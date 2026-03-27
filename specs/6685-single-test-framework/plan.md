@@ -1,8 +1,10 @@
-# Implementation Plan: Standardize Test Frameworks - Python pytest Migration
+# Implementation Plan: Python pytest Migration (User Story 1 - Feature #6685)
 
 **Branch**: `6685-single-test-framework` | **Date**: 2026-03-27 | **Spec**: [specs/6685-single-test-framework/spec.md](../spec.md)
 
-**Input**: Feature specification from `/specs/6685-single-test-framework/spec.md`
+**Input**: User Story 1 from feature specification: Python test framework consolidation
+
+**SCOPE CLARIFICATION (2026-03-27)**: This plan addresses **User Story 1 (Python) only**, the MVP for Feature #6685. User Story 2 (Go) and User Story 3 (Documentation/Enforcement) are deferred to Features #6686 and #6687 for separate planning cycles. See spec.md Assumptions for phased delivery timeline.
 
 ## Summary
 

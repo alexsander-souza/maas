@@ -1,9 +1,12 @@
-# Feature Specification: Standardize Test Frameworks Per Language
+# Feature Specification: Standardize Python Test Framework (User Story 1)
 
 **Feature Branch**: `6685-single-test-framework`  
 **Created**: 2026-03-27  
 **Status**: Draft  
 **Input**: User description: "As a MAAS developer, I want to maintain only one test framework for each language"
+
+**SCOPE CLARIFICATION** (2026-03-27):
+This specification defines a complete 3-story feature, but **current implementation focuses on User Story 1 (Python) only**, targeting MVP delivery in 7 weeks. User Story 2 (Go) and User Story 3 (Documentation/Enforcement) are planned as separate follow-up features (#6686, #6687) for future releases. See "Phased Delivery" section below.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -118,8 +121,13 @@ All MAAS developers want clear, authoritative guidance on which test framework t
 
 ## Assumptions
 
-- **Python Framework Selection**: pytest is established as the exclusive standard for all Python testing in MAAS. All existing unittest and testtools tests will be migrated to pytest during this initiative.
-- **Go Testing**: Standard Go `testing` package is mandatory; testify/assert or similar libraries are optional but approved for consistent assertion patterns
+- **Feature Scope (2026-03-27)**: This feature is implemented in 3 phases across 2-3 releases:
+  - **Phase 1 (Current - Feature #6685)**: Python pytest consolidation (User Story 1) - MVP in 7 weeks
+  - **Phase 2 (Future - Feature #6686)**: Go testing standardization (User Story 2) - separate planning cycle
+  - **Phase 3 (Future - Feature #6687)**: Documentation/Enforcement (User Story 3) - depends on P1+P2
+  
+- **Python Framework Selection**: pytest is established as the exclusive standard for all Python testing in MAAS (Feature #6685 scope). All existing unittest and testtools tests will be migrated to pytest during this initiative.
+- **Go Testing**: Deferred to Feature #6686. Standard Go `testing` package is mandatory; testify/assert or similar libraries are optional but approved for consistent assertion patterns (to be detailed in #6686 planning)
 - **Test Coverage Retention**: Any framework migration will maintain or improve overall test coverage percentages
 - **Backward Compatibility**: Existing test infrastructure (CI/CD, Makefile targets) will be updated to support the standardized framework; no breaking changes to the testing experience for developers
 - **Phased Migration**: Large legacy test suites may require phased migration; not all tests must be converted on day one
