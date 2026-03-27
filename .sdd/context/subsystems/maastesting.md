@@ -2,9 +2,9 @@
 
 ## Purpose
 
-Testing utilities, fixtures, and helpers shared across MAAS test suites. This subsystem provides reusable test infrastructure including database setup, factory patterns, common test base classes, pytest plugins, and mocking utilities to ensure consistent and efficient testing across all MAAS components.
+Testing utilities, fixtures, and helpers shared across all MAAS test suites. This subsystem provides reusable test infrastructure including database setup, factory patterns, common test base classes, pytest plugins, and mocking utilities.
 
-**Status**: Active - critical test infrastructure for all subsystems.
+**Status**: Active - critical test infrastructure for all components.
 
 ## Location
 
@@ -15,49 +15,49 @@ Testing utilities, fixtures, and helpers shared across MAAS test suites. This su
 ### Core Technologies
 - **Python**: 3.10+
 - **pytest**: Primary test framework
-- **testtools**: Legacy test framework support
 - **pytest-asyncio**: Async test support
 
 ### Key Libraries
-- **pytest**: Modern test framework and runner
-- **pytest-asyncio**: Async/await test support
+- **pytest**: Modern test framework
 - **factory-boy**: Test data factory pattern
 - **faker**: Realistic test data generation
-- **fixtures**: Test fixture management
-- **mock**: Mocking and patching utilities
+- **testtools**: Legacy test framework support
 
 ## Architectural Constraints
 
 ### Shared Across Components
 
-This subsystem serves all other subsystems:
-- Used by `maasserver` (Django tests)
-- Used by `maasapiserver` (FastAPI tests)
-- Used by `maasservicelayer` (service/repository tests)
-- Used by `provisioningserver` (Twisted tests)
-- Used by other components
+This subsystem serves all other MAAS components:
+- `maasserver` (Django tests)
+- `maasapiserver` (FastAPI tests)
+- `maasservicelayer` (service/repository tests)
+- `maastemporalworker` (workflow tests)
+- `provisioningserver` (Twisted tests)
+
+Changes here impact all test suites - coordinate carefully.
 
 ### Minimal Dependencies
 
 Keep dependencies minimal to avoid circular dependencies:
 - No business logic dependencies
-- No direct subsystem imports
+- No direct subsystem imports except for type hints
 - Focus on testing infrastructure only
-- Support multiple test frameworks
 
-### Backward Compatibility
+### Support Both Frameworks
 
-Support both legacy and modern testing approaches:
-- testtools for legacy Django tests
-- pytest for modern async tests
+Support legacy and modern testing approaches:
+- `testtools` for legacy Django tests
+- `pytest` for modern async tests
 - Gradual migration path
-- Both frameworks coexist
 
 ## Key Patterns
 
+> **See**: [test-code-quality.md](../../skills/techniques/test-code-quality.md) for comprehensive testing patterns.
+> **See**: [python-testing.md](../../skills/languages/python-testing.md) for Python testing best practices.
+
 ### Factory Pattern
 
-Provide factories for creating test data:
+Factories for creating test data with sensible defaults:
 
 ```python
 from maastesting.factory import factory
@@ -67,12 +67,9 @@ class MachineFactory:
     
     @staticmethod
     def make_Machine(hostname=None, status=None, **kwargs):
-        """Create a test machine with sensible defaults."""
-        from maasserver.models import Machine
-        
+        """Create test machine with defaults."""
         if hostname is None:
             hostname = factory.make_name('machine')
-        
         if status is None:
             status = NODE_STATUS.READY
         
@@ -81,21 +78,8 @@ class MachineFactory:
             status=status,
             **kwargs
         )
-    
-    @staticmethod
-    def make_Machine_with_interfaces(interface_count=1):
-        """Create machine with network interfaces."""
-        machine = MachineFactory.make_Machine()
-        
-        for i in range(interface_count):
-            InterfaceFactory.make_Interface(
-                node=machine,
-                name=f"eth{i}"
-            )
-        
-        return machine
 
-# Usage in tests
+# Usage
 def test_machine_creation():
     machine = factory.make_Machine(hostname="test-machine")
     assert machine.hostname == "test-machine"
@@ -103,11 +87,10 @@ def test_machine_creation():
 
 ### Database Fixtures
 
-Provide database setup for tests:
+Database setup for integration tests:
 
 ```python
 import pytest
-from maastesting.database import setup_test_database, teardown_test_database
 
 @pytest.fixture(scope="session")
 def db_session():
@@ -118,25 +101,17 @@ def db_session():
 
 @pytest.fixture
 async def db_connection(db_session):
-    """Provide database connection for test."""
+    """Provide database connection with transaction rollback."""
     async with db_session.get_connection() as conn:
-        # Start transaction
         trans = await conn.begin()
-        
         yield conn
-        
-        # Rollback transaction to clean up
         await trans.rollback()
 
-# Usage in tests
+# Usage
 @pytest.mark.asyncio
 async def test_with_database(db_connection):
-    """Test that uses database."""
-    from maasservicelayer.db.repositories import MachineRepository
-    
     repo = MachineRepository(db_connection)
     machine = await repo.create({"hostname": "test"})
-    
     assert machine.id is not None
 ```
 
@@ -152,7 +127,7 @@ class RepositoryCommonTests(ABC):
     
     @abstractmethod
     def get_repository_class(self):
-        """Return the repository class to test."""
+        """Return repository class to test."""
         pass
     
     @abstractmethod
@@ -163,53 +138,31 @@ class RepositoryCommonTests(ABC):
     @pytest.mark.asyncio
     async def test_create(self, db_connection):
         """Test creating a resource."""
-        repo_class = self.get_repository_class()
-        repo = repo_class(db_connection)
-        
+        repo = self.get_repository_class()(db_connection)
         resource = self.get_create_resource()
         created = await repo.create(resource)
-        
         assert created.id is not None
     
     @pytest.mark.asyncio
     async def test_get_by_id(self, db_connection):
         """Test retrieving by ID."""
-        repo_class = self.get_repository_class()
-        repo = repo_class(db_connection)
-        
-        resource = self.get_create_resource()
-        created = await repo.create(resource)
-        
+        repo = self.get_repository_class()(db_connection)
+        created = await repo.create(self.get_create_resource())
         retrieved = await repo.get_by_id(created.id)
         assert retrieved.id == created.id
-    
-    @pytest.mark.asyncio
-    async def test_list(self, db_connection):
-        """Test listing resources."""
-        repo_class = self.get_repository_class()
-        repo = repo_class(db_connection)
-        
-        # Create multiple resources
-        for i in range(3):
-            await repo.create(self.get_create_resource())
-        
-        results = await repo.list()
-        assert len(results) >= 3
 
 # Usage
 class TestMachineRepository(RepositoryCommonTests):
-    """Test machine repository."""
-    
     def get_repository_class(self):
         return MachineRepository
     
     def get_create_resource(self):
-        return {"hostname": "test-machine", "architecture": "amd64"}
+        return {"hostname": "test", "architecture": "amd64"}
 ```
 
-### Service Test Base Classes
+### Service Test Base Class
 
-Common tests for services:
+Base class for testing services:
 
 ```python
 class ServiceCommonTests(ABC):
@@ -217,7 +170,7 @@ class ServiceCommonTests(ABC):
     
     @abstractmethod
     def get_service_class(self):
-        """Return the service class to test."""
+        """Return service class to test."""
         pass
     
     @abstractmethod
@@ -225,539 +178,314 @@ class ServiceCommonTests(ABC):
         """Return builder for create test."""
         pass
     
-    @abstractmethod
-    def get_mock_repository(self, mocker):
-        """Return mocked repository."""
-        pass
-    
     @pytest.mark.asyncio
     async def test_create(self, mocker):
-        """Test create operation."""
-        service_class = self.get_service_class()
-        mock_repo = self.get_mock_repository(mocker)
+        """Test service create with mocked repository."""
+        mock_repo = mocker.Mock()
+        mock_repo.create = mocker.AsyncMock(return_value=Machine(id=1))
         
-        # Mock repository create
-        mock_repo.create = AsyncMock(return_value=Machine(id=1))
-        
-        service = service_class(mock_repo)
-        builder = self.get_create_builder()
-        
-        result = await service.create(builder)
+        service = self.get_service_class()(mock_repo)
+        result = await service.create(self.get_create_builder())
         
         assert result.id == 1
         mock_repo.create.assert_called_once()
 ```
 
-### API Test Fixtures
+### Async Test Utilities
 
-Fixtures for API testing:
+Utilities for async testing:
 
 ```python
-import pytest
-from httpx import AsyncClient
-from maasapiserver.v3.app import create_app
+import asyncio
 
-@pytest.fixture
-async def api_client():
-    """Provide API test client."""
-    app = create_app()
+async def wait_for_condition(condition, timeout=5.0, interval=0.1):
+    """Wait for condition to become true."""
+    end_time = asyncio.get_event_loop().time() + timeout
     
-    async with AsyncClient(app=app, base_url="http://test") as client:
-        yield client
-
-@pytest.fixture
-async def mocked_api_client_user(mocker):
-    """API client with mocked services and authenticated user."""
-    app = create_app()
+    while asyncio.get_event_loop().time() < end_time:
+        if await condition():
+            return True
+        await asyncio.sleep(interval)
     
-    # Mock authentication
-    mock_user = User(id=1, username="testuser")
-    mock_get_user = mocker.patch(
-        'maasapiserver.v3.auth.get_authenticated_user',
-        return_value=mock_user
-    )
-    
-    # Mock services
-    mock_service = mocker.Mock()
-    app.dependency_overrides[get_service] = lambda: mock_service
-    
-    async with AsyncClient(app=app, base_url="http://test") as client:
-        yield client, mock_service
+    raise TimeoutError(f"Condition not met within {timeout}s")
 
 # Usage
-@pytest.mark.asyncio
-async def test_api_endpoint(mocked_api_client_user):
-    """Test API endpoint."""
-    client, service = mocked_api_client_user
+async def test_deployment_completes():
+    machine = await start_deployment(machine_id)
     
-    service.get_by_id.return_value = Machine(id=1, hostname="test")
+    async def is_deployed():
+        m = await service.get_by_id(machine_id)
+        return m.status == "deployed"
     
-    response = await client.get("/api/v3/machines/1")
-    
-    assert response.status_code == 200
-    assert response.json()["hostname"] == "test"
-```
-
-### Pytest Plugins
-
-Custom pytest plugins for MAAS:
-
-```python
-# conftest.py
-import pytest
-
-def pytest_configure(config):
-    """Configure pytest for MAAS tests."""
-    config.addinivalue_line(
-        "markers", 
-        "db: mark test as requiring database"
-    )
-    config.addinivalue_line(
-        "markers",
-        "slow: mark test as slow running"
-    )
-
-@pytest.fixture(autouse=True)
-def reset_database(request):
-    """Reset database after each test."""
-    if "db" in request.keywords:
-        yield
-        # Clean up database
-        cleanup_test_database()
-    else:
-        yield
-
-@pytest.fixture
-def isolated_filesystem(tmp_path):
-    """Provide isolated filesystem for tests."""
-    import os
-    old_cwd = os.getcwd()
-    os.chdir(tmp_path)
-    
-    yield tmp_path
-    
-    os.chdir(old_cwd)
+    await wait_for_condition(is_deployed, timeout=10.0)
 ```
 
 ### Mock Helpers
 
-Utilities for mocking:
+Common mocking patterns:
 
 ```python
-from unittest.mock import Mock, AsyncMock, patch
+from unittest.mock import AsyncMock, Mock
 
-class MockHelper:
-    """Helper for creating common mocks."""
+def make_mock_service(spec_class, **method_returns):
+    """Create mock service with specified return values."""
+    mock = Mock(spec=spec_class)
     
-    @staticmethod
-    def mock_service(spec_class, **methods):
-        """Create mocked service with async methods."""
-        mock = Mock(spec=spec_class)
-        
-        for method_name, return_value in methods.items():
-            setattr(mock, method_name, AsyncMock(return_value=return_value))
-        
-        return mock
+    for method_name, return_value in method_returns.items():
+        setattr(mock, method_name, AsyncMock(return_value=return_value))
     
-    @staticmethod
-    def mock_repository(spec_class):
-        """Create mocked repository."""
-        mock = Mock(spec=spec_class)
-        
-        # Common async methods
-        mock.get_by_id = AsyncMock()
-        mock.create = AsyncMock()
-        mock.update = AsyncMock()
-        mock.delete = AsyncMock()
-        mock.list = AsyncMock()
-        
-        return mock
+    return mock
 
 # Usage
-def test_with_mocked_service(mocker):
-    """Test using mock helper."""
-    mock_service = MockHelper.mock_service(
+def test_with_mock_service():
+    mock_service = make_mock_service(
         MachineService,
-        get_by_id=Machine(id=1),
-        create=Machine(id=2)
+        get_by_id=Machine(id=1, hostname="test"),
+        list=[]
     )
     
     result = await mock_service.get_by_id(1)
-    assert result.id == 1
-```
-
-### Test Data Builders
-
-Builders for complex test data:
-
-```python
-class MachineTestBuilder:
-    """Builder for creating test machines."""
-    
-    def __init__(self):
-        self._hostname = "test-machine"
-        self._status = "ready"
-        self._architecture = "amd64"
-        self._interfaces = []
-        self._storage = []
-    
-    def with_hostname(self, hostname):
-        self._hostname = hostname
-        return self
-    
-    def with_status(self, status):
-        self._status = status
-        return self
-    
-    def with_interfaces(self, count=1):
-        for i in range(count):
-            self._interfaces.append({
-                "name": f"eth{i}",
-                "mac": f"00:11:22:33:44:{i:02x}"
-            })
-        return self
-    
-    def with_storage(self, size_gb=100):
-        self._storage.append({
-            "name": f"sda",
-            "size": size_gb * 1024 * 1024 * 1024
-        })
-        return self
-    
-    def build(self):
-        """Build the test machine."""
-        machine = factory.make_Machine(
-            hostname=self._hostname,
-            status=self._status,
-            architecture=self._architecture
-        )
-        
-        for iface in self._interfaces:
-            factory.make_Interface(node=machine, **iface)
-        
-        for disk in self._storage:
-            factory.make_PhysicalBlockDevice(node=machine, **disk)
-        
-        return machine
-
-# Usage
-def test_complex_machine():
-    """Test with complex machine setup."""
-    machine = (
-        MachineTestBuilder()
-        .with_hostname("complex-machine")
-        .with_interfaces(count=2)
-        .with_storage(size_gb=500)
-        .build()
-    )
-    
-    assert len(machine.interface_set.all()) == 2
+    assert result.hostname == "test"
 ```
 
 ## Testing Requirements
 
+> **See**: [test-code-quality.md](../../skills/techniques/test-code-quality.md) for comprehensive testing guidelines.
+
+### Test Coverage
+
+All testing utilities must be tested:
+- Factories produce valid test data
+- Fixtures set up and tear down correctly
+- Base classes execute all test methods
+- Mock helpers create valid mocks
+
 ### Self-Testing
 
-Test the testing utilities themselves:
+Testing utilities must not introduce bugs:
 
 ```python
-def test_factory_creates_unique_names():
-    """Test factory name generation."""
-    name1 = factory.make_name('test')
-    name2 = factory.make_name('test')
-    
-    assert name1 != name2
-    assert name1.startswith('test-')
+def test_machine_factory():
+    """Test that factory creates valid machines."""
+    machine = factory.make_Machine()
+    assert machine.hostname is not None
+    assert machine.status in NODE_STATUS
+    assert machine.id is not None
 
-def test_database_fixture_provides_connection(db_connection):
-    """Test database fixture."""
-    assert db_connection is not None
-    
-@pytest.mark.asyncio
-async def test_mock_helper_creates_async_mocks():
-    """Test mock helper."""
-    mock = MockHelper.mock_service(MachineService)
-    
-    mock.get_by_id.return_value = Machine(id=1)
-    result = await mock.get_by_id(1)
-    
-    assert result.id == 1
+def test_db_fixture_isolation(db_connection):
+    """Test that fixtures provide isolation."""
+    repo = MachineRepository(db_connection)
+    await repo.create({"hostname": "test1"})
+    # Transaction rolled back after test
 ```
 
-### Documentation Tests
+### Running Tests
 
-Ensure utilities are well-documented:
+```bash
+# Test maastesting utilities
+pytest src/maastesting/tests/
 
-```python
-def test_factory_methods_have_docstrings():
-    """Test that factory methods are documented."""
-    from maastesting.factory import factory
-    
-    for method_name in dir(factory):
-        if method_name.startswith('make_'):
-            method = getattr(factory, method_name)
-            assert method.__doc__ is not None
+# With coverage
+pytest --cov=maastesting src/maastesting/tests/
 ```
 
 ## Development Guidelines
 
-### Adding New Fixtures
-
-When adding new test fixtures:
-
-1. **Document Purpose**: Clear docstring explaining use
-2. **Scope Appropriately**: Function, module, or session scope
-3. **Clean Up Resources**: Ensure proper teardown
-4. **Test the Fixture**: Verify fixture works correctly
-5. **Update Documentation**: Add to fixture catalog
-
-```python
-@pytest.fixture(scope="function")
-def temporary_directory(tmp_path):
-    """
-    Provide a temporary directory that is cleaned up after test.
-    
-    Yields:
-        Path: Temporary directory path
-        
-    Example:
-        def test_file_operations(temporary_directory):
-            file_path = temporary_directory / "test.txt"
-            file_path.write_text("test content")
-    """
-    yield tmp_path
-    # Cleanup handled by pytest's tmp_path
-```
-
 ### Adding New Factories
 
-When adding factory methods:
-
-1. **Follow Naming Convention**: `make_<ResourceType>`
-2. **Sensible Defaults**: Provide working defaults
-3. **Customization**: Allow parameter overrides
-4. **Related Resources**: Create related entities as needed
-5. **Return Created Object**: Always return the created instance
+1. Inherit from or use existing factory patterns
+2. Provide sensible defaults
+3. Allow overrides via kwargs
+4. Generate unique names/IDs
+5. Document required vs optional parameters
 
 ```python
-def make_Subnet(cidr=None, vlan=None, **kwargs):
-    """
-    Create a test subnet.
+@staticmethod
+def make_Machine(hostname=None, **kwargs):
+    """Create test machine.
     
     Args:
-        cidr: CIDR notation (auto-generated if None)
-        vlan: VLAN object (created if None)
-        **kwargs: Additional Subnet fields
-        
-    Returns:
-        Subnet: Created subnet instance
+        hostname: Machine hostname (auto-generated if None)
+        **kwargs: Additional Machine fields
     """
-    if cidr is None:
-        cidr = generate_test_cidr()
-    
-    if vlan is None:
-        vlan = make_VLAN()
-    
-    return Subnet.objects.create(
-        cidr=cidr,
-        vlan=vlan,
-        **kwargs
-    )
+    if hostname is None:
+        hostname = factory.make_name('machine')
+    return Machine.objects.create(hostname=hostname, **kwargs)
 ```
 
-### Adding Common Test Classes
+### Adding New Fixtures
 
-When adding test base classes:
+1. Choose appropriate scope (function, module, session)
+2. Ensure proper setup and teardown
+3. Document fixture purpose and usage
+4. Provide clean state for each test
 
-1. **Abstract Methods**: Clearly define what subclasses must implement
-2. **Test Coverage**: Cover common functionality
-3. **Flexible**: Allow customization via overrides
-4. **Well-Documented**: Explain usage and requirements
+### Adding Base Classes
 
-### Performance Considerations
-
-Keep tests fast:
-- Use database transactions for rollback
-- Mock external services
-- Cache expensive fixtures at session scope
-- Provide fast alternatives for slow operations
+1. Use ABC for abstract base classes
+2. Define abstract methods for customization
+3. Implement common test patterns
+4. Document expected subclass behavior
 
 ## Integration Points
 
-### pytest
+### Used By All Test Suites
 
-Primary test framework integration:
-- Custom plugins in `conftest.py`
-- Fixture registration
-- Marker registration
-- Configuration options
+All MAAS components import from maastesting:
+- `maasserver.tests` - Django test suite
+- `maasapiserver.tests` - FastAPI test suite
+- `maasservicelayer.tests` - Service/repository tests
+- `maastemporalworker.tests` - Workflow tests
 
-### testtools
+### Pytest Plugins
 
-Legacy test framework support:
-- Base test cases for Django
-- Scenario-based testing
-- Deferred test runners
+Custom pytest plugins in `maastesting.pytest_plugin`:
+- Database fixtures
+- Async test support
+- Factory fixtures
+- Mock utilities
 
-### Database Systems
+### Django TestCase Support
 
-Database test setup:
-- PostgreSQL test database
+Integration with Django's test framework:
+- Database setup/teardown
 - Transaction management
-- Fixture data loading
-- Schema setup
-
-### All MAAS Subsystems
-
-Used across all subsystems:
-- `maasserver`: Django test fixtures
-- `maasapiserver`: API test clients
-- `maasservicelayer`: Repository/service test bases
-- `provisioningserver`: Twisted test utilities
-- `maasagent`: Go test helpers (future)
+- Fixture loading
+- Test client support
 
 ## Common Pitfalls
 
-### Shared Mutable State
+> **See**: [common-anti-patterns.md](../../common-anti-patterns.md) for general anti-patterns.
 
-❌ **Don't**: Share mutable objects between tests
+### Using Factories in Production Code
+
+❌ **Don't** use test factories in production code:
 ```python
-# Module-level mutable state - WRONG!
-shared_machine = factory.make_Machine()
+# WRONG - Test factory in production
+from maastesting.factory import factory
 
-def test_1():
-    shared_machine.hostname = "test1"  # Mutates shared state!
-
-def test_2():
-    # Fails if test_1 runs first
-    assert shared_machine.hostname == "machine"
+def create_machine():
+    return factory.make_Machine()  # Test code only!
 ```
 
-✅ **Do**: Create fresh instances per test
+✅ **Do** use proper service layer:
 ```python
+# Correct - Use service layer
+async def create_machine():
+    return await machine_service.create(builder)
+```
+
+### Sharing State Between Tests
+
+❌ **Don't** share mutable state between tests:
+```python
+# WRONG - Shared state
+shared_machine = None
+
+def test_create():
+    global shared_machine
+    shared_machine = factory.make_Machine()
+
+def test_update():
+    shared_machine.hostname = "updated"  # Brittle!
+```
+
+✅ **Do** create fresh state per test:
+```python
+# Correct - Fresh state
+def test_create():
+    machine = factory.make_Machine()
+    assert machine.id is not None
+
+def test_update():
+    machine = factory.make_Machine()
+    machine.hostname = "updated"
+```
+
+### Not Cleaning Up Resources
+
+❌ **Don't** leave resources without cleanup:
+```python
+# WRONG - No cleanup
+def test_with_file():
+    f = open("test.txt", "w")
+    f.write("data")
+    # Missing f.close()
+```
+
+✅ **Do** use fixtures or context managers:
+```python
+# Correct - Automatic cleanup
 @pytest.fixture
-def machine():
-    return factory.make_Machine()
-
-def test_1(machine):
-    machine.hostname = "test1"  # Isolated
-
-def test_2(machine):
-    # Fresh machine instance
-    assert machine.hostname.startswith("machine-")
-```
-
-### Fixture Scope Issues
-
-❌ **Don't**: Use function-scoped fixtures in module/session scope
-```python
-@pytest.fixture(scope="session")
-def session_fixture(function_scoped_fixture):  # WRONG!
-    return something
-```
-
-✅ **Do**: Match or increase scope
-```python
-@pytest.fixture(scope="session")
-def session_fixture(session_scoped_fixture):  # Correct
-    return something
-```
-
-### Missing Cleanup
-
-❌ **Don't**: Leak resources
-```python
-@pytest.fixture
-def temp_file():
-    f = open("/tmp/test", "w")
-    yield f
-    # Missing f.close()!
-```
-
-✅ **Do**: Always clean up
-```python
-@pytest.fixture
-def temp_file():
-    f = open("/tmp/test", "w")
+def test_file():
+    f = open("test.txt", "w")
     yield f
     f.close()
+
+def test_with_file(test_file):
+    test_file.write("data")
 ```
 
-## Related Skills
+### Mocking Too Much
 
-Links to relevant skills in `.sdd/skills/`:
+❌ **Don't** over-mock in integration tests:
+```python
+# WRONG - Mocking everything in integration test
+def test_create_machine(mocker):
+    mocker.patch('maasservicelayer.db.connection')
+    mocker.patch('maasservicelayer.repositories')
+    # Testing nothing real!
+```
 
-- **pytest**: Modern Python testing
-- **testtools**: Legacy test framework
-- **Factory Pattern**: Test data generation
-- **Mocking**: Test doubles and stubs
-- **Database Testing**: Database test strategies
-- **Async Testing**: Testing async code
+✅ **Do** use real components in integration tests:
+```python
+# Correct - Real database in integration test
+async def test_create_machine(db_connection):
+    repo = MachineRepository(db_connection)  # Real repo
+    machine = await repo.create({"hostname": "test"})
+    assert machine.id is not None
+```
 
-## Best Practices
+## Security Considerations
+
+> **See**: [security-practices.md](../../skills/techniques/security-practices.md)
+
+### Test Data Security
+
+- Never use real credentials in test data
+- Sanitize any production data used in tests
+- Don't commit sensitive test data to repository
 
 ### Test Isolation
 
-Each test should be independent:
-- No dependencies between tests
-- Clean state before each test
-- Rollback database changes
-- Mock external dependencies
+- Ensure tests don't leak sensitive data
+- Clean up test databases completely
+- Isolate test environments from production
 
-### Meaningful Names
+## Performance Considerations
 
-Use descriptive names:
-- Test names describe what is tested
-- Fixture names describe what they provide
-- Factory names describe what they create
+### Test Speed
 
-### Fast Tests
+- Use appropriate fixture scopes to minimize setup time
+- Mock slow external services
+- Use in-memory databases for unit tests
+- Parallelize independent tests
 
-Optimize for speed:
-- Mock slow operations
-- Use in-memory databases where possible
-- Parallel test execution
-- Session-scoped expensive fixtures
+### Database Performance
 
-### Maintainability
+- Use transactions for test isolation (faster than full cleanup)
+- Minimize database migrations in tests
+- Consider using fixtures for bulk data
 
-Keep tests maintainable:
-- DRY principle with fixtures and helpers
-- Clear test structure (Arrange-Act-Assert)
-- Update tests with code changes
-- Refactor tests as needed
+### Async Test Performance
 
-## Documentation
-
-### Fixture Catalog
-
-Maintain catalog of available fixtures:
-- Purpose of each fixture
-- Parameters and configuration
-- Usage examples
-- Scope and cleanup behavior
-
-### Factory Documentation
-
-Document factory methods:
-- What resource is created
-- Available parameters
-- Default values
-- Related factories
-
-### Common Test Patterns
-
-Document testing patterns:
-- Repository testing approach
-- Service testing with mocks
-- API endpoint testing
-- Async test patterns
+- Use `pytest-xdist` for parallel execution
+- Avoid unnecessary `asyncio.sleep()` calls
+- Use time mocking for time-dependent tests
 
 ## Additional Resources
 
-- pytest Documentation: https://docs.pytest.org/
-- testtools Documentation: https://testtools.readthedocs.io/
-- Factory Boy: https://factoryboy.readthedocs.io/
-- pytest-asyncio: https://pytest-asyncio.readthedocs.io/
-- `AGENTS.md`: General coding guidelines
-- Test examples across MAAS codebase
+- **pytest Documentation**: https://docs.pytest.org/
+- **factory-boy**: https://factoryboy.readthedocs.io/
+- **pytest-asyncio**: https://pytest-asyncio.readthedocs.io/
+- **Related**: [test-code-quality.md](../../skills/techniques/test-code-quality.md), [python-testing.md](../../skills/languages/python-testing.md)

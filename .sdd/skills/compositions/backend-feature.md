@@ -131,7 +131,7 @@ class MachineRepository:
         await self._connection.execute(stmt)
 ```
 
-**Skills**: [sqlalchemy-patterns.md](../languages/sqlalchemy-patterns.md), [secure-coding.md](../techniques/secure-coding.md)
+**Skills**: [sqlalchemy-patterns.md](../languages/sqlalchemy-patterns.md), [security-practices.md](../techniques/security-practices.md)
 
 ### 4. Implement Service Layer
 
@@ -278,7 +278,7 @@ def test_create_machine_validates_input(machine_service):
 - [ ] Error messages don't expose sensitive information
 - [ ] Secure defaults for any configurable options
 
-**Skills**: [secure-coding.md](../techniques/secure-coding.md), [input-validation.md](../techniques/input-validation.md)
+**Skills**: [security-practices.md](../techniques/security-practices.md), [input-validation.md](../techniques/input-validation.md)
 
 ### 8. Code Quality Review
 
@@ -317,7 +317,7 @@ tests/maasservicelayer/
 - **Python Patterns**: [../languages/python-patterns.md](../languages/python-patterns.md) - Three-tier architecture
 - **SQLAlchemy**: [../languages/sqlalchemy-patterns.md](../languages/sqlalchemy-patterns.md) - Repository patterns
 - **Python Testing**: [../languages/python-testing.md](../languages/python-testing.md) - Testing strategies
-- **Secure Coding**: [../techniques/secure-coding.md](../techniques/secure-coding.md) - Security practices
+- **Security Practices**: [../techniques/security-practices.md](../techniques/security-practices.md) - Security practices
 - **Input Validation**: [../techniques/input-validation.md](../techniques/input-validation.md) - Validating requests
 - **API Endpoint**: [api-endpoint.md](api-endpoint.md) - Adding HTTP layer
 

@@ -125,64 +125,7 @@ func TestMachineStatus(t *testing.T) {
 }
 ```
 
-**Table-Driven Test with Complex Input/Output**:
 
-```go
-func TestProcessMachineRequest(t *testing.T) {
-    tests := []struct {
-        name    string
-        request MachineRequest
-        want    *Machine
-        wantErr error
-    }{
-        {
-            name: "valid request",
-            request: MachineRequest{
-                Hostname: "node1",
-                ZoneID:   1,
-                CPUCount: 4,
-            },
-            want: &Machine{
-                Hostname: "node1",
-                ZoneID:   1,
-                CPUCount: 4,
-                Status:   "new",
-            },
-            wantErr: nil,
-        },
-        {
-            name: "invalid zone",
-            request: MachineRequest{
-                Hostname: "node2",
-                ZoneID:   -1,
-                CPUCount: 2,
-            },
-            want:    nil,
-            wantErr: ErrInvalidZone,
-        },
-    }
-    
-    for _, tt := range tests {
-        t.Run(tt.name, func(t *testing.T) {
-            got, err := ProcessMachineRequest(tt.request)
-            
-            if !errors.Is(err, tt.wantErr) {
-                t.Errorf("error = %v, wantErr %v", err, tt.wantErr)
-                return
-            }
-            
-            if tt.want != nil && got != nil {
-                if got.Hostname != tt.want.Hostname {
-                    t.Errorf("Hostname = %v, want %v", got.Hostname, tt.want.Hostname)
-                }
-                if got.ZoneID != tt.want.ZoneID {
-                    t.Errorf("ZoneID = %v, want %v", got.ZoneID, tt.want.ZoneID)
-                }
-            }
-        })
-    }
-}
-```
 
 ### Using Testify
 
@@ -198,103 +141,16 @@ import (
 func TestMachineCreation(t *testing.T) {
     machine, err := CreateMachine("node1", 1)
     
-    // require stops test on failure
-    require.NoError(t, err, "should not error on valid input")
-    require.NotNil(t, machine, "should return machine")
-    
-    // assert continues test on failure
+    require.NoError(t, err)
+    require.NotNil(t, machine)
     assert.Equal(t, "node1", machine.Hostname)
     assert.Equal(t, 1, machine.ZoneID)
-    assert.Equal(t, "new", machine.Status)
-}
-
-func TestMachineValidation(t *testing.T) {
-    machine := &Machine{Hostname: "", ZoneID: 1}
-    err := machine.Validate()
-    
-    assert.Error(t, err, "should error on empty hostname")
-    assert.Contains(t, err.Error(), "hostname")
 }
 ```
 
-**Table-Driven Tests with Testify**:
 
-```go
-func TestMachineOperations(t *testing.T) {
-    tests := []struct {
-        name        string
-        machineID   int
-        expectError bool
-        errorMsg    string
-    }{
-        {"valid machine", 1, false, ""},
-        {"invalid machine", 999, true, "not found"},
-    }
-    
-    for _, tt := range tests {
-        t.Run(tt.name, func(t *testing.T) {
-            machine, err := GetMachine(tt.machineID)
-            
-            if tt.expectError {
-                assert.Error(t, err)
-                assert.Contains(t, err.Error(), tt.errorMsg)
-                assert.Nil(t, machine)
-            } else {
-                assert.NoError(t, err)
-                assert.NotNil(t, machine)
-                assert.Equal(t, tt.machineID, machine.ID)
-            }
-        })
-    }
-}
-```
 
 ### Mocking Interfaces
-
-**Manual Mock**:
-
-```go
-// Mock implementation of MachineRepository
-type MockMachineRepository struct {
-    machines map[int]*Machine
-    err      error
-}
-
-func NewMockMachineRepository() *MockMachineRepository {
-    return &MockMachineRepository{
-        machines: make(map[int]*Machine),
-    }
-}
-
-func (m *MockMachineRepository) GetByID(id int) (*Machine, error) {
-    if m.err != nil {
-        return nil, m.err
-    }
-    machine, exists := m.machines[id]
-    if !exists {
-        return nil, ErrNotFound
-    }
-    return machine, nil
-}
-
-func (m *MockMachineRepository) SetError(err error) {
-    m.err = err
-}
-
-// Test using mock
-func TestMachineService(t *testing.T) {
-    repo := NewMockMachineRepository()
-    repo.machines[1] = &Machine{ID: 1, Hostname: "test"}
-    
-    service := NewMachineService(repo)
-    machine, err := service.GetMachine(1)
-    
-    assert.NoError(t, err)
-    assert.Equal(t, "test", machine.Hostname)
-}
-```
-
-**Testify Mock**:
 
 ```go
 import (
@@ -352,51 +208,16 @@ func TestMachineRepository(t *testing.T) {
 }
 
 func setupTestDatabase(t *testing.T) *sql.DB {
-    t.Helper() // Marks this as a helper function
-    
+    t.Helper()
     db, err := sql.Open("sqlite3", ":memory:")
     if err != nil {
         t.Fatalf("failed to open database: %v", err)
     }
-    
-    // Run migrations
-    if err := runMigrations(db); err != nil {
-        t.Fatalf("failed to run migrations: %v", err)
-    }
-    
     return db
 }
 ```
 
-**Subtests with Shared Setup**:
 
-```go
-func TestMachineOperations(t *testing.T) {
-    // Shared setup
-    db := setupTestDatabase(t)
-    defer db.Close()
-    repo := NewMachineRepository(db)
-    
-    t.Run("Create", func(t *testing.T) {
-        machine := &Machine{Hostname: "test1", ZoneID: 1}
-        err := repo.Create(machine)
-        assert.NoError(t, err)
-        assert.NotZero(t, machine.ID)
-    })
-    
-    t.Run("GetByID", func(t *testing.T) {
-        machine, err := repo.GetByID(1)
-        assert.NoError(t, err)
-        assert.Equal(t, "test1", machine.Hostname)
-    })
-    
-    t.Run("Update", func(t *testing.T) {
-        machine := &Machine{ID: 1, Hostname: "updated", ZoneID: 1}
-        err := repo.Update(machine)
-        assert.NoError(t, err)
-    })
-}
-```
 
 ### Testing Errors
 
@@ -476,35 +297,7 @@ func TestChannelProcessing(t *testing.T) {
 ```go
 func BenchmarkMachineCreation(b *testing.B) {
     for i := 0; i < b.N; i++ {
-        _ = NewMachine("test", 1)
-    }
-}
-
-func BenchmarkMachineValidation(b *testing.B) {
-    machine := &Machine{Hostname: "test-node", ZoneID: 1}
-    
-    b.ResetTimer() // Reset timer after setup
-    for i := 0; i < b.N; i++ {
-        _ = machine.Validate()
-    }
-}
-
-// Table-driven benchmark
-func BenchmarkMachineOperations(b *testing.B) {
-    benchmarks := []struct {
-        name string
-        op   func()
-    }{
-        {"Create", func() { NewMachine("test", 1) }},
-        {"Validate", func() { (&Machine{Hostname: "test", ZoneID: 1}).Validate() }},
-    }
-    
-    for _, bm := range benchmarks {
-        b.Run(bm.name, func(b *testing.B) {
-            for i := 0; i < b.N; i++ {
-                bm.op()
-            }
-        })
+        CreateMachine("test", 1)
     }
 }
 ```
@@ -711,12 +504,7 @@ func TestSomething(t *testing.T) {
 }
 ```
 
-## Related Skills
 
-- **Go Patterns**: [go-patterns.md](go-patterns.md) - Code patterns being tested
-- **Microcluster**: [microcluster-patterns.md](microcluster-patterns.md) - Testing microcluster code
-- **Test Quality**: [../techniques/test-code-quality.md](../techniques/test-code-quality.md) - Writing clean tests
-- **Testing Suite**: [../compositions/testing-suite.md](../compositions/testing-suite.md) - Complete testing workflow
 
 ## Common Test Patterns Summary
 

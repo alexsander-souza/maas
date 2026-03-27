@@ -159,83 +159,84 @@ Use `.sdd/validation/plan-checklist.md` for detailed validation.
 
 ## Process Flow
 
+```mermaid
+flowchart TD
+    A[📋 1. Study Approved Specification] --> B[🔍 2. Research MAAS Architecture]
+    B --> C[🏗️ 3. Design High-Level Architecture]
+    C --> D[⚖️ 4. Evaluate Alternatives]
+    D --> E[🛠️ 5. Specify Technology Stack]
+    E --> F[🧩 6. Design Component Details]
+    F --> G[🔒 7. Address Cross-Cutting Concerns]
+    G --> H[⚠️ 8. Identify and Assess Risks]
+    H --> I[🚀 9. Plan Deployment & Operations]
+    I --> J[✅ 10. Review and Validate]
+    J --> K{Approved?}
+    K -->|No| L[📝 Address Feedback]
+    L --> C
+    K -->|Yes| M[🎯 11. Hand Off to Task Decomposer]
+    
+    A -.includes.-> A1[Understand requirements<br/>Extract constraints<br/>Note performance targets]
+    B -.includes.-> B1[Review existing patterns<br/>Identify reusable components<br/>Check similar implementations]
+    C -.includes.-> C1[Choose architectural pattern<br/>Define component boundaries<br/>Map data flow]
+    D -.includes.-> D1[List 2-3 approaches<br/>Assess pros/cons<br/>Select with justification]
+    E -.includes.-> E1[Choose technologies<br/>Justify new dependencies<br/>Document versions]
+    F -.includes.-> F1[Define interfaces<br/>Specify API contracts<br/>Plan database changes]
+    G -.includes.-> G1[Security<br/>Performance<br/>Error handling<br/>Testing]
+    H -.includes.-> H1[Technical risks<br/>Dependency risks<br/>Mitigation strategies]
+    I -.includes.-> I1[Rollout strategy<br/>Monitoring<br/>Documentation needs]
+    J -.includes.-> J1[Self-review checklist<br/>Architect review<br/>Get approval]
+    
+    style A fill:#e1f5ff
+    style C fill:#fff4e1
+    style G fill:#ffe1e1
+    style J fill:#e8f5e9
+    style M fill:#d4edda
 ```
-┌─────────────────────────────────────────────────────────────┐
-│ 1. Study Approved Specification                             │
-│    - Understand user requirements                           │
-│    - Extract technical constraints                          │
-│    - Note performance targets                               │
-└────────────────────┬────────────────────────────────────────┘
-                     ↓
-┌─────────────────────────────────────────────────────────────┐
-│ 2. Research MAAS Architecture                               │
-│    - Review existing patterns                               │
-│    - Identify reusable components                           │
-│    - Check similar implementations                          │
-└────────────────────┬────────────────────────────────────────┘
-                     ↓
-┌─────────────────────────────────────────────────────────────┐
-│ 3. Design High-Level Architecture                           │
-│    - Choose architectural pattern                           │
-│    - Define component boundaries                            │
-│    - Map data flow                                          │
-└────────────────────┬────────────────────────────────────────┘
-                     ↓
-┌─────────────────────────────────────────────────────────────┐
-│ 4. Evaluate Alternatives                                    │
-│    - List 2-3 approaches for major decisions                │
-│    - Assess pros/cons                                       │
-│    - Select best approach with justification                │
-└────────────────────┬────────────────────────────────────────┘
-                     ↓
-┌─────────────────────────────────────────────────────────────┐
-│ 5. Specify Technology Stack                                 │
-│    - Choose technologies (default to MAAS stack)            │
-│    - Justify any new dependencies                           │
-│    - Document version requirements                          │
-└────────────────────┬────────────────────────────────────────┘
-                     ↓
-┌─────────────────────────────────────────────────────────────┐
-│ 6. Design Component Details                                 │
-│    - Define interfaces                                      │
-│    - Specify API contracts                                  │
-│    - Plan database changes                                  │
-└────────────────────┬────────────────────────────────────────┘
-                     ↓
-┌─────────────────────────────────────────────────────────────┐
-│ 7. Address Cross-Cutting Concerns                           │
-│    - Security                                               │
-│    - Performance                                            │
-│    - Error handling                                         │
-│    - Testing                                                │
-└────────────────────┬────────────────────────────────────────┘
-                     ↓
-┌─────────────────────────────────────────────────────────────┐
-│ 8. Identify and Assess Risks                                │
-│    - Technical risks                                        │
-│    - Dependency risks                                       │
-│    - Mitigation strategies                                  │
-└────────────────────┬────────────────────────────────────────┘
-                     ↓
-┌─────────────────────────────────────────────────────────────┐
-│ 9. Plan Deployment and Operations                           │
-│    - Rollout strategy                                       │
-│    - Monitoring                                             │
-│    - Documentation needs                                    │
-└────────────────────┬────────────────────────────────────────┘
-                     ↓
-┌─────────────────────────────────────────────────────────────┐
-│ 10. Review and Validate                                     │
-│     - Self-review with checklist                            │
-│     - Architect review                                      │
-│     - Get approval                                          │
-└────────────────────┬────────────────────────────────────────┘
-                     ↓
-┌─────────────────────────────────────────────────────────────┐
-│ 11. Hand Off to Task Decomposer                             │
-│     - Technical plan + diagrams                             │
-│     - Task decomposer creates task list                     │
-└─────────────────────────────────────────────────────────────┘
+
+**Input/Output Flow:**
+
+```mermaid
+flowchart LR
+    subgraph Inputs["📥 Inputs"]
+        I1[Approved Specification]
+        I2[MAAS Architecture Docs]
+        I3[Subsystem Constraints]
+        I4[Technical Requirements]
+    end
+    
+    subgraph Process["⚙️ Plan Command"]
+        P1[Architecture Design]
+        P2[Technology Selection]
+        P3[Risk Assessment]
+        P4[Deployment Planning]
+    end
+    
+    subgraph Outputs["📤 Outputs"]
+        O1[Technical Plan]
+        O2[Architecture Diagrams]
+        O3[API Contracts]
+        O4[Database Schema]
+        O5[Risk Mitigations]
+    end
+    
+    I1 --> P1
+    I2 --> P1
+    I3 --> P2
+    I4 --> P2
+    
+    P1 --> P2
+    P2 --> P3
+    P3 --> P4
+    
+    P4 --> O1
+    P4 --> O2
+    P4 --> O3
+    P4 --> O4
+    P4 --> O5
+    
+    O1 -.Next Phase.-> Next[📋 Tasks Command]
+    
+    style Process fill:#fff4e1
 ```
 
 ## Examples

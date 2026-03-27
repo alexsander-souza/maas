@@ -409,8 +409,7 @@ def upload_file(file, allowed_types=None, max_size_mb=10):
 
 ## Related Skills
 
-- **Secure Coding**: [secure-coding.md](secure-coding.md) - Overall security practices
-- **Secret Management**: [secret-management.md](secret-management.md) - Handling sensitive data
+- **Security Practices**: [security-practices.md](security-practices.md) - Comprehensive security guidelines including secrets
 - **Python Patterns**: [../languages/python-patterns.md](../languages/python-patterns.md) - Pydantic validation
 - **Go Patterns**: [../languages/go-patterns.md](../languages/go-patterns.md) - Go validation patterns
 - **API Endpoint**: [../compositions/api-endpoint.md](../compositions/api-endpoint.md) - Endpoint validation

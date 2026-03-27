@@ -8,6 +8,10 @@
 
 ---
 
+**Reference:** See [Shared Quality Criteria](./_shared-criteria.md) for all common standards (documentation, architecture, testing, code quality, security, performance, minimal change integration)
+
+---
+
 ## Instructions
 
 This checklist validates that implementation work is complete, high-quality, and ready for code review. Use this before submitting a pull request to ensure all quality standards are met.

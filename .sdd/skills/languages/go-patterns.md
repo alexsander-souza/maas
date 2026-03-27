@@ -43,10 +43,16 @@ func ProcessMachine(id int) error {
 }
 ```
 
-**Custom Error Types**:
+**Custom Errors and Sentinel Errors**:
 
 ```go
-// Define custom errors for specific cases
+// Sentinel errors for common cases
+var (
+    ErrMachineNotReady = errors.New("machine is not ready")
+    ErrNotFound        = errors.New("not found")
+)
+
+// Custom error type for detailed context
 type NotFoundError struct {
     Resource string
     ID       int
@@ -68,51 +74,21 @@ func GetMachine(id int) (*Machine, error) {
     return machine, nil
 }
 
-// Check error type
-func HandleGetMachine(id int) {
+// Checking errors
+func HandleMachine(id int) error {
     machine, err := GetMachine(id)
     if err != nil {
         var notFound *NotFoundError
         if errors.As(err, &notFound) {
-            log.Printf("Machine not found: %v", notFound)
-            return
+            return fmt.Errorf("resource missing: %w", err)
         }
-        log.Printf("Unexpected error: %v", err)
-        return
-    }
-    // Use machine
-}
-```
-
-**Sentinel Errors**:
-
-```go
-// Define package-level sentinel errors
-var (
-    ErrMachineNotReady = errors.New("machine is not ready")
-    ErrInvalidHostname = errors.New("invalid hostname format")
-    ErrZoneNotFound    = errors.New("zone not found")
-)
-
-func AllocateMachine(id int) error {
-    machine, err := GetMachine(id)
-    if err != nil {
         return err
     }
     
     if machine.Status != "ready" {
         return ErrMachineNotReady
     }
-    
-    // Allocate machine
     return nil
-}
-
-// Check sentinel errors
-if err := AllocateMachine(id); err != nil {
-    if errors.Is(err, ErrMachineNotReady) {
-        // Handle specifically
-    }
 }
 ```
 
@@ -141,13 +117,12 @@ func NewMachine(hostname string, zoneID int) *Machine {
 }
 ```
 
-**Struct with Validation**:
+**Struct with Methods and Validation**:
 
 ```go
 type MachineRequest struct {
     Hostname string `json:"hostname"`
     ZoneID   int    `json:"zone_id"`
-    CPUCount int    `json:"cpu_count"`
 }
 
 func (r *MachineRequest) Validate() error {
@@ -157,16 +132,9 @@ func (r *MachineRequest) Validate() error {
     if r.ZoneID <= 0 {
         return errors.New("invalid zone_id")
     }
-    if r.CPUCount < 1 {
-        return errors.New("cpu_count must be positive")
-    }
     return nil
 }
-```
 
-**Struct with Methods**:
-
-```go
 type Machine struct {
     ID       int
     Hostname string
@@ -186,104 +154,56 @@ func (m *Machine) SetStatus(status string) error {
     m.Status = status
     return nil
 }
-
-// Pointer receiver for consistency when struct is large
-func (m *Machine) Deploy(config DeployConfig) error {
-    if !m.IsReady() {
-        return ErrMachineNotReady
-    }
-    // Deploy logic
-    m.Status = "deployed"
-    return nil
-}
 ```
 
 ### Interface Design
 
-**Small, Focused Interfaces**:
-
 ```go
-// Prefer small interfaces
+// Small, focused interfaces
 type MachineReader interface {
     GetByID(id int) (*Machine, error)
     List(filters FilterSpec) ([]*Machine, error)
 }
 
-type MachineWriter interface {
-    Create(machine *Machine) error
-    Update(machine *Machine) error
-    Delete(id int) error
-}
-
-// Compose interfaces as needed
 type MachineRepository interface {
     MachineReader
-    MachineWriter
+    Create(machine *Machine) error
+    Update(machine *Machine) error
 }
-```
 
-**Accept Interfaces, Return Structs**:
-
-```go
-// Function accepts interface (flexible)
-func ProcessMachines(repo MachineReader, filter FilterSpec) error {
-    machines, err := repo.List(filter)
+// Accept interfaces, return structs
+func ProcessMachines(repo MachineReader) error {
+    machines, err := repo.List(FilterSpec{})
     if err != nil {
         return err
     }
-    
     for _, machine := range machines {
-        // Process each machine
+        // Process
     }
     return nil
 }
 
-// Function returns concrete type (clear contract)
 func NewMachineService(repo MachineRepository) *MachineService {
-    return &MachineService{
-        repo: repo,
-    }
+    return &MachineService{repo: repo}
 }
 ```
 
 ### Concurrency Patterns
 
-**Goroutines with Error Handling**:
-
 ```go
-func ProcessMachinesAsync(machines []*Machine) error {
-    errChan := make(chan error, len(machines))
-    
-    for _, machine := range machines {
-        machine := machine // Capture loop variable
-        go func() {
-            errChan <- processMachine(machine)
-        }()
-    }
-    
-    // Collect errors
-    for i := 0; i < len(machines); i++ {
-        if err := <-errChan; err != nil {
-            return fmt.Errorf("processing failed: %w", err)
-        }
-    }
-    
-    return nil
-}
-```
+import (
+    "context"
+    "sync"
+)
 
-**WaitGroup Pattern**:
-
-```go
-import "sync"
-
+// WaitGroup with error handling
 func ProcessBatch(machines []*Machine) error {
     var wg sync.WaitGroup
     errChan := make(chan error, len(machines))
     
     for _, machine := range machines {
         wg.Add(1)
-        machine := machine
+        machine := machine // Capture loop variable
         
         go func() {
             defer wg.Done()
@@ -296,28 +216,20 @@ func ProcessBatch(machines []*Machine) error {
     wg.Wait()
     close(errChan)
     
-    // Check for errors
     for err := range errChan {
         if err != nil {
             return err
         }
     }
-    
     return nil
 }
-```
 
-**Context for Cancellation**:
-
-```go
-import "context"
-
+// Context for cancellation
 func ProcessWithTimeout(ctx context.Context, machineID int) error {
     ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
     defer cancel()
     
     resultChan := make(chan error, 1)
-    
     go func() {
         resultChan <- doLongRunningWork(machineID)
     }()
@@ -326,171 +238,69 @@ func ProcessWithTimeout(ctx context.Context, machineID int) error {
     case err := <-resultChan:
         return err
     case <-ctx.Done():
-        return fmt.Errorf("operation timeout: %w", ctx.Err())
+        return fmt.Errorf("timeout: %w", ctx.Err())
     }
 }
 ```
 
 ### Idiomatic Go Patterns
 
-**Nil Slice vs Empty Slice**:
-
 ```go
 // Prefer nil slice for zero-length
 func GetMachines(filter FilterSpec) ([]*Machine, error) {
-    // Return nil slice, not empty slice
     var machines []*Machine
-    
-    // Or simply:
     if noResults {
         return nil, nil
     }
-    
     return machines, nil
 }
-```
 
-**Multiple Return Values**:
-
-```go
-// Common pattern: (result, error)
-func FindMachine(id int) (*Machine, error) {
-    // Implementation
-}
-
-// Common pattern: (result, bool) for lookup
-func LookupMachine(hostname string) (*Machine, bool) {
-    machine, exists := machineMap[hostname]
-    return machine, exists
-}
-```
-
-**Defer for Cleanup**:
-
-```go
+// Defer for cleanup
 func ProcessFile(filename string) error {
     file, err := os.Open(filename)
     if err != nil {
         return err
     }
-    defer file.Close() // Always closes, even on error
-    
+    defer file.Close() // Always closes
     // Process file
     return nil
 }
 
-// Multiple defers execute in LIFO order
-func Transaction() error {
-    tx, err := db.Begin()
-    if err != nil {
-        return err
-    }
-    defer tx.Rollback() // Will be no-op if committed
-    
-    // Do work
-    
-    return tx.Commit()
-}
-```
-
-**Range Over Collections**:
-
-```go
-// Range over slice
-for i, machine := range machines {
-    fmt.Printf("Machine %d: %s\n", i, machine.Hostname)
-}
-
-// Ignore index
+// Range over collections
 for _, machine := range machines {
     process(machine)
 }
 
-// Range over map
 for key, value := range machineMap {
-    fmt.Printf("%s: %v\n", key, value)
-}
-
-// Range over channel
-for msg := range messageChan {
-    handleMessage(msg)
+    process(key, value)
 }
 ```
 
 ### Code Organization
 
-**Package Structure**:
-
 ```go
-// Package comment
 // Package machine provides machine management functionality.
 package machine
 
 import (
-    "context"
     "errors"
     "fmt"
 )
 
-// Constants
 const (
-    StatusNew       = "new"
-    StatusReady     = "ready"
-    StatusAllocated = "allocated"
+    StatusNew   = "new"
+    StatusReady = "ready"
 )
 
-// Package-level variables
-var (
-    ErrNotFound = errors.New("machine not found")
-)
+var ErrNotFound = errors.New("machine not found")
 
-// Types
 type Machine struct {
-    // Fields
+    ID       int    // Exported
+    hostname string // Unexported
 }
 
-// Functions
 func NewMachine() *Machine {
     return &Machine{}
-}
-```
-
-**Exported vs Unexported**:
-
-```go
-// Exported (public) - starts with uppercase
-type Machine struct {
-    ID       int    // Exported field
-    hostname string // Unexported field
-}
-
-func (m *Machine) Deploy() error {
-    return m.internalDeploy() // Can call unexported method
-}
-
-// Unexported (private) - starts with lowercase
-func (m *Machine) internalDeploy() error {
-    // Implementation
-}
-```
-
-### Testing Integration
-
-**Basic Test Structure**:
-
-```go
-func TestGetMachine(t *testing.T) {
-    repo := NewInMemoryRepository()
-    service := NewMachineService(repo)
-    
-    machine, err := service.GetMachine(1)
-    if err != nil {
-        t.Fatalf("unexpected error: %v", err)
-    }
-    
-    if machine.ID != 1 {
-        t.Errorf("expected ID 1, got %d", machine.ID)
-    }
 }
 ```
 
@@ -620,13 +430,7 @@ func ReadFile(name string) error {
 }
 ```
 
-## Related Skills
 
-- **Go Testing**: [go-testing.md](go-testing.md) - Testing patterns for Go code
-- **Microcluster**: [microcluster-patterns.md](microcluster-patterns.md) - Patterns for maasagent
-- **Code Clarity**: [../techniques/code-clarity.md](../techniques/code-clarity.md) - Readable code practices
-- **Error Handling**: Covered in this document
-- **Naming Conventions**: [../techniques/naming-conventions.md](../techniques/naming-conventions.md) - Cross-language naming
 
 ## MAAS-Specific Go Context
 

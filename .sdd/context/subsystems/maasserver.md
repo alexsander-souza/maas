@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Legacy Django-based region controller server that provides the v2 REST API and web UI for MAAS. This subsystem handles the core MAAS functionality including machine management, network configuration, and deployment orchestration through a monolithic Django application.
+Legacy Django-based region controller server that provides the v2 REST API and web UI for MAAS. Handles core MAAS functionality including machine management, network configuration, and deployment orchestration through a monolithic Django application.
 
 **Status**: Maintenance mode - new features should be added to v3 API when feasible.
 
@@ -26,7 +26,7 @@ Legacy Django-based region controller server that provides the v2 REST API and w
 ## Architectural Constraints
 
 ### Legacy Architecture
-This is a monolithic Django application that predates the modern three-tier architecture. It combines presentation, business logic, and data access in a traditional Django MVC pattern.
+Monolithic Django application that predates the modern three-tier architecture. Combines presentation, business logic, and data access in traditional Django MVC pattern.
 
 ### Database Access
 - **Django ORM**: Primary data access method
@@ -34,30 +34,10 @@ This is a monolithic Django application that predates the modern three-tier arch
 - **deferToDatabase**: Required for database operations in Twisted async contexts
 
 ### Async Patterns
-Uses Twisted's deferred-based async model, which differs from modern Python async/await:
-
-```python
-from twisted.internet import defer
-from maasserver.utils.orm import transactional
-
-@transactional
-def get_machine(machine_id):
-    """Synchronous function wrapped for transaction."""
-    return Machine.objects.get(id=machine_id)
-
-@defer.inlineCallbacks
-def async_operation():
-    """Async operation using Twisted deferreds."""
-    machine = yield deferToDatabase(get_machine, machine_id=123)
-    defer.returnValue(machine)
-```
+Uses Twisted's deferred-based async model, which differs from modern Python async/await.
 
 ### Backward Compatibility
-Must maintain backward compatibility with:
-- Existing v2 API clients
-- Django model structure
-- Database schema (shared with v3)
-- Legacy authentication methods
+Must maintain compatibility with existing v2 API clients, Django model structure, and legacy authentication methods.
 
 ## Key Patterns
 
@@ -68,6 +48,7 @@ When calling database operations from Twisted async contexts, always use `deferT
 ```python
 from maasserver.utils.orm import transactional
 from maasserver.utils.threads import deferToDatabase
+from twisted.internet import defer
 
 @transactional
 def _get_machine_sync(machine_id):
@@ -98,327 +79,247 @@ class Machine(models.Model):
     status = models.IntegerField(default=0)
     
     class Meta:
-        db_table = "maasserver_node"
-```
-
-**Do NOT**:
-- Change existing model field names
-- Modify model inheritance hierarchy
-- Alter Meta class settings without careful review
-- Break existing migrations
-
-### Transactional Decorator
-
-Use `@transactional` for database operations:
-
-```python
-from maasserver.utils.orm import transactional
-
-@transactional
-def create_machine(hostname, architecture):
-    """Create machine in transaction."""
-    machine = Machine.objects.create(
-        hostname=hostname,
-        architecture=architecture
-    )
-    return machine
+        db_table = 'maasserver_node'
+        ordering = ['hostname']
+    
+    def __str__(self):
+        return f"{self.hostname} ({self.system_id})"
 ```
 
 ### Django Signal Handlers
 
-Use signals for side effects and cross-cutting concerns:
+Use Django signals for decoupled event handling:
 
 ```python
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 
 @receiver(post_save, sender=Machine)
-def machine_created(sender, instance, created, **kwargs):
-    """Handle machine creation event."""
+def handle_machine_save(sender, instance, created, **kwargs):
+    """Handle machine creation/update events."""
     if created:
-        notify_machine_created(instance)
+        logger.info(f"Machine created: {instance.system_id}")
+        trigger_commissioning(instance)
+    else:
+        logger.info(f"Machine updated: {instance.system_id}")
+```
+
+### Twisted Deferred Pattern
+
+Handle async operations with Twisted deferreds:
+
+```python
+from twisted.internet import defer
+
+@defer.inlineCallbacks
+def deploy_machine(machine_id, distro_series):
+    """Deploy machine using Twisted async pattern."""
+    # Get machine from database
+    machine = yield deferToDatabase(get_machine, machine_id)
+    
+    # Validate machine status
+    if machine.status != NODE_STATUS.READY:
+        raise MachineNotReady(f"Machine {machine_id} not ready")
+    
+    # Update status
+    yield deferToDatabase(update_machine_status, machine_id, NODE_STATUS.DEPLOYING)
+    
+    # Trigger deployment workflow
+    result = yield trigger_deployment_workflow(machine, distro_series)
+    
+    defer.returnValue(result)
+```
+
+### Django REST API (Piston3)
+
+Legacy v2 API uses django-piston3:
+
+```python
+from piston3.handler import BaseHandler
+from piston3.utils import rc
+
+class MachinesHandler(BaseHandler):
+    """Handler for /api/2.0/machines/ endpoint."""
+    
+    allowed_methods = ('GET', 'POST')
+    model = Machine
+    
+    def read(self, request):
+        """List machines."""
+        machines = Machine.objects.all()
+        return machines
+    
+    def create(self, request):
+        """Create new machine."""
+        hostname = request.POST.get('hostname')
+        architecture = request.POST.get('architecture')
+        
+        machine = Machine.objects.create(
+            hostname=hostname,
+            architecture=architecture
+        )
+        return machine
 ```
 
 ## Testing Requirements
 
-### Test Framework
+> **See**: [test-code-quality.md](../../skills/techniques/test-code-quality.md) for comprehensive testing patterns.
 
-Use Django's test framework with `testtools`:
+### Django Test Conventions
+Use Django's `TestCase` for database tests:
+
+```python
+from django.test import TestCase
+from maasserver.models import Machine
+
+class TestMachineModel(TestCase):
+    def test_create_machine(self):
+        machine = Machine.objects.create(
+            hostname="test-machine",
+            architecture="amd64/generic"
+        )
+        self.assertEqual(machine.hostname, "test-machine")
+```
+
+### Twisted Test Pattern
+Use `MAASServerTestCase` for Twisted tests:
 
 ```python
 from maasserver.testing.testcase import MAASServerTestCase
 
-class TestMachine(MAASServerTestCase):
-    """Test machine operations."""
-    
-    def test_create_machine(self):
-        """Test machine creation."""
-        machine = Machine.objects.create(hostname="test-machine")
-        self.assertEqual(machine.hostname, "test-machine")
+class TestAsyncOperation(MAASServerTestCase):
+    @defer.inlineCallbacks
+    def test_deploy_machine(self):
+        machine = yield deferToDatabase(create_test_machine)
+        result = yield deploy_machine(machine.system_id, "ubuntu/jammy")
+        self.assertEqual(result.status, "deploying")
 ```
-
-### Test Fixtures
-
-Use Django fixtures and factory patterns:
-
-```python
-from maasserver.testing.factory import factory
-
-class TestMachineAPI(MAASServerTestCase):
-    def test_list_machines(self):
-        """Test machine listing."""
-        # Use factory to create test data
-        machine = factory.make_Machine(hostname="test")
-        
-        response = self.client.get("/MAAS/api/2.0/machines/")
-        self.assertEqual(response.status_code, 200)
-```
-
-### Running Tests
-
-```bash
-# Run all maasserver tests
-bin/test.region
-
-# Run specific test file
-bin/test.region src/maasserver/tests/test_machine.py
-
-# Run specific test case
-bin/test.region src/maasserver/tests/test_machine.py::TestMachine::test_create_machine
-```
-
-### Test Database
-
-Tests use a separate test database:
-- Automatically created and destroyed
-- Isolated from development database
-- Migrations applied automatically
-
-## Development Guidelines
-
-### Adding New Features
-
-**Prefer v3 API**: New features should be implemented in the v3 API (`src/maasapiserver` + `src/maasservicelayer`) unless there's a specific requirement for v2 support.
-
-**If must add to v2**:
-1. Keep changes minimal
-2. Maintain backward compatibility
-3. Document in v2 API deprecation notes
-4. Plan migration path to v3
-
-### Modifying Existing Code
-
-When modifying legacy code:
-
-1. **Preserve Structure**: Don't refactor unless necessary
-2. **Test Coverage**: Ensure existing tests pass
-3. **Backward Compatibility**: Don't break existing API contracts
-4. **Document Changes**: Update docstrings and comments
-
-### Database Migrations
-
-Use Django migrations:
-
-```bash
-# Create migration
-./manage.py makemigrations maasserver
-
-# Apply migrations
-./manage.py migrate
-```
-
-**Coordination**: Database is shared with v3 API. Coordinate migrations with `src/maasservicelayer` Alembic migrations.
 
 ## Integration Points
 
-### v3 API Integration
+### v3 API Server (maasapiserver)
+- **Purpose**: Gradual migration from v2 to v3 API
+- **Interface**: Shared database schema
+- **Key Considerations**: Maintain schema compatibility during transition
 
-The v3 API shares the same database:
-- **Shared Schema**: Both use same PostgreSQL database
-- **Shared Models**: Some data models overlap
-- **Migration Coordination**: Schema changes require coordination
+### Provisioning Server (provisioningserver)
+- **Purpose**: Rack controller services and DHCP/DNS/PXE
+- **Interface**: RPC over message queue
+- **Key Considerations**: Maintain protocol compatibility
 
-### Provisioning Server
+### Metadata Server (metadataserver)
+- **Purpose**: Cloud-init metadata for deploying machines
+- **Interface**: Django URL routing and shared models
+- **Key Considerations**: Part of same Django application
 
-Communicates with rack controllers via RPC:
-
-```python
-from provisioningserver.rpc.region import ProvisioningRPC
-
-# RPC calls to rack controllers
-client.call(GetBootConfig, system_id=machine.system_id)
-```
-
-### Metadata Server
-
-Provides cloud-init metadata during machine deployment:
-- Boot configuration
-- User data
-- Network configuration
-
-### Web UI
-
-Django templates and views for the web interface:
-- Machine management UI
-- Network configuration UI
-- Settings and administration
-
-### MAAS CLI
-
-CLI communicates with v2 API endpoints:
-- OAuth authentication
-- REST API calls
-- JSON responses
-
-## Migration Strategy
-
-### From v2 to v3
-
-Gradual migration approach:
-
-1. **Identify Feature**: Feature to migrate from v2 to v3
-2. **Implement in v3**: Build feature in v3 API with three-tier architecture
-3. **Test Parity**: Ensure v3 feature matches v2 behavior
-4. **Update Clients**: Migrate clients to v3 endpoint
-5. **Deprecate v2**: Mark v2 endpoint as deprecated
-6. **Monitor Usage**: Track v2 endpoint usage
-7. **Remove v2**: After sufficient transition period
-
-### Shared Components
-
-Some components remain shared:
-- Database schema
-- Django models (until fully migrated)
-- Authentication backends
-- Permission systems
+### Temporal Workflows
+- **Purpose**: Orchestration of long-running operations
+- **Interface**: Temporal client via deferToDatabase
+- **Key Considerations**: Async operations must use deferToDatabase
 
 ## Common Pitfalls
 
-### Threading Issues
+> **See**: [common-anti-patterns.md](../../common-anti-patterns.md) for general anti-patterns.
 
-❌ **Don't**: Call Django ORM directly from Twisted async code
+### Calling Django ORM Directly from Twisted
+
 ```python
+# WRONG: Direct ORM call in async context
 @defer.inlineCallbacks
-def bad_example():
-    machine = Machine.objects.get(id=123)  # WRONG: Not thread-safe
-```
+def get_machine(machine_id):
+    machine = Machine.objects.get(id=machine_id)  # Thread safety issue!
+    defer.returnValue(machine)
 
-✅ **Do**: Use deferToDatabase
-```python
-@defer.inlineCallbacks
-def good_example():
-    machine = yield deferToDatabase(lambda: Machine.objects.get(id=123))
-```
-
-### Transaction Management
-
-❌ **Don't**: Manually manage transactions
-```python
-from django.db import transaction
-
-def bad_example():
-    with transaction.atomic():  # Avoid manual transaction management
-        Machine.objects.create(...)
-```
-
-✅ **Do**: Use @transactional decorator
-```python
+# Correct: Use deferToDatabase
 @transactional
-def good_example():
-    Machine.objects.create(...)  # Transaction handled automatically
+def _get_machine(machine_id):
+    return Machine.objects.get(id=machine_id)
+
+@defer.inlineCallbacks
+def get_machine(machine_id):
+    machine = yield deferToDatabase(_get_machine, machine_id)
+    defer.returnValue(machine)
 ```
 
-### Breaking Changes
+### Blocking Operations in Twisted
 
-❌ **Don't**: Change existing API behavior
 ```python
-def get_machines(request):
-    # Don't change response format
-    return {"machines": [...]}  # Breaking change
+# WRONG: Blocking call in Twisted context
+@defer.inlineCallbacks
+def process_machine(machine_id):
+    result = requests.get("http://external-api.com")  # Blocks reactor!
+    defer.returnValue(result)
+
+# Correct: Use Twisted's HTTP client or deferToThread
+from twisted.web.client import getPage
+
+@defer.inlineCallbacks
+def process_machine(machine_id):
+    result = yield getPage(b"http://external-api.com")
+    defer.returnValue(result)
 ```
 
-✅ **Do**: Maintain backward compatibility
+### Mixing async/await with Twisted
+
 ```python
-def get_machines(request):
-    # Preserve existing response format
-    return [...]  # Original format maintained
+# WRONG: Can't mix modern async/await with Twisted
+@defer.inlineCallbacks
+async def deploy_machine(machine_id):  # Syntax error!
+    machine = await get_machine(machine_id)
+    return machine
+
+# Correct: Stick to Twisted patterns in this subsystem
+@defer.inlineCallbacks
+def deploy_machine(machine_id):
+    machine = yield deferToDatabase(get_machine, machine_id)
+    defer.returnValue(machine)
 ```
-
-## Related Skills
-
-Links to relevant skills in `.sdd/skills/`:
-
-- **Python Development**: General Python best practices
-- **Django Development**: Django-specific patterns
-- **Twisted Async**: Asynchronous programming with Twisted
-- **Database Migrations**: Django migration management
-- **API Development**: REST API design and implementation
-- **Testing**: Unit and integration testing strategies
 
 ## Security Considerations
 
-### Authentication
-- OAuth 1.0a for API access
-- Django session authentication for web UI
-- Macaroon-based authentication for specialized use cases
+> **See**: [security-practices.md](../../skills/techniques/security-practices.md) for comprehensive security guidelines.
 
-### Authorization
-- Django permission system
-- Role-based access control
-- Resource-level permissions
-
-### Input Validation
-- Django form validation
-- Manual validation in API handlers
-- SQL injection prevention via ORM
+### Legacy-Specific Security
+- Django's built-in security features (CSRF, XSS protection)
+- OAuth 1.0a for v2 API authentication
+- Session-based authentication for web UI
+- SQL injection protection via Django ORM (never use raw SQL with string formatting)
 
 ## Performance Considerations
 
-### Database Optimization
-- Use `select_related()` and `prefetch_related()` to avoid N+1 queries
-- Index frequently queried fields
-- Use database-level constraints
+### Database Query Optimization
+Use `select_related` and `prefetch_related` to avoid N+1 queries:
+
+```python
+# Optimize queries for related objects
+machines = Machine.objects.select_related('zone', 'owner').prefetch_related('interfaces')
+```
 
 ### Caching
-- Django cache framework
-- Per-request caching
-- Memcached backend
+Use Django's cache framework for frequently accessed data:
 
-### Async Operations
-- Use deferToDatabase for blocking operations
-- Avoid blocking the Twisted reactor
-- Use thread pools appropriately
+```python
+from django.core.cache import cache
 
-## Documentation
+def get_machine_count():
+    count = cache.get('machine_count')
+    if count is None:
+        count = Machine.objects.count()
+        cache.set('machine_count', count, 300)  # 5 minutes
+    return count
+```
 
-### Code Documentation
-- Docstrings for all public functions and classes
-- Inline comments for complex logic
-- Type hints where beneficial (gradually adding)
+## Migration Notes
 
-### API Documentation
-- v2 API reference maintained separately
-- Endpoint documentation in code
-- Example requests/responses
-
-## Maintenance Status
-
-**Current State**: Legacy codebase in maintenance mode
-
-**Changes Allowed**:
-- ✅ Bug fixes
-- ✅ Security patches
-- ✅ Critical feature updates
-- ⚠️ New features (justify v2 requirement)
-- ❌ Major refactoring
-- ❌ Architecture changes
-
-**Future Direction**: Gradual feature migration to v3 API
+When adding new features:
+1. **Prefer v3 API**: Add to `maasapiserver` when possible
+2. **Database changes**: Coordinate with v3 API team for schema changes
+3. **Testing**: Ensure backward compatibility with existing clients
+4. **Documentation**: Mark v2-specific features as legacy
 
 ## Additional Resources
 
 - Django Documentation: https://docs.djangoproject.com/
-- Twisted Documentation: https://docs.twisted.org/
-- MAAS v2 API Reference: https://maas.io/docs/api
-- `AGENTS.md`: General coding guidelines
-- `src/maasservicelayer/README.md`: v3 architecture guide
+- Twisted Documentation: https://twisted.org/documents/current/
+- Django ORM Best Practices: [sqlalchemy-patterns.md](../../skills/languages/sqlalchemy-patterns.md) (principles apply)
+- [AGENTS.md](../../AGENTS.md): Core coding guidelines

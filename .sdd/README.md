@@ -13,6 +13,16 @@ Spec-Driven Development is an intent-driven approach where specifications become
 
 Each phase produces living artifacts that evolve with the project. You don't move to the next phase until the current one is validated.
 
+```mermaid
+flowchart LR
+    A[📝 Specify] --> B[📐 Plan]
+    B --> C[📋 Tasks]
+    C --> D[⚙️ Implement]
+    D --> E{Validate}
+    E -->|Pass| F[✅ Done]
+    E -->|Fail| D
+```
+
 ## When to Use SDD
 
 Use SDD for:

@@ -2,9 +2,9 @@
 
 ## Purpose
 
-Integration and cross-component tests that validate interactions between multiple MAAS subsystems. This subsystem contains tests that span architectural boundaries, verify end-to-end workflows, and ensure proper integration of the various components that make up MAAS.
+Root-level test suite and test configuration for the entire MAAS project. This subsystem contains integration tests, end-to-end tests, and test infrastructure that spans multiple components, ensuring the system works correctly as a whole.
 
-**Status**: Active - critical for system-level quality assurance.
+**Status**: Active - comprehensive test coverage for all MAAS components.
 
 ## Location
 
@@ -15,614 +15,458 @@ Integration and cross-component tests that validate interactions between multipl
 ### Core Technologies
 - **Python**: 3.10+
 - **pytest**: Primary test framework
+- **pytest-django**: Django integration for pytest
 - **pytest-asyncio**: Async test support
 
 ### Key Libraries
-- **pytest**: Test framework and fixtures
-- **pytest-mock**: Mocking support
+- **pytest**: Test framework and runner
+- **pytest-xdist**: Parallel test execution
 - **pytest-cov**: Coverage reporting
-- **httpx**: HTTP client for API testing
-- **testtools**: Additional testing utilities
+- **selenium**: Browser automation for UI tests
+- **locust**: Performance and load testing
 
 ## Architectural Constraints
 
 ### Cross-Component Testing
 
-Tests in this subsystem validate interactions across multiple components:
+Tests in this subsystem span multiple components:
+- Integration tests across service boundaries
+- End-to-end tests simulating real workflows
+- System-level performance tests
+- Browser-based UI tests
 
-```
-┌─────────────────────────────────────┐
-│        Integration Tests            │
-│   (src/tests)                       │
-│                                     │
-│  ┌─────────────────────────────┐   │
-│  │  API ↔ Service ↔ Repository │   │
-│  │  Region ↔ Rack ↔ Agent      │   │
-│  │  Workflows ↔ Services        │   │
-│  └─────────────────────────────┘   │
-└─────────────────────────────────────┘
-```
+### Realistic Test Environment
 
-### System-Level Validation
+Tests run in environments that closely mirror production:
+- Full database setup
+- Multiple services running
+- Real network communication
+- Actual file system operations
 
-Focus on realistic scenarios:
-- Complete user workflows
-- Multi-component interactions
-- Database state consistency
-- External service integration
-- Performance characteristics
+### CI/CD Integration
 
-### Test Environment Requirements
-
-Integration tests may require:
-- Running database
-- Multiple service instances
-- Network connectivity
-- External dependencies
-- Longer execution times
+Test suite designed for continuous integration:
+- Fast execution for quick feedback
+- Parallel execution support
+- Clear failure reporting
+- Incremental test execution
 
 ## Key Patterns
 
-### End-to-End API Testing
+> **See**: [test-code-quality.md](../../skills/techniques/test-code-quality.md) for comprehensive testing patterns.
 
-Test complete API workflows:
+### Integration Test Pattern
+
+Test multiple components working together:
 
 ```python
 import pytest
-from httpx import AsyncClient
+from maasserver.models import Machine, Node
+from maasservicelayer.services.machines import MachineService
 
+@pytest.mark.django_db
 @pytest.mark.asyncio
-@pytest.mark.integration
-async def test_machine_deployment_workflow(
-    running_api_server,
-    db_connection,
-    temporal_client
-):
-    """Test complete machine deployment from API to completion."""
+async def test_machine_deployment_flow(db_connection):
+    """Test complete machine deployment flow."""
+    # Create machine via Django ORM
+    machine = Machine.objects.create(
+        hostname="test-machine",
+        status=NODE_STATUS.READY
+    )
     
-    # Create machine via API
-    async with AsyncClient(base_url=running_api_server) as client:
-        # Step 1: Create machine
-        response = await client.post(
-            "/api/v3/machines/",
-            json={
-                "hostname": "test-machine",
-                "architecture": "amd64",
-                "memory": 8192,
-                "cpuCount": 4
-            },
-            headers={"Authorization": f"Bearer {get_test_token()}"}
-        )
-        assert response.status_code == 201
-        machine = response.json()
-        machine_id = machine["id"]
-        
-        # Step 2: Commission machine
-        response = await client.post(
-            f"/api/v3/machines/{machine_id}/commission",
-            headers={"Authorization": f"Bearer {get_test_token()}"}
-        )
-        assert response.status_code == 200
-        
-        # Step 3: Wait for commissioning to complete
-        await wait_for_machine_status(client, machine_id, "ready", timeout=300)
-        
-        # Step 4: Deploy machine
-        response = await client.post(
-            f"/api/v3/machines/{machine_id}/deploy",
-            json={
-                "osystem": "ubuntu",
-                "distro_series": "jammy"
-            },
-            headers={"Authorization": f"Bearer {get_test_token()}"}
-        )
-        assert response.status_code == 200
-        
-        # Step 5: Verify workflow started
-        workflow_id = response.json()["workflow_id"]
-        workflow_handle = temporal_client.get_workflow_handle(workflow_id)
-        
-        # Step 6: Wait for deployment
-        result = await workflow_handle.result(timeout=timedelta(hours=1))
-        assert result.success is True
-        
-        # Step 7: Verify final state
-        response = await client.get(
-            f"/api/v3/machines/{machine_id}",
-            headers={"Authorization": f"Bearer {get_test_token()}"}
-        )
-        machine = response.json()
-        assert machine["status"] == "deployed"
+    # Deploy via service layer
+    service = MachineService(db_connection)
+    deployed = await service.deploy(
+        machine.system_id,
+        os="ubuntu",
+        distro_series="jammy"
+    )
+    
+    # Verify deployment
+    assert deployed.status == NODE_STATUS.DEPLOYING
+    
+    # Verify Django ORM sees the change
+    machine.refresh_from_db()
+    assert machine.status == NODE_STATUS.DEPLOYING
 ```
 
-### Multi-Service Integration
+### End-to-End Test Pattern
 
-Test interactions between multiple services:
+Test complete user workflows:
 
 ```python
-@pytest.mark.asyncio
-@pytest.mark.integration
-async def test_service_layer_integration(db_connection):
-    """Test service layer interactions."""
+import pytest
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+
+@pytest.mark.e2e
+class TestMachineDeploymentE2E:
+    """End-to-end tests for machine deployment."""
     
-    # Setup services with real database
-    machine_service = MachineService(
-        MachineRepository(db_connection)
-    )
-    network_service = NetworkService(
-        NetworkRepository(db_connection)
-    )
-    deployment_service = DeploymentService(
-        machine_repo=MachineRepository(db_connection),
-        network_repo=NetworkRepository(db_connection)
-    )
+    @pytest.fixture
+    def browser(self):
+        """Provide browser instance."""
+        driver = webdriver.Chrome()
+        driver.implicitly_wait(10)
+        yield driver
+        driver.quit()
     
-    # Create machine
-    machine = await machine_service.create(
-        MachineCreateBuilder()
-            .with_hostname("test-machine")
-            .with_architecture("amd64")
-    )
-    
-    # Configure network
-    network = await network_service.create_for_machine(
-        machine.id,
-        NetworkConfigBuilder()
-            .with_interface("eth0")
-            .with_subnet("192.168.1.0/24")
-    )
-    
-    # Deploy machine with network
-    deployment = await deployment_service.deploy(
-        machine.id,
-        DeploymentConfig(
-            networks=[network.id]
-        )
-    )
-    
-    # Verify all services updated correctly
-    updated_machine = await machine_service.get_by_id(machine.id)
-    assert updated_machine.status == "deploying"
-    
-    networks = await network_service.list_for_machine(machine.id)
-    assert len(networks) == 1
-    assert networks[0].configured is True
+    def test_deploy_machine_via_ui(self, browser, live_maas_server):
+        """Test deploying machine through web UI."""
+        # Login
+        browser.get(f"{live_maas_server}/login")
+        browser.find_element(By.ID, "username").send_keys("admin")
+        browser.find_element(By.ID, "password").send_keys("password")
+        browser.find_element(By.ID, "login-button").click()
+        
+        # Navigate to machines
+        browser.get(f"{live_maas_server}/machines")
+        
+        # Select machine
+        machine = browser.find_element(By.CSS_SELECTOR, ".machine-row:first-child")
+        machine.click()
+        
+        # Deploy
+        deploy_button = browser.find_element(By.ID, "deploy-button")
+        deploy_button.click()
+        
+        # Verify status change
+        status = browser.find_element(By.CLASS_NAME, "machine-status")
+        assert "Deploying" in status.text
 ```
 
-### Database Integration Tests
-
-Test database consistency across operations:
-
-```python
-@pytest.mark.asyncio
-@pytest.mark.integration
-async def test_database_transaction_integrity(db_connection):
-    """Test transaction integrity across multiple operations."""
-    
-    service = MachineService(MachineRepository(db_connection))
-    
-    # Start transaction
-    async with db_connection.begin():
-        # Create multiple machines
-        machines = []
-        for i in range(10):
-            machine = await service.create(
-                MachineCreateBuilder()
-                    .with_hostname(f"machine-{i}")
-            )
-            machines.append(machine)
-        
-        # Update all machines
-        for machine in machines:
-            await service.update(
-                machine.id,
-                MachineUpdateBuilder().with_status("ready")
-            )
-        
-        # Verify all updates within transaction
-        for machine in machines:
-            updated = await service.get_by_id(machine.id)
-            assert updated.status == "ready"
-        
-        # Rollback to test transaction
-        raise Exception("Intentional rollback")
-    
-    # Verify rollback worked
-    for machine in machines:
-        result = await service.get_by_id(machine.id)
-        assert result is None
-```
-
-### Temporal Workflow Integration
-
-Test complete workflow execution:
-
-```python
-@pytest.mark.asyncio
-@pytest.mark.integration
-async def test_deployment_workflow_integration(
-    temporal_client,
-    db_connection
-):
-    """Test complete deployment workflow with real services."""
-    
-    # Setup real services
-    machine_service = MachineService(MachineRepository(db_connection))
-    
-    # Create machine
-    machine = await machine_service.create(
-        MachineCreateBuilder()
-            .with_hostname("workflow-test")
-            .with_status("ready")
-    )
-    
-    # Start workflow
-    handle = await temporal_client.start_workflow(
-        DeployMachineWorkflow.run,
-        args=[machine.id, DeploymentConfig(...)],
-        id=f"deploy-integration-{machine.id}",
-        task_queue="maas-workflows"
-    )
-    
-    # Monitor workflow progress
-    async for event in handle.fetch_history():
-        if event.event_type == "ActivityTaskCompleted":
-            # Verify database state after each activity
-            machine = await machine_service.get_by_id(machine.id)
-            assert machine is not None
-    
-    # Wait for completion
-    result = await handle.result()
-    assert result.success is True
-    
-    # Verify final state in database
-    final_machine = await machine_service.get_by_id(machine.id)
-    assert final_machine.status == "deployed"
-```
-
-### Performance Integration Tests
+### Performance Test Pattern
 
 Test system performance under load:
 
 ```python
-@pytest.mark.asyncio
-@pytest.mark.integration
-@pytest.mark.slow
-async def test_concurrent_machine_creation(db_connection):
-    """Test creating many machines concurrently."""
+from locust import HttpUser, task, between
+
+class MAASUser(HttpUser):
+    """Simulated MAAS user for load testing."""
     
-    service = MachineService(MachineRepository(db_connection))
+    wait_time = between(1, 3)
     
-    import time
-    start_time = time.time()
+    def on_start(self):
+        """Login when user starts."""
+        self.client.post("/api/2.0/users/login", json={
+            "username": "admin",
+            "password": "test"
+        })
     
-    # Create 100 machines concurrently
-    tasks = []
-    for i in range(100):
-        task = service.create(
-            MachineCreateBuilder()
-                .with_hostname(f"perf-test-{i}")
-        )
-        tasks.append(task)
+    @task(3)
+    def list_machines(self):
+        """List machines endpoint."""
+        self.client.get("/api/2.0/machines/")
     
-    machines = await asyncio.gather(*tasks)
+    @task(1)
+    def get_machine(self):
+        """Get single machine."""
+        self.client.get("/api/2.0/machines/abc123/")
     
-    elapsed = time.time() - start_time
-    
-    # Verify all created
-    assert len(machines) == 100
-    
-    # Performance assertion
-    assert elapsed < 10.0, f"Took {elapsed}s, expected < 10s"
-    
-    # Verify database consistency
-    for machine in machines:
-        retrieved = await service.get_by_id(machine.id)
-        assert retrieved is not None
+    @task(1)
+    def commission_machine(self):
+        """Commission machine."""
+        self.client.post("/api/2.0/machines/abc123/?op=commission")
 ```
 
-### External Service Mocking
+### Database Migration Test Pattern
 
-Mock external dependencies for integration tests:
+Test database migrations work correctly:
 
 ```python
-@pytest.mark.asyncio
-@pytest.mark.integration
-async def test_with_mocked_external_services(
-    db_connection,
-    mock_power_driver,
-    mock_image_service
-):
-    """Test integration with mocked external services."""
+import pytest
+from django.core.management import call_command
+from django.db import connection
+
+@pytest.mark.django_db
+class TestMigrations:
+    """Test database migrations."""
     
-    # Real services
-    machine_service = MachineService(MachineRepository(db_connection))
-    deployment_service = DeploymentService(
-        machine_repo=MachineRepository(db_connection),
-        power_service=mock_power_driver,
-        image_service=mock_image_service
+    def test_migrations_complete(self):
+        """Test all migrations run successfully."""
+        call_command('migrate', verbosity=0)
+        
+        # Verify expected tables exist
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT tablename FROM pg_tables "
+                "WHERE schemaname = 'public'"
+            )
+            tables = [row[0] for row in cursor.fetchall()]
+        
+        assert 'maasserver_node' in tables
+        assert 'maasserver_interface' in tables
+    
+    def test_migration_reversible(self):
+        """Test migrations can be reversed."""
+        # Apply latest migration
+        call_command('migrate', 'maasserver', verbosity=0)
+        
+        # Reverse one migration
+        call_command('migrate', 'maasserver', '0001', verbosity=0)
+        
+        # Reapply
+        call_command('migrate', 'maasserver', verbosity=0)
+```
+
+### Test Fixture Pattern
+
+Shared fixtures for integration tests:
+
+```python
+import pytest
+from django.contrib.auth.models import User
+from maasserver.models import Node
+
+@pytest.fixture
+def admin_user(db):
+    """Create admin user."""
+    return User.objects.create_superuser(
+        username='admin',
+        email='admin@example.com',
+        password='password'
     )
-    
-    # Create and deploy machine
-    machine = await machine_service.create(
-        MachineCreateBuilder().with_hostname("external-test")
+
+@pytest.fixture
+def ready_machine(db):
+    """Create machine ready for deployment."""
+    return Node.objects.create(
+        hostname='test-machine',
+        status=NODE_STATUS.READY,
+        power_type='manual',
+        architecture='amd64/generic'
     )
+
+@pytest.fixture
+async def api_client(admin_user):
+    """Create authenticated API client."""
+    from httpx import AsyncClient
+    from maasapiserver.main import app
     
-    await deployment_service.deploy(machine.id, DeploymentConfig(...))
-    
-    # Verify external service calls
-    mock_power_driver.power_on.assert_called_once_with(machine.id)
-    mock_image_service.download_image.assert_called_once()
+    async with AsyncClient(app=app, base_url="http://test") as client:
+        # Login
+        response = await client.post("/auth/login", json={
+            "username": "admin",
+            "password": "password"
+        })
+        token = response.json()["token"]
+        
+        # Set auth header
+        client.headers["Authorization"] = f"Bearer {token}"
+        
+        yield client
 ```
 
 ## Testing Requirements
 
+> **See**: [test-code-quality.md](../../skills/techniques/test-code-quality.md) for comprehensive testing guidelines.
+
 ### Test Categories
 
-Organize tests by category:
+Tests organized by scope:
+- **Unit Tests**: Individual components in isolation
+- **Integration Tests**: Multiple components together
+- **E2E Tests**: Complete user workflows
+- **Performance Tests**: Load and stress testing
+- **Smoke Tests**: Quick validation of critical paths
 
-```python
-# Mark tests appropriately
-@pytest.mark.integration  # Cross-component integration
-@pytest.mark.slow         # Long-running tests
-@pytest.mark.database     # Requires database
-@pytest.mark.temporal     # Requires Temporal
-@pytest.mark.network      # Requires network access
-@pytest.mark.external     # Requires external services
-```
+### Coverage Requirements
 
-### Test Fixtures
-
-Provide comprehensive fixtures:
-
-```python
-import pytest
-from maasservicelayer.db.connection import DatabaseConnection
-
-@pytest.fixture
-async def db_connection():
-    """Provide real database connection for integration tests."""
-    connection = await DatabaseConnection.create()
-    yield connection
-    await connection.close()
-
-@pytest.fixture
-async def running_api_server():
-    """Start real API server for testing."""
-    from maasapiserver.app import create_app
-    import uvicorn
-    
-    app = create_app()
-    config = uvicorn.Config(app, host="127.0.0.1", port=8000)
-    server = uvicorn.Server(config)
-    
-    # Start server in background
-    import asyncio
-    task = asyncio.create_task(server.serve())
-    
-    # Wait for server to start
-    await asyncio.sleep(1)
-    
-    yield "http://127.0.0.1:8000"
-    
-    # Cleanup
-    server.should_exit = True
-    await task
-
-@pytest.fixture
-async def temporal_client():
-    """Provide Temporal client for workflow tests."""
-    from temporalio.client import Client
-    
-    client = await Client.connect("localhost:7233")
-    yield client
-    await client.close()
-```
+Minimum coverage targets:
+- **Critical paths**: 100% coverage
+- **Business logic**: 95% coverage
+- **API endpoints**: 90% coverage
+- **Overall codebase**: 80% coverage
 
 ### Running Tests
 
 ```bash
-# Run all integration tests
-pytest src/tests/ -m integration
+# All tests
+pytest src/tests/
 
-# Run excluding slow tests
-pytest src/tests/ -m "integration and not slow"
+# Integration tests only
+pytest src/tests/integration/
 
-# Run with specific markers
-pytest src/tests/ -m "integration and database"
+# E2E tests (requires live server)
+pytest src/tests/e2e/ --live-server
 
-# Run with verbose output
-pytest src/tests/ -v -m integration
+# Performance tests
+locust -f src/tests/performance/test_api.py
 
-# Run with coverage
-pytest src/tests/ --cov=maasservicelayer --cov=maasapiserver -m integration
+# Parallel execution
+pytest -n auto src/tests/
 
-# Run in parallel
-pytest src/tests/ -n auto -m integration
+# With coverage
+pytest --cov=src --cov-report=html src/tests/
 ```
 
 ## Development Guidelines
 
-### Writing Integration Tests
+### Adding Integration Tests
 
-1. **Test Real Scenarios**: Focus on actual user workflows
-2. **Use Real Dependencies**: Prefer real database over mocks
-3. **Verify State**: Check database and service state
-4. **Clean Up**: Ensure proper teardown
-5. **Document Purpose**: Clear test descriptions
-6. **Set Timeouts**: Prevent hanging tests
-7. **Mark Appropriately**: Use pytest markers
+1. Identify components being tested
+2. Set up required fixtures and services
+3. Write test simulating real usage
+4. Verify state across all components
+5. Clean up resources after test
 
-### Test Isolation
+### Writing E2E Tests
 
-Ensure tests don't interfere with each other:
+1. Start with user story or workflow
+2. Use Page Object pattern for UI tests
+3. Make tests resilient to UI changes
+4. Include explicit waits, not fixed delays
+5. Test happy path and common error cases
 
-```python
-@pytest.fixture(autouse=True)
-async def cleanup_database(db_connection):
-    """Clean database before each test."""
-    yield
-    # Cleanup after test
-    await db_connection.execute("TRUNCATE TABLE maasserver_node CASCADE")
-```
+### Performance Test Guidelines
 
-### Test Data Management
-
-Create and manage test data:
-
-```python
-@pytest.fixture
-def test_data_factory():
-    """Factory for creating test data."""
-    
-    class TestDataFactory:
-        async def create_machine(self, **kwargs):
-            defaults = {
-                "hostname": "test-machine",
-                "architecture": "amd64",
-                "memory": 8192
-            }
-            defaults.update(kwargs)
-            return await machine_service.create(
-                MachineCreateBuilder(**defaults)
-            )
-        
-        async def create_deployed_machine(self):
-            machine = await self.create_machine()
-            await deployment_service.deploy(machine.id, DeploymentConfig())
-            return machine
-    
-    return TestDataFactory()
-```
+1. Define realistic load scenarios
+2. Test with production-like data volumes
+3. Monitor response times and error rates
+4. Identify bottlenecks and optimize
+5. Set performance regression alerts
 
 ## Integration Points
 
-### All Subsystems
+### All MAAS Components
+- Tests import from all subsystems
+- Verifies component interactions
+- Ensures API contracts are met
+- Validates data consistency across layers
 
-Integration tests validate interactions between:
+### CI/CD Pipeline
+- Automated test execution on commits
+- Parallel test execution for speed
+- Test results reported to GitHub
+- Coverage reports published
 
-- **API ↔ Service Layer**: HTTP requests to business logic
-- **Service ↔ Repository**: Business logic to data access
-- **Region ↔ Rack**: Region and rack controller communication
-- **Workflows ↔ Services**: Temporal workflows with services
-- **Agent ↔ Region**: MAAS agent integration
-- **Metadata ↔ Machines**: Metadata service during provisioning
+### Test Infrastructure
+- Uses [maastesting](./maastesting.md) for utilities
+- Shares fixtures across test suites
+- Common test data factories
+- Standardized test patterns
 
 ## Common Pitfalls
 
-### Test Pollution
-
-❌ **Don't**: Leave data in shared database
-```python
-async def test_bad_cleanup():
-    machine = await create_machine()
-    # No cleanup - pollutes next test!
-```
-
-✅ **Do**: Clean up after tests
-```python
-async def test_good_cleanup(db_connection):
-    machine = await create_machine()
-    # Test operations...
-    
-    # Cleanup
-    await machine_service.delete(machine.id)
-```
+> **See**: [common-anti-patterns.md](../../common-anti-patterns.md) for general anti-patterns.
 
 ### Flaky Tests
 
-❌ **Don't**: Rely on timing
+❌ **Don't** write tests that pass/fail randomly:
 ```python
-async def test_flaky():
-    await start_async_operation()
-    await asyncio.sleep(1)  # Hope it's done!
-    assert operation_complete()
+# WRONG - Time-dependent test
+def test_deployment():
+    deploy_machine()
+    time.sleep(5)  # Might not be enough!
+    assert machine.status == "deployed"
 ```
 
-✅ **Do**: Wait for conditions
+✅ **Do** use proper waiting mechanisms:
 ```python
-async def test_reliable():
-    await start_async_operation()
-    await wait_for_condition(
-        lambda: operation_complete(),
+# Correct - Wait for condition
+def test_deployment():
+    deploy_machine()
+    wait_for_condition(
+        lambda: machine.status == "deployed",
         timeout=30
     )
-    assert operation_complete()
+    assert machine.status == "deployed"
 ```
 
-### Missing Markers
+### Tests Depending on Order
 
-❌ **Don't**: Forget test markers
+❌ **Don't** write tests that depend on execution order:
 ```python
-async def test_slow_integration():  # Missing markers!
-    # Long-running test...
+# WRONG - Depends on previous test
+def test_create_machine():
+    global machine_id
+    machine_id = create_machine()
+
+def test_deploy_machine():
+    deploy_machine(machine_id)  # Breaks if run alone!
 ```
 
-✅ **Do**: Mark tests appropriately
+✅ **Do** make tests independent:
 ```python
-@pytest.mark.integration
-@pytest.mark.slow
-async def test_slow_integration():
-    # Long-running test...
+# Correct - Self-contained
+def test_deploy_machine():
+    machine_id = create_machine()  # Create own test data
+    deploy_machine(machine_id)
+    assert_deployed(machine_id)
 ```
 
-## Related Skills
+### Not Cleaning Up Resources
 
-Links to relevant skills in `.sdd/skills/`:
-
-- **Integration Testing**: Cross-component test strategies
-- **pytest**: Test framework and fixtures
-- **Test Data Management**: Creating and managing test data
-- **Database Testing**: Testing with real databases
-- **Async Testing**: Testing asynchronous code
-- **Performance Testing**: Load and performance testing
-
-## Best Practices
-
-### Test Organization
-
-Organize by scenario:
-- `test_machine_lifecycle.py`: Complete machine workflows
-- `test_network_integration.py`: Network configuration scenarios
-- `test_deployment_workflows.py`: Deployment end-to-end
-- `test_api_service_integration.py`: API to service layer
-- `test_database_consistency.py`: Data integrity tests
-
-### Test Documentation
-
-Document test scenarios:
+❌ **Don't** leave test data behind:
 ```python
-async def test_machine_deployment_with_custom_network():
-    """
-    Integration test for machine deployment with custom network configuration.
-    
-    Scenario:
-    1. Create machine via API
-    2. Configure custom network settings
-    3. Deploy machine with network configuration
-    4. Verify deployment successful
-    5. Verify network settings applied
-    
-    Tests:
-    - API → Service → Repository data flow
-    - Temporal workflow execution
-    - Network configuration persistence
-    - Machine state transitions
-    """
+# WRONG - No cleanup
+def test_machine():
+    machine = create_machine()
+    # Test logic...
+    # Machine left in database!
 ```
 
-### Timeouts
-
-Always set timeouts:
+✅ **Do** use fixtures or explicit cleanup:
 ```python
-@pytest.mark.timeout(300)  # 5 minute timeout
-async def test_long_running_integration():
-    """Long-running integration test with timeout."""
+# Correct - Automatic cleanup
+@pytest.fixture
+def machine():
+    m = create_machine()
+    yield m
+    m.delete()
+
+def test_machine(machine):
+    # Test logic...
+    # Machine cleaned up automatically
 ```
+
+## Security Considerations
+
+> **See**: [security-practices.md](../../skills/techniques/security-practices.md)
+
+### Test Credentials
+- Use separate credentials for testing
+- Never use production credentials
+- Rotate test credentials regularly
+- Don't commit credentials to repository
+
+### Test Data
+- Sanitize any production data used in tests
+- Don't test with real user data
+- Use generated or anonymized data
+- Clean up test data after execution
+
+### Test Isolation
+- Ensure tests don't affect production
+- Use separate test databases
+- Isolate test environments from production
+- Prevent test code from running in production
+
+## Performance Considerations
+
+### Test Speed
+- Run fast unit tests first
+- Parallelize independent tests
+- Use pytest-xdist for parallel execution
+- Cache expensive setup operations
+
+### Resource Usage
+- Clean up resources promptly
+- Use connection pooling
+- Limit concurrent test execution
+- Monitor memory usage in long test runs
+
+### CI/CD Optimization
+- Split test suite into fast/slow
+- Run smoke tests on every commit
+- Run full suite on merge to main
+- Cache dependencies between runs
 
 ## Additional Resources
 
-- pytest Documentation: https://docs.pytest.org/
-- Integration Testing Best Practices: https://martinfowler.com/bliki/IntegrationTest.html
-- `AGENTS.md`: General coding guidelines
-- Individual subsystem documentation in `.sdd/context/subsystems/`
+- **pytest Documentation**: https://docs.pytest.org/
+- **pytest-django**: https://pytest-django.readthedocs.io/
+- **Selenium**: https://www.selenium.dev/documentation/
+- **Locust**: https://docs.locust.io/
+- **Related**: [test-code-quality.md](../../skills/techniques/test-code-quality.md), [maastesting.md](./maastesting.md)

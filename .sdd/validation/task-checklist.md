@@ -8,6 +8,10 @@
 
 ---
 
+**Reference:** See [Shared Quality Criteria](./_shared-criteria.md) for common standards (documentation quality, MAAS architectural standards, testing standards)
+
+---
+
 ## Instructions
 
 This checklist validates that an individual task is well-defined, properly sized, and ready for implementation. Answer each question honestly with Yes or No. A "No" answer indicates an area that needs work before the task can be assigned.

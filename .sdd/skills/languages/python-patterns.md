@@ -121,63 +121,14 @@ class MachineRequest(BaseModel):
     def normalize_hostname(cls, value: str) -> str:
         return value.strip().lower()
     
-    @field_validator("cpu_count", mode="after")
-    @classmethod
-    def validate_cpu_count(cls, value: int) -> int:
-        if value < 1:
-            raise ValueError("cpu_count must be positive")
-        return value
-    
     @model_validator(mode="after")
     def validate_model(self) -> "MachineRequest":
-        # Cross-field validation
-        if self.hostname.startswith("test-") and self.cpu_count > 2:
-            raise ValueError("Test machines limited to 2 CPUs")
+        if self.cpu_count < 1:
+            raise ValueError("cpu_count must be positive")
         return self
 ```
 
-**Field Aliases**:
-
-```python
-from pydantic import Field, AliasChoices
-
-class MachineRequest(BaseModel):
-    # Simple alias (input and output both use "mac_address")
-    mac_address: str = Field(alias="macAddress")
-    
-    # Different input vs output names
-    cpu_count: int = Field(
-        validation_alias="cpuCount",      # Accept "cpuCount" on input
-        serialization_alias="num_cpus"    # Output as "num_cpus"
-    )
-    
-    # Accept multiple input formats
-    zone_id: int = Field(
-        validation_alias=AliasChoices("zone_id", "zoneId", "zone")
-    )
-    
-    model_config = ConfigDict(populate_by_name=True)  # Accept field name too
-```
-
-**Serialization**:
-
-```python
-# Model to dict
-data = machine.model_dump()
-data_with_aliases = machine.model_dump(by_alias=True)
-
-# Model to JSON
-json_str = machine.model_dump_json()
-
-# Dict to model
-machine = MachineRequest.model_validate({"hostname": "node1", "zone_id": 1})
-
-# JSON to model
-machine = MachineRequest.model_validate_json('{"hostname": "node1", "zone_id": 1}')
-
-# Get JSON schema
-schema = MachineRequest.model_json_schema()
-```
+For comprehensive Pydantic v2 patterns including field aliases and serialization, see [common-patterns.md](../common-patterns.md).
 
 ### Builder Pattern (Pydantic Models)
 
@@ -246,87 +197,45 @@ def synchronous_db_function():
 
 ### Import Organization
 
-Follow isort order:
-
 ```python
 # 1. Standard library
 import json
-from typing import TYPE_CHECKING
 from datetime import datetime
 
 # 2. Third-party
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from sqlalchemy import select
-import pytest
 
-# 3. MAAS first-party (in specific order)
-from apiclient.utils import parse_url
-from maasapiserver.common.api.base import API
-from maascommon.enums import MachineStatus
+# 3. MAAS first-party
 from maasservicelayer.db.repositories.machines import MachineRepository
 from maasservicelayer.services.machines import MachineService
-from maastesting.fixtures import TestFixture
 ```
 
 ### Type Hints
 
 ```python
-# Function signatures
+# Modern union syntax (Python 3.10+)
 def get_machine(machine_id: int) -> Machine | None:
     pass
 
-async def list_machines(
-    zone_id: int | None = None,
-    limit: int = 100,
-) -> list[Machine]:
-    pass
-
-# Modern union syntax (Python 3.10+)
-def process(value: str | int | None) -> dict[str, Any]:
-    pass
-
-# For compatibility with Python 3.9
-from typing import Optional, Union, Dict, Any
-
-def process(value: Optional[Union[str, int]]) -> Dict[str, Any]:
+async def list_machines(zone_id: int | None = None) -> list[Machine]:
     pass
 ```
 
 ### Code Style
 
-```python
-# Max 79 characters per line
-def long_function_name(
-    first_parameter: str,
-    second_parameter: int,
-    third_parameter: bool = False,
-) -> dict[str, Any]:
-    """Docstring is concise and focused on purpose."""
-    result = {
-        "key1": first_parameter,
-        "key2": second_parameter,
-    }
-    return result
-
-# Double quotes for strings
-message = "Hello, world"
-query = "SELECT * FROM machines WHERE id = ?"
-
-# 4-space indentation
-if condition:
-    do_something()
-    if nested_condition:
-        do_nested_thing()
-```
+- **Line length**: 79 characters max
+- **Quotes**: Double quotes for strings
+- **Indentation**: 4 spaces
+- **Formatting**: Use Ruff formatter
 
 ## Anti-patterns
 
 ### ❌ String Concatenation for SQL
 
 ```python
-# NEVER do this
+# NEVER do this - SQL injection risk
 query = f"SELECT * FROM machines WHERE id = {machine_id}"
-query = "SELECT * FROM machines WHERE name = '" + name + "'"
 ```
 
 ### ❌ Breaking Three-Tier Architecture
@@ -335,16 +244,7 @@ query = "SELECT * FROM machines WHERE name = '" + name + "'"
 # NEVER access database directly from API layer
 @router.get("/machines/{id}")
 async def get_machine(id: int, db: AsyncConnection = Depends()):
-    # Wrong: API talking to database directly
-    result = await db.execute(select(MachineTable).where(...))
-    
-# NEVER put business logic in repository
-class MachineRepository:
-    def create(self, builder: MachineRequest) -> Machine:
-        # Wrong: Business logic in repository
-        if builder.cpu_count > 100:
-            raise ValueError("Too many CPUs")
-        # Repository should only handle data access
+    result = await db.execute(select(MachineTable).where(...))  # Wrong
 ```
 
 ### ❌ Using Django ORM in V3 API
@@ -352,39 +252,6 @@ class MachineRepository:
 ```python
 # NEVER use Django ORM in new v3 API code
 from maasserver.models import Machine  # Wrong layer
-
-@router.get("/machines")
-async def list_machines():
-    machines = Machine.objects.all()  # Wrong: Use SQLAlchemy Core
-```
-
-### ❌ Ignoring QuerySpec
-
-```python
-# NEVER create custom filtering without QuerySpec
-class MachineRepository:
-    def list_by_zone(self, zone_id: int) -> list[Machine]:
-        # Wrong: Hard-coded filter, not composable
-        stmt = select(MachineTable).where(MachineTable.c.zone_id == zone_id)
-        
-# Correct: Use QuerySpec
-def list(self, query: QuerySpec) -> list[Machine]:
-    stmt = select(MachineTable)
-    stmt = query.apply_to_statement(stmt)
-    return self._execute(stmt)
-```
-
-### ❌ Pydantic v1 Patterns
-
-```python
-# NEVER use Pydantic v1 syntax
-class MachineRequest(BaseModel):
-    class Config:  # Wrong: v1 syntax
-        extra = "forbid"
-        
-# Correct: v2 syntax
-class MachineRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
 ```
 
 ### ❌ Missing Type Annotations
@@ -393,21 +260,9 @@ class MachineRequest(BaseModel):
 # NEVER omit type hints in new code
 def process_machine(machine):  # Wrong: No type hints
     return machine.hostname
-    
-# Correct
-def process_machine(machine: Machine) -> str:
-    return machine.hostname
 ```
 
-## Related Skills
 
-- **Testing**: [python-testing.md](python-testing.md) - Test patterns for Python code
-- **Django**: [django-patterns.md](django-patterns.md) - Legacy Django ORM patterns
-- **SQLAlchemy**: [sqlalchemy-patterns.md](sqlalchemy-patterns.md) - Repository and query patterns
-- **Code Clarity**: [../techniques/code-clarity.md](../techniques/code-clarity.md) - Readable code practices
-- **Naming**: [../techniques/naming-conventions.md](../techniques/naming-conventions.md) - Naming standards
-- **Backend Feature**: [../compositions/backend-feature.md](../compositions/backend-feature.md) - Complete workflow
-- **API Endpoint**: [../compositions/api-endpoint.md](../compositions/api-endpoint.md) - Building endpoints
 
 ## Configuration Reference
 

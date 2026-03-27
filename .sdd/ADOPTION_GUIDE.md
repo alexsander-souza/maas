@@ -4,38 +4,45 @@ This guide helps teams and AI agents decide when to use Spec-Driven Development 
 
 ## Decision Tree: Should I Use SDD?
 
-```
-START: I have work to do on MAAS
-│
-├─ Is this a bug fix for existing functionality?
-│  └─ YES → **Direct Implementation** (follow AGENTS.md)
-│
-├─ Is this a small enhancement to a single file/module?
-│  └─ YES → **Direct Implementation** (follow AGENTS.md)
-│
-├─ Does this change affect 2-3 files in one subsystem?
-│  ├─ Is the approach obvious and well-established?
-│  │  └─ YES → **Direct Implementation**
-│  └─ Is there architectural ambiguity or multiple viable approaches?
-│     └─ YES → **Consider SDD** (at least /specify and /plan phases)
-│
-├─ Does this change affect multiple subsystems?
-│  └─ YES → **Use SDD** (all phases)
-│
-├─ Is this a new feature or capability?
-│  ├─ Is it <200 lines of code with clear requirements?
-│  │  └─ YES → **Direct Implementation** (but document intent)
-│  └─ Is it >200 lines or requirements are vague?
-│     └─ YES → **Use SDD** (all phases)
-│
-├─ Does this involve security, performance, or data migration?
-│  └─ YES → **Use SDD** (critical to document decisions)
-│
-└─ Am I refactoring or modernizing existing code?
-   ├─ Single module/file refactor?
-   │  └─ YES → **Direct Implementation**
-   └─ Multi-module or architectural refactor?
-      └─ YES → **Use SDD** (all phases)
+```mermaid
+flowchart TD
+    START[📋 I have work to do on MAAS] --> Q1{Bug fix for<br/>existing functionality?}
+    Q1 -->|Yes| DIRECT1[✅ Direct Implementation<br/>follow AGENTS.md]
+    Q1 -->|No| Q2{Small enhancement<br/>to single file/module?}
+    
+    Q2 -->|Yes| DIRECT2[✅ Direct Implementation<br/>follow AGENTS.md]
+    Q2 -->|No| Q3{Change affects<br/>2-3 files in one subsystem?}
+    
+    Q3 -->|Yes| Q3A{Approach obvious<br/>and well-established?}
+    Q3A -->|Yes| DIRECT3[✅ Direct Implementation]
+    Q3A -->|No| CONSIDER1[🤔 Consider SDD<br/>at least /specify and /plan phases]
+    
+    Q3 -->|No| Q4{Change affects<br/>multiple subsystems?}
+    Q4 -->|Yes| SDD1[📐 Use SDD<br/>all phases]
+    
+    Q4 -->|No| Q5{New feature<br/>or capability?}
+    Q5 -->|Yes| Q5A{Less than 200 lines<br/>with clear requirements?}
+    Q5A -->|Yes| DIRECT4[✅ Direct Implementation<br/>but document intent]
+    Q5A -->|No| SDD2[📐 Use SDD<br/>all phases]
+    
+    Q5 -->|No| Q6{Involves security,<br/>performance, or<br/>data migration?}
+    Q6 -->|Yes| SDD3[📐 Use SDD<br/>critical to document decisions]
+    
+    Q6 -->|No| Q7{Refactoring or<br/>modernizing existing code?}
+    Q7 -->|Yes| Q7A{Single module/file<br/>refactor?}
+    Q7A -->|Yes| DIRECT5[✅ Direct Implementation]
+    Q7A -->|No| SDD4[📐 Use SDD<br/>all phases]
+    
+    style DIRECT1 fill:#d4edda
+    style DIRECT2 fill:#d4edda
+    style DIRECT3 fill:#d4edda
+    style DIRECT4 fill:#d4edda
+    style DIRECT5 fill:#d4edda
+    style SDD1 fill:#fff4e1
+    style SDD2 fill:#fff4e1
+    style SDD3 fill:#fff4e1
+    style SDD4 fill:#fff4e1
+    style CONSIDER1 fill:#e1f5ff
 ```
 
 **Rule of thumb**: If you're unsure whether to use SDD, start with `/specify`. Writing a 1-page spec takes 15 minutes and clarifies whether you need the full workflow.

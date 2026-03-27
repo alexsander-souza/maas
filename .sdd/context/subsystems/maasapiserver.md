@@ -2,9 +2,9 @@
 
 ## Purpose
 
-FastAPI-based v3 REST API that serves as the presentation layer in MAAS's three-tier architecture. This subsystem handles HTTP communication, request validation, response serialization, and authentication for the modern MAAS API.
+FastAPI-based REST API server for MAAS v3, serving as the presentation layer in the three-tier architecture. This subsystem handles HTTP requests, authentication, request/response serialization, and delegates all business logic to the service layer.
 
-**Status**: Active development - recommended for all new features.
+**Status**: Active development - modern API for MAAS v3.
 
 ## Location
 
@@ -15,146 +15,135 @@ FastAPI-based v3 REST API that serves as the presentation layer in MAAS's three-
 ### Core Technologies
 - **Python**: 3.10+
 - **FastAPI**: Modern async web framework
-- **Pydantic**: Data validation and serialization
-- **Uvicorn**: ASGI server
+- **Pydantic**: Request/response validation
+- **uvicorn**: ASGI server
 
 ### Key Libraries
-- **pydantic**: Request/response models and validation
-- **fastapi**: Routing, dependency injection, OpenAPI generation
-- **httpx**: HTTP client for testing
+- **fastapi**: Web framework and routing
+- **pydantic**: Data validation and serialization
 - **pytest**: Testing framework
-- **pytest-asyncio**: Async test support
+- **httpx**: Async HTTP client for testing
 
 ## Architectural Constraints
 
 ### Presentation Layer Only
 
-This subsystem is strictly the **API/Presentation layer** in the three-tier architecture:
+This subsystem is **strictly presentation layer**:
 
-```
-┌──────────────────────────────┐
-│   maasapiserver (API)        │  ← YOU ARE HERE
-│   - HTTP endpoints           │
-│   - Request validation       │
-│   - Response serialization   │
-└──────────┬───────────────────┘
-           │
-           ▼
-┌──────────────────────────────┐
-│   maasservicelayer           │
-│   - Business logic           │
-│   - Repository coordination  │
-└──────────────────────────────┘
+**Responsibilities (YES)**:
+- HTTP request/response handling
+- Request validation (data types, formats)
+- Response serialization to JSON
+- Authentication/authorization checks
+- Routing and endpoint definition
+- OpenAPI documentation
+
+**Not Allowed (NO)**:
+- Business logic or validation rules
+- Database queries or connections
+- Direct repository access
+- Complex data transformations
+- Workflow orchestration
+
+```python
+# Handler structure
+API Request → Handler → Service Layer → Repository → Database
+                ↓
+          JSON Response
 ```
 
 ### No Business Logic
 
-Handlers should contain **ZERO business logic**. All business rules, validation, and orchestration belong in the service layer.
+Handlers must delegate all business logic to services:
+
+```python
+# ❌ WRONG - Business logic in handler
+async def create(self, request: MachineCreateRequest) -> MachineResponse:
+    if request.memory < 1024:  # Business rule - WRONG!
+        raise ValidationError("Insufficient memory")
+    machine = await self.service.create(request.to_builder())
+    return MachineResponse.from_model(machine)
+
+# ✅ CORRECT - Delegate to service
+async def create(self, request: MachineCreateRequest) -> MachineResponse:
+    machine = await self.service.create(request.to_builder())
+    return MachineResponse.from_model(machine)
+```
 
 ### No Direct Database Access
 
-Handlers **NEVER** access the database directly. All data access goes through services, which use repositories.
+Never access repositories directly - always go through services.
 
 ### Stateless
 
-All handlers must be stateless. Request handling should not depend on any server-side state except through the database.
+Handlers must be stateless - all state in database or external services.
 
 ## Key Patterns
 
+> **See**: [python-patterns.md](../../skills/languages/python-patterns.md) and [django-patterns.md](../../skills/languages/django-patterns.md) for common patterns.
+
 ### Handler Pattern
 
-Extend the `Handler` base class for new API endpoints:
+Handlers are thin wrappers around service calls:
 
 ```python
-from maasapiserver.v3.handlers.base import Handler
-from maasapiserver.v3.auth.decorators import handler, check_permissions
+from fastapi import APIRouter, Depends
+from maasapiserver.common.api.base import Handler
+from maasservicelayer.services.machines import MachineService
 
-@handler
 class MachineHandler(Handler):
-    """Handler for machine resources."""
+    """Handler for machine API endpoints."""
     
-    @check_permissions(MachinePermission.VIEW)
     async def get(self, machine_id: int) -> MachineResponse:
-        """Get a single machine by ID."""
+        """Get machine by ID."""
         machine = await self.service.get_by_id(machine_id)
         if not machine:
             raise NotFoundException(f"Machine {machine_id} not found")
         return MachineResponse.from_model(machine)
     
-    @check_permissions(MachinePermission.VIEW)
-    async def list(self, params: MachineListParams) -> MachineListResponse:
+    async def list(
+        self, 
+        status: str | None = None,
+        limit: int = 100,
+        offset: int = 0
+    ) -> list[MachineResponse]:
         """List machines with optional filtering."""
         machines = await self.service.list(
-            status=params.status,
-            architecture=params.architecture,
-            limit=params.limit,
-            offset=params.offset
+            status=status,
+            limit=limit,
+            offset=offset
         )
-        return MachineListResponse(
-            items=[MachineResponse.from_model(m) for m in machines],
-            total=len(machines)
-        )
+        return [MachineResponse.from_model(m) for m in machines]
     
-    @check_permissions(MachinePermission.EDIT)
     async def create(self, request: MachineCreateRequest) -> MachineResponse:
-        """Create a new machine."""
+        """Create new machine."""
         machine = await self.service.create(request.to_builder())
         return MachineResponse.from_model(machine)
     
-    @check_permissions(MachinePermission.EDIT)
-    async def update(
-        self, 
-        machine_id: int, 
-        request: MachineUpdateRequest
-    ) -> MachineResponse:
-        """Update an existing machine."""
-        machine = await self.service.update(machine_id, request.to_builder())
-        return MachineResponse.from_model(machine)
-    
-    @check_permissions(MachinePermission.DELETE)
     async def delete(self, machine_id: int) -> None:
-        """Delete a machine."""
+        """Delete machine."""
         await self.service.delete(machine_id)
 ```
 
-### @handler Decorator
+### Pydantic Models for Validation
 
-Use the `@handler` decorator to register handler classes:
-
-```python
-@handler
-class MachineHandler(Handler):
-    """Marks this as a handler class for automatic registration."""
-    pass
-```
-
-**What it does**:
-- Registers handler with FastAPI router
-- Sets up dependency injection
-- Configures OpenAPI documentation
-- Enables automatic service injection
-
-### Pydantic Models
-
-Define request and response models using Pydantic:
+Use Pydantic for request validation and response serialization:
 
 ```python
 from pydantic import BaseModel, Field, validator
-from typing import Optional
 
 class MachineCreateRequest(BaseModel):
     """Request model for creating a machine."""
-    
     hostname: str = Field(..., min_length=1, max_length=255)
-    architecture: str = Field(..., regex=r"^[a-z0-9]+(/[a-z0-9]+)?$")
-    memory: int = Field(..., gt=0, description="Memory in MB")
-    cpu_count: int = Field(..., gt=0, alias="cpuCount")
+    architecture: str = Field(..., pattern=r'^(amd64|arm64|ppc64el)$')
+    memory: int = Field(..., gt=0)
+    cpu_count: int = Field(..., gt=0)
     
-    @validator("hostname")
+    @validator('hostname')
     def validate_hostname(cls, v):
-        """Ensure hostname is valid."""
-        if not v.replace("-", "").replace("_", "").isalnum():
-            raise ValueError("Hostname must be alphanumeric")
+        """Validate hostname format."""
+        if not v.replace('-', '').replace('_', '').isalnum():
+            raise ValueError('Hostname must be alphanumeric')
         return v.lower()
     
     def to_builder(self) -> MachineCreateBuilder:
@@ -166,27 +155,16 @@ class MachineCreateRequest(BaseModel):
             .with_memory(self.memory)
             .with_cpu_count(self.cpu_count)
         )
-    
-    class Config:
-        schema_extra = {
-            "example": {
-                "hostname": "machine-1",
-                "architecture": "amd64/generic",
-                "memory": 8192,
-                "cpuCount": 4
-            }
-        }
 
 class MachineResponse(BaseModel):
-    """Response model for machine resource."""
-    
+    """Response model for machine data."""
     id: int
     system_id: str
     hostname: str
     status: str
     architecture: str
     memory: int
-    cpu_count: int = Field(alias="cpuCount")
+    cpu_count: int
     created: datetime
     updated: datetime
     
@@ -202,560 +180,353 @@ class MachineResponse(BaseModel):
             memory=machine.memory,
             cpu_count=machine.cpu_count,
             created=machine.created,
-            updated=machine.updated
+            updated=machine.updated,
         )
-    
-    class Config:
-        orm_mode = True
-        allow_population_by_field_name = True
 ```
 
 ### Permission Checking
 
-Use `@check_permissions` decorator for authorization:
+Check permissions before operations:
 
 ```python
-from maasapiserver.v3.auth.decorators import check_permissions
-from maasapiserver.v3.auth.permissions import MachinePermission
+from maasapiserver.common.auth import User, require_permission
 
-@handler
 class MachineHandler(Handler):
+    async def get(self, machine_id: int, user: User = Depends(get_current_user)) -> MachineResponse:
+        """Get machine with permission check."""
+        require_permission(user, "maasserver.view_machine")
+        machine = await self.service.get_by_id(machine_id)
+        return MachineResponse.from_model(machine)
     
-    @check_permissions(MachinePermission.VIEW)
-    async def get(self, machine_id: int) -> MachineResponse:
-        """Requires VIEW permission."""
-        pass
-    
-    @check_permissions(MachinePermission.EDIT)
-    async def update(self, machine_id: int, request: UpdateRequest) -> MachineResponse:
-        """Requires EDIT permission."""
-        pass
-    
-    @check_permissions(MachinePermission.DELETE)
-    async def delete(self, machine_id: int) -> None:
-        """Requires DELETE permission."""
-        pass
+    async def delete(self, machine_id: int, user: User = Depends(get_current_user)) -> None:
+        """Delete machine with permission check."""
+        require_permission(user, "maasserver.delete_machine")
+        machine = await self.service.get_by_id(machine_id)
+        if machine.owner != user and not user.is_admin:
+            raise ForbiddenError("Cannot delete machines owned by others")
+        await self.service.delete(machine_id)
 ```
-
-**Permission Levels**:
-- `VIEW`: Read-only access
-- `EDIT`: Create and update
-- `DELETE`: Delete resources
-- `ADMIN`: Administrative operations
 
 ### Error Handling
 
-Use standard HTTP exceptions:
+Convert service exceptions to HTTP responses:
 
 ```python
 from fastapi import HTTPException, status
-from maasapiserver.v3.exceptions import (
-    NotFoundException,
-    ValidationException,
-    UnauthorizedException,
-    ForbiddenException
-)
 
-@handler
 class MachineHandler(Handler):
-    
     async def get(self, machine_id: int) -> MachineResponse:
-        """Get machine or raise 404."""
-        machine = await self.service.get_by_id(machine_id)
-        if not machine:
-            raise NotFoundException(f"Machine {machine_id} not found")
-        return MachineResponse.from_model(machine)
-    
-    async def create(self, request: MachineCreateRequest) -> MachineResponse:
-        """Create machine or raise validation error."""
+        """Get machine with error handling."""
         try:
-            machine = await self.service.create(request.to_builder())
-        except ValueError as e:
-            raise ValidationException(str(e))
-        return MachineResponse.from_model(machine)
+            machine = await self.service.get_by_id(machine_id)
+            if not machine:
+                raise HTTPException(status_code=404, detail="Machine not found")
+            return MachineResponse.from_model(machine)
+        except PermissionDenied as e:
+            raise HTTPException(status_code=403, detail=str(e))
+        except Exception as e:
+            logger.exception(f"Unexpected error: {e}")
+            raise HTTPException(status_code=500, detail="Internal server error")
 ```
-
-**Standard Exceptions**:
-- `NotFoundException` → 404 Not Found
-- `ValidationException` → 400 Bad Request
-- `UnauthorizedException` → 401 Unauthorized
-- `ForbiddenException` → 403 Forbidden
-- `ConflictException` → 409 Conflict
 
 ## Testing Requirements
 
-### Test Framework
+> **See**: [test-code-quality.md](../../skills/techniques/test-code-quality.md) and [python-testing.md](../../skills/languages/python-testing.md) for testing patterns.
 
-Use pytest with async support:
+### Test Handlers with Mocked Services
+
+Always mock service layer dependencies:
 
 ```python
 import pytest
 from httpx import AsyncClient
-from maasapiserver.v3.app import create_app
 
 @pytest.mark.asyncio
-class TestMachineHandler:
-    """Test machine API endpoints."""
+async def test_get_machine(api_client: AsyncClient, mock_machine_service):
+    """Test getting a machine."""
+    # Mock service
+    mock_machine_service.get_by_id.return_value = Machine(
+        id=1,
+        hostname="test-machine",
+        status="ready"
+    )
     
-    async def test_get_machine(self, mocked_api_client_user):
-        """Test getting a single machine."""
-        client, service = mocked_api_client_user
-        
-        # Mock service response
-        service.get_by_id.return_value = Machine(
-            id=1,
-            hostname="test-machine",
-            status="ready"
-        )
-        
-        # Make request
-        response = await client.get("/api/v3/machines/1")
-        
-        # Assert
-        assert response.status_code == 200
-        data = response.json()
-        assert data["hostname"] == "test-machine"
-        service.get_by_id.assert_called_once_with(1)
+    # Make request
+    response = await api_client.get("/api/v3/machines/1")
+    
+    # Assert
+    assert response.status_code == 200
+    data = response.json()
+    assert data["hostname"] == "test-machine"
+    mock_machine_service.get_by_id.assert_called_once_with(1)
 ```
-
-### APICommonTests Base Class
-
-Use `APICommonTests` for standard CRUD test coverage:
-
-```python
-from maastesting.api import APICommonTests
-
-class TestMachineAPI(APICommonTests):
-    """Standard test suite for machine API."""
-    
-    def get_handler_class(self):
-        return MachineHandler
-    
-    def get_create_request(self):
-        return MachineCreateRequest(
-            hostname="test-machine",
-            architecture="amd64",
-            memory=8192,
-            cpuCount=4
-        )
-    
-    def get_update_request(self):
-        return MachineUpdateRequest(
-            hostname="updated-machine"
-        )
-```
-
-### Mocked Service Fixtures
-
-**Critical**: Always mock services in API tests, never mock repositories:
-
-```python
-@pytest.fixture
-async def mocked_api_client_user(mocker):
-    """API client with mocked services."""
-    app = create_app()
-    
-    # Mock the service layer
-    mock_service = mocker.Mock(spec=MachineService)
-    
-    # Inject mocked service
-    app.dependency_overrides[get_machine_service] = lambda: mock_service
-    
-    async with AsyncClient(app=app, base_url="http://test") as client:
-        yield client, mock_service
-```
-
-**Why mock services, not repositories**:
-- Tests API layer in isolation
-- Services already tested separately
-- Faster test execution
-- Clear separation of concerns
 
 ### Test Authentication
 
-Test with different authentication methods:
+Test authentication and authorization:
 
 ```python
 @pytest.mark.asyncio
-async def test_bearer_token_auth(mocked_api_client_user):
-    """Test Bearer token authentication."""
-    client, service = mocked_api_client_user
-    
-    headers = {"Authorization": "Bearer test-token"}
-    response = await client.get("/api/v3/machines/1", headers=headers)
-    
-    assert response.status_code == 200
-
-@pytest.mark.asyncio
-async def test_session_auth(mocked_api_client_user):
-    """Test Django session authentication."""
-    client, service = mocked_api_client_user
-    
-    cookies = {"sessionid": "test-session-id"}
-    response = await client.get("/api/v3/machines/1", cookies=cookies)
-    
-    assert response.status_code == 200
-
-@pytest.mark.asyncio
-async def test_unauthorized(mocked_api_client_user):
-    """Test unauthorized access."""
-    client, service = mocked_api_client_user
-    
-    response = await client.get("/api/v3/machines/1")
-    
+async def test_unauthorized(api_client: AsyncClient):
+    """Test endpoint without authentication."""
+    response = await api_client.get("/api/v3/machines/1")
     assert response.status_code == 401
+
+@pytest.mark.asyncio
+async def test_forbidden(api_client: AsyncClient, regular_user_token):
+    """Test endpoint without permission."""
+    response = await api_client.delete(
+        "/api/v3/machines/1",
+        headers={"Authorization": f"Bearer {regular_user_token}"}
+    )
+    assert response.status_code == 403
 ```
 
 ### Running Tests
 
 ```bash
-# Run all maasapiserver tests
+# All API server tests
 pytest src/maasapiserver/tests/
 
-# Run specific test file
+# Specific handler tests
 pytest src/maasapiserver/tests/v3/handlers/test_machines.py
 
-# Run with coverage
+# With coverage
 pytest --cov=maasapiserver src/maasapiserver/tests/
-
-# Run in verbose mode
-pytest -vv src/maasapiserver/tests/
 ```
 
 ## Development Guidelines
 
 ### Adding New Endpoints
 
-1. **Define Pydantic Models**: Request/response models first
-2. **Create Handler**: Extend `Handler` base class
-3. **Implement Methods**: CRUD operations as needed
-4. **Add Permissions**: Use `@check_permissions`
-5. **Write Tests**: Use mocked services
-6. **Update OpenAPI**: Ensure accurate documentation
+1. Define Pydantic request/response models
+2. Create handler class extending `Handler`
+3. Implement handler methods (thin wrappers)
+4. Add permission checks
+5. Register routes in router
+6. Test with mocked services
 
 ### Handler Method Naming
 
-Follow REST conventions:
+Use standard HTTP verb naming:
+- `get()` - GET single resource
+- `list()` - GET collection
+- `create()` - POST new resource
+- `update()` - PUT/PATCH existing resource
+- `delete()` - DELETE resource
 
-- `get(id)`: Retrieve single resource
-- `list(params)`: List resources with filtering
-- `create(request)`: Create new resource
-- `update(id, request)`: Update existing resource
-- `delete(id)`: Delete resource
-- `patch(id, request)`: Partial update
+### Thin Handlers Rule
 
-### Thin Handlers
+Handlers should be 5-10 lines maximum:
 
-Keep handlers thin - delegate everything to services:
-
-✅ **Good** (thin handler):
 ```python
+# ❌ TOO COMPLEX
+async def create(self, request: MachineCreateRequest) -> MachineResponse:
+    if request.memory < 1024:
+        raise ValidationError()
+    if not self._is_valid_architecture(request.architecture):
+        raise ValidationError()
+    builder = self._build_machine_request(request)
+    machine = await self.service.create(builder)
+    self._log_creation(machine)
+    return MachineResponse.from_model(machine)
+
+# ✅ SIMPLE AND CLEAR
 async def create(self, request: MachineCreateRequest) -> MachineResponse:
     machine = await self.service.create(request.to_builder())
     return MachineResponse.from_model(machine)
 ```
 
-❌ **Bad** (business logic in handler):
-```python
-async def create(self, request: MachineCreateRequest) -> MachineResponse:
-    # Validation in handler - WRONG!
-    if request.memory < 1024:
-        raise ValidationException("Minimum 1GB memory")
-    
-    # Direct repository access - WRONG!
-    machine = await repository.create(request.dict())
-    
-    return MachineResponse.from_model(machine)
-```
-
 ### OpenAPI Documentation
 
-Ensure comprehensive OpenAPI documentation:
+Add comprehensive docstrings for auto-generated API docs:
 
 ```python
-@handler
-class MachineHandler(Handler):
+async def get(self, machine_id: int) -> MachineResponse:
+    """
+    Get machine by ID.
     
-    async def get(self, machine_id: int) -> MachineResponse:
-        """
-        Get machine by ID.
+    Retrieves detailed information about a specific machine.
+    
+    Args:
+        machine_id: Unique identifier of the machine
         
-        Retrieves a single machine resource by its unique identifier.
+    Returns:
+        Machine details including status, resources, and configuration
         
-        Args:
-            machine_id: Unique machine identifier
-            
-        Returns:
-            Machine resource with all attributes
-            
-        Raises:
-            404: Machine not found
-            401: Unauthorized
-            403: Insufficient permissions
-        """
-        pass
+    Raises:
+        HTTPException: 404 if machine not found, 403 if no permission
+    """
+    machine = await self.service.get_by_id(machine_id)
+    return MachineResponse.from_model(machine)
 ```
 
 ## Authentication
 
 ### Supported Methods
-
-1. **Bearer Token** (Recommended):
-   ```
-   Authorization: Bearer <jwt_token>
-   ```
-
-2. **Django Session** (Backward compatibility):
-   ```
-   Cookie: sessionid=<session_id>
-   ```
-
-3. **Macaroon** (Specialized use cases):
-   ```
-   Macaroons: <macaroon_token>
-   ```
+- **Bearer Token**: JWT tokens for API clients
+- **Session Cookie**: Browser-based authentication
+- **API Key**: For service-to-service communication
 
 ### Authentication Flow
 
+All authenticated endpoints use FastAPI dependencies:
+
 ```python
-from maasapiserver.v3.auth.dependencies import get_authenticated_user
+from fastapi import Depends
+from maasapiserver.common.auth import get_current_user, User
 
 async def get_machine(
     machine_id: int,
-    user: User = Depends(get_authenticated_user)
+    user: User = Depends(get_current_user)
 ) -> MachineResponse:
-    """Automatically authenticated via dependency injection."""
+    """Endpoint with automatic authentication."""
+    # user is automatically injected and validated
     machine = await service.get_by_id(machine_id)
     return MachineResponse.from_model(machine)
 ```
 
 ## Integration Points
 
-### Service Layer
-
-Primary integration point:
-
-```python
-from maasservicelayer.services.machines import MachineService
-
-class MachineHandler(Handler):
-    def __init__(self, service: MachineService):
-        self.service = service
-```
+### Service Layer (maasservicelayer)
+- Handlers inject services via dependency injection
+- All business logic delegated to services
+- See [maasservicelayer.md](./maasservicelayer.md)
 
 ### OpenAPI Specification
-
-Automatically generated at `/api/v3/openapi.json`:
-- Complete schema definitions
-- Authentication schemes
-- Request/response examples
-- Error responses
+- Auto-generated from Pydantic models and docstrings
+- Available at `/docs` (Swagger UI) and `/redoc` (ReDoc)
+- OpenAPI JSON at `/openapi.json`
 
 ### FastAPI Router
-
-Handlers registered with FastAPI:
-
-```python
-from fastapi import APIRouter
-
-router = APIRouter(prefix="/api/v3")
-
-# Handlers automatically registered via @handler decorator
-```
+- Handlers registered to FastAPI routers
+- Version-specific routes (e.g., `/api/v3/`)
+- Automatic request validation and serialization
 
 ### Web UI
-
-Future: React/Vue frontend consuming v3 API
+- API consumed by MAAS web interface
+- CORS configuration for browser access
+- WebSocket support for real-time updates
 
 ## Common Pitfalls
 
+> **See**: [common-anti-patterns.md](../../common-anti-patterns.md) for general anti-patterns.
+
 ### Business Logic in Handlers
 
-❌ **Don't**:
+❌ **Don't** put business logic in handlers:
 ```python
-async def create(self, request: MachineCreateRequest):
-    # Business validation - belongs in service!
-    if request.memory < MIN_MEMORY:
-        raise ValidationException()
-    
-    # Complex orchestration - belongs in service!
-    machine = await self.machine_repo.create(request)
-    await self.event_repo.log_created(machine)
-    await self.notify_service.send(machine)
+async def create(self, request: MachineCreateRequest) -> MachineResponse:
+    # Business validation - WRONG!
+    if request.memory < self._calculate_minimum_memory(request.cpu_count):
+        raise ValidationError("Insufficient memory")
+    machine = await self.service.create(request.to_builder())
+    return MachineResponse.from_model(machine)
 ```
 
-✅ **Do**:
+✅ **Do** delegate to service layer:
 ```python
-async def create(self, request: MachineCreateRequest):
-    # Just delegate to service
+async def create(self, request: MachineCreateRequest) -> MachineResponse:
     machine = await self.service.create(request.to_builder())
     return MachineResponse.from_model(machine)
 ```
 
 ### Direct Repository Access
 
-❌ **Don't**:
+❌ **Don't** access repositories directly:
 ```python
-from maasservicelayer.db.repositories.machines import MachineRepository
-
-async def get(self, machine_id: int):
-    repository = MachineRepository(connection)
-    machine = await repository.get_by_id(machine_id)  # WRONG!
+async def get(self, machine_id: int) -> MachineResponse:
+    machine = await machine_repository.get_by_id(machine_id)  # WRONG!
+    return MachineResponse.from_model(machine)
 ```
 
-✅ **Do**:
+✅ **Do** use service layer:
 ```python
-async def get(self, machine_id: int):
-    machine = await self.service.get_by_id(machine_id)  # Correct
+async def get(self, machine_id: int) -> MachineResponse:
+    machine = await self.service.get_by_id(machine_id)
+    return MachineResponse.from_model(machine)
 ```
 
-### Mocking Repositories in Tests
+### Mocking Services in Tests (Not Repositories)
 
-❌ **Don't**:
+❌ **Don't** mock repositories in API tests:
 ```python
-@pytest.mark.asyncio
-async def test_get_machine(mocker):
-    # Mocking repository - WRONG!
-    mock_repo = mocker.Mock(spec=MachineRepository)
-    handler = MachineHandler(repository=mock_repo)
+async def test_get_machine(mock_repository):
+    # WRONG! Test handler, not repository
+    mock_repository.get_by_id.return_value = Machine(...)
 ```
 
-✅ **Do**:
+✅ **Do** mock services:
 ```python
-@pytest.mark.asyncio
-async def test_get_machine(mocked_api_client_user):
-    # Mock service, not repository
-    client, mock_service = mocked_api_client_user
+async def test_get_machine(mock_service):
     mock_service.get_by_id.return_value = Machine(...)
+    response = await client.get("/api/v3/machines/1")
+    assert response.status_code == 200
 ```
 
 ### Inconsistent Error Handling
 
-❌ **Don't**:
+❌ **Don't** use inconsistent error responses:
 ```python
-async def get(self, machine_id: int):
+async def get(self, machine_id: int) -> MachineResponse:
     machine = await self.service.get_by_id(machine_id)
     if not machine:
-        return {"error": "Not found"}  # Inconsistent format
+        return None  # WRONG! Inconsistent response type
 ```
 
-✅ **Do**:
+✅ **Do** use standard HTTP exceptions:
 ```python
-async def get(self, machine_id: int):
+async def get(self, machine_id: int) -> MachineResponse:
     machine = await self.service.get_by_id(machine_id)
     if not machine:
-        raise NotFoundException(f"Machine {machine_id} not found")
+        raise HTTPException(status_code=404, detail="Machine not found")
+    return MachineResponse.from_model(machine)
 ```
-
-## Related Skills
-
-Links to relevant skills in `.sdd/skills/`:
-
-- **FastAPI Development**: FastAPI-specific patterns
-- **Pydantic Models**: Data validation and serialization
-- **Async Python**: Modern async/await patterns
-- **REST API Design**: RESTful API best practices
-- **OpenAPI Documentation**: API documentation standards
-- **API Testing**: Testing HTTP endpoints
-- **Authentication**: Auth mechanisms and security
 
 ## Security Considerations
 
-### Input Validation
+> **See**: [security-practices.md](../../skills/techniques/security-practices.md) for comprehensive security guidelines.
 
-All input validated via Pydantic:
-- Type checking
-- Format validation
-- Length constraints
-- Custom validators
+### Input Validation
+- All inputs validated via Pydantic models
+- Use Field constraints for length, range, pattern validation
+- See [input-validation.md](../../skills/techniques/input-validation.md)
 
 ### Authorization
-
-Permission checks on every endpoint:
-- Role-based access control
-- Resource-level permissions
-- Automatic permission enforcement
+- Check permissions before every operation
+- Validate resource ownership
+- Use role-based access control (RBAC)
 
 ### Rate Limiting
-
-Future: Implement rate limiting for API endpoints
+- Configure rate limiting per endpoint
+- Prevent abuse and DoS attacks
+- Use FastAPI middleware for rate limiting
 
 ### CORS
-
-Configure CORS for browser-based clients:
-```python
-from fastapi.middleware.cors import CORSMiddleware
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["https://maas.example.com"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-```
+- Configure CORS appropriately for web UI
+- Restrict allowed origins in production
+- Enable credentials only when necessary
 
 ## Performance Considerations
 
 ### Async All the Way
-
-All handlers are async:
-- Non-blocking I/O
-- Efficient resource usage
-- High concurrency support
+- Use async/await throughout handler chain
+- Avoid blocking operations
+- Use async database drivers
 
 ### Response Serialization
-
-Pydantic models efficiently serialize responses:
-- Fast C-based validation
-- Automatic type conversion
-- Schema caching
+- Use Pydantic for efficient serialization
+- Avoid N+1 queries by eager loading in service layer
+- Paginate large result sets
 
 ### Database Connection Pooling
-
-Managed by service layer:
-- Connection reuse
-- Automatic cleanup
-- Transaction management
-
-## Documentation
-
-### OpenAPI Specification
-
-Accessible at `/api/v3/openapi.json`:
-- Auto-generated from Pydantic models
-- Complete endpoint documentation
-- Request/response schemas
-- Authentication schemes
-
-### Docstrings
-
-Comprehensive docstrings for all handlers:
-- Method purpose
-- Parameters
-- Return values
-- Exceptions
-- Examples
-
-### Code Examples
-
-Include examples in Pydantic schema_extra:
-```python
-class Config:
-    schema_extra = {
-        "example": {
-            "hostname": "machine-1",
-            "status": "ready"
-        }
-    }
-```
+- Connection pooling handled by service layer
+- Don't create new connections in handlers
+- Reuse injected service instances
 
 ## Additional Resources
 
-- FastAPI Documentation: https://fastapi.tiangolo.com/
-- Pydantic Documentation: https://pydantic-docs.helpmanual.io/
-- OpenAPI Specification: https://spec.openapis.org/oas/v3.0.3
-- `AGENTS.md`: General coding guidelines
-- `src/maasapiserver/README.md`: API server documentation
-- `src/maasservicelayer/README.md`: Service layer documentation
-- `.sdd/context/architecture/three-tier-architecture.md`: Architecture overview
+- **FastAPI Documentation**: https://fastapi.tiangolo.com/
+- **Pydantic Documentation**: https://docs.pydantic.dev/
+- **OpenAPI Specification**: https://swagger.io/specification/
+- **Related**: [python-patterns.md](../../skills/languages/python-patterns.md), [maasservicelayer.md](./maasservicelayer.md)

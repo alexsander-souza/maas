@@ -6,13 +6,7 @@ Define Django ORM patterns for legacy MAAS code (primarily `maasserver`), includ
 
 ## When to Use
 
-- Maintaining existing Django-based code in `maasserver`
-- Working with Django models in legacy endpoints
-- Creating or modifying Django migrations
-- Accessing Django ORM from legacy v2 API
-- Using `deferToDatabase` in async contexts with Django
-
-**Note**: New v3 API code should use SQLAlchemy Core, not Django ORM. See [sqlalchemy-patterns.md](sqlalchemy-patterns.md).
+Maintaining existing Django-based code in `maasserver`, legacy v2 API, and Django migrations. **Note**: New v3 API code uses SQLAlchemy Core.
 
 ## Pattern Examples
 
@@ -41,27 +35,6 @@ class Machine(models.Model):
         
     def __str__(self):
         return self.hostname
-```
-
-**Model with Validators**:
-
-```python
-from django.core.validators import MinValueValidator, MaxValueValidator
-from django.core.exceptions import ValidationError
-
-class Machine(models.Model):
-    cpu_count = models.IntegerField(
-        validators=[MinValueValidator(1), MaxValueValidator(256)]
-    )
-    
-    def clean(self):
-        super().clean()
-        if self.hostname.startswith("_"):
-            raise ValidationError("Hostname cannot start with underscore")
-    
-    def save(self, *args, **kwargs):
-        self.full_clean()  # Run validators
-        super().save(*args, **kwargs)
 ```
 
 ### QuerySet Patterns
@@ -95,33 +68,18 @@ machines = Machine.objects.filter(
 )
 ```
 
-**Complex Queries**:
+**Complex Queries with Q Objects**:
 
 ```python
-from django.db.models import Q, F, Count, Sum
+from django.db.models import Q, F
 
 # OR conditions
 machines = Machine.objects.filter(
     Q(status="ready") | Q(status="allocated")
 )
 
-# Complex boolean logic
-machines = Machine.objects.filter(
-    Q(status="ready") & (Q(zone_id=1) | Q(zone_id=2))
-)
-
 # Field comparisons
 machines = Machine.objects.filter(cpu_count__gt=F("memory") / 1024)
-
-# Aggregation
-from django.db.models import Count, Avg
-zone_stats = Zone.objects.annotate(
-    machine_count=Count("machines"),
-    avg_cpu=Avg("machines__cpu_count"),
-)
-
-# Distinct
-unique_zones = Machine.objects.values("zone_id").distinct()
 ```
 
 **Select Related / Prefetch Related**:
@@ -138,15 +96,6 @@ for zone in zones:
     for machine in zone.machines.all():  # No N+1 queries
         print(machine.hostname)
 
-# Complex prefetch
-from django.db.models import Prefetch
-zones = Zone.objects.prefetch_related(
-    Prefetch(
-        "machines",
-        queryset=Machine.objects.filter(status="ready"),
-        to_attr="ready_machines",
-    )
-)
 ```
 
 ### Transactions
@@ -170,17 +119,6 @@ def update_machine_status(machine_id, new_status):
         machine.save()
         StatusHistory.objects.create(machine=machine, status=new_status)
 
-# Savepoints for partial rollback
-with transaction.atomic():
-    create_machine("machine1")
-    
-    sid = transaction.savepoint()
-    try:
-        create_machine("invalid")
-    except Exception:
-        transaction.savepoint_rollback(sid)
-    
-    create_machine("machine2")  # This still succeeds
 ```
 
 ### Migrations
@@ -234,35 +172,6 @@ class Migration(migrations.Migration):
     ]
 ```
 
-**Complex Schema Changes**:
-
-```python
-class Migration(migrations.Migration):
-    operations = [
-        # Add index
-        migrations.AddIndex(
-            model_name="machine",
-            index=models.Index(fields=["zone", "status"], name="machine_zone_status_idx"),
-        ),
-        
-        # Add constraint
-        migrations.AddConstraint(
-            model_name="machine",
-            constraint=models.CheckConstraint(
-                check=models.Q(cpu_count__gte=1),
-                name="machine_cpu_count_positive",
-            ),
-        ),
-        
-        # Rename field
-        migrations.RenameField(
-            model_name="machine",
-            old_name="cores",
-            new_name="cpu_count",
-        ),
-    ]
-```
-
 ### Django in Async Contexts (deferToDatabase)
 
 ```python
@@ -297,68 +206,6 @@ def update_machine_status(machine_id, new_status):
     machine.status = new_status
     machine.save()
     return machine
-```
-
-### Manager and QuerySet Custom Methods
-
-```python
-class MachineQuerySet(models.QuerySet):
-    def ready(self):
-        return self.filter(status="ready")
-    
-    def in_zone(self, zone_id):
-        return self.filter(zone_id=zone_id)
-    
-    def with_min_resources(self, min_cpu, min_memory):
-        return self.filter(
-            cpu_count__gte=min_cpu,
-            memory__gte=min_memory,
-        )
-
-class MachineManager(models.Manager):
-    def get_queryset(self):
-        return MachineQuerySet(self.model, using=self._db)
-    
-    def ready(self):
-        return self.get_queryset().ready()
-    
-    def in_zone(self, zone_id):
-        return self.get_queryset().in_zone(zone_id)
-
-class Machine(models.Model):
-    # fields...
-    
-    objects = MachineManager()
-
-# Usage
-ready_machines = Machine.objects.ready()
-zone_ready = Machine.objects.ready().in_zone(1)
-```
-
-### Model Properties and Methods
-
-```python
-class Machine(models.Model):
-    cpu_count = models.IntegerField()
-    memory = models.IntegerField()  # MB
-    
-    @property
-    def memory_gb(self):
-        """Memory in gigabytes."""
-        return self.memory / 1024
-    
-    @property
-    def is_high_spec(self):
-        return self.cpu_count >= 16 and self.memory >= 32768
-    
-    def allocate_to(self, user):
-        """Business logic method."""
-        if self.status != "ready":
-            raise ValueError(f"Machine {self.hostname} is not ready")
-        
-        self.status = "allocated"
-        self.owner = user
-        self.save()
 ```
 
 ## Anti-patterns
@@ -409,20 +256,6 @@ machine = [m for m in all_machines if m.id == target_id][0]  # Wasteful!
 machine = Machine.objects.get(id=target_id)
 ```
 
-### ❌ Multiple Database Hits in Loop
-
-```python
-# NEVER query in a loop
-for machine_id in machine_ids:
-    machine = Machine.objects.get(id=machine_id)  # N queries!
-    process(machine)
-
-# Correct: Fetch once
-machines = Machine.objects.filter(id__in=machine_ids)
-for machine in machines:
-    process(machine)
-```
-
 ### ❌ Not Using Transactions for Multi-Step Operations
 
 ```python
@@ -430,44 +263,25 @@ for machine in machines:
 def create_machine_with_interfaces(data):
     machine = Machine.objects.create(**data)
     Interface.objects.create(machine=machine, name="eth0")  # Could fail, leaving orphan
-    Interface.objects.create(machine=machine, name="eth1")
 
 # Correct
 @transaction.atomic
 def create_machine_with_interfaces(data):
     machine = Machine.objects.create(**data)
     Interface.objects.create(machine=machine, name="eth0")
-    Interface.objects.create(machine=machine, name="eth1")
-```
-
-### ❌ Modifying QuerySets After Evaluation
-
-```python
-# NEVER modify queryset after it's evaluated
-machines = Machine.objects.filter(status="ready")
-list(machines)  # Evaluates queryset
-machines = machines.filter(zone_id=1)  # New query, previous evaluation wasted
 ```
 
 ### ❌ Using .count() When You Need Existence Check
 
 ```python
 # NEVER use count() just to check existence
-if Machine.objects.filter(hostname="test").count() > 0:  # Counts all matching rows
+if Machine.objects.filter(hostname="test").count() > 0:  # Wasteful
     do_something()
 
 # Correct
 if Machine.objects.filter(hostname="test").exists():  # Efficient EXISTS query
     do_something()
 ```
-
-## Related Skills
-
-- **SQLAlchemy**: [sqlalchemy-patterns.md](sqlalchemy-patterns.md) - Patterns for new v3 API code
-- **Python Patterns**: [python-patterns.md](python-patterns.md) - General Python conventions
-- **Database Migration**: [../compositions/database-migration.md](../compositions/database-migration.md) - Migration workflows
-- **Testing**: [python-testing.md](python-testing.md) - Testing Django code
-- **Security**: [../techniques/input-validation.md](../techniques/input-validation.md) - Secure database access
 
 ## When to Use Django vs SQLAlchemy
 

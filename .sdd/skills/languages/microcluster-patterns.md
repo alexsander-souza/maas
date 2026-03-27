@@ -604,12 +604,6 @@ func (s *Service) DeployMachine(ctx context.Context, id string) error {
 }
 ```
 
-## Related Skills
-
-- **Go Patterns**: [go-patterns.md](go-patterns.md) - General Go conventions and error handling
-- **Go Testing**: [go-testing.md](go-testing.md) - Testing microcluster services
-- **Code Clarity**: [../techniques/code-clarity.md](../techniques/code-clarity.md) - Readable code practices
-- **Secure Coding**: [../techniques/secure-coding.md](../techniques/secure-coding.md) - Security in distributed systems
 
 ## MAAS Agent Context
 

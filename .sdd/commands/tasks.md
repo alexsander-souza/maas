@@ -253,6 +253,82 @@ Overall task list must meet:
 
 ## Process Flow
 
+```mermaid
+flowchart TD
+    A[📋 1. Review Inputs] --> B[🔍 2. Identify Natural Boundaries]
+    B --> C[📝 3. Define Tasks]
+    C --> D[🔗 4. Map Dependencies]
+    D --> E[✅ 5. Validate Against Spec]
+    E --> F[📊 6. Size and Estimate]
+    F --> G[🔄 7. Review and Refine]
+    G --> H{Quality Check}
+    H -->|Issues| I[📌 Refine Tasks]
+    I --> C
+    H -->|Pass| J[👍 Get Approval]
+    J --> K{Approved?}
+    K -->|No| L[📢 Address Feedback]
+    L --> C
+    K -->|Yes| M[🚀 Hand Off to Implementer]
+    
+    A -.includes.-> A1[Read spec & plan<br/>Understand requirements<br/>Identify constraints]
+    B -.includes.-> B1[Find components<br/>Identify layers<br/>Spot integration points]
+    C -.includes.-> C1[Create task details<br/>Define acceptance criteria<br/>List files to change]
+    D -.includes.-> D1[Sequential dependencies<br/>Parallel opportunities<br/>Blocking issues]
+    E -.includes.-> E1[Match to spec criteria<br/>Cover user journeys<br/>Verify completeness]
+    F -.includes.-> F1[Apply sizing guidelines<br/>Estimate effort<br/>Split large tasks]
+    G -.includes.-> G1[Check task size<br/>Optimize parallelization<br/>Validate estimates]
+    
+    style A fill:#e1f5ff
+    style C fill:#fff4e1
+    style E fill:#e8f5e9
+    style J fill:#ffe1e1
+    style M fill:#d4edda
+```
+
+**Input/Output Flow:**
+
+```mermaid
+flowchart LR
+    subgraph Inputs["📥 Inputs"]
+        I1[Approved Specification]
+        I2[Technical Plan]
+        I3[Team Context]
+        I4[Dependency Constraints]
+    end
+    
+    subgraph Process["⚙️ Tasks Command"]
+        P1[Identify Boundaries]
+        P2[Define Tasks]
+        P3[Map Dependencies]
+        P4[Size & Estimate]
+    end
+    
+    subgraph Outputs["📤 Outputs"]
+        O1[Task List Document]
+        O2[Dependency Graph]
+        O3[Effort Estimates]
+        O4[Assignment Plan]
+    end
+    
+    I1 --> P1
+    I2 --> P1
+    I3 --> P4
+    I4 --> P3
+    
+    P1 --> P2
+    P2 --> P3
+    P3 --> P4
+    
+    P4 --> O1
+    P4 --> O2
+    P4 --> O3
+    P4 --> O4
+    
+    O1 -.Next Phase.-> Next[⚙️ Implement Command]
+    
+    style Process fill:#fff4e1
+```
+
 ### Step 1: Review Inputs
 
 **Action:** Read specification and technical plan thoroughly
@@ -359,6 +435,32 @@ TASK-001 (Database)
 
 TASK-002 + TASK-006
     └─> TASK-003 (Service)
+```
+
+**Task Dependency Visualization:**
+
+```mermaid
+graph TD
+    T1[TASK-001<br/>Database Schema] --> T2[TASK-002<br/>Repository]
+    T1 --> T6[TASK-006<br/>Client Library]
+    
+    T2 --> T3[TASK-003<br/>Service Layer]
+    T6 --> T3
+    
+    T3 --> T4[TASK-004<br/>API Endpoint]
+    T4 --> T5[TASK-005<br/>UI Component]
+    
+    T3 --> T7[TASK-007<br/>Integration Tests]
+    T4 --> T7
+    T5 --> T7
+    
+    style T1 fill:#e1f5ff
+    style T2 fill:#fff4e1
+    style T3 fill:#fff4e1
+    style T4 fill:#e8f5e9
+    style T5 fill:#e8f5e9
+    style T6 fill:#fff4e1
+    style T7 fill:#ffe1e1
 ```
 
 **Time:** 30-60 minutes

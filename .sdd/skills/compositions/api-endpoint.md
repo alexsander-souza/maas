@@ -130,7 +130,7 @@ class MachineClauseFactory:
         return MachineTable.c.status == status
 ```
 
-**Skills Applied**: [sqlalchemy-patterns.md](../languages/sqlalchemy-patterns.md), [secure-coding.md](../techniques/secure-coding.md)
+**Skills Applied**: [sqlalchemy-patterns.md](../languages/sqlalchemy-patterns.md), [security-practices.md](../techniques/security-practices.md)
 
 ### Step 3: Create Service Layer
 
@@ -290,7 +290,7 @@ async def create_machine(
     return MachineResponse.from_model(machine)
 ```
 
-**Skills Applied**: [secure-coding.md](../techniques/secure-coding.md)
+**Skills Applied**: [security-practices.md](../techniques/security-practices.md)
 
 ### Step 6: Write Tests
 
@@ -403,7 +403,7 @@ async def test_create_machine_returns_400_with_invalid_hostname(client: AsyncCli
 - [ ] Rate limiting (if applicable)
 - [ ] HTTPS only in production
 
-**Skills Applied**: [secure-coding.md](../techniques/secure-coding.md), [secret-management.md](../techniques/secret-management.md)
+**Skills Applied**: [security-practices.md](../techniques/security-practices.md)
 
 ## Code Quality Checklist
 
@@ -421,7 +421,7 @@ async def test_create_machine_returns_400_with_invalid_hostname(client: AsyncCli
 - **Python Patterns**: [../languages/python-patterns.md](../languages/python-patterns.md) - Three-tier architecture
 - **SQLAlchemy**: [../languages/sqlalchemy-patterns.md](../languages/sqlalchemy-patterns.md) - Repository layer
 - **Testing**: [../languages/python-testing.md](../languages/python-testing.md) - Test patterns
-- **Security**: [../techniques/secure-coding.md](../techniques/secure-coding.md) - Security practices
+- **Security**: [../techniques/security-practices.md](../techniques/security-practices.md) - Security practices
 - **Input Validation**: [../techniques/input-validation.md](../techniques/input-validation.md) - Request validation
 - **Backend Feature**: [backend-feature.md](backend-feature.md) - Complete feature workflow
 

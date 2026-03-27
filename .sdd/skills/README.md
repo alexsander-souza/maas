@@ -26,8 +26,7 @@ This directory contains reusable, actionable skill modules for MAAS development.
 - **Microcluster**: [microcluster-patterns.md](languages/microcluster-patterns.md)
 
 ### Security & Quality
-- **Secure coding**: [secure-coding.md](techniques/secure-coding.md)
-- **Secret management**: [secret-management.md](techniques/secret-management.md)
+- **Security practices**: [security-practices.md](techniques/security-practices.md)
 - **Input validation**: [input-validation.md](techniques/input-validation.md)
 - **Naming conventions**: [naming-conventions.md](techniques/naming-conventions.md)
 - **Code clarity**: [code-clarity.md](techniques/code-clarity.md)

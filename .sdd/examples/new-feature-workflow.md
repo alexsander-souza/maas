@@ -4,6 +4,69 @@
 
 This example demonstrates the complete Specification-Driven Development (SDD) workflow for adding a new feature to MAAS. We'll walk through all phases: **Specify → Plan → Tasks → Implement**, showing concrete examples at each step.
 
+```mermaid
+flowchart TD
+    A[📋 User Research] --> B[📝 Create Specification]
+    B --> C{Spec Validated?}
+    C -->|No| B
+    C -->|Yes| D[📐 Design Technical Plan]
+    D --> E{Plan Validated?}
+    E -->|No| D
+    E -->|Yes| F[📋 Decompose Tasks]
+    F --> G{Tasks Validated?}
+    G -->|No| F
+    G -->|Yes| H[⚙️ Implement Task 1]
+    H --> I[✅ Test Task 1]
+    I --> J{More Tasks?}
+    J -->|Yes| K[⚙️ Implement Next Task]
+    K --> L[✅ Test Task]
+    L --> J
+    J -->|No| M[🚀 Integration Testing]
+    M --> N[✅ Release]
+```
+
+```mermaid
+sequenceDiagram
+    participant User as 👤 User/Stakeholder
+    participant Spec as 📝 Specifier Agent
+    participant Plan as 📐 Planner Agent
+    participant Task as 📋 Task Decomposer
+    participant Impl as ⚙️ Implementer Agent
+    
+    User->>Spec: Describe problem & needs
+    Spec->>Spec: Research & document journeys
+    Spec->>User: Present specification
+    User->>Spec: Approve specification
+    
+    Spec->>Plan: Hand off approved spec
+    Plan->>Plan: Design architecture
+    Plan->>Plan: Evaluate technologies
+    Plan->>Spec: Request clarification
+    Spec->>Plan: Provide details
+    Plan->>User: Present technical plan
+    User->>Plan: Approve plan
+    
+    Plan->>Task: Hand off approved plan
+    Task->>Task: Break into atomic tasks
+    Task->>Task: Define dependencies
+    Task->>Plan: Verify feasibility
+    Plan->>Task: Confirm approach
+    
+    Task->>Impl: Assign Task 1
+    Impl->>Impl: Write tests
+    Impl->>Impl: Implement code
+    Impl->>Task: Complete Task 1
+    
+    Task->>Impl: Assign Task 2
+    Impl->>Impl: Implement & test
+    Impl->>Task: Complete Task 2
+    
+    Task->>Task: All tasks complete
+    Task->>User: Ready for validation
+    User->>User: Acceptance testing
+    User->>Task: Approve release
+```
+
 ## Feature: Hardware-Based Machine Filtering
 
 ### Background
@@ -127,20 +190,15 @@ This feature extends the existing MAAS web UI machine list with client-side and 
 
 **Architecture Pattern:** Filter pipeline (client → API → database)
 
-```
-User Interaction
-    ↓
-React Filter Component (UI)
-    ↓
-Redux State (filter criteria)
-    ↓
-API Request with Query Params
-    ↓
-Django API Handler
-    ↓
-Apply Filters to QuerySet
-    ↓
-Return Filtered Results
+```mermaid
+flowchart TD
+    A[👤 User Interaction] --> B[🖥️ React Filter Component]
+    B --> C[📦 Redux State]
+    C --> D[🌐 API Request with Query Params]
+    D --> E[⚙️ Django API Handler]
+    E --> F[🔍 Apply Filters to QuerySet]
+    F --> G[📊 Return Filtered Results]
+    G --> B
 ```
 
 **Component Design:**

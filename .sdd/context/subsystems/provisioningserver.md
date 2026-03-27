@@ -2,9 +2,9 @@
 
 ## Purpose
 
-Rack controller provisioning services that manage the provisioning and deployment of machines in MAAS. This subsystem runs on rack controllers and handles power management, network boot services (TFTP/HTTP), image downloads, and communication with region controllers.
+Legacy Python-based rack controller providing network services (DHCP, DNS, PXE), power management, and image distribution for MAAS. This subsystem is in maintenance mode and being gradually replaced by the modern Go-based maasagent.
 
-**Status**: Active - core infrastructure component for rack controllers.
+**Status**: Maintenance mode - being replaced by maasagent.
 
 ## Location
 
@@ -14,122 +14,148 @@ Rack controller provisioning services that manage the provisioning and deploymen
 
 ### Core Technologies
 - **Python**: 3.10+
-- **Twisted**: Asynchronous networking framework
-- **RPC**: Custom RPC protocol for region-rack communication
+- **Twisted**: Asynchronous event-driven framework
+- **tftp**: TFTP server for PXE boot
+- **ISC DHCP**: DHCP server integration
+- **BIND**: DNS server integration
 
 ### Key Libraries
-- **twisted**: Event-driven networking engine
-- **tftp**: TFTP server implementation
-- **pexpect**: Power driver automation
-- **requests**: HTTP client for image downloads
-- **netifaces**: Network interface detection
+- **twisted**: Core async framework
+- **netaddr**: Network address manipulation
+- **pyroute2**: Network interface management
+- **python-apt**: Package management integration
+- **simplestreams**: Image synchronization
 
 ## Architectural Constraints
 
-### Rack Controller Architecture
+### Twisted Event Loop
 
-The provisioning server runs on rack controllers, which are distributed nodes that manage provisioning in specific network segments:
-
-```
-┌─────────────────────────────────┐
-│   Region Controller             │
-│   - Database                    │
-│   - API                         │
-│   - Web UI                      │
-└────────────┬────────────────────┘
-             │ RPC
-             │
-      ┌──────┴──────┬──────────────┐
-      │             │              │
-┌─────▼──────┐ ┌────▼──────┐ ┌────▼──────┐
-│ Rack 1     │ │ Rack 2    │ │ Rack 3    │
-│ - DHCP     │ │ - DHCP    │ │ - DHCP    │
-│ - TFTP     │ │ - TFTP    │ │ - TFTP    │
-│ - HTTP     │ │ - HTTP    │ │ - HTTP    │
-│ - Power    │ │ - Power   │ │ - Power   │
-└────────────┘ └───────────┘ └───────────┘
-```
-
-### Twisted Async Model
-
-Uses Twisted's deferred-based asynchronous programming model (not modern async/await):
-
-- Deferred chains for async operations
-- Reactor pattern for event loop
-- Thread pool for blocking operations
+Built on Twisted's asynchronous event-driven architecture:
+- Reactor pattern for event handling
+- Deferred-based async operations
 - Protocol implementations for network services
+- Legacy async model (pre-async/await)
 
-### Stateless Operation
+### Service-Oriented Architecture
 
-Rack controllers maintain minimal state:
-- Configuration pulled from region controller
-- Images cached locally
-- No persistent database
-- Restartable without data loss
+Multiple independent services running in single process:
+- **DHCP Service**: Dynamic host configuration
+- **DNS Service**: Domain name resolution
+- **TFTP Service**: Boot file serving
+- **HTTP Service**: Image downloads
+- **RPC Service**: Region communication
+
+### Legacy Codebase
+
+Written before modern Python async:
+- Uses Twisted Deferreds instead of async/await
+- Complex callback chains
+- Event-driven patterns
+- Being gradually deprecated
 
 ## Key Patterns
 
-### Twisted Deferred Pattern
+> **See**: [python-patterns.md](../../skills/languages/python-patterns.md) for common Python patterns.
 
-Use Twisted deferreds for asynchronous operations:
+### Twisted Service Pattern
+
+Services implement Twisted's IService interface:
+
+```python
+from twisted.application import service
+from twisted.internet import defer
+
+class DHCPService(service.Service):
+    """DHCP service for rack controller."""
+    
+    def __init__(self, interface):
+        self.interface = interface
+        self.dhcp_server = None
+    
+    def startService(self):
+        """Start DHCP service."""
+        service.Service.startService(self)
+        self.dhcp_server = DHCPServer(self.interface)
+        return self.dhcp_server.start()
+    
+    def stopService(self):
+        """Stop DHCP service gracefully."""
+        if self.dhcp_server:
+            return self.dhcp_server.stop()
+        return defer.succeed(None)
+```
+
+### Deferred Pattern
+
+Twisted uses Deferreds for async operations:
 
 ```python
 from twisted.internet import defer
-from twisted.internet.threads import deferToThread
 
 @defer.inlineCallbacks
-def provision_machine(system_id):
-    """Provision a machine using Twisted deferreds."""
-    # Power on the machine
-    yield deferToThread(power_on, system_id)
+def configure_interface(interface_name, ip_address):
+    """Configure network interface asynchronously."""
+    # Yield Deferred to wait for result
+    result = yield check_interface_exists(interface_name)
+    if not result:
+        raise InterfaceNotFoundError(interface_name)
     
-    # Wait for network boot
-    boot_result = yield wait_for_network_boot(system_id)
+    yield set_interface_ip(interface_name, ip_address)
+    yield bring_interface_up(interface_name)
     
-    # Configure deployment
-    config = yield get_deployment_config(system_id)
-    
-    defer.returnValue(config)
+    defer.returnValue(True)
 
-def power_on(system_id):
-    """Blocking power operation - run in thread."""
-    driver = get_power_driver(system_id)
-    driver.power_on()
+# Modern equivalent with async/await:
+# async def configure_interface(interface_name, ip_address):
+#     result = await check_interface_exists(interface_name)
+#     ...
 ```
 
-### Power Driver Pattern
+### RPC Client Pattern
 
-Power drivers implement a common interface for controlling machine power:
+Communication with region controller:
 
 ```python
-from provisioningserver.drivers import PowerDriver
+from provisioningserver.rpc.region import getRegionClient
+
+@defer.inlineCallbacks
+def report_machine_status(system_id, status):
+    """Report machine status to region."""
+    client = getRegionClient()
+    
+    try:
+        response = yield client(
+            ReportMachineStatus,
+            system_id=system_id,
+            status=status
+        )
+        defer.returnValue(response)
+    except Exception as e:
+        log.error(f"Failed to report status: {e}")
+        raise
+```
+
+### Power Control Pattern
+
+Abstract power management:
+
+```python
+from provisioningserver.drivers.power import PowerDriver
 
 class IPMIPowerDriver(PowerDriver):
-    """IPMI power driver implementation."""
+    """IPMI power control driver."""
     
     name = "ipmi"
-    description = "IPMI power driver"
+    description = "IPMI power control"
     settings = [
-        {
-            "name": "power_address",
-            "label": "IP Address",
-            "required": True,
-        },
-        {
-            "name": "power_user",
-            "label": "Username",
-            "required": True,
-        },
-        {
-            "name": "power_pass",
-            "label": "Password",
-            "required": True,
-            "secret": True,
-        },
+        {"name": "power_address", "label": "IP Address"},
+        {"name": "power_user", "label": "Username"},
+        {"name": "power_pass", "label": "Password", "secret": True},
     ]
     
+    @defer.inlineCallbacks
     def power_on(self, system_id, context):
-        """Power on the machine via IPMI."""
+        """Power on machine via IPMI."""
         command = [
             "ipmitool",
             "-I", "lanplus",
@@ -138,10 +164,13 @@ class IPMIPowerDriver(PowerDriver):
             "-P", context["power_pass"],
             "power", "on"
         ]
-        return self._run_command(command)
+        
+        result = yield run_command(command)
+        defer.returnValue(result.returncode == 0)
     
+    @defer.inlineCallbacks
     def power_off(self, system_id, context):
-        """Power off the machine via IPMI."""
+        """Power off machine via IPMI."""
         command = [
             "ipmitool",
             "-I", "lanplus",
@@ -150,497 +179,348 @@ class IPMIPowerDriver(PowerDriver):
             "-P", context["power_pass"],
             "power", "off"
         ]
-        return self._run_command(command)
-    
-    def power_query(self, system_id, context):
-        """Query power state via IPMI."""
-        command = [
-            "ipmitool",
-            "-I", "lanplus",
-            "-H", context["power_address"],
-            "-U", context["power_user"],
-            "-P", context["power_pass"],
-            "power", "status"
-        ]
-        output = self._run_command(command)
-        return "on" if "on" in output.lower() else "off"
+        
+        result = yield run_command(command)
+        defer.returnValue(result.returncode == 0)
 ```
 
-### TFTP Service Pattern
+### Image Management Pattern
 
-TFTP server for network boot:
-
-```python
-from twisted.internet import reactor, defer
-from provisioningserver.boot import BootMethodRegister
-
-class TFTPBackend:
-    """TFTP backend for serving boot files."""
-    
-    def __init__(self, base_path, client_service):
-        self.base_path = base_path
-        self.client_service = client_service
-    
-    @defer.inlineCallbacks
-    def get_reader(self, file_name, peer):
-        """Get file reader for TFTP request."""
-        # Log request
-        yield self._log_request(file_name, peer)
-        
-        # Check if this is a boot request
-        boot_method = BootMethodRegister.get_by_name(file_name)
-        if boot_method:
-            # Generate boot configuration dynamically
-            config = yield self._get_boot_config(boot_method, peer)
-            defer.returnValue(StringReader(config))
-        
-        # Serve static file
-        file_path = os.path.join(self.base_path, file_name)
-        if os.path.exists(file_path):
-            defer.returnValue(open(file_path, "rb"))
-        
-        # File not found
-        raise FileNotFoundError(file_name)
-```
-
-### RPC Communication Pattern
-
-Communication with region controller via RPC:
+Synchronize and serve boot images:
 
 ```python
-from provisioningserver.rpc.region import (
-    GetBootConfig,
-    MarkNodeFailed,
-)
+from provisioningserver.import_images import download_images
 
 @defer.inlineCallbacks
-def get_boot_config_from_region(system_id, arch, subarch):
-    """Get boot configuration from region controller."""
-    client = yield getRegionClient()
+def sync_boot_images(source_url):
+    """Synchronize boot images from source."""
+    log.info(f"Syncing images from {source_url}")
     
-    result = yield client.call(
-        GetBootConfig,
-        system_id=system_id,
-        local_ip=get_local_ip(),
-        remote_ip=get_remote_ip(),
-        arch=arch,
-        subarch=subarch,
-    )
+    # Download image metadata
+    metadata = yield download_image_metadata(source_url)
     
-    defer.returnValue(result)
-
-@defer.inlineCallbacks
-def report_boot_failure(system_id, error_message):
-    """Report boot failure to region controller."""
-    client = yield getRegionClient()
+    # Download each image
+    for image in metadata.images:
+        if not image_exists_locally(image):
+            log.info(f"Downloading {image.name}")
+            yield download_image(image)
     
-    yield client.call(
-        MarkNodeFailed,
-        system_id=system_id,
-        error_message=error_message,
-    )
-```
-
-### HTTP Boot Service Pattern
-
-HTTP server for serving boot images and configuration:
-
-```python
-from twisted.web import server, resource
-from twisted.internet import reactor
-
-class BootImageResource(resource.Resource):
-    """HTTP resource for serving boot images."""
+    # Update TFTP configuration
+    yield update_tftp_config()
     
-    isLeaf = True
-    
-    def __init__(self, image_store):
-        resource.Resource.__init__(self)
-        self.image_store = image_store
-    
-    def render_GET(self, request):
-        """Serve boot image via HTTP."""
-        system_id = request.args.get(b"system_id", [None])[0]
-        arch = request.args.get(b"arch", [None])[0]
-        
-        if not system_id or not arch:
-            request.setResponseCode(400)
-            return b"Missing required parameters"
-        
-        # Get image path
-        image_path = self.image_store.get_image_path(arch)
-        
-        if not os.path.exists(image_path):
-            request.setResponseCode(404)
-            return b"Image not found"
-        
-        # Serve file
-        request.setHeader(b"content-type", b"application/octet-stream")
-        with open(image_path, "rb") as f:
-            return f.read()
+    defer.returnValue(len(metadata.images))
 ```
 
 ## Testing Requirements
 
-### Test Framework
+> **See**: [test-code-quality.md](../../skills/techniques/test-code-quality.md) and [python-testing.md](../../skills/languages/python-testing.md)
 
-Use Twisted's trial test runner and testtools:
+### Twisted Trial Tests
+
+Use Twisted's test framework:
 
 ```python
 from twisted.trial import unittest
 from twisted.internet import defer
-from provisioningserver.power import PowerDriver
 
-class TestIPMIPowerDriver(unittest.TestCase):
-    """Test IPMI power driver."""
-    
-    def setUp(self):
-        """Set up test fixtures."""
-        self.driver = IPMIPowerDriver()
-        self.context = {
-            "power_address": "192.168.1.100",
-            "power_user": "admin",
-            "power_pass": "password",
-        }
+class TestDHCPService(unittest.TestCase):
+    """Tests for DHCP service."""
     
     @defer.inlineCallbacks
-    def test_power_on(self):
-        """Test powering on a machine."""
-        result = yield self.driver.power_on("test-system", self.context)
-        self.assertIsNotNone(result)
-    
-    def test_validate_context(self):
-        """Test context validation."""
-        # Valid context
-        self.driver.validate_context(self.context)
+    def test_start_service(self):
+        """Test starting DHCP service."""
+        service = DHCPService("eth0")
+        yield service.startService()
         
-        # Invalid context - missing required field
-        invalid_context = {"power_address": "192.168.1.100"}
-        with self.assertRaises(ValueError):
-            self.driver.validate_context(invalid_context)
+        self.assertTrue(service.running)
+        self.assertIsNotNone(service.dhcp_server)
+        
+        yield service.stopService()
+    
+    @defer.inlineCallbacks
+    def test_create_lease(self):
+        """Test creating DHCP lease."""
+        service = DHCPService("eth0")
+        yield service.startService()
+        
+        lease = yield service.create_lease(
+            mac="00:11:22:33:44:55",
+            ip="192.168.1.100"
+        )
+        
+        self.assertEqual(lease.mac, "00:11:22:33:44:55")
+        self.assertEqual(lease.ip, "192.168.1.100")
+        
+        yield service.stopService()
 ```
 
 ### Mock RPC Calls
 
-Mock region controller RPC calls in tests:
+Mock region communication:
 
 ```python
-from twisted.internet import defer
-from unittest.mock import Mock, patch
+from unittest import mock
 
-class TestBootService(unittest.TestCase):
-    """Test boot service."""
+class TestRPCClient(unittest.TestCase):
+    """Test RPC communication."""
     
     @defer.inlineCallbacks
-    def test_get_boot_config(self):
-        """Test getting boot configuration."""
-        mock_client = Mock()
-        mock_client.call = Mock(return_value=defer.succeed({
-            "kernel": "/boot/vmlinuz",
-            "initrd": "/boot/initrd",
-            "cmdline": "root=/dev/sda1",
-        }))
-        
-        with patch("provisioningserver.boot.getRegionClient",
-                   return_value=defer.succeed(mock_client)):
-            config = yield get_boot_config("test-system")
+    def test_report_status(self):
+        """Test reporting status to region."""
+        with mock.patch('provisioningserver.rpc.region.getRegionClient') as mock_client:
+            mock_response = defer.succeed({"status": "ok"})
+            mock_client.return_value.return_value = mock_response
             
-            self.assertEqual(config["kernel"], "/boot/vmlinuz")
-            mock_client.call.assert_called_once()
-```
-
-### Testing Async Operations
-
-Use inlineCallbacks for testing async code:
-
-```python
-class TestAsyncOperations(unittest.TestCase):
-    """Test async operations."""
-    
-    @defer.inlineCallbacks
-    def test_deferred_chain(self):
-        """Test deferred chain execution."""
-        results = []
-        
-        @defer.inlineCallbacks
-        def async_operation(value):
-            yield defer.succeed(None)  # Simulate async work
-            results.append(value)
-            defer.returnValue(value * 2)
-        
-        result = yield async_operation(5)
-        
-        self.assertEqual(result, 10)
-        self.assertEqual(results, [5])
+            result = yield report_machine_status("abc123", "deployed")
+            
+            self.assertEqual(result["status"], "ok")
+            mock_client.return_value.assert_called_once()
 ```
 
 ### Running Tests
 
 ```bash
-# Run all provisioning server tests
-trial provisioningserver
+# Run with Twisted trial
+trial provisioningserver.tests
 
 # Run specific test module
-trial provisioningserver.tests.test_power
+trial provisioningserver.tests.test_dhcp
 
 # Run with coverage
-coverage run --source=provisioningserver -m twisted.trial provisioningserver
+coverage run --source=provisioningserver -m trial provisioningserver.tests
 coverage report
 ```
 
 ## Development Guidelines
 
-### Reactor Usage
+### Working with Deferreds
 
-**Critical**: Be extremely careful with the Twisted reactor:
-
-- Only one reactor per process
-- Never call `reactor.run()` in library code
-- Use `reactor.callLater()` for delayed operations
-- Clean up with `reactor.stop()` when appropriate
+Understanding Twisted's async model:
 
 ```python
-from twisted.internet import reactor
+from twisted.internet import defer
 
-# ✅ Good: Schedule delayed operation
-def delayed_operation():
-    reactor.callLater(5.0, do_something)
+# Basic Deferred usage
+def async_operation():
+    d = defer.Deferred()
+    
+    def callback_success(result):
+        # Process successful result
+        return result * 2
+    
+    def callback_error(failure):
+        # Handle error
+        log.error(f"Operation failed: {failure}")
+        return None
+    
+    d.addCallback(callback_success)
+    d.addErrback(callback_error)
+    
+    return d
 
-# ❌ Bad: Don't run reactor in library code
-def bad_example():
-    reactor.run()  # WRONG! Blocks forever
-```
-
-### Thread Pool for Blocking Operations
-
-Use `deferToThread` for blocking I/O:
-
-```python
-from twisted.internet.threads import deferToThread
-
+# Using inlineCallbacks (recommended)
 @defer.inlineCallbacks
-def good_example():
-    """Run blocking operation in thread pool."""
-    # Blocking operation runs in thread
-    result = yield deferToThread(blocking_io_operation)
+def process_data(data):
+    """Process data with multiple async steps."""
+    validated = yield validate_data(data)
+    transformed = yield transform_data(validated)
+    result = yield save_data(transformed)
     defer.returnValue(result)
-
-def blocking_io_operation():
-    """Blocking operation that would block reactor."""
-    with open("/etc/config", "r") as f:
-        return f.read()
 ```
 
-### Error Handling in Deferreds
+### Service Lifecycle
 
-Proper error handling in deferred chains:
+Proper service management:
 
 ```python
-@defer.inlineCallbacks
-def operation_with_error_handling():
-    """Handle errors in deferred chain."""
-    try:
-        result = yield risky_operation()
-        defer.returnValue(result)
-    except SpecificError as e:
-        log.error("Operation failed: %s", e)
-        # Return default or re-raise
-        defer.returnValue(None)
-    except Exception as e:
-        log.error("Unexpected error: %s", e)
-        raise
+from twisted.application import service
+
+class MyService(service.Service):
+    """Custom service implementation."""
+    
+    def startService(self):
+        """Initialize and start service."""
+        service.Service.startService(self)
+        # Initialize resources
+        self.connection = establish_connection()
+        self.timer = task.LoopingCall(self.periodic_task)
+        self.timer.start(60.0)  # Run every 60 seconds
+    
+    def stopService(self):
+        """Clean up and stop service."""
+        # Stop periodic tasks
+        if self.timer.running:
+            self.timer.stop()
+        
+        # Close connections
+        if self.connection:
+            self.connection.close()
+        
+        return service.Service.stopService(self)
+    
+    def periodic_task(self):
+        """Task run periodically."""
+        # Perform periodic work
+        pass
 ```
 
-### Adding New Power Drivers
+### Error Handling in Twisted
 
-1. Create driver class extending `PowerDriver`
-2. Define settings schema
-3. Implement `power_on`, `power_off`, `power_query`
-4. Register driver in `PowerDriverRegistry`
-5. Write tests with mocked commands
-6. Document driver in user docs
+Handle failures properly:
+
+```python
+from twisted.python import log, failure
+
+@defer.inlineCallbacks
+def risky_operation(data):
+    """Operation that might fail."""
+    try:
+        result = yield perform_operation(data)
+        defer.returnValue(result)
+    except ValueError as e:
+        log.error(f"Validation error: {e}")
+        raise
+    except Exception as e:
+        log.error(f"Unexpected error: {e}")
+        raise OperationError(f"Failed to process: {e}")
+```
 
 ## Integration Points
 
-### Region Controller
+### MAAS Region Controller
+- RPC communication for commands and status
+- Report machine discoveries and commissioning results
+- Receive deployment instructions
+- See [maasserver.md](./maasserver.md)
 
-Communicates with region controller via RPC:
-- Boot configuration requests
-- Machine status updates
-- Event logging
-- Image synchronization
+### ISC DHCP Server
+- Generate DHCP configuration files
+- Manage leases and reservations
+- Dynamic DNS updates
 
-### MAAS Agent
+### BIND DNS Server
+- Generate zone files
+- Manage forward and reverse zones
+- Dynamic DNS updates
 
-Future integration with new Go-based agent:
-- DHCP service coordination
-- DNS service coordination
-- Metrics collection
+### TFTP Server
+- Serve PXE boot files
+- Provide bootloader configurations
+- Support multiple architectures
 
-### Network Services
-
-Provides network boot services:
-- DHCP server
-- TFTP server
-- HTTP server for images
-- Proxy service
-
-### Power Management
-
-Interfaces with BMC/IPMI systems:
-- IPMI
-- Redfish
-- Virsh (libvirt)
-- AWS, Azure, GCP APIs
-- Custom power drivers
+### HTTP Server
+- Serve OS images
+- Provide cloud-init configurations
+- Curtin installation scripts
 
 ## Common Pitfalls
 
+> **See**: [common-anti-patterns.md](../../common-anti-patterns.md) for general anti-patterns.
+
 ### Blocking the Reactor
 
-❌ **Don't**:
-```python
-def bad_power_query():
-    # Blocking I/O on reactor thread - WRONG!
-    output = subprocess.check_output(["ipmitool", "..."])
-    return output
-```
-
-✅ **Do**:
+❌ **Don't** block the Twisted reactor:
 ```python
 @defer.inlineCallbacks
-def good_power_query():
-    # Run in thread pool
-    output = yield deferToThread(
-        subprocess.check_output, ["ipmitool", "..."]
-    )
-    defer.returnValue(output)
-```
-
-### Deferred Return Values
-
-❌ **Don't**:
-```python
-@defer.inlineCallbacks
-def bad_example():
+def bad_function():
+    time.sleep(10)  # WRONG! Blocks reactor
     result = yield some_operation()
-    return result  # WRONG! Use defer.returnValue()
 ```
 
-✅ **Do**:
+✅ **Do** use reactor.callLater for delays:
+```python
+from twisted.internet import reactor, defer
+
+@defer.inlineCallbacks
+def good_function():
+    d = defer.Deferred()
+    reactor.callLater(10, d.callback, None)  # Non-blocking delay
+    yield d
+    result = yield some_operation()
+```
+
+### Unhandled Deferreds
+
+❌ **Don't** ignore Deferred results:
+```python
+def bad_function():
+    d = async_operation()  # WRONG! Deferred not handled
+    return "done"
+```
+
+✅ **Do** return or yield Deferreds:
 ```python
 @defer.inlineCallbacks
-def good_example():
-    result = yield some_operation()
-    defer.returnValue(result)  # Correct
+def good_function():
+    result = yield async_operation()  # Properly handled
+    defer.returnValue(result)
 ```
 
-### Error Propagation
+### Missing Error Handlers
 
-❌ **Don't**:
+❌ **Don't** forget errbacks:
 ```python
-def bad_error_handling(deferred):
-    deferred.addCallback(lambda x: x * 2)
-    # Error silently ignored
+d = risky_operation()
+d.addCallback(handle_success)  # WRONG! No error handler
 ```
 
-✅ **Do**:
+✅ **Do** add errbacks:
 ```python
-def good_error_handling(deferred):
-    deferred.addCallback(lambda x: x * 2)
-    deferred.addErrback(log_error)  # Handle errors
+d = risky_operation()
+d.addCallback(handle_success)
+d.addErrback(handle_error)  # Proper error handling
 ```
-
-## Related Skills
-
-Links to relevant skills in `.sdd/skills/`:
-
-- **Twisted Async**: Deferred-based async programming
-- **Python Development**: General Python patterns
-- **Network Programming**: TCP/IP, DHCP, TFTP, HTTP
-- **Power Management**: BMC/IPMI protocols
-- **RPC**: Remote procedure call patterns
-- **Testing**: Async test patterns with trial
 
 ## Security Considerations
 
-### Power Credentials
+> **See**: [security-practices.md](../../skills/techniques/security-practices.md)
 
-Secure handling of power credentials:
+### Power Credentials
+- Store power control credentials securely
 - Never log passwords
-- Encrypt credentials at rest
-- Use secure channels for transmission
-- Validate credential format
+- Use secrets management for sensitive data
 
 ### Network Services
+- Restrict DHCP to management networks
+- Validate DNS queries to prevent abuse
+- Secure TFTP access to authorized clients
 
-Secure network service configuration:
-- Restrict TFTP/HTTP to trusted networks
-- Validate all file requests
-- Prevent directory traversal
-- Rate limiting for DoS prevention
-
-### RPC Security
-
-Secure region-rack communication:
-- TLS for RPC connections
-- Certificate validation
-- Authentication tokens
-- Authorization checks
+### RPC Communication
+- Use TLS for region communication
+- Validate RPC messages
+- Authenticate rack controllers
 
 ## Performance Considerations
 
-### Async I/O
-
-Maximize async operations:
-- Non-blocking network I/O
-- Thread pool for blocking ops
-- Efficient event loop usage
-
-### Connection Pooling
-
-Reuse connections where possible:
-- HTTP client connection pooling
-- RPC connection reuse
-- Database connection pooling
-
-### Caching
-
-Cache frequently accessed data:
-- Boot images cached locally
-- Configuration cached with TTL
-- DNS resolution caching
-
-## Documentation
-
-### Power Driver Documentation
-
-Document each power driver:
-- Supported hardware
-- Required settings
-- Setup instructions
-- Troubleshooting guide
-
-### RPC Protocol
-
-Document RPC methods:
-- Method signatures
-- Parameter descriptions
-- Return values
-- Error conditions
+### Reactor Performance
+- Keep callback chains short
+- Avoid blocking operations
+- Use thread pools for CPU-intensive work
 
 ### Network Services
+- Configure appropriate buffer sizes
+- Use connection pooling
+- Optimize DHCP response times
 
-Document network service configuration:
-- DHCP configuration
-- TFTP setup
-- HTTP endpoints
-- Port requirements
+### Image Management
+- Use efficient image compression
+- Implement caching for frequently accessed images
+- Parallel image downloads where possible
+
+## Migration to maasagent
+
+This subsystem is being replaced by maasagent:
+- **New deployments**: Use maasagent
+- **Existing deployments**: Gradual migration path
+- **Feature freeze**: No new features in provisioningserver
+- **Bug fixes only**: Maintenance mode
+
+See [maasagent.md](./maasagent.md) for the replacement architecture.
 
 ## Additional Resources
 
-- Twisted Documentation: https://docs.twisted.org/
-- IPMI Specification: https://www.intel.com/content/www/us/en/products/docs/servers/ipmi/ipmi-home.html
-- TFTP RFC: https://tools.ietf.org/html/rfc1350
-- `AGENTS.md`: General coding guidelines
-- Power driver implementations: `src/provisioningserver/drivers/power/`
+- **Twisted Documentation**: https://docs.twistedmatrix.com/
+- **Twisted Tutorial**: https://docs.twistedmatrix.com/en/stable/core/howto/async.html
+- **ISC DHCP**: https://www.isc.org/dhcp/
+- **BIND DNS**: https://www.isc.org/bind/
+- **Related**: [python-patterns.md](../../skills/languages/python-patterns.md), [maasagent.md](./maasagent.md)

@@ -56,7 +56,7 @@ All detailed guidelines now live in organized subdirectories:
 |--------------------------|--------------|-------------|
 | Code Quality and Verbosity | `.sdd/skills/techniques/code-quality.md` | Naming, comments, verbosity |
 | When to Comment | `.sdd/skills/techniques/comments.md` | Comment guidelines |
-| Security Requirements (detailed) | `.sdd/skills/techniques/secure-coding.md` | Security best practices |
+| Security Requirements (detailed) | `.sdd/skills/techniques/security-practices.md` | Security best practices |
 | Documentation Standards (detailed) | `.sdd/skills/techniques/documentation.md` | Documentation patterns |
 | Testing → Avoid trivial assertions | `.sdd/skills/techniques/testing-principles.md` | Testing philosophy |
 | Input Validation | `.sdd/skills/techniques/input-validation.md` | Validation patterns |
@@ -282,7 +282,7 @@ If you discover content that was in the old AGENTS.md but isn't in the new struc
 
 **New workflow:**
 1. Read AGENTS.md core security principles
-2. Consult `.sdd/skills/techniques/secure-coding.md` for detailed patterns
+2. Consult `.sdd/skills/techniques/security-practices.md` for detailed patterns
 3. Check subsystem context for specific constraints
 4. Reference `.sdd/skills/techniques/input-validation.md` if needed
 

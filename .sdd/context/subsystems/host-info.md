@@ -2,9 +2,7 @@
 
 ## Purpose
 
-Standalone Go utility for collecting and reporting host hardware information. This tool detects and reports detailed hardware specifications including CPU, memory, storage, and network interfaces for MAAS machine commissioning and inventory management.
-
-**Status**: Active - stable utility for hardware detection.
+Standalone Go utility for collecting and reporting host hardware information. Detects and reports detailed hardware specifications including CPU, memory, storage, and network interfaces for MAAS machine commissioning and inventory management.
 
 ## Location
 
@@ -24,28 +22,17 @@ Standalone Go utility for collecting and reporting host hardware information. Th
 ## Architectural Constraints
 
 ### Standalone Utility
-
-This is a self-contained executable with minimal dependencies:
+Self-contained executable with minimal dependencies:
 - No external service dependencies
 - Runs directly on target machines
 - Outputs structured data (JSON)
 - Lightweight and portable
 
 ### Minimal Dependencies
+Deliberately keeps dependencies minimal - only essential libraries, standard library preferred.
 
-Deliberately keeps dependencies minimal:
-- Only essential libraries
-- Standard library preferred
-- LXD shared libraries for hardware detection
-- No heavy frameworks
-
-### Cross-Platform Considerations
-
-Must work across different architectures and systems:
-- x86_64 (amd64)
-- ARM64 (arm64)
-- PowerPC (ppc64el)
-- s390x (IBM Z)
+### Cross-Platform Support
+Must work across different architectures: x86_64, ARM64, PowerPC (ppc64el), s390x (IBM Z).
 
 ## Key Patterns
 
@@ -59,7 +46,7 @@ package main
 import (
     "encoding/json"
     "fmt"
-    "github.com/lxc/lxd/shared/osarch"
+    "os"
 )
 
 type HardwareInfo struct {
@@ -92,59 +79,26 @@ type DiskInfo struct {
     Removable  bool   `json:"removable"`
 }
 
-type NICInfo struct {
-    Name       string `json:"name"`
-    MACAddress string `json:"mac_address"`
-    Speed      int    `json:"speed_mbps"`
-    Vendor     string `json:"vendor"`
-    Product    string `json:"product"`
-}
-
-type SystemInfo struct {
-    Manufacturer string `json:"manufacturer"`
-    Product      string `json:"product"`
-    Serial       string `json:"serial"`
-    UUID         string `json:"uuid"`
-    Firmware     string `json:"firmware"`
-}
-
 func collectHardwareInfo() (*HardwareInfo, error) {
     info := &HardwareInfo{}
     
-    // Collect CPU information
     cpuInfo, err := collectCPUInfo()
     if err != nil {
         return nil, fmt.Errorf("failed to collect CPU info: %w", err)
     }
     info.CPU = cpuInfo
     
-    // Collect memory information
     memInfo, err := collectMemoryInfo()
     if err != nil {
         return nil, fmt.Errorf("failed to collect memory info: %w", err)
     }
     info.Memory = memInfo
     
-    // Collect storage information
     storageInfo, err := collectStorageInfo()
     if err != nil {
         return nil, fmt.Errorf("failed to collect storage info: %w", err)
     }
     info.Storage = storageInfo
-    
-    // Collect network information
-    networkInfo, err := collectNetworkInfo()
-    if err != nil {
-        return nil, fmt.Errorf("failed to collect network info: %w", err)
-    }
-    info.Network = networkInfo
-    
-    // Collect system information
-    systemInfo, err := collectSystemInfo()
-    if err != nil {
-        return nil, fmt.Errorf("failed to collect system info: %w", err)
-    }
-    info.System = systemInfo
     
     return info, nil
 }
@@ -156,7 +110,6 @@ func main() {
         os.Exit(1)
     }
     
-    // Output as JSON
     output, err := json.MarshalIndent(info, "", "  ")
     if err != nil {
         fmt.Fprintf(os.Stderr, "Error encoding JSON: %v\n", err)
@@ -184,9 +137,9 @@ func outputHardwareInfo(info *HardwareInfo) error {
 }
 ```
 
-### Error Handling
+### Graceful Error Handling
 
-Graceful error handling for missing hardware:
+Handle missing hardware gracefully:
 
 ```go
 func collectDiskInfo(path string) (*DiskInfo, error) {
@@ -210,7 +163,7 @@ func collectDiskInfo(path string) (*DiskInfo, error) {
 
 ### System File Parsing
 
-Reads information from /sys and /proc:
+Reads information from `/sys` and `/proc`:
 
 ```go
 func readSysFile(path string) (string, error) {
@@ -243,3 +196,106 @@ func getCPUModel() (string, error) {
 ```
 
 ## Testing Requirements
+
+> **See**: [test-code-quality.md](../../skills/techniques/test-code-quality.md) for comprehensive testing patterns.
+
+### Unit Tests
+Test hardware detection functions in isolation:
+
+```go
+func TestCollectCPUInfo(t *testing.T) {
+    info, err := collectCPUInfo()
+    if err != nil {
+        t.Fatalf("Failed to collect CPU info: %v", err)
+    }
+    
+    if info.Cores <= 0 {
+        t.Errorf("Expected positive core count, got %d", info.Cores)
+    }
+}
+```
+
+### Integration Tests
+Test against real hardware or mock filesystems for `/sys` and `/proc` parsing.
+
+## Integration Points
+
+### MAAS Commissioning Scripts
+- **Purpose**: Invoked during machine commissioning to gather hardware inventory
+- **Interface**: Executed as subprocess, output parsed from stdout
+- **Key Considerations**: Must be statically compiled for portability
+
+### Region Controller
+- **Purpose**: Sends collected data to MAAS for storage and analysis
+- **Interface**: JSON output consumed by commissioning scripts
+- **Key Considerations**: Schema stability across versions
+
+## Common Pitfalls
+
+> **See**: [common-anti-patterns.md](../../common-anti-patterns.md) for general anti-patterns.
+
+### Blocking on Missing Hardware
+
+```go
+// WRONG: Fail if optional hardware missing
+func collectAllInfo() (*HardwareInfo, error) {
+    gpu, err := detectGPU()
+    if err != nil {
+        return nil, err  // Blocks on missing GPU
+    }
+    return info, nil
+}
+
+// Correct: Continue with warnings
+func collectAllInfo() (*HardwareInfo, error) {
+    gpu, err := detectGPU()
+    if err != nil {
+        log.Printf("Warning: GPU detection failed: %v", err)
+    }
+    return info, nil
+}
+```
+
+### Platform-Specific Assumptions
+
+```go
+// WRONG: Assumes x86_64
+cpuFile := "/proc/cpuinfo"
+// Parses "model name" field (x86 only)
+
+// Correct: Handle architecture differences
+func getCPUInfo() string {
+    switch runtime.GOARCH {
+    case "amd64":
+        return parseX86CPUInfo()
+    case "arm64":
+        return parseARMCPUInfo()
+    default:
+        return parseGenericCPUInfo()
+    }
+}
+```
+
+## Security Considerations
+
+> **See**: [security-practices.md](../../skills/techniques/security-practices.md) for comprehensive security guidelines.
+
+### Read-Only Access
+Only reads system information - no privileged operations or modifications to system state.
+
+### No Sensitive Data
+Avoid collecting or exposing sensitive information like serial numbers unless required for hardware identification.
+
+## Performance Considerations
+
+### Fast Execution
+Must complete quickly during commissioning:
+- Parallel hardware detection where possible
+- Timeout on slow operations
+- Skip non-essential hardware if time-constrained
+
+## Additional Resources
+
+- LXD Hardware Detection: https://github.com/lxc/lxd
+- Go System Programming: https://golang.org/pkg/os/
+- Linux `/sys` and `/proc` Documentation

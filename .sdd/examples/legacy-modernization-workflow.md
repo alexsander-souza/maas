@@ -10,6 +10,90 @@ This example demonstrates using the SDD process to modernize a legacy MAAS subsy
 
 **Business Driver:** Support Redfish and new IPMI variants, reduce time-to-market for new BMC protocols from 3 months to 2 weeks
 
+### Migration Strategy: Strangler Fig Pattern
+
+```mermaid
+flowchart LR
+    subgraph "Sprint 1: Foundation"
+        A[New Interface] --> B[Service Layer]
+        B --> C[Factory Pattern]
+    end
+    
+    subgraph "Sprint 2: First Migration"
+        D[IPMI Adapter] --> E[Integration Tests]
+    end
+    
+    subgraph "Sprint 3: Complete Migration"
+        F[Virsh Adapter] --> G[Manual Adapter]
+    end
+    
+    subgraph "Sprint 4: Cleanup"
+        H[Remove Legacy] --> I[Add Redfish]
+    end
+    
+    A --> D
+    E --> F
+    G --> H
+```
+
+### Architecture Evolution
+
+```mermaid
+graph TB
+    subgraph "BEFORE: Monolithic (5000+ lines)"
+        L1[Legacy Power Control Module]
+        L1 --> L2[IPMI Code]
+        L1 --> L3[Virsh Code]
+        L1 --> L4[Manual Code]
+        L1 --> L5[Shared Retry Logic]
+        L1 --> L6[Shared Error Handling]
+        
+        style L1 fill:#ffcccc
+    end
+    
+    subgraph "AFTER: Modular Architecture"
+        N1[PowerControlService] --> N2[PowerAdapterFactory]
+        N2 --> N3[IPMI Adapter]
+        N2 --> N4[Virsh Adapter]
+        N2 --> N5[Manual Adapter]
+        N2 --> N6[Redfish Adapter]
+        
+        N1 -.Provides.-> R[Retry Logic]
+        N1 -.Provides.-> E[Error Handling]
+        N1 -.Provides.-> T[Timeout Management]
+        
+        style N1 fill:#ccffcc
+        style N2 fill:#ccffcc
+    end
+```
+
+### Migration Phase Flow
+
+```mermaid
+flowchart TD
+    Start[Legacy Code Active] --> Build[Build New Framework]
+    Build --> Facade[Create Compatibility Facade]
+    Facade --> Flag{Feature Flag}
+    
+    Flag -->|10%| Test1[Test New IPMI]
+    Test1 --> Monitor1{Monitor Metrics}
+    Monitor1 -->|Issues| Rollback1[Rollback to Legacy]
+    Monitor1 -->|Success| Expand1[50% Traffic]
+    
+    Expand1 --> Monitor2{Monitor}
+    Monitor2 -->|Issues| Rollback2[Rollback]
+    Monitor2 -->|Success| Full[100% New Code]
+    
+    Full --> Migrate2[Migrate Virsh/Manual]
+    Migrate2 --> Complete[All Adapters Migrated]
+    Complete --> Remove[Remove Legacy Code]
+    Remove --> NewFeature[Add Redfish Support]
+    
+    Rollback1 --> Fix[Fix Issues]
+    Rollback2 --> Fix
+    Fix --> Flag
+```
+
 ---
 
 ## Phase 1: Specify (Weeks 1-2)
@@ -321,35 +405,34 @@ Gradually replace legacy code without big-bang rewrite:
 ## Architecture
 
 ### Component Diagram
-```
-┌─────────────────────────────────────────┐
-│     Legacy API Facade (Backward Compat) │
-└──────────────┬──────────────────────────┘
-               │
-               ▼
-┌─────────────────────────────────────────┐
-│      PowerControlService                 │
-│  - Retry logic                           │
-│  - Timeout handling                      │
-│  - Error translation                     │
-│  - Logging                               │
-└──────────────┬──────────────────────────┘
-               │
-               ▼
-┌─────────────────────────────────────────┐
-│      PowerAdapterFactory                 │
-│  - Creates appropriate adapter           │
-└──────────────┬──────────────────────────┘
-               │
-               ├─────┬─────────┬──────────┐
-               ▼     ▼         ▼          ▼
-         ┌──────┐ ┌────┐  ┌──────┐  ┌────────┐
-         │ IPMI │ │Virsh│ │Manual│  │Redfish │
-         │Adapter│ │Adapt│ │Adapt │  │Adapter │
-         └──────┘ └────┘  └──────┘  └────────┘
-               │     │         │          │
-               ▼     ▼         ▼          ▼
-           BMC Hardware / Virtualization
+
+```mermaid
+flowchart TD
+    API[Legacy API Facade<br/>Backward Compat] --> Service[PowerControlService]
+    
+    Service --> |Provides| Retry[Retry Logic]
+    Service --> |Provides| Timeout[Timeout Handling]
+    Service --> |Provides| Error[Error Translation]
+    Service --> |Provides| Log[Logging]
+    
+    Service --> Factory[PowerAdapterFactory]
+    
+    Factory --> |Creates| IPMI[IPMI Adapter]
+    Factory --> |Creates| Virsh[Virsh Adapter]
+    Factory --> |Creates| Manual[Manual Adapter]
+    Factory --> |Creates| Redfish[Redfish Adapter]
+    
+    IPMI --> BMC1[BMC Hardware]
+    Virsh --> Virt[Virtualization]
+    Manual --> Operator[Human Operator]
+    Redfish --> BMC2[BMC Hardware]
+    
+    style Service fill:#e1f5ff
+    style Factory fill:#fff4e1
+    style IPMI fill:#e8f5e9
+    style Virsh fill:#e8f5e9
+    style Manual fill:#e8f5e9
+    style Redfish fill:#e8f5e9
 ```
 
 ## Data Model Changes

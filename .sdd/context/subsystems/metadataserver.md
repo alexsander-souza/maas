@@ -2,9 +2,9 @@
 
 ## Purpose
 
-Cloud-init metadata service that provides configuration and initialization data to deploying and commissioning machines. This subsystem serves metadata, user-data, and vendor-data to machines during boot, enabling automated configuration and deployment.
+Metadata service providing cloud-init and curtin configuration data to machines during deployment and commissioning. This Django-based subsystem serves machine-specific configuration via HTTP endpoints, enabling automated OS installation and initial configuration.
 
-**Status**: Active - critical component for machine lifecycle management.
+**Status**: Active - critical for machine deployment.
 
 ## Location
 
@@ -14,582 +14,480 @@ Cloud-init metadata service that provides configuration and initialization data 
 
 ### Core Technologies
 - **Python**: 3.10+
-- **Django**: Web framework for metadata endpoints
-- **Cloud-init**: Industry-standard initialization system
-- **YAML**: Configuration format for cloud-init
+- **Django**: Web framework
+- **cloud-init**: Cloud instance initialization
+- **curtin**: OS installation tool
 
 ### Key Libraries
-- **django**: HTTP endpoints and ORM
-- **pyyaml**: YAML processing for cloud-init configs
-- **jinja2**: Template rendering for user-data
-- **testtools**: Testing framework
+- **django**: Web framework
+- **pyyaml**: Configuration serialization
+- **jinja2**: Template rendering
+- **requests**: HTTP client for testing
 
 ## Architectural Constraints
 
-### Django-Based Service
+### Django Integration
 
-Part of the legacy Django application but serves a distinct purpose:
-- Separate URL namespace (`/MAAS/metadata/`)
-- Dedicated models for scripts and results
-- Integration with machine provisioning workflow
+Built as a Django app within maasserver:
+- Uses Django models and ORM
+- HTTP endpoints via Django views
+- Authentication via Django middleware
+- Integrated with maasserver database
 
-### Machine Lifecycle Integration
+### Stateless Endpoints
 
-Tightly coupled to machine states:
-- **Commissioning**: Hardware discovery and inventory
-- **Deployment**: OS installation and configuration
-- **Testing**: Hardware validation
-- **Rescue Mode**: System recovery
+All endpoints are stateless:
+- No session storage
+- Configuration generated on-demand
+- Token-based authentication
+- RESTful design
 
-### Unauthenticated Access
+### Security-Critical
 
-Metadata endpoints are accessible without authentication:
-- Machines authenticate via OAuth tokens embedded in URLs
-- Token-based access control per machine
-- Limited to specific machine's own metadata
+Serves sensitive configuration data:
+- Machine credentials
+- Network configuration
+- User data and scripts
+- API keys and tokens
+
+Must validate all requests and authorize access.
 
 ## Key Patterns
 
+> **See**: [django-patterns.md](../../skills/languages/django-patterns.md) for Django-specific patterns.
+
 ### Metadata Endpoint Pattern
 
-Serve cloud-init compatible metadata:
+Serve metadata to machines via HTTP:
 
 ```python
-from django.http import HttpResponse
+from django.http import JsonResponse, HttpResponse
 from metadataserver.models import NodeMetadata
 
-def get_metadata(request, version, machine_token):
-    """Serve instance metadata."""
+def get_metadata(request, system_id, token):
+    """Get metadata for machine."""
     # Validate token
-    node = authenticate_machine(machine_token)
-    if not node:
-        return HttpResponse(status=404)
+    metadata = NodeMetadata.objects.get(
+        node__system_id=system_id,
+        token=token
+    )
+    
+    if not metadata.is_valid():
+        return HttpResponse("Invalid token", status=403)
     
     # Generate metadata
-    metadata = {
-        'instance-id': node.system_id,
-        'local-hostname': node.hostname,
-        'public-keys': get_ssh_keys(node),
+    data = {
+        'instance-id': metadata.node.system_id,
+        'local-hostname': metadata.node.hostname,
+        'public-keys': metadata.get_public_keys(),
+        'network-config': metadata.get_network_config(),
     }
     
-    return HttpResponse(
-        yaml.dump(metadata),
-        content_type='text/plain'
-    )
+    return JsonResponse(data)
 ```
 
-### User-Data Generation
+### Cloud-Init Configuration
 
-Generate cloud-init user-data scripts:
+Generate cloud-init user-data:
 
 ```python
-from metadataserver.user_data import generate_user_data
-
-def get_user_data(request, version, machine_token):
-    """Serve cloud-init user-data."""
-    node = authenticate_machine(machine_token)
+def get_cloud_init_userdata(node, preseed_type):
+    """Generate cloud-init user-data for node."""
+    template = get_preseed_template(preseed_type)
     
-    # Generate based on machine state
-    if node.status == NODE_STATUS.COMMISSIONING:
-        user_data = generate_commissioning_user_data(node)
-    elif node.status == NODE_STATUS.DEPLOYING:
-        user_data = generate_deployment_user_data(node)
-    else:
-        user_data = generate_default_user_data(node)
+    context = {
+        'node': node,
+        'hostname': node.hostname,
+        'fqdn': node.fqdn,
+        'preseed_data': get_preseed_data(node),
+        'ssh_keys': get_authorized_keys(node),
+        'packages': get_required_packages(node),
+    }
     
-    return HttpResponse(user_data, content_type='text/x-shellscript')
+    return template.render(context)
 ```
 
-### Commissioning Scripts
+### Curtin Configuration
 
-Manage hardware discovery scripts:
+Generate curtin installation config:
 
 ```python
-from metadataserver.models import Script
+def get_curtin_config(node):
+    """Generate curtin configuration for installation."""
+    config = {
+        'install': {
+            'target': '/target',
+            'unmount': 'disabled',
+        },
+        'partitioning': get_partition_layout(node),
+        'network': get_network_config(node),
+        'sources': {
+            '00_primary': {
+                'uri': get_image_url(node),
+                'type': 'tgz',
+            }
+        },
+        'late_commands': get_late_commands(node),
+    }
+    
+    return config
 
-class Script(models.Model):
-    """Commissioning or testing script."""
+def get_partition_layout(node):
+    """Generate partition layout for node."""
+    disks = node.physicalblockdevice_set.all()
     
-    name = models.CharField(max_length=255, unique=True)
-    description = models.TextField()
-    script = models.TextField()
-    script_type = models.IntegerField(choices=SCRIPT_TYPE_CHOICES)
-    tags = models.ManyToManyField('Tag')
-    
-    def get_script_for_node(self, node):
-        """Render script with node-specific variables."""
-        template = Template(self.script)
-        return template.render({
-            'node': node,
-            'system_id': node.system_id,
-            'hostname': node.hostname,
+    layout = []
+    for disk in disks:
+        layout.append({
+            'id': f'disk-{disk.id}',
+            'type': 'disk',
+            'path': disk.path,
+            'ptable': 'gpt',
+            'partitions': get_disk_partitions(disk)
         })
+    
+    return layout
 ```
 
-### Script Results Storage
+### Token-Based Authentication
 
-Store and process commissioning results:
-
-```python
-from metadataserver.models import ScriptResult
-
-class ScriptResult(models.Model):
-    """Result from running a commissioning/testing script."""
-    
-    script = models.ForeignKey(Script, on_delete=models.CASCADE)
-    script_set = models.ForeignKey('ScriptSet', on_delete=models.CASCADE)
-    status = models.IntegerField(default=SCRIPT_STATUS.PENDING)
-    exit_status = models.IntegerField(null=True)
-    output = models.TextField(blank=True)
-    stdout = models.TextField(blank=True)
-    stderr = models.TextField(blank=True)
-    result = models.TextField(blank=True)
-    
-    def store_result(self, exit_code, stdout, stderr):
-        """Store script execution results."""
-        self.exit_status = exit_code
-        self.stdout = stdout
-        self.stderr = stderr
-        self.status = (
-            SCRIPT_STATUS.PASSED if exit_code == 0 
-            else SCRIPT_STATUS.FAILED
-        )
-        self.save()
-        
-        # Process results for hardware data
-        if self.script.script_type == SCRIPT_TYPE.COMMISSIONING:
-            self._process_commissioning_data()
-```
-
-### Vendor-Data Pattern
-
-Provide MAAS-specific configuration:
+Secure metadata access with tokens:
 
 ```python
-def get_vendor_data(request, version, machine_token):
-    """Serve vendor-data for MAAS-specific configuration."""
-    node = authenticate_machine(machine_token)
+from django.utils.crypto import get_random_string
+from metadataserver.models import NodeKey
+
+def create_metadata_token(node):
+    """Create secure token for metadata access."""
+    token = get_random_string(32)
     
-    vendor_data = {
-        'maas': {
-            'metadata_url': get_metadata_url(),
-            'signal_url': get_signal_url(node),
-            'consumer_key': node.token.consumer.key,
-        }
-    }
-    
-    return HttpResponse(
-        yaml.dump(vendor_data),
-        content_type='text/plain'
+    NodeKey.objects.create(
+        node=node,
+        token=token,
+        key_type='metadata',
+        valid_until=timezone.now() + timedelta(hours=24)
     )
+    
+    return token
+
+def validate_metadata_token(system_id, token):
+    """Validate metadata token."""
+    try:
+        key = NodeKey.objects.get(
+            node__system_id=system_id,
+            token=token,
+            key_type='metadata'
+        )
+        
+        if key.valid_until < timezone.now():
+            key.delete()
+            return False
+        
+        return True
+    except NodeKey.DoesNotExist:
+        return False
 ```
 
-### Signaling Pattern
+### Preseed Template Pattern
 
-Machines signal status back to MAAS:
+Template-based configuration generation:
 
 ```python
-from metadataserver.api import signal
+from django.template import Template, Context
 
-@api_endpoint
-def signal_status(request):
-    """Receive status signals from deploying machines."""
-    token = request.POST.get('token')
-    status = request.POST.get('status')
-    message = request.POST.get('message', '')
+def render_preseed(node, template_name):
+    """Render preseed template for node."""
+    template_path = f'preseeds/{template_name}.template'
+    template_content = load_template(template_path)
     
-    node = authenticate_machine(token)
+    template = Template(template_content)
+    context = Context({
+        'node': node,
+        'main_archive': get_main_archive_url(),
+        'kernel_opts': get_kernel_options(node),
+        'preseed_data': get_preseed_data(node),
+    })
     
-    # Update node status
-    if status == 'OK':
-        node.mark_commissioning_complete()
-    elif status == 'FAILED':
-        node.mark_failed(message)
-    elif status == 'WORKING':
-        node.update_progress(message)
-    
-    return {'status': 'acknowledged'}
+    return template.render(context)
 ```
 
 ## Testing Requirements
 
-### Test Framework
+> **See**: [test-code-quality.md](../../skills/techniques/test-code-quality.md) for comprehensive testing patterns.
 
-Follow Django testing patterns:
+### Test Metadata Endpoints
+
+Test all metadata endpoints:
 
 ```python
-from maasserver.testing.testcase import MAASServerTestCase
-from metadataserver.models import Script, ScriptResult
+from django.test import TestCase, Client
+from maasserver.testing.factory import factory
 
-class TestMetadataEndpoints(MAASServerTestCase):
-    """Test metadata service endpoints."""
+class TestMetadataEndpoints(TestCase):
+    """Test metadata HTTP endpoints."""
     
-    def test_get_metadata(self):
-        """Test retrieving machine metadata."""
-        node = self.factory.make_Node()
-        token = self.factory.make_NodeToken(node=node)
+    def test_get_metadata_with_valid_token(self):
+        """Test metadata endpoint with valid token."""
+        node = factory.make_Node()
+        token = create_metadata_token(node)
         
-        response = self.client.get(
-            f'/MAAS/metadata/latest/meta-data/',
-            headers={'Authorization': f'OAuth {token}'}
+        client = Client()
+        response = client.get(
+            f'/metadata/{node.system_id}/{token}/'
         )
         
         self.assertEqual(response.status_code, 200)
-        metadata = yaml.safe_load(response.content)
-        self.assertEqual(metadata['instance-id'], node.system_id)
+        data = response.json()
+        self.assertEqual(data['instance-id'], node.system_id)
+    
+    def test_get_metadata_with_invalid_token(self):
+        """Test metadata endpoint with invalid token."""
+        node = factory.make_Node()
+        
+        client = Client()
+        response = client.get(
+            f'/metadata/{node.system_id}/invalid-token/'
+        )
+        
+        self.assertEqual(response.status_code, 403)
 ```
 
-### Script Testing
+### Test Configuration Generation
 
-Test commissioning script execution:
-
-```python
-class TestCommissioningScripts(MAASServerTestCase):
-    """Test commissioning script functionality."""
-    
-    def test_run_commissioning_script(self):
-        """Test script execution during commissioning."""
-        node = self.factory.make_Node(
-            status=NODE_STATUS.COMMISSIONING
-        )
-        script = self.factory.make_Script(
-            script_type=SCRIPT_TYPE.COMMISSIONING
-        )
-        
-        # Execute script
-        result = run_script(node, script)
-        
-        # Verify result stored
-        self.assertIsNotNone(result.id)
-        self.assertEqual(result.script, script)
-```
-
-### User-Data Testing
-
-Test cloud-init user-data generation:
+Test configuration generation logic:
 
 ```python
-class TestUserData(MAASServerTestCase):
-    """Test user-data generation."""
+class TestCurtinConfig(TestCase):
+    """Test curtin configuration generation."""
     
-    def test_commissioning_user_data(self):
-        """Test user-data for commissioning."""
-        node = self.factory.make_Node(
-            status=NODE_STATUS.COMMISSIONING
-        )
+    def test_generate_curtin_config(self):
+        """Test generating curtin config."""
+        node = factory.make_Node_with_Interface_on_Subnet()
+        factory.make_PhysicalBlockDevice(node=node)
         
-        user_data = generate_commissioning_user_data(node)
+        config = get_curtin_config(node)
         
-        # Verify cloud-init format
-        self.assertTrue(user_data.startswith('#cloud-config'))
-        
-        # Parse and validate
-        config = yaml.safe_load(user_data)
-        self.assertIn('runcmd', config)
+        self.assertIn('install', config)
+        self.assertIn('partitioning', config)
+        self.assertIn('network', config)
+        self.assertTrue(len(config['partitioning']) > 0)
 ```
 
 ### Running Tests
 
 ```bash
-# Run all metadataserver tests
-bin/test.region src/metadataserver/
+# All metadataserver tests
+pytest src/metadataserver/tests/
 
-# Run specific test file
-bin/test.region src/metadataserver/tests/test_api.py
+# Specific test module
+pytest src/metadataserver/tests/test_api.py
 
-# Run with coverage
-bin/test.region --with-coverage src/metadataserver/
+# With coverage
+pytest --cov=metadataserver src/metadataserver/tests/
 ```
 
 ## Development Guidelines
 
-### Adding New Scripts
+### Adding New Endpoints
 
-1. **Create Script Model**: Define in database
-2. **Implement Script Logic**: Shell or Python
-3. **Add Result Processing**: Parse script output
-4. **Test Execution**: Verify on test machines
-5. **Document Purpose**: Clear script documentation
+1. Define URL pattern in `urls.py`
+2. Implement view function with token validation
+3. Generate appropriate configuration
+4. Test with valid and invalid tokens
+5. Document endpoint in API docs
 
-```python
-def create_hardware_info_script():
-    """Create script to gather hardware information."""
-    script = Script.objects.create(
-        name='00-maas-hardware-info',
-        description='Gather detailed hardware information',
-        script_type=SCRIPT_TYPE.COMMISSIONING,
-        script='''#!/bin/bash
-lshw -json > hardware.json
-lscpu > cpu.txt
-free -m > memory.txt
-''',
-        timeout=300
-    )
-    return script
-```
+### Security First
 
-### Modifying Metadata Format
+All endpoints must:
+- Validate authentication tokens
+- Check token expiration
+- Log access attempts
+- Sanitize all inputs
+- Never expose sensitive data in errors
 
-When changing metadata format:
-- Maintain backward compatibility
-- Version metadata endpoints
-- Update cloud-init templates
-- Test with various OS images
+### Configuration Generation
 
-### Processing Script Results
+Follow these principles:
+- Generate config on-demand (don't cache)
+- Validate node state before generation
+- Use templates for complex configs
+- Include error recovery mechanisms
+- Log generation for debugging
 
-Parse and store hardware data from scripts:
+### Template Management
 
 ```python
-def process_lshw_results(script_result):
-    """Process lshw hardware detection output."""
-    try:
-        hardware_data = json.loads(script_result.stdout)
-        
-        # Extract CPU information
-        update_cpu_info(script_result.node, hardware_data)
-        
-        # Extract memory information
-        update_memory_info(script_result.node, hardware_data)
-        
-        # Extract network interfaces
-        update_network_interfaces(script_result.node, hardware_data)
-        
-        script_result.mark_processed()
-    except json.JSONDecodeError as e:
-        script_result.mark_failed(f"Invalid JSON: {e}")
+def get_preseed_template(name):
+    """Get preseed template by name."""
+    template_path = os.path.join(PRESEED_DIR, f'{name}.template')
+    
+    if not os.path.exists(template_path):
+        raise TemplateNotFound(f"Template {name} not found")
+    
+    with open(template_path, 'r') as f:
+        return f.read()
 ```
 
 ## Integration Points
 
-### Machine Lifecycle
+### Machine Deployment Flow
+1. Machine powers on and boots PXE
+2. Bootloader requests metadata URL with token
+3. Machine downloads cloud-init config
+4. Machine downloads curtin config
+5. Curtin installs OS using config
+6. Cloud-init configures instance
+7. Machine reports completion
 
-Integrates with machine status transitions:
+### MAAS Server (maasserver)
+- Uses Django models from maasserver
+- Shares authentication system
+- Access to node configuration
+- See [maasserver.md](./maasserver.md)
 
-```python
-# Commissioning start
-node.start_commissioning()
-# → Metadata service provides commissioning user-data
-# → Machine boots and runs scripts
-# → Results sent back to metadata service
-# → Node marked commissioned
-
-# Deployment start  
-node.start_deployment(os_release)
-# → Metadata service provides deployment user-data
-# → Machine installs OS
-# → Configuration applied via cloud-init
-# → Node signals completion
-```
-
-### MAAS Region Controller
-
-Primary consumer of metadata service:
-- Triggers commissioning/deployment
-- Receives status signals
-- Processes script results
-- Updates node state
-
-### MAAS Rack Controller
-
-Provides network connectivity:
-- DHCP provides metadata URL to machines
-- Proxy for metadata requests
-- Boot image serving
+### Rack Controller (provisioningserver)
+- Rack serves metadata endpoints as proxy
+- Caches metadata for performance
+- Handles TFTP/HTTP boot process
+- See [provisioningserver.md](./provisioningserver.md)
 
 ### Cloud-Init
-
-Standard cloud initialization:
-- Reads metadata on boot
-- Executes user-data scripts
+- Reads instance-id, hostname, keys
 - Applies network configuration
-- Runs final configuration
+- Runs user-provided scripts
+- Reports deployment status
 
-### Image Service
-
-Coordinates with image downloads:
-- Provides curtin configuration
-- OS image selection
-- Custom image support
+### Curtin
+- Performs OS installation
+- Partitions disks
+- Configures storage
+- Installs bootloader
 
 ## Common Pitfalls
 
-### Authentication Bypass
+> **See**: [common-anti-patterns.md](../../common-anti-patterns.md) for general anti-patterns.
 
-❌ **Don't**: Skip token validation
+### Exposing Sensitive Data
+
+❌ **Don't** include secrets in metadata responses:
 ```python
-def get_metadata(request):
-    # Missing authentication - WRONG!
-    node = Node.objects.first()
-    return metadata(node)
+# WRONG!
+def get_metadata(request, system_id, token):
+    return JsonResponse({
+        'hostname': node.hostname,
+        'api_key': node.owner.api_key,  # WRONG! Never expose
+        'password': node.password,  # WRONG!
+    })
 ```
 
-✅ **Do**: Always validate tokens
+✅ **Do** only include necessary data:
 ```python
-def get_metadata(request, machine_token):
-    node = authenticate_machine(machine_token)
-    if not node:
-        return HttpResponse(status=404)
-    return metadata(node)
+# Correct
+def get_metadata(request, system_id, token):
+    return JsonResponse({
+        'instance-id': node.system_id,
+        'local-hostname': node.hostname,
+        'public-keys': get_authorized_keys(node),  # Public keys only
+    })
 ```
 
-### Script Timeouts
+### Token Validation Bypass
 
-❌ **Don't**: Infinite script execution
+❌ **Don't** skip token validation:
 ```python
-script = Script(timeout=None)  # WRONG!
+# WRONG!
+def get_metadata(request, system_id, token):
+    node = Node.objects.get(system_id=system_id)  # No validation!
+    return JsonResponse(get_metadata_dict(node))
 ```
 
-✅ **Do**: Set reasonable timeouts
+✅ **Do** always validate tokens:
 ```python
-script = Script(
-    timeout=300,  # 5 minutes
-    timeout_action=TIMEOUT_ACTION.FAIL
-)
+# Correct
+def get_metadata(request, system_id, token):
+    if not validate_metadata_token(system_id, token):
+        return HttpResponse("Unauthorized", status=403)
+    
+    node = Node.objects.get(system_id=system_id)
+    return JsonResponse(get_metadata_dict(node))
 ```
 
-### Large Script Output
+### Caching Metadata
 
-❌ **Don't**: Store unlimited output
+❌ **Don't** cache generated metadata:
 ```python
-result.stdout = script_output  # Could be gigabytes!
+# WRONG!
+cached_metadata = {}
+
+def get_metadata(request, system_id, token):
+    if system_id in cached_metadata:
+        return JsonResponse(cached_metadata[system_id])  # Stale!
+    
+    metadata = generate_metadata(system_id)
+    cached_metadata[system_id] = metadata
+    return JsonResponse(metadata)
 ```
 
-✅ **Do**: Limit output size
+✅ **Do** generate fresh metadata:
 ```python
-MAX_OUTPUT_SIZE = 10 * 1024 * 1024  # 10MB
-
-result.stdout = script_output[:MAX_OUTPUT_SIZE]
-if len(script_output) > MAX_OUTPUT_SIZE:
-    result.note = "Output truncated"
+# Correct
+def get_metadata(request, system_id, token):
+    # Always generate fresh metadata
+    metadata = generate_metadata(system_id)
+    return JsonResponse(metadata)
 ```
-
-### Metadata Caching
-
-❌ **Don't**: Cache metadata indefinitely
-```python
-@cache_forever
-def get_metadata(node):  # WRONG!
-    return generate_metadata(node)
-```
-
-✅ **Do**: Use appropriate cache duration
-```python
-@cache(timeout=60)  # 1 minute cache
-def get_metadata(node):
-    return generate_metadata(node)
-```
-
-## Related Skills
-
-Links to relevant skills in `.sdd/skills/`:
-
-- **Cloud-Init**: Cloud initialization patterns
-- **YAML Processing**: Configuration file handling
-- **Shell Scripting**: Commissioning script development
-- **Django Development**: Django-specific patterns
-- **Hardware Detection**: System information gathering
-- **API Development**: Metadata endpoint design
 
 ## Security Considerations
 
-### Token-Based Authentication
+> **See**: [security-practices.md](../../skills/techniques/security-practices.md)
 
-Each machine receives unique token:
-- Single-use or time-limited tokens
-- Token tied to specific machine
-- Cannot access other machines' data
-- Token invalidated after use
+### Token Management
+- Generate cryptographically secure tokens
+- Set appropriate expiration times
+- Single-use tokens for sensitive operations
+- Rotate tokens on security events
 
-### Script Sandboxing
+### Access Control
+- Validate all tokens before serving data
+- Log all metadata requests
+- Rate limit requests per token
+- Detect and block suspicious patterns
 
-Commissioning scripts run in controlled environment:
-- Limited network access
-- No access to MAAS internals
-- Timeout enforcement
-- Output size limits
+### Data Protection
+- Never include passwords or API keys
+- Use public keys only for SSH access
+- Sanitize all user-provided data
+- Validate configuration before serving
 
-### Input Validation
-
-Validate all data from machines:
-- Sanitize script results
-- Limit upload sizes
-- Validate data formats
-- Prevent injection attacks
-
-### Secrets Management
-
-Handle sensitive data carefully:
-- Don't expose API credentials in user-data
-- Use secure token generation
-- Rotate tokens regularly
-- Encrypt sensitive metadata
+### Audit Logging
+- Log all metadata requests with timestamps
+- Track token usage and validation failures
+- Alert on suspicious access patterns
+- Retain logs for security audits
 
 ## Performance Considerations
 
-### Metadata Caching
-
-Cache generated metadata:
-- Short TTL for dynamic data
-- Longer TTL for static data
-- Invalidate on node changes
-- Per-machine cache keys
-
-### Script Parallelization
-
-Run scripts concurrently when possible:
-- Independent scripts in parallel
-- Respect dependencies
-- Limit concurrent executions
-- Monitor resource usage
-
-### Result Storage
-
-Optimize result storage:
-- Compress large outputs
-- Archive old results
-- Index for quick queries
-- Purge after retention period
-
-### Endpoint Optimization
-
-Optimize metadata endpoints:
+### Configuration Generation
+- Generate configs on-demand (don't pre-generate)
+- Use efficient template rendering
 - Minimize database queries
-- Use select_related/prefetch_related
-- Cache template rendering
-- Compress responses
+- Cache static data (templates, images)
 
-## Documentation
+### HTTP Response Times
+- Keep metadata responses under 100ms
+- Use connection pooling
+- Minimize serialization overhead
+- Compress large responses
 
-### Script Documentation
-
-Document all commissioning scripts:
-- Purpose and functionality
-- Required permissions
-- Expected output format
-- Failure conditions
-- Timeout settings
-
-### Metadata Format
-
-Document metadata structure:
-- Cloud-init compatibility
-- MAAS-specific extensions
-- Version differences
-- Example outputs
-
-### API Endpoints
-
-Document metadata API:
-- Endpoint URLs
-- Authentication method
-- Response formats
-- Error conditions
+### Database Queries
+- Use select_related for foreign keys
+- Prefetch related objects when needed
+- Index frequently queried fields
+- Avoid N+1 query problems
 
 ## Additional Resources
 
-- Cloud-Init Documentation: https://cloudinit.readthedocs.io/
-- Cloud-Init Spec: https://github.com/canonical/cloud-init
-- MAAS Metadata API: https://maas.io/docs/metadata-api
-- `AGENTS.md`: General coding guidelines
-- `src/maasserver`: Related region controller code
+- **Cloud-Init Documentation**: https://cloudinit.readthedocs.io/
+- **Curtin Documentation**: https://curtin.readthedocs.io/
+- **EC2 Metadata API**: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-instance-metadata.html
+- **Related**: [django-patterns.md](../../skills/languages/django-patterns.md), [maasserver.md](./maasserver.md)

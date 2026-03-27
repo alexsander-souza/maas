@@ -7,6 +7,10 @@
 
 ---
 
+**Reference:** See [Shared Quality Criteria](./_shared-criteria.md) for common standards (documentation quality, MAAS architectural standards, security standards, performance standards)
+
+---
+
 ## Instructions
 
 This checklist validates that a technical plan is complete, sound, and ready for task decomposition and implementation. Answer each question honestly with Yes or No. A "No" answer indicates an area that needs work before proceeding.

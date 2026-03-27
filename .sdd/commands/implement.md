@@ -247,6 +247,109 @@ Before marking task complete, verify:
 
 ## Process Flow
 
+```mermaid
+flowchart TD
+    A[📋 1. Understand the Task] --> B[⚙️ 2. Set Up Environment]
+    B --> C[🔴 3. Write First Test RED]
+    C --> D[✅ 4. Minimal Implementation GREEN]
+    D --> E[🔄 5. Refactor]
+    E --> F{More Tests Needed?}
+    F -->|Yes| G[🔴 Write Next Test RED]
+    G --> H[✅ Implement GREEN]
+    H --> I[🔄 Refactor]
+    I --> F
+    F -->|No| J[✅ 6. Validate Acceptance Criteria]
+    J --> K{All Criteria Met?}
+    K -->|No| L[📝 Add Missing Tests]
+    L --> G
+    K -->|Yes| M[📝 7. Update Documentation]
+    M --> N[👀 8. Code Review Prep]
+    N --> O[✅ 9. Submit for Review]
+    
+    A -.includes.-> A1[Read task & spec<br/>Review architecture<br/>Identify dependencies]
+    C -.includes.-> C1[Arrange-Act-Assert<br/>Mock dependencies<br/>Watch test fail]
+    D -.includes.-> D1[Minimal code<br/>Pass the test<br/>No premature optimization]
+    E -.includes.-> E1[Clean up code<br/>Remove duplication<br/>Improve readability]
+    J -.includes.-> J1[Check all criteria<br/>Run all tests<br/>Verify integration]
+    
+    style C fill:#ffcccc
+    style D fill:#ccffcc
+    style E fill:#cce5ff
+    style O fill:#d4edda
+```
+
+**Test-Driven Development Cycle:**
+
+```mermaid
+flowchart LR
+    subgraph TDD["🔄 TDD Cycle"]
+        direction TB
+        RED[🔴 RED<br/>Write Failing Test] --> GREEN[✅ GREEN<br/>Make Test Pass]
+        GREEN --> REFACTOR[🔄 REFACTOR<br/>Clean Up Code]
+        REFACTOR --> RED2[🔴 RED<br/>Next Test]
+    end
+    
+    START[Start Task] --> RED
+    REFACTOR -.Repeat.-> RED
+    REFACTOR --> DONE{All Acceptance<br/>Criteria Met?}
+    DONE -->|No| RED2
+    DONE -->|Yes| COMPLETE[✅ Task Complete]
+    
+    style RED fill:#ffcccc
+    style RED2 fill:#ffcccc
+    style GREEN fill:#ccffcc
+    style REFACTOR fill:#cce5ff
+    style COMPLETE fill:#d4edda
+```
+
+**Input/Output Flow:**
+
+```mermaid
+flowchart LR
+    subgraph Inputs["📥 Inputs"]
+        I1[Task Definition]
+        I2[Specification]
+        I3[Technical Plan]
+        I4[Existing Codebase]
+        I5[Coding Standards]
+    end
+    
+    subgraph Process["⚙️ Implement Command"]
+        P1[Write Tests]
+        P2[Implement Code]
+        P3[Refactor]
+        P4[Validate]
+    end
+    
+    subgraph Outputs["📤 Outputs"]
+        O1[Test Files]
+        O2[Implementation Files]
+        O3[Updated Documentation]
+        O4[Passing Tests]
+        O5[Code Review Ready]
+    end
+    
+    I1 --> P1
+    I2 --> P1
+    I3 --> P2
+    I4 --> P2
+    I5 --> P3
+    
+    P1 --> P2
+    P2 --> P3
+    P3 --> P4
+    
+    P4 --> O1
+    P4 --> O2
+    P4 --> O3
+    P4 --> O4
+    P4 --> O5
+    
+    O5 -.Next.-> Review[👀 Code Review]
+    
+    style Process fill:#fff4e1
+```
+
 ### Step 1: Understand the Task (15-30 minutes)
 
 **Actions:**

@@ -17,7 +17,7 @@ Complete workflow for creating, testing, and deploying database migrations in MA
 - **Django Patterns**: [../languages/django-patterns.md](../languages/django-patterns.md) - Django migration system
 - **SQLAlchemy Patterns**: [../languages/sqlalchemy-patterns.md](../languages/sqlalchemy-patterns.md) - Schema definition
 - **Python Patterns**: [../languages/python-patterns.md](../languages/python-patterns.md) - Code organization
-- **Secure Coding**: [../techniques/secure-coding.md](../techniques/secure-coding.md) - Safe data handling
+- **Secure Coding**: [../techniques/security-practices.md](../techniques/security-practices.md) - Safe data handling
 - **Testing**: [../languages/python-testing.md](../languages/python-testing.md) - Migration testing
 
 ## Workflow Steps

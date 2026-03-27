@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Command-line interface for MAAS that provides a comprehensive CLI tool for managing and interacting with MAAS deployments. This subsystem enables users and scripts to perform all MAAS operations from the command line, serving as an alternative to the web UI and a foundation for automation.
+Command-line interface for MAAS that provides comprehensive CLI operations for managing deployments. Enables users and scripts to perform all MAAS operations from the command line, serving as an alternative to the web UI and foundation for automation.
 
 **Status**: Active - primary CLI tool for MAAS.
 
@@ -15,37 +15,37 @@ Command-line interface for MAAS that provides a comprehensive CLI tool for manag
 ### Core Technologies
 - **Python**: 3.10+
 - **argparse**: Command-line argument parsing
-- **API Client**: MAAS API client library
+- **MAAS API Client**: Communication with MAAS API
 
 ### Key Libraries
 - **argparse**: CLI argument parsing
 - **colorama**: Terminal color output
-- **requests**: HTTP client for API communication
-- **json**: Data serialization
-- **yaml**: Configuration file handling
+- **requests**: HTTP client for API
+- **pyyaml**: Configuration file handling
 
 ## Architectural Constraints
 
 ### API-Driven Design
 
-The CLI is a thin client that communicates exclusively with the MAAS API:
+CLI is a thin client communicating exclusively via MAAS API:
 - No direct database access
 - All operations via REST API
 - OAuth authentication
 - Stateless operation
+- No business logic in CLI
 
 ### User Experience Focus
 
 Designed for both interactive and scripted use:
 - Clear, actionable error messages
 - Human-readable output by default
-- Machine-readable output available (JSON, YAML)
+- Machine-readable formats available (JSON, YAML)
 - Progress indicators for long operations
-- Helpful usage documentation
+- Comprehensive help documentation
 
 ### Profile-Based Configuration
 
-Supports multiple MAAS profiles:
+Support multiple MAAS profiles for different environments:
 - Store multiple server configurations
 - Switch between environments easily
 - Secure credential storage
@@ -53,9 +53,11 @@ Supports multiple MAAS profiles:
 
 ## Key Patterns
 
+> **See**: [python-patterns.md](../../skills/languages/python-patterns.md) for common Python patterns.
+
 ### Command Structure
 
-Hierarchical command organization:
+Hierarchical command organization with subcommands:
 
 ```python
 from maascli.command import Command
@@ -67,73 +69,33 @@ class MachinesCommand(Command):
         'list': ListMachinesCommand,
         'read': ReadMachineCommand,
         'create': CreateMachineCommand,
-        'update': UpdateMachineCommand,
-        'delete': DeleteMachineCommand,
         'deploy': DeployMachineCommand,
         'release': ReleaseMachineCommand,
     }
-```
-
-### Argument Parsing
-
-Structured argument parsing with validation:
-
-```python
-from argparse import ArgumentParser
 
 class DeployMachineCommand(Command):
     """Deploy a machine."""
     
-    def add_arguments(self, parser: ArgumentParser):
-        """Add command-specific arguments."""
-        parser.add_argument(
-            'system_id',
-            help='System ID of the machine to deploy'
-        )
-        parser.add_argument(
-            '--os',
-            required=True,
-            help='Operating system to deploy'
-        )
-        parser.add_argument(
-            '--distro-series',
-            required=True,
-            help='Distribution series (e.g., jammy, focal)'
-        )
-        parser.add_argument(
-            '--wait',
-            action='store_true',
-            help='Wait for deployment to complete'
-        )
-    
-    def validate_arguments(self, args):
-        """Validate arguments before execution."""
-        if not args.system_id:
-            raise ValueError("system_id is required")
-        
-        if not self._is_valid_system_id(args.system_id):
-            raise ValueError(f"Invalid system_id format: {args.system_id}")
+    def add_arguments(self, parser):
+        parser.add_argument('system_id', help='System ID of machine')
+        parser.add_argument('--os', required=True, help='OS to deploy')
+        parser.add_argument('--wait', action='store_true', help='Wait for completion')
     
     def execute(self, args):
-        """Execute the command."""
-        self.validate_arguments(args)
-        
         client = self.get_client()
         machine = client.machines.deploy(
             system_id=args.system_id,
-            os=args.os,
-            distro_series=args.distro_series
+            os=args.os
         )
-        
         self.print_result(machine)
         
         if args.wait:
             self.wait_for_deployment(machine)
 ```
 
-### Error Handling
+### Error Handling Pattern
 
-User-friendly error messages:
+User-friendly error messages for all failure scenarios:
 
 ```python
 class CommandError(Exception):
@@ -141,27 +103,21 @@ class CommandError(Exception):
     pass
 
 def execute_command(command, args):
-    """Execute command with error handling."""
     try:
         return command.execute(args)
     except APIError as e:
-        # API errors
         if e.status_code == 404:
             raise CommandError(f"Resource not found: {e.detail}")
         elif e.status_code == 401:
-            raise CommandError("Authentication failed. Check your credentials.")
+            raise CommandError("Authentication failed. Run 'maas login' first.")
         elif e.status_code == 403:
-            raise CommandError("Permission denied. Insufficient privileges.")
+            raise CommandError("Permission denied.")
         else:
             raise CommandError(f"API error: {e.detail}")
-    except ConnectionError as e:
-        raise CommandError(f"Cannot connect to MAAS server: {e}")
+    except ConnectionError:
+        raise CommandError("Cannot connect to MAAS server. Check URL and network.")
     except ValueError as e:
         raise CommandError(f"Invalid input: {e}")
-    except Exception as e:
-        # Unexpected errors
-        log_error(e)
-        raise CommandError(f"Unexpected error: {e}")
 ```
 
 ### Output Formatting
@@ -174,66 +130,26 @@ import json
 import yaml
 
 class OutputFormat(Enum):
-    """Supported output formats."""
     HUMAN = "human"
     JSON = "json"
     YAML = "yaml"
-    TABLE = "table"
 
 class OutputFormatter:
-    """Format command output."""
-    
     def format(self, data, format: OutputFormat):
-        """Format data according to specified format."""
         if format == OutputFormat.JSON:
             return json.dumps(data, indent=2)
         elif format == OutputFormat.YAML:
             return yaml.dump(data, default_flow_style=False)
-        elif format == OutputFormat.TABLE:
-            return self._format_table(data)
         else:
             return self._format_human(data)
     
     def _format_human(self, data):
-        """Human-readable format."""
+        """Human-readable format with color."""
         if isinstance(data, dict):
-            lines = []
-            for key, value in data.items():
-                lines.append(f"{key}: {value}")
-            return "\n".join(lines)
+            return '\n'.join(f"{k}: {v}" for k, v in data.items())
         elif isinstance(data, list):
-            return "\n".join(str(item) for item in data)
-        else:
-            return str(data)
-    
-    def _format_table(self, data):
-        """Tabular format."""
-        if not isinstance(data, list) or not data:
-            return str(data)
-        
-        # Extract headers from first item
-        headers = list(data[0].keys())
-        
-        # Calculate column widths
-        widths = {h: len(h) for h in headers}
-        for item in data:
-            for header in headers:
-                widths[header] = max(widths[header], len(str(item.get(header, ''))))
-        
-        # Build table
-        lines = []
-        
-        # Header row
-        header_row = " | ".join(h.ljust(widths[h]) for h in headers)
-        lines.append(header_row)
-        lines.append("-" * len(header_row))
-        
-        # Data rows
-        for item in data:
-            row = " | ".join(str(item.get(h, '')).ljust(widths[h]) for h in headers)
-            lines.append(row)
-        
-        return "\n".join(lines)
+            return '\n'.join(str(item) for item in data)
+        return str(data)
 ```
 
 ### Profile Management
@@ -241,219 +157,114 @@ class OutputFormatter:
 Manage multiple MAAS server profiles:
 
 ```python
-import os
-import json
-from pathlib import Path
-
 class ProfileManager:
     """Manage MAAS CLI profiles."""
     
-    def __init__(self):
-        self.config_dir = Path.home() / '.maas'
-        self.config_file = self.config_dir / 'profiles.json'
-        self._ensure_config_dir()
-    
-    def _ensure_config_dir(self):
-        """Ensure configuration directory exists."""
-        self.config_dir.mkdir(mode=0o700, exist_ok=True)
+    def __init__(self, config_dir="~/.maas-cli"):
+        self.config_dir = Path(config_dir).expanduser()
+        self.config_file = self.config_dir / "profiles.yaml"
     
     def add_profile(self, name: str, url: str, apikey: str):
         """Add a new profile."""
         profiles = self.load_profiles()
-        
         profiles[name] = {
             'url': url,
-            'apikey': apikey,
+            'apikey': apikey
         }
-        
         self.save_profiles(profiles)
     
-    def get_profile(self, name: str = None):
-        """Get profile by name or default."""
+    def get_profile(self, name: str) -> dict:
+        """Get profile by name."""
         profiles = self.load_profiles()
-        
-        if name:
-            if name not in profiles:
-                raise ValueError(f"Profile '{name}' not found")
-            return profiles[name]
-        
-        # Return default profile
-        default = profiles.get('_default')
-        if not default:
-            raise ValueError("No default profile set")
-        
-        return profiles[default]
-    
-    def set_default(self, name: str):
-        """Set default profile."""
-        profiles = self.load_profiles()
-        
         if name not in profiles:
-            raise ValueError(f"Profile '{name}' not found")
-        
-        profiles['_default'] = name
-        self.save_profiles(profiles)
+            raise CommandError(f"Profile '{name}' not found")
+        return profiles[name]
     
-    def list_profiles(self):
-        """List all profiles."""
-        profiles = self.load_profiles()
-        default = profiles.get('_default')
-        
-        result = []
-        for name, config in profiles.items():
-            if name.startswith('_'):
-                continue
-            
-            result.append({
-                'name': name,
-                'url': config['url'],
-                'default': name == default,
-            })
-        
-        return result
-    
-    def load_profiles(self):
-        """Load profiles from disk."""
-        if not self.config_file.exists():
-            return {}
-        
-        with open(self.config_file, 'r') as f:
-            return json.load(f)
-    
-    def save_profiles(self, profiles):
-        """Save profiles to disk."""
-        with open(self.config_file, 'w') as f:
-            json.dump(profiles, f, indent=2)
-        
-        # Secure permissions
-        os.chmod(self.config_file, 0o600)
-```
-
-### Interactive Prompts
-
-Prompt for confirmation on destructive operations:
-
-```python
-def confirm_action(message: str, default: bool = False) -> bool:
-    """Prompt user for confirmation."""
-    default_str = "Y/n" if default else "y/N"
-    response = input(f"{message} [{default_str}]: ").strip().lower()
-    
-    if not response:
-        return default
-    
-    return response in ('y', 'yes')
-
-class DeleteMachineCommand(Command):
-    """Delete a machine."""
-    
-    def execute(self, args):
-        """Execute the delete command."""
-        machine = self.get_machine(args.system_id)
-        
-        # Prompt for confirmation unless --force
-        if not args.force:
-            message = f"Delete machine '{machine['hostname']}' ({args.system_id})?"
-            if not confirm_action(message, default=False):
-                print("Operation cancelled.")
-                return
-        
-        # Perform deletion
-        self.client.machines.delete(args.system_id)
-        print(f"Machine {args.system_id} deleted successfully.")
+    def list_profiles(self) -> list[str]:
+        """List all profile names."""
+        return list(self.load_profiles().keys())
 ```
 
 ## Testing Requirements
 
-### Test Framework
+> **See**: [test-code-quality.md](../../skills/techniques/test-code-quality.md) for comprehensive testing patterns.
 
-Use pytest for CLI testing:
+### Mock API Client
+
+Always mock the API client in CLI tests:
 
 ```python
 import pytest
-from unittest.mock import Mock, patch
-from maascli.commands.machines import DeployMachineCommand
+from unittest.mock import Mock, MagicMock
 
-class TestDeployMachineCommand:
-    """Test machine deployment command."""
+@pytest.fixture
+def mock_api_client():
+    """Mock MAAS API client."""
+    client = MagicMock()
+    client.machines.list.return_value = [
+        {'system_id': 'abc123', 'hostname': 'machine1', 'status': 'Ready'}
+    ]
+    return client
+
+def test_list_machines(mock_api_client, capsys):
+    """Test listing machines."""
+    cmd = ListMachinesCommand(client=mock_api_client)
+    cmd.execute(Mock(format='json'))
     
-    def test_deploy_success(self, mocker):
-        """Test successful machine deployment."""
-        # Mock API client
-        mock_client = mocker.Mock()
-        mock_client.machines.deploy.return_value = {
-            'system_id': 'abc123',
-            'hostname': 'machine-1',
-            'status_name': 'Deploying'
-        }
-        
-        # Create command
-        command = DeployMachineCommand()
-        command.get_client = lambda: mock_client
-        
-        # Execute
-        args = mocker.Mock()
-        args.system_id = 'abc123'
-        args.os = 'ubuntu'
-        args.distro_series = 'jammy'
-        args.wait = False
-        
-        command.execute(args)
-        
-        # Verify
-        mock_client.machines.deploy.assert_called_once_with(
-            system_id='abc123',
-            os='ubuntu',
-            distro_series='jammy'
-        )
-    
-    def test_deploy_invalid_system_id(self):
-        """Test deployment with invalid system ID."""
-        command = DeployMachineCommand()
-        
-        args = Mock()
-        args.system_id = ''
-        
-        with pytest.raises(ValueError):
-            command.validate_arguments(args)
+    captured = capsys.readouterr()
+    assert 'machine1' in captured.out
+    mock_api_client.machines.list.assert_called_once()
 ```
 
-### Integration Tests
+### Test Output Formats
 
-Test against real MAAS API:
+Verify all output formats work correctly:
 
 ```python
-@pytest.mark.integration
-class TestCLIIntegration:
-    """Integration tests for CLI."""
+def test_output_formats():
+    """Test different output formats."""
+    data = {'hostname': 'test', 'status': 'ready'}
+    formatter = OutputFormatter()
     
-    def test_list_machines(self, maas_client):
-        """Test listing machines via CLI."""
-        # Requires real MAAS instance
-        result = subprocess.run(
-            ['maas', 'admin', 'machines', 'read'],
-            capture_output=True,
-            text=True
-        )
-        
-        assert result.returncode == 0
-        machines = json.loads(result.stdout)
-        assert isinstance(machines, list)
+    # JSON output
+    json_output = formatter.format(data, OutputFormat.JSON)
+    assert json.loads(json_output) == data
+    
+    # YAML output
+    yaml_output = formatter.format(data, OutputFormat.YAML)
+    assert yaml.safe_load(yaml_output) == data
+    
+    # Human output
+    human_output = formatter.format(data, OutputFormat.HUMAN)
+    assert 'hostname' in human_output
+    assert 'test' in human_output
+```
+
+### Test Error Handling
+
+Test error messages are user-friendly:
+
+```python
+def test_connection_error_handling(mock_api_client):
+    """Test connection error handling."""
+    mock_api_client.machines.list.side_effect = ConnectionError()
+    
+    cmd = ListMachinesCommand(client=mock_api_client)
+    
+    with pytest.raises(CommandError, match="Cannot connect"):
+        cmd.execute(Mock())
 ```
 
 ### Running Tests
 
 ```bash
-# Run all CLI tests
+# All CLI tests
 pytest src/maascli/tests/
 
-# Run specific test file
+# Specific command tests
 pytest src/maascli/tests/test_machines.py
 
-# Run integration tests (requires MAAS)
-pytest -m integration src/maascli/tests/
-
-# Run with coverage
+# With coverage
 pytest --cov=maascli src/maascli/tests/
 ```
 
@@ -461,284 +272,153 @@ pytest --cov=maascli src/maascli/tests/
 
 ### Adding New Commands
 
-1. **Create Command Class**: Extend base `Command` class
-2. **Define Arguments**: Add argument parser configuration
-3. **Implement Validation**: Validate inputs early
-4. **Execute Logic**: Call API client methods
-5. **Format Output**: Use appropriate output formatter
-6. **Write Tests**: Unit and integration tests
-7. **Update Documentation**: Command help and docs
+1. Create command class extending `Command`
+2. Implement `add_arguments()` for CLI arguments
+3. Implement `execute()` for command logic
+4. Add to parent command's `subcommands` dict
+5. Write tests with mocked API client
 
-### Input Validation
+### Command Design Principles
 
-**Always validate inputs before API calls**:
+- **Single Responsibility**: Each command does one thing
+- **Consistent Interface**: Follow established patterns
+- **Clear Help Text**: Comprehensive help for all arguments
+- **Validation**: Validate inputs before API calls
+- **Error Messages**: User-friendly, actionable errors
 
-```python
-def validate_arguments(self, args):
-    """Validate command arguments."""
-    # Check required fields
-    if not args.system_id:
-        raise ValueError("system_id is required")
-    
-    # Validate formats
-    if not re.match(r'^[a-z0-9]+$', args.system_id):
-        raise ValueError("Invalid system_id format")
-    
-    # Validate values
-    if args.count and args.count < 1:
-        raise ValueError("count must be positive")
-    
-    # Check dependencies
-    if args.network_config and not args.deploy:
-        raise ValueError("--network-config requires --deploy")
-```
+### API Client Usage
 
-### Error Messages
-
-Write clear, actionable error messages:
+Always use the API client abstraction:
 
 ```python
-# ❌ Bad
-raise CommandError("Error")
-
-# ✅ Good
-raise CommandError(
-    "Machine 'abc123' not found. "
-    "Use 'maas machines list' to see available machines."
-)
-
-# ❌ Bad
-raise CommandError("Invalid input")
-
-# ✅ Good
-raise CommandError(
-    "Invalid OS selection 'windoze'. "
-    "Available options: ubuntu, centos, rhel. "
-    "Use 'maas os list' to see all options."
-)
-```
-
-### Help Documentation
-
-Provide comprehensive help text:
-
-```python
-class DeployMachineCommand(Command):
-    """
-    Deploy a machine with the specified operating system.
+class Command:
+    def get_client(self):
+        """Get authenticated API client."""
+        profile = self.profile_manager.get_active_profile()
+        return MAASClient(
+            url=profile['url'],
+            apikey=profile['apikey']
+        )
     
-    This command initiates the deployment process for a machine,
-    installing the selected operating system and configuring it
-    according to the provided parameters.
-    
-    Examples:
-        # Deploy Ubuntu Jammy
-        maas admin machine deploy abc123 --os ubuntu --distro-series jammy
-        
-        # Deploy and wait for completion
-        maas admin machine deploy abc123 --os ubuntu --distro-series jammy --wait
-        
-        # Deploy with custom user data
-        maas admin machine deploy abc123 --os ubuntu --distro-series jammy \\
-            --user-data @/path/to/cloud-config.yaml
-    """
-    
-    def add_arguments(self, parser):
-        """Add command arguments with detailed help."""
-        parser.add_argument(
-            'system_id',
-            help='System ID of the machine to deploy (e.g., abc123)'
-        )
-        parser.add_argument(
-            '--os',
-            required=True,
-            help='Operating system to install (e.g., ubuntu, centos)'
-        )
-        parser.add_argument(
-            '--distro-series',
-            required=True,
-            help='Distribution series/version (e.g., jammy, focal, stream8)'
-        )
-        parser.add_argument(
-            '--wait',
-            action='store_true',
-            help='Wait for deployment to complete before returning'
-        )
+    def execute(self, args):
+        client = self.get_client()
+        # Use client methods
+        result = client.machines.list()
+        return result
 ```
 
 ## Integration Points
 
-### MAAS API (v2 or v3)
+### MAAS API Server
+- All operations via REST API
+- OAuth 1.0 authentication
+- JSON request/response format
+- See [maasapiserver.md](./maasapiserver.md)
 
-Primary interface to MAAS:
-- REST API calls for all operations
-- OAuth authentication
-- JSON request/response handling
-- Error response processing
+### Profile Configuration
+- Stored in `~/.maas-cli/profiles.yaml`
+- Contains server URLs and credentials
+- Active profile tracked in config
 
-### API Client Library
-
-Uses `src/apiclient` for API communication:
-- HTTP client wrapper
-- Authentication handling
-- Request serialization
-- Response deserialization
-
-### Configuration Files
-
-Reads configuration from:
-- `~/.maas/profiles.json`: Profile storage
-- Environment variables: `MAAS_URL`, `MAAS_API_KEY`
-- Command-line flags: Override defaults
-
-### Shell Integration
-
-Integrates with shell environments:
-- Bash completion scripts
-- Exit codes for scripting
-- Standard input/output handling
-- Environment variable support
+### Exit Codes
+- `0`: Success
+- `1`: General error
+- `2`: Command-line usage error
+- `3`: Authentication error
+- `4`: Permission denied
 
 ## Common Pitfalls
 
+> **See**: [common-anti-patterns.md](../../common-anti-patterns.md) for general anti-patterns.
+
 ### Exposing Credentials
 
-❌ **Don't**: Display API keys in output
+❌ **Don't** log or display credentials:
 ```python
-print(f"Using API key: {apikey}")  # WRONG!
+# WRONG!
+print(f"Using API key: {apikey}")
+logger.debug(f"Auth: {profile['apikey']}")
 ```
 
-✅ **Do**: Mask sensitive data
+✅ **Do** protect credentials:
 ```python
-masked_key = apikey[:8] + "..." + apikey[-4:]
-print(f"Using API key: {masked_key}")
+# Correct
+logger.debug(f"Using profile: {profile['name']}")
+print("Authentication successful")
 ```
 
-### Unclear Error Messages
+### Poor Error Messages
 
-❌ **Don't**: Generic errors
+❌ **Don't** expose technical details to users:
 ```python
-except Exception as e:
-    print(f"Error: {e}")  # Not helpful
+# WRONG!
+raise CommandError(f"HTTP 500: {traceback.format_exc()}")
 ```
 
-✅ **Do**: Actionable messages
+✅ **Do** provide actionable messages:
 ```python
-except ConnectionError:
-    print(
-        "Error: Cannot connect to MAAS server.\n"
-        "Check that the server URL is correct and the server is running.\n"
-        f"Current URL: {client.url}"
-    )
+# Correct
+raise CommandError("Server error. Please try again or contact support.")
 ```
 
-### Missing Input Validation
+### Blocking Operations
 
-❌ **Don't**: Skip validation
+❌ **Don't** block without feedback:
 ```python
-def execute(self, args):
-    # Direct API call without validation
-    client.machines.deploy(args.system_id)
+# WRONG!
+while not deployment_complete():
+    time.sleep(5)  # Silent waiting
 ```
 
-✅ **Do**: Validate early
+✅ **Do** provide progress feedback:
 ```python
-def execute(self, args):
-    self.validate_arguments(args)
-    client.machines.deploy(args.system_id)
+# Correct
+with ProgressBar("Deploying...") as progress:
+    while not deployment_complete():
+        progress.update()
+        time.sleep(5)
 ```
-
-## Related Skills
-
-Links to relevant skills in `.sdd/skills/`:
-
-- **CLI Development**: Command-line interface design
-- **Python Development**: General Python patterns
-- **API Client**: REST API client implementation
-- **User Experience**: CLI UX best practices
-- **Error Handling**: User-friendly error messages
-- **Testing**: CLI testing strategies
 
 ## Security Considerations
 
+> **See**: [security-practices.md](../../skills/techniques/security-practices.md)
+
 ### Credential Storage
+- Store credentials in user-only readable files (600 permissions)
+- Never log or display API keys
+- Support credential rotation
 
-Secure storage of API credentials:
-- File permissions: 0600 for config files
-- No plaintext passwords in scripts
-- Use system keyring when available
-- Prompt for credentials when needed
+### Input Validation
+- Validate all user inputs before API calls
+- Sanitize file paths
+- Prevent command injection in shell operations
+- See [input-validation.md](../../skills/techniques/input-validation.md)
 
-### Input Sanitization
-
-Sanitize all user inputs:
-- Validate formats before API calls
-- Prevent command injection
-- Escape special characters
-- Validate file paths
-
-### API Key Handling
-
-Protect API keys:
-- Never log API keys
-- Don't include in error messages
-- Clear from memory after use
-- Rotate keys regularly
+### Secure Communication
+- Use HTTPS for API communication
+- Verify SSL certificates by default
+- Allow certificate verification override only with explicit flag
 
 ## Performance Considerations
 
-### Caching
+### API Call Optimization
+- Batch operations where possible
+- Use pagination for large result sets
+- Cache profile data locally
+- Minimize redundant API calls
 
-Cache API responses when appropriate:
-- OS image lists
-- Profile data
-- Server capabilities
+### Large Output Handling
+- Stream large responses instead of loading entirely
+- Use pagination for list commands
+- Support filtering server-side when available
 
-### Batch Operations
-
-Support batch operations:
-- Deploy multiple machines
-- Bulk updates
-- Parallel API calls when safe
-
-### Progress Indicators
-
-Show progress for long operations:
-- Deployment status
-- Image downloads
-- Bulk operations
-
-## Documentation
-
-### Command Help
-
-All commands must have:
-- Brief description
-- Detailed explanation
-- Usage examples
-- Argument descriptions
-- Common error solutions
-
-### Man Pages
-
-Generate man pages from help:
-- Standard Unix format
-- Organized by category
-- Cross-references
-- Examples section
-
-### Online Documentation
-
-Link to comprehensive docs:
-- API reference
-- Tutorials
-- Troubleshooting guides
-- Best practices
+### Startup Time
+- Lazy load dependencies
+- Defer expensive operations
+- Quick response for help/version commands
 
 ## Additional Resources
 
-- argparse Documentation: https://docs.python.org/3/library/argparse.html
-- Click Framework: https://click.palletsprojects.com/ (alternative)
-- CLI Guidelines: https://clig.dev/
-- `AGENTS.md`: General coding guidelines
-- `src/apiclient`: API client library
+- **argparse**: https://docs.python.org/3/library/argparse.html
+- **MAAS API**: See API documentation
+- **Related**: [python-patterns.md](../../skills/languages/python-patterns.md), [maasapiserver.md](./maasapiserver.md)

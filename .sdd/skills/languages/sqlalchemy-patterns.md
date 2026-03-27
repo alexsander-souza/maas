@@ -104,10 +104,6 @@ from sqlalchemy.sql.expression import ColumnElement
 
 class MachineClauseFactory(ClauseFactory):
     @staticmethod
-    def with_id(machine_id: int) -> ColumnElement[bool]:
-        return MachineTable.c.id == machine_id
-    
-    @staticmethod
     def with_zone_id(zone_id: int) -> ColumnElement[bool]:
         return MachineTable.c.zone_id == zone_id
     
@@ -120,97 +116,27 @@ class MachineClauseFactory(ClauseFactory):
         if owner_id is None:
             return MachineTable.c.owner_id.is_(None)
         return MachineTable.c.owner_id == owner_id
-    
-    @staticmethod
-    def with_hostname_pattern(pattern: str) -> ColumnElement[bool]:
-        return MachineTable.c.hostname.like(f"%{pattern}%")
-    
-    @staticmethod
-    def with_min_cpu(min_cpu: int) -> ColumnElement[bool]:
-        return MachineTable.c.cpu_count >= min_cpu
-    
-    @staticmethod
-    def in_zone_list(zone_ids: list[int]) -> ColumnElement[bool]:
-        return MachineTable.c.zone_id.in_(zone_ids)
-```
-
-**Composing Filters**:
-
-```python
-from sqlalchemy import and_, or_
-
-class MachineClauseFactory(ClauseFactory):
-    @staticmethod
-    def available_in_zones(zone_ids: list[int]) -> ColumnElement[bool]:
-        return and_(
-            MachineClauseFactory.with_status("ready"),
-            MachineClauseFactory.in_zone_list(zone_ids),
-        )
-    
-    @staticmethod
-    def high_spec() -> ColumnElement[bool]:
-        return and_(
-            MachineTable.c.cpu_count >= 16,
-            MachineTable.c.memory >= 32768,
-        )
-    
-    @staticmethod
-    def ready_or_allocated() -> ColumnElement[bool]:
-        return or_(
-            MachineClauseFactory.with_status("ready"),
-            MachineClauseFactory.with_status("allocated"),
-        )
 ```
 
 ### Parameterized Queries
 
-**Always Use Parameters**:
-
 ```python
-# Correct: Parameterized queries
+# Always use parameterized queries (automatic with SQLAlchemy)
 stmt = select(MachineTable).where(MachineTable.c.hostname == hostname)
 stmt = select(MachineTable).where(MachineTable.c.id.in_(machine_ids))
 
-# With literals (safe, but parameters preferred)
-from sqlalchemy import bindparam
+# Complex filters with AND/OR
+from sqlalchemy import and_, or_
 
-stmt = select(MachineTable).where(
-    MachineTable.c.hostname == bindparam("hostname")
-)
-result = await connection.execute(stmt, {"hostname": "node1"})
-```
-
-**Complex Filters**:
-
-```python
-from sqlalchemy import and_, or_, not_
-
-# AND conditions
 stmt = select(MachineTable).where(
     and_(
         MachineTable.c.zone_id == zone_id,
         MachineTable.c.status == "ready",
-        MachineTable.c.cpu_count >= min_cpu,
     )
-)
-
-# OR conditions
-stmt = select(MachineTable).where(
-    or_(
-        MachineTable.c.status == "ready",
-        MachineTable.c.status == "allocated",
-    )
-)
-
-# NOT condition
-stmt = select(MachineTable).where(
-    not_(MachineTable.c.status == "broken")
 )
 ```
 
 ### Joins
-
-**Simple Join**:
 
 ```python
 from sqlalchemy import join
@@ -228,48 +154,14 @@ stmt = (
 )
 ```
 
-**Left Outer Join**:
-
-```python
-from sqlalchemy import outerjoin
-
-stmt = (
-    select(MachineTable, OwnerTable)
-    .select_from(
-        outerjoin(
-            MachineTable,
-            OwnerTable,
-            MachineTable.c.owner_id == OwnerTable.c.id,
-        )
-    )
-)
-```
-
-**Multiple Joins**:
-
-```python
-stmt = (
-    select(MachineTable, ZoneTable, OwnerTable)
-    .select_from(
-        MachineTable
-        .join(ZoneTable, MachineTable.c.zone_id == ZoneTable.c.id)
-        .outerjoin(OwnerTable, MachineTable.c.owner_id == OwnerTable.c.id)
-    )
-    .where(ZoneTable.c.name == "production")
-)
-```
-
 ### Aggregations
 
 ```python
-from sqlalchemy import func, select
+from sqlalchemy import func
 
 # Count
-stmt = select(func.count(MachineTable.c.id)).where(
-    MachineTable.c.status == "ready"
-)
-result = await connection.execute(stmt)
-count = result.scalar()
+stmt = select(func.count(MachineTable.c.id)).where(MachineTable.c.status == "ready")
+count = (await connection.execute(stmt)).scalar()
 
 # Group by with aggregates
 stmt = (
@@ -277,19 +169,8 @@ stmt = (
         MachineTable.c.zone_id,
         func.count(MachineTable.c.id).label("machine_count"),
         func.avg(MachineTable.c.cpu_count).label("avg_cpu"),
-        func.sum(MachineTable.c.memory).label("total_memory"),
     )
     .group_by(MachineTable.c.zone_id)
-)
-
-# Having clause
-stmt = (
-    select(
-        MachineTable.c.zone_id,
-        func.count(MachineTable.c.id).label("count"),
-    )
-    .group_by(MachineTable.c.zone_id)
-    .having(func.count(MachineTable.c.id) > 10)
 )
 ```
 
@@ -312,8 +193,6 @@ stmt = select(MachineTable).limit(10).offset(20)
 
 ### Insert Operations
 
-**Single Insert**:
-
 ```python
 stmt = insert(MachineTable).values(
     hostname="node1",
@@ -326,36 +205,7 @@ row = result.one()
 machine = Machine(**row._asdict())
 ```
 
-**Bulk Insert**:
-
-```python
-machines_data = [
-    {"hostname": "node1", "zone_id": 1},
-    {"hostname": "node2", "zone_id": 1},
-    {"hostname": "node3", "zone_id": 2},
-]
-
-stmt = insert(MachineTable).values(machines_data)
-await connection.execute(stmt)
-```
-
-**Insert with Select**:
-
-```python
-# Copy machines from one zone to another
-stmt = insert(MachineTable).from_select(
-    ["hostname", "zone_id", "cpu_count"],
-    select(
-        MachineTable.c.hostname,
-        new_zone_id,
-        MachineTable.c.cpu_count,
-    ).where(MachineTable.c.zone_id == old_zone_id)
-)
-```
-
 ### Update Operations
-
-**Simple Update**:
 
 ```python
 stmt = (
@@ -369,59 +219,11 @@ result = await connection.execute(stmt)
 row = result.one()
 ```
 
-**Conditional Update**:
-
-```python
-stmt = (
-    update(MachineTable)
-    .where(
-        and_(
-            MachineTable.c.zone_id == old_zone_id,
-            MachineTable.c.status == "ready",
-        )
-    )
-    .values(zone_id=new_zone_id)
-)
-```
-
-**Update with Expression**:
-
-```python
-from sqlalchemy import case
-
-stmt = (
-    update(MachineTable)
-    .where(MachineTable.c.id == machine_id)
-    .values(
-        cpu_count=MachineTable.c.cpu_count * 2,
-        updated=func.now(),
-    )
-)
-```
-
 ### Delete Operations
 
 ```python
-# Simple delete
 stmt = delete(MachineTable).where(MachineTable.c.id == machine_id)
 await connection.execute(stmt)
-
-# Conditional delete
-stmt = delete(MachineTable).where(
-    and_(
-        MachineTable.c.status == "broken",
-        MachineTable.c.updated < func.now() - timedelta(days=30),
-    )
-)
-
-# Delete with returning (PostgreSQL)
-stmt = (
-    delete(MachineTable)
-    .where(MachineTable.c.id == machine_id)
-    .returning(MachineTable.c.hostname)
-)
-result = await connection.execute(stmt)
-deleted_hostname = result.scalar()
 ```
 
 ### Transactions
@@ -504,19 +306,7 @@ subq = (
     .scalar_subquery()
 )
 
-stmt = select(
-    MachineTable.c.hostname,
-    subq.label("interface_count"),
-)
-
-# Correlated subquery
-stmt = select(MachineTable).where(
-    MachineTable.c.cpu_count > (
-        select(func.avg(MachineTable.c.cpu_count))
-        .where(MachineTable.c.zone_id == ZoneTable.c.id)
-        .scalar_subquery()
-    )
-)
+stmt = select(MachineTable.c.hostname, subq.label("interface_count"))
 ```
 
 ## Anti-patterns
@@ -626,14 +416,7 @@ stmt = select(MachineTable).where(MachineTable.c.owner_id.is_(None))
 stmt = select(MachineTable).where(MachineTable.c.owner_id.is_not(None))
 ```
 
-## Related Skills
 
-- **Python Patterns**: [python-patterns.md](python-patterns.md) - Three-tier architecture, QuerySpec usage
-- **Django**: [django-patterns.md](django-patterns.md) - Legacy ORM patterns (contrast)
-- **Testing**: [python-testing.md](python-testing.md) - Testing repository code
-- **Security**: [../techniques/input-validation.md](../techniques/input-validation.md) - Parameterized queries
-- **Backend Feature**: [../compositions/backend-feature.md](../compositions/backend-feature.md) - Complete workflow
-- **API Endpoint**: [../compositions/api-endpoint.md](../compositions/api-endpoint.md) - Repository to API flow
 
 ## Core vs ORM Decision
 

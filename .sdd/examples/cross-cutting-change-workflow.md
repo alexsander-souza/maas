@@ -10,6 +10,65 @@ This example demonstrates using the SDD process for a cross-cutting change that 
 
 **Business Driver:** Enterprise customers require compliance certifications; 3 deals blocked waiting for audit logging; security team mandate to meet compliance standards by Q2
 
+### Affected Subsystems Overview
+
+```mermaid
+graph TB
+    subgraph "Authentication & Authorization"
+        AUTH[Authentication Service]
+        AUTHZ[Authorization Service]
+    end
+    
+    subgraph "Data Layer"
+        API[API Layer]
+        DB[Database Layer]
+        EVENT[Event Bus]
+    end
+    
+    subgraph "Domain Services"
+        USER[User Management]
+        MACHINE[Machine Management]
+        NET[Network Service]
+        DNS[DNS Service]
+        DHCP[DHCP Service]
+    end
+    
+    subgraph "User Interfaces"
+        UI[Web UI]
+        CLI[CLI]
+        BG[Background Jobs]
+    end
+    
+    subgraph "Audit Infrastructure"
+        BUS[AuditEventBus]
+        WRITER[AuditLogWriter]
+        STORAGE[(Immutable Storage)]
+        QUERY[Query API]
+    end
+    
+    AUTH --> BUS
+    AUTHZ --> BUS
+    API --> BUS
+    USER --> BUS
+    MACHINE --> BUS
+    NET --> BUS
+    DNS --> BUS
+    DHCP --> BUS
+    UI --> BUS
+    CLI --> BUS
+    BG --> BUS
+    DB --> BUS
+    
+    BUS --> WRITER
+    WRITER --> STORAGE
+    STORAGE --> QUERY
+    
+    style BUS fill:#e1f5ff
+    style WRITER fill:#e1f5ff
+    style STORAGE fill:#fff4e1
+    style QUERY fill:#e8f5e9
+```
+
 ---
 
 ## Phase 1: Specify (Week 1)
@@ -232,40 +291,65 @@ MAAS lacks comprehensive, tamper-proof audit logging required for enterprise com
 
 **Target Architecture:**
 
+```mermaid
+flowchart TD
+    subgraph APP["Application Layer"]
+        API_L[API Endpoints]
+        SVC[Services]
+        UI_L[Web UI]
+        CLI_L[CLI]
+        BG_L[Background Jobs]
+    end
+    
+    APP -->|Emit Audit Events<br/>Non-blocking| BUS[AuditEventBus<br/>Async Queue]
+    
+    BUS -->|Buffering & Batching| WRITER[AuditLogWriter<br/>Background Worker]
+    
+    WRITER -->|1. Dequeue events| WRITER
+    WRITER -->|2. Compute hash chain| WRITER
+    WRITER -->|3. Write to storage| STORAGE[(Immutable Audit Storage<br/>PostgreSQL)]
+    
+    STORAGE -->|Append-only<br/>Cryptographic chain<br/>Partitioned by date| ARCHIVE[Archival Storage<br/>7-year retention]
+    
+    STORAGE -->|Read-only access| QUERY[Audit Query API]
+    
+    QUERY -->|Filtering<br/>Pagination<br/>Export| CONSUMERS[Compliance Officers<br/>Security Team<br/>SIEM Systems]
+    
+    style BUS fill:#e1f5ff
+    style WRITER fill:#fff4e1
+    style STORAGE fill:#ffe1e1
+    style QUERY fill:#e8f5e9
 ```
-┌─────────────────────────────────────────────────────────┐
-│                 Application Layer                        │
-│  (API, Services, UI, CLI, Background Jobs)               │
-└────────────────┬────────────────────────────────────────┘
-                 │ Emit Audit Events
-                 ▼
-┌─────────────────────────────────────────────────────────┐
-│            AuditEventBus (Async Queue)                   │
-│  - Non-blocking event emission                           │
-│  - Buffering and batching                                │
-└────────────────┬────────────────────────────────────────┘
-                 │
-                 ▼
-┌─────────────────────────────────────────────────────────┐
-│         AuditLogWriter (Background Worker)               │
-│  - Dequeue events from bus                               │
-│  - Compute hash chain                                    │
-│  - Write to immutable storage                            │
-└────────────────┬────────────────────────────────────────┘
-                 │
-                 ▼
-┌─────────────────────────────────────────────────────────┐
-│      Immutable Audit Storage (PostgreSQL)                │
-│  - Append-only table with cryptographic chain            │
-│  - Partitioned by date for retention                     │
-└─────────────────────────────────────────────────────────┘
-                 │
-                 ▼
-┌─────────────────────────────────────────────────────────┐
-│           Audit Query API                                │
-│  - Read-only access to audit events                      │
-│  - Filtering, pagination, export                         │
-└─────────────────────────────────────────────────────────┘
+
+**Audit Event Data Flow:**
+
+```mermaid
+sequenceDiagram
+    participant App as Application<br/>(API/UI/Service)
+    participant Bus as AuditEventBus
+    participant Writer as AuditLogWriter
+    participant DB as PostgreSQL
+    participant Chain as Hash Chain
+    
+    App->>Bus: emit(event) [async, non-blocking]
+    Note over App,Bus: <5ms overhead
+    
+    Bus->>Bus: Buffer events
+    Bus->>Bus: Batch every 100ms
+    
+    loop Every 100ms
+        Bus->>Writer: dequeue_batch()
+        Writer->>Chain: get_previous_hash()
+        Chain-->>Writer: previous_hash
+        
+        Writer->>Writer: compute_hash(event + prev_hash)
+        Writer->>DB: INSERT INTO audit_events
+        DB-->>Writer: success
+        
+        Writer->>Chain: update_latest_hash(new_hash)
+    end
+    
+    Note over DB: Append-only table<br/>Tamper-evident chain
 ```
 
 **Design Decisions:**
@@ -317,6 +401,46 @@ MAAS lacks comprehensive, tamper-proof audit logging required for enterprise com
 ### Step 2.3: Create Technical Plan
 
 **Technical Plan:** `.sdd/plans/security-audit-logging.md`
+
+**Integration Points Architecture:**
+
+```mermaid
+graph LR
+    subgraph "Instrumentation Layer"
+        DEC[@audit_log decorator]
+        MID[Middleware]
+        SIG[Signal handlers]
+    end
+    
+    subgraph "Event Emission"
+        DEC --> EMIT[emit_audit_event]
+        MID --> EMIT
+        SIG --> EMIT
+    end
+    
+    subgraph "Event Processing"
+        EMIT --> BUS[AuditEventBus]
+        BUS --> Q[(In-Memory Queue)]
+        Q --> WORKER[Background Worker]
+    end
+    
+    subgraph "Storage & Query"
+        WORKER --> HASH[Hash Chain Manager]
+        HASH --> STORE[(PostgreSQL)]
+        STORE --> API[Query API]
+    end
+    
+    subgraph "Consumers"
+        API --> COMP[Compliance Reports]
+        API --> SEC[Security Dashboard]
+        API --> SIEM[SIEM Export]
+    end
+    
+    style EMIT fill:#e1f5ff
+    style BUS fill:#e1f5ff
+    style WORKER fill:#fff4e1
+    style STORE fill:#ffe1e1
+```
 
 ```markdown
 # Technical Plan: Security Audit Logging

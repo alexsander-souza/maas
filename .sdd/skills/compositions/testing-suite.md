@@ -508,7 +508,7 @@ def temp_machine(machine_repository):
 - **Go Testing**: [../languages/go-testing.md](../languages/go-testing.md)
 - **Test Code Quality**: [../techniques/test-code-quality.md](../techniques/test-code-quality.md)
 - **SQLAlchemy Patterns**: [../languages/sqlalchemy-patterns.md](../languages/sqlalchemy-patterns.md)
-- **Secure Coding**: [../techniques/secure-coding.md](../techniques/secure-coding.md)
+- **Security Practices**: [../techniques/security-practices.md](../techniques/security-practices.md)
 
 ## Summary
 

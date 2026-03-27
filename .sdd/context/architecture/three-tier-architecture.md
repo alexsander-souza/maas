@@ -6,31 +6,41 @@ MAAS implements a three-tier architecture pattern for its modern v3 API, providi
 
 ## Architecture Layers
 
-```
-┌─────────────────────────────────────────┐
-│        API Layer (Presentation)         │
-│         src/maasapiserver               │
-│    FastAPI Handlers & Endpoints         │
-└─────────────┬───────────────────────────┘
-              │ HTTP Requests/Responses
-              │ Pydantic Models
-              ▼
-┌─────────────────────────────────────────┐
-│     Service Layer (Business Logic)      │
-│       src/maasservicelayer/services     │
-│      Business Rules & Orchestration     │
-└─────────────┬───────────────────────────┘
-              │ Domain Operations
-              │ Service Methods
-              ▼
-┌─────────────────────────────────────────┐
-│    Repository Layer (Data Access)       │
-│      src/maasservicelayer/db/repos      │
-│    SQLAlchemy Core Queries & CRUD       │
-└─────────────┬───────────────────────────┘
-              │ SQL Operations
-              ▼
-         [PostgreSQL]
+```mermaid
+flowchart TD
+    subgraph API["🌐 API Layer (Presentation)<br/>src/maasapiserver"]
+        H[FastAPI Handlers & Endpoints]
+        V[Request Validation]
+        S[Response Serialization]
+    end
+    
+    subgraph Service["⚙️ Service Layer (Business Logic)<br/>src/maasservicelayer/services"]
+        BR[Business Rules & Orchestration]
+        TX[Transaction Management]
+        EV[Event Emission]
+    end
+    
+    subgraph Repository["📦 Repository Layer (Data Access)<br/>src/maasservicelayer/db/repos"]
+        SQL[SQLAlchemy Core Queries & CRUD]
+        MAP[Row-to-Model Mapping]
+    end
+    
+    DB[(PostgreSQL<br/>Database)]
+    
+    H --> |HTTP Requests/Responses<br/>Pydantic Models| BR
+    V --> BR
+    S --> |Return| H
+    
+    BR --> |Domain Operations<br/>Service Methods| SQL
+    TX --> SQL
+    
+    SQL --> |SQL Operations| DB
+    MAP --> |Domain Models| BR
+    
+    style API fill:#e1f5ff
+    style Service fill:#fff4e1
+    style Repository fill:#e8f5e9
+    style DB fill:#ffe1e1
 ```
 
 ## Layer Responsibilities

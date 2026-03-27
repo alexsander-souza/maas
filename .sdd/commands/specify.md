@@ -205,52 +205,74 @@ Use `.sdd/validation/specification-checklist.md` for detailed validation.
 
 ## Process Flow
 
+```mermaid
+flowchart TD
+    A[🔍 1. Identify User Problem] --> B[📋 2. Document Current State]
+    B --> C[🎯 3. Define Desired State]
+    C --> D[📝 4. Create Specification]
+    D --> E[✅ 5. Review & Validate]
+    E --> F{Pass Validation?}
+    F -->|No| G[📌 Clarify & Revise]
+    G --> E
+    F -->|Yes| H[👍 6. Get Approval]
+    H --> I{Approved?}
+    I -->|No| J[📢 Address Feedback]
+    J --> D
+    I -->|Yes| K[🚀 7. Hand Off to Planner]
+    
+    A -.includes.-> A1[Gather evidence<br/>User research<br/>Pain points]
+    B -.includes.-> B1[Map workflows<br/>Identify workarounds<br/>Document pain]
+    C -.includes.-> C1[Envision improved workflow<br/>Define success criteria<br/>List acceptance criteria]
+    D -.includes.-> D1[Use template<br/>Complete all sections<br/>Avoid technical details]
+    E -.includes.-> E1[Self-review checklist<br/>Stakeholder feedback<br/>Clarify ambiguities]
+    H -.includes.-> H1[Present to stakeholders<br/>Address concerns<br/>Mark as Approved]
+    
+    style A fill:#e1f5ff
+    style D fill:#fff4e1
+    style E fill:#e8f5e9
+    style K fill:#d4edda
 ```
-┌─────────────────────────────────────────────────────────────┐
-│ 1. Identify User Problem                                    │
-│    - Gather evidence (tickets, research, metrics)           │
-│    - Understand user context and pain points                │
-└────────────────────┬────────────────────────────────────────┘
-                     ↓
-┌─────────────────────────────────────────────────────────────┐
-│ 2. Document Current State                                   │
-│    - Map existing user workflows                            │
-│    - Identify pain points and workarounds                   │
-└────────────────────┬────────────────────────────────────────┘
-                     ↓
-┌─────────────────────────────────────────────────────────────┐
-│ 3. Define Desired State                                     │
-│    - Envision improved workflow                             │
-│    - Define success criteria                                │
-│    - List acceptance criteria                               │
-└────────────────────┬────────────────────────────────────────┘
-                     ↓
-┌─────────────────────────────────────────────────────────────┐
-│ 4. Create Specification Document                            │
-│    - Use specification template                             │
-│    - Fill all sections completely                           │
-│    - Avoid technical prescriptions                          │
-└────────────────────┬────────────────────────────────────────┘
-                     ↓
-┌─────────────────────────────────────────────────────────────┐
-│ 5. Review and Validate                                      │
-│    - Self-review with validation checklist                  │
-│    - Get feedback from users/stakeholders                   │
-│    - Clarify ambiguities                                    │
-└────────────────────┬────────────────────────────────────────┘
-                     ↓
-┌─────────────────────────────────────────────────────────────┐
-│ 6. Get Approval                                             │
-│    - Present to stakeholders                                │
-│    - Address feedback                                       │
-│    - Mark as "Approved"                                     │
-└────────────────────┬────────────────────────────────────────┘
-                     ↓
-┌─────────────────────────────────────────────────────────────┐
-│ 7. Hand Off to Planner                                      │
-│    - Specification + supporting artifacts                   │
-│    - Planner creates technical plan                         │
-└─────────────────────────────────────────────────────────────┘
+
+**Input/Output Flow:**
+
+```mermaid
+flowchart LR
+    subgraph Inputs["📥 Inputs"]
+        I1[User Research]
+        I2[Support Tickets]
+        I3[Metrics & Data]
+        I4[Customer Feedback]
+    end
+    
+    subgraph Process["⚙️ Specify Command"]
+        P1[Problem Analysis]
+        P2[Journey Mapping]
+        P3[Criteria Definition]
+    end
+    
+    subgraph Outputs["📤 Outputs"]
+        O1[Specification Doc]
+        O2[User Journeys]
+        O3[Acceptance Criteria]
+        O4[Success Metrics]
+    end
+    
+    I1 --> P1
+    I2 --> P1
+    I3 --> P1
+    I4 --> P1
+    
+    P1 --> P2
+    P2 --> P3
+    
+    P3 --> O1
+    P3 --> O2
+    P3 --> O3
+    P3 --> O4
+    
+    O1 -.Next Phase.-> Next[📐 Plan Command]
+    
+    style Process fill:#fff4e1
 ```
 
 ## Examples

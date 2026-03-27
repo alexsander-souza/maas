@@ -7,6 +7,10 @@
 
 ---
 
+**Reference:** See [Shared Quality Criteria](./_shared-criteria.md) for common standards (documentation quality, security requirements)
+
+---
+
 ## Instructions
 
 This checklist validates that a specification is complete and ready for technical planning. Answer each question honestly with Yes or No. A "No" answer indicates an area that needs work before proceeding.
