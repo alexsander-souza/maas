@@ -10,7 +10,7 @@
 AI Client (Claude Desktop, etc.)
        │  HTTP/SSE
        ▼
-MAAS nginx (TCP port 5275) ──► Unix socket (/run/maas/mcp.sock)
+MAAS nginx (TCP port 5275) ──► Unix socket (/var/lib/maas/mcp.sock)
                                        │
                                 MCP Server process
                               (src/maasmcpserver/)
@@ -58,23 +58,17 @@ package installation is needed. `python3-mcp` is included via `stage-packages`.
 
 ## 2. Configure
 
-### deb — Edit `/etc/maas/mcp-server.env`
+The MCP server works out of the box with no configuration needed — it defaults to
+`MAAS_URL=http://localhost:5240`, which is the MAAS region API on the same host.
+
+Override any setting via the env file:
+
+### deb — `/etc/maas/mcp-server.env`
 
 ```bash
-sudo nano /etc/maas/mcp-server.env
-```
-
-Minimum required content:
-
-```bash
-# Required: URL of your MAAS API v3 endpoint
-MAAS_URL=http://maas.example.com:5240
-```
-
-Optional settings (defaults shown):
-
-```bash
-# MCP_SOCKET_PATH=/run/maas/mcp.sock
+# All settings are optional; defaults shown.
+# MAAS_URL=http://localhost:5240
+# MCP_SOCKET_PATH=/var/lib/maas/mcp.sock
 # MAAS_REQUEST_TIMEOUT=30
 # MAAS_TLS_VERIFY=true
 # LOG_LEVEL=INFO
@@ -83,19 +77,17 @@ Optional settings (defaults shown):
 **Do not set** `MCP_HOST`, `MCP_PORT`, `TLS_CERT`, `TLS_KEY`, or `MAAS_API_KEY` — these
 are unsupported and contradict the architecture (see `contracts/config.md`).
 
-### snap — Create `$SNAP_DATA/mcp-server.env`
+### snap — `$SNAP_DATA/mcp-server.env` (optional)
 
 ```bash
-sudo tee /var/snap/maas/current/mcp-server.env > /dev/null <<'EOF'
-MAAS_URL=http://maas.example.com:5240
+# Override only if your MAAS API is not at http://localhost:5240
+# MAAS_URL=http://maas.example.com:5240
 # MAAS_REQUEST_TIMEOUT=30
 # MAAS_TLS_VERIFY=true
 # LOG_LEVEL=INFO
-EOF
 ```
 
-The snap wrapper sets `MCP_SOCKET_PATH` to `$SNAP_DATA/mcp.sock` automatically. Do not
-override it.
+The snap wrapper sets `MCP_SOCKET_PATH` to `$SNAP_DATA/mcp.sock` automatically.
 
 ---
 
@@ -103,24 +95,21 @@ override it.
 
 ### deb
 
-```bash
-sudo systemctl enable maas-mcp-server
-sudo systemctl start maas-mcp-server
-sudo systemctl status maas-mcp-server
-```
+The service is **enabled and started automatically** on package install. No manual
+`systemctl enable` is required.
 
-The service is disabled by default. `systemctl enable` is required before the first start
-and persists across reboots.
+```bash
+# Verify it is running:
+sudo systemctl status maas-mcp-server
+
+# Restart after editing /etc/maas/mcp-server.env:
+sudo systemctl restart maas-mcp-server
+```
 
 ### snap
 
-```bash
-sudo snap start maas.mcp-server
-sudo snap logs maas.mcp-server -f
-```
-
-The Pebble service is `startup: disabled` by default. `snap start` must be issued
-explicitly. Use `sudo snap restart maas.mcp-server` to restart after config changes.
+The Pebble service starts automatically with the snap. No manual `snap start` is
+required.
 
 ---
 
@@ -128,10 +117,10 @@ explicitly. Use `sudo snap restart maas.mcp-server` to restart after config chan
 
 ```bash
 # Check the Unix socket exists (deb):
-ls -l /run/maas/mcp.sock
+ls -l /var/lib/maas/mcp.sock
 
 # Check the Unix socket exists (snap):
-ls -l /var/snap/maas/current/mcp.sock
+ls -l /var/snap/maas/common/maas/mcp.sock
 
 # Confirm nginx is forwarding TCP 5275 → Unix socket:
 curl -s http://localhost:5275/  # should return an MCP protocol response or 400, not connection refused
@@ -231,7 +220,7 @@ nginx proxy, or connect your AI client directly via `socat` TCP tunnelling.
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|
 | `Connection refused` on port 5275 | nginx not proxying to Unix socket | Check nginx config; confirm the `proxy_pass unix:…` block for port 5275 is present and nginx has reloaded |
-| `No such file or directory: /run/maas/mcp.sock` | Service not started, or wrong socket path in nginx config | `systemctl start maas-mcp-server`; confirm `MCP_SOCKET_PATH` matches nginx config |
+| `No such file or directory: /var/lib/maas/mcp.sock` | Service not started, or wrong socket path in nginx config | `systemctl start maas-mcp-server`; confirm `MCP_SOCKET_PATH` matches nginx config |
 | `Validation error: maas_url field required` | `MAAS_URL` not set in env file | Edit `/etc/maas/mcp-server.env` and add `MAAS_URL=…`; restart service |
 | `maas_unreachable` error in tool response | MAAS API v3 endpoint unreachable or slow | Check `MAAS_URL` value; verify MAAS is running; check `MAAS_TLS_VERIFY` if using self-signed cert |
 | `401 Unauthorized` on tool call | Invalid or expired MAAS API key | Supply a valid, unexpired JWT token in the `Authorization: Bearer` header |
