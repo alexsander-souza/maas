@@ -12,6 +12,25 @@ This guide walks through setting up a local dev environment and verifying the fu
 
 ---
 
+## Getting a v3 Bearer Token
+
+The v3 API uses session-based Bearer tokens. Obtain one with:
+
+```bash
+MAAS_USER="admin"
+MAAS_PWD='admin'
+MAAS_URL="http://172.16.1.4:5240"
+
+TOKEN=$(curl -s -X POST "$MAAS_URL/MAAS/a/v3/auth/login" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  --data-urlencode "username=$MAAS_USER" \
+  --data-urlencode "password=$MAAS_PWD" | jq -r '.access_token')
+```
+
+Use `$TOKEN` in subsequent requests as `-H "Authorization: Bearer $TOKEN"`.
+
+---
+
 ## Running Tests
 
 ```bash
@@ -55,7 +74,7 @@ SHA=$(sha256sum /tmp/bootloader.tar.gz | cut -d' ' -f1)
 SIZE=$(stat -c%s /tmp/bootloader.tar.gz)
 
 curl -X POST http://localhost:5240/MAAS/a/v3/boot_assets/bootloaders \
-  -H "Authorization: Bearer <token>" \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/octet-stream" \
   -H "Content-Length: $SIZE" \
   -H "x-name: ubuntu/jammy" \
@@ -77,7 +96,7 @@ KSIZE=$(stat -c%s /tmp/vmlinuz)
 
 # Step 1: upload kernel
 RESOURCE_ID=$(curl -s -X POST http://localhost:5240/MAAS/a/v3/boot_assets/kernels \
-  -H "Authorization: Bearer <token>" \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/octet-stream" \
   -H "Content-Length: $KSIZE" \
   -H "x-name: ubuntu/noble" \
@@ -94,7 +113,7 @@ ISHA=$(sha256sum /tmp/initrd.img | cut -d' ' -f1)
 ISIZE=$(stat -c%s /tmp/initrd.img)
 
 curl -X POST http://localhost:5240/MAAS/a/v3/boot_assets/kernels/$RESOURCE_ID/initrd \
-  -H "Authorization: Bearer <token>" \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/octet-stream" \
   -H "Content-Length: $ISIZE" \
   -H "x-sha256: $ISHA" \
@@ -107,10 +126,10 @@ echo "complete should now be true"
 
 ```bash
 curl http://localhost:5240/MAAS/a/v3/custom_images?type=bootloader \
-  -H "Authorization: Bearer <token>"
+  -H "Authorization: Bearer $TOKEN"
 
 curl http://localhost:5240/MAAS/a/v3/custom_images?type=kernel \
-  -H "Authorization: Bearer <token>"
+  -H "Authorization: Bearer $TOKEN"
 ```
 
 ### 4. Deploy with custom bootloader
