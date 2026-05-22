@@ -52,12 +52,10 @@ bin/pytest src/tests/maasapiserver/v3/api/public/handlers/test_boot_resources.py
 
 ## Applying Migrations
 
-```bash
-# Alembic migration (partial unique indexes)
-cd src && alembic -c maasservicelayer/db/alembic/alembic.ini upgrade head
+Alembic is the sole migration tool. Django migrations are legacy and frozen.
 
-# Django migration (Node custom_bootloader/custom_kernel fields)
-bin/maas-region migrate
+```bash
+cd src && alembic -c maasservicelayer/db/alembic/alembic.ini upgrade head
 ```
 
 ---

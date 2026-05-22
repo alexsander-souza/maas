@@ -82,15 +82,15 @@ No changes. One record per `(file_id, region_id)` pair. Created immediately afte
 
 ---
 
-## Node Model Changes
+## Node Model Changes (`maasserver_node` table)
 
-Two nullable fields added to the Django `Node` model (`maasserver_node` table). Django migration required.
+Three nullable columns added to the `maasserver_node` table via **Alembic migration** (Django migrations are legacy; Alembic is the sole migration tool).
 
-| New field | Django type | DB column | Purpose |
+| Column | SQLAlchemy type | Django field (ORM access) | Purpose |
 |---|---|---|---|
-| `custom_bootloader` | `CharField(max_length=255, blank=True, null=True)` | `custom_bootloader` | Asset name stored at deploy time, e.g. `ubuntu/jammy`. Null = use Simplestreams default. |
-| `custom_kernel` | `CharField(max_length=255, blank=True, null=True)` | `custom_kernel` | Kernel asset name, e.g. `ubuntu/noble`. Null = use Simplestreams default. |
-| `custom_kernel_kflavor` | `CharField(max_length=32, blank=True, default="generic")` | `custom_kernel_kflavor` | Kernel flavour parsed from the `name:kflavor` deploy parameter, defaults to `generic`. Stored separately to avoid re-parsing at PXE boot time. |
+| `custom_bootloader` | `String(255), nullable` | `CharField(max_length=255, blank=True, null=True)` | Asset name stored at deploy time, e.g. `ubuntu/jammy`. Null = use Simplestreams default. |
+| `custom_kernel` | `String(255), nullable` | `CharField(max_length=255, blank=True, null=True)` | Kernel asset name, e.g. `ubuntu/noble`. Null = use Simplestreams default. |
+| `custom_kernel_kflavor` | `String(32), server_default="generic"` | `CharField(max_length=32, blank=True, default="generic")` | Kernel flavour parsed from the `name:kflavor` deploy parameter, defaults to `generic`. Stored separately to avoid re-parsing at PXE boot time. |
 
 > **Design note**: the `hwe_kernel` Node field was considered as a kflavor carrier but rejected: `hwe_kernel` maps to the Simplestreams `subarch` string and is bypassed entirely when `custom_kernel` is set. Reusing it would create a field whose meaning changes based on runtime context.
 

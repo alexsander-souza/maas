@@ -41,7 +41,7 @@ No new database tables are required. Custom assets reuse `BootResource → BootR
 | Pydantic builders for create/update | ✅ PASS | Existing `BootResourceBuilder` reused; new request models produce builders |
 | Async/await in v3 API | ✅ PASS | All new handlers are `async` |
 | Conventional commits with scope | ✅ PASS | Commits scoped to `api`, `service`, `repo`, `db`, `legacy` as appropriate |
-| Alembic migrations for schema changes | ✅ PASS | Two partial indexes + Node fields require Alembic migration + Django migration |
+| Alembic migrations for schema changes | ✅ PASS | All schema changes go through Alembic (sole migration tool; Django migrations are legacy) |
 | Testing pyramid | ✅ PASS | Repository (real DB), service (mocked repos), API (mocked services), DHCP unit |
 | Backward compatibility for legacy code | ✅ PASS | v2 deploy endpoint extended; no existing parameters removed |
 
