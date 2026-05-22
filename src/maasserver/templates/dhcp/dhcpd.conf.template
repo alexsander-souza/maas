@@ -188,6 +188,9 @@ host {{host['host']}}-{{host['mac'].replace(":", "-")}} {
 
    hardware ethernet {{host['mac']}};
    fixed-address {{host['ip']}};
+   {{if host.get('boot_filename')}}
+   filename "{{host['boot_filename']}}";
+   {{endif}}
 }
 {{endfor}}
 

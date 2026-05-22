@@ -48,8 +48,11 @@ from maasserver.api.utils import (
 )
 from maasserver.authorization import can_edit_machines
 from maasserver.clusterrpc.driver_parameters import get_all_power_types
+from maasserver.dhcp import configure_dhcp_on_agents
 from maasserver.enum import (
     BMC_TYPE,
+    BOOT_RESOURCE_FILE_TYPE,
+    BOOT_RESOURCE_TYPE,
     BRIDGE_TYPE,
     BRIDGE_TYPE_CHOICES,
     BRIDGE_TYPE_CHOICES_DICT,
@@ -78,6 +81,7 @@ from maasserver.forms.filesystem import (
 )
 from maasserver.forms.pods import ComposeMachineForPodsForm
 from maasserver.models import (
+    BootResource,
     Config,
     Domain,
     Interface,
@@ -886,6 +890,75 @@ class MachineHandler(NodeHandler, WorkloadAnnotationsMixin, PowerMixin):
             form.save()
         else:
             raise MAASAPIValidationError(form.errors)
+
+        custom_bootloader = request.POST.get("custom_bootloader")
+        custom_kernel = request.POST.get("custom_kernel")
+        machine_arch, _ = machine.split_arch()
+
+        if custom_bootloader:
+            bootloader = BootResource.objects.filter(
+                name=custom_bootloader,
+                architecture__startswith=f"{machine_arch}/",
+                rtype=BOOT_RESOURCE_TYPE.UPLOADED,
+                bootloader_type__isnull=False,
+            ).first()
+            if bootloader is None:
+                raise MAASAPIBadRequest(
+                    "Custom bootloader '%s' not found or architecture mismatch"
+                    % custom_bootloader
+                )
+            machine.custom_bootloader = custom_bootloader
+
+        if custom_kernel:
+            if ":" in custom_kernel:
+                kernel_name, kernel_kflavor = custom_kernel.rsplit(":", 1)
+            else:
+                kernel_name, kernel_kflavor = custom_kernel, "generic"
+            kernel_resource = BootResource.objects.filter(
+                name=kernel_name,
+                architecture__startswith=f"{machine_arch}/",
+                rtype=BOOT_RESOURCE_TYPE.UPLOADED,
+                kflavor=kernel_kflavor,
+                bootloader_type__isnull=True,
+            ).first()
+            if kernel_resource is None:
+                raise MAASAPIBadRequest(
+                    "Custom kernel '%s' not found or architecture mismatch"
+                    % custom_kernel
+                )
+            latest_set = kernel_resource.get_latest_set()
+            if latest_set is None:
+                raise MAASAPIBadRequest(
+                    "Custom kernel '%s' is not complete (missing initrd)"
+                    % custom_kernel
+                )
+            filetypes = {
+                resource_file.filetype
+                for resource_file in latest_set.files.all()
+            }
+            if not {
+                BOOT_RESOURCE_FILE_TYPE.BOOT_KERNEL,
+                BOOT_RESOURCE_FILE_TYPE.BOOT_INITRD,
+            }.issubset(filetypes):
+                raise MAASAPIBadRequest(
+                    "Custom kernel '%s' is not complete (missing initrd)"
+                    % custom_kernel
+                )
+            machine.custom_kernel = kernel_name
+            machine.custom_kernel_kflavor = kernel_kflavor
+
+        if custom_bootloader or custom_kernel:
+            machine.save(
+                update_fields=[
+                    "custom_bootloader",
+                    "custom_kernel",
+                    "custom_kernel_kflavor",
+                    "updated",
+                ]
+            )
+            if custom_bootloader:
+                configure_dhcp_on_agents(system_ids=[machine.system_id])
+
         # Check that the curtin preseeds renders correctly
         # if not an ephemeral deployment.
         if not ephemeral_deploy:

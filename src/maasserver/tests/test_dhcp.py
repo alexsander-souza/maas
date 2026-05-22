@@ -19,7 +19,7 @@ from maasserver.dhcp import (
     get_default_dns_servers,
 )
 from maasserver.dhcpd.config import compose_conditional_bootloader
-from maasserver.enum import INTERFACE_TYPE, IPADDRESS_TYPE
+from maasserver.enum import BOOT_RESOURCE_TYPE, INTERFACE_TYPE, IPADDRESS_TYPE
 from maasserver.models import Config, ControllerInfo, DHCPSnippet, Domain
 from maasserver.models import dnspublication as dnspublications_module
 from maasserver.secrets import SecretManager
@@ -2382,6 +2382,56 @@ class TestMakeHostsForSubnet(MAASServerTestCase):
         ]
 
         self.assertEqual(expected_hosts, dhcp.make_hosts_for_subnets([subnet]))
+
+    def test_returns_boot_filename_for_custom_bootloader(self):
+        rack_controller = factory.make_RackController(interface=False)
+        vlan = factory.make_VLAN()
+        subnet = factory.make_Subnet(vlan=vlan)
+        factory.make_Interface(
+            INTERFACE_TYPE.PHYSICAL, vlan=vlan, node=rack_controller
+        )
+        node = factory.make_Node(
+            interface=False,
+            architecture="amd64/generic",
+            custom_bootloader="bootloader/shim",
+        )
+        interface = factory.make_Interface(
+            INTERFACE_TYPE.PHYSICAL, node=node, vlan=vlan
+        )
+        ip = factory.make_StaticIPAddress(
+            alloc_type=IPADDRESS_TYPE.AUTO,
+            subnet=subnet,
+            interface=interface,
+        )
+        resource = factory.make_BootResource(
+            rtype=BOOT_RESOURCE_TYPE.UPLOADED,
+            name="bootloader/shim",
+            architecture="amd64/generic",
+            bootloader_type="uefi",
+            extra={"primary_file": "shimx64.efi"},
+        )
+        resource_set = factory.make_BootResourceSet(
+            resource=resource, version="1", label="uploaded"
+        )
+        factory.make_BootResourceFile(
+            resource_set=resource_set,
+            sha256="12345678abcdef00",
+        )
+
+        self.assertEqual(
+            [
+                {
+                    "host": f"{node.hostname}-{interface.name}",
+                    "mac": str(interface.mac_address),
+                    "ip": str(ip.ip),
+                    "dhcp_snippets": [],
+                    "boot_filename": (
+                        "custom-bootloaders/12345678/shimx64.efi"
+                    ),
+                }
+            ],
+            dhcp.make_hosts_for_subnets([subnet]),
+        )
 
 
 class TestMakeFailoverPeerConfig(MAASServerTestCase):

@@ -21,6 +21,8 @@ from maasserver.api import auth
 from maasserver.api import machines as machines_module
 from maasserver.auth.tests.test_auth import OpenFGAMockMixin
 from maasserver.enum import (
+    BOOT_RESOURCE_FILE_TYPE,
+    BOOT_RESOURCE_TYPE,
     BRIDGE_TYPE,
     FILESYSTEM_FORMAT_TYPE_CHOICES,
     FILESYSTEM_TYPE,
@@ -799,6 +801,196 @@ class TestMachineAPI(APITestCase.ForUser):
         )
         self.assertEqual(http.client.BAD_REQUEST, response.status_code)
         self.assertEqual(b"Failed to render preseed: error", response.content)
+
+    def test_POST_deploy_sets_custom_bootloader_and_triggers_dhcp(self):
+        self.patch(node_module.Node, "_start")
+        self.patch(machines_module, "get_curtin_merged_config")
+        configure_dhcp_on_agents = self.patch(
+            machines_module, "configure_dhcp_on_agents"
+        )
+        machine = factory.make_Node(
+            owner=self.user,
+            interface=True,
+            power_type="manual",
+            status=NODE_STATUS.READY,
+            architecture=make_usable_architecture(self),
+        )
+        arch, _ = machine.split_arch()
+        factory.make_BootResource(
+            rtype=BOOT_RESOURCE_TYPE.UPLOADED,
+            name="bootloader/shim",
+            architecture=f"{arch}/generic",
+            bootloader_type="uefi",
+        )
+
+        response = self.client.post(
+            self.get_machine_uri(machine),
+            {"op": "deploy", "custom_bootloader": "bootloader/shim"},
+        )
+
+        self.assertEqual(http.client.OK, response.status_code)
+        machine = reload_object(machine)
+        self.assertEqual("bootloader/shim", machine.custom_bootloader)
+        configure_dhcp_on_agents.assert_called_once_with(
+            system_ids=[machine.system_id]
+        )
+
+    def test_POST_deploy_rejects_missing_custom_bootloader(self):
+        self.patch(node_module.Node, "_start")
+        self.patch(machines_module, "get_curtin_merged_config")
+        machine = factory.make_Node(
+            owner=self.user,
+            interface=True,
+            power_type="manual",
+            status=NODE_STATUS.READY,
+            architecture=make_usable_architecture(self),
+        )
+
+        response = self.client.post(
+            self.get_machine_uri(machine),
+            {"op": "deploy", "custom_bootloader": "missing/bootloader"},
+        )
+
+        self.assertEqual(http.client.BAD_REQUEST, response.status_code)
+        self.assertEqual(
+            (
+                "Custom bootloader 'missing/bootloader' not found or "
+                "architecture mismatch"
+            ),
+            response.content.decode(settings.DEFAULT_CHARSET),
+        )
+
+    def test_POST_deploy_rejects_custom_bootloader_architecture_mismatch(self):
+        self.patch(node_module.Node, "_start")
+        self.patch(machines_module, "get_curtin_merged_config")
+        machine = factory.make_Node(
+            owner=self.user,
+            interface=True,
+            power_type="manual",
+            status=NODE_STATUS.READY,
+            architecture=make_usable_architecture(self, arch_name="amd64"),
+        )
+        factory.make_BootResource(
+            rtype=BOOT_RESOURCE_TYPE.UPLOADED,
+            name="bootloader/shim",
+            architecture="arm64/generic",
+            bootloader_type="uefi",
+        )
+
+        response = self.client.post(
+            self.get_machine_uri(machine),
+            {"op": "deploy", "custom_bootloader": "bootloader/shim"},
+        )
+
+        self.assertEqual(http.client.BAD_REQUEST, response.status_code)
+        self.assertEqual(
+            (
+                "Custom bootloader 'bootloader/shim' not found or "
+                "architecture mismatch"
+            ),
+            response.content.decode(settings.DEFAULT_CHARSET),
+        )
+
+    def test_POST_deploy_sets_custom_kernel_and_kflavor(self):
+        self.patch(node_module.Node, "_start")
+        self.patch(machines_module, "get_curtin_merged_config")
+        machine = factory.make_Node(
+            owner=self.user,
+            interface=True,
+            power_type="manual",
+            status=NODE_STATUS.READY,
+            architecture=make_usable_architecture(self),
+        )
+        arch, _ = machine.split_arch()
+        boot_resource = factory.make_BootResource(
+            rtype=BOOT_RESOURCE_TYPE.UPLOADED,
+            name="custom/linux-custom",
+            architecture=f"{arch}/generic",
+            kflavor="lowlatency",
+            bootloader_type=None,
+        )
+        resource_set = factory.make_BootResourceSet(
+            resource=boot_resource, version="1", label="uploaded"
+        )
+        factory.make_BootResourceFile(
+            resource_set=resource_set,
+            filetype=BOOT_RESOURCE_FILE_TYPE.BOOT_KERNEL,
+        )
+        factory.make_BootResourceFile(
+            resource_set=resource_set,
+            filetype=BOOT_RESOURCE_FILE_TYPE.BOOT_INITRD,
+        )
+
+        response = self.client.post(
+            self.get_machine_uri(machine),
+            {
+                "op": "deploy",
+                "custom_kernel": "custom/linux-custom:lowlatency",
+            },
+        )
+
+        self.assertEqual(http.client.OK, response.status_code)
+        machine = reload_object(machine)
+        self.assertEqual("custom/linux-custom", machine.custom_kernel)
+        self.assertEqual("lowlatency", machine.custom_kernel_kflavor)
+
+    def test_POST_deploy_rejects_incomplete_custom_kernel(self):
+        self.patch(node_module.Node, "_start")
+        self.patch(machines_module, "get_curtin_merged_config")
+        machine = factory.make_Node(
+            owner=self.user,
+            interface=True,
+            power_type="manual",
+            status=NODE_STATUS.READY,
+            architecture=make_usable_architecture(self),
+        )
+        arch, _ = machine.split_arch()
+        boot_resource = factory.make_BootResource(
+            rtype=BOOT_RESOURCE_TYPE.UPLOADED,
+            name="custom/linux-custom",
+            architecture=f"{arch}/generic",
+            kflavor="generic",
+            bootloader_type=None,
+        )
+        resource_set = factory.make_BootResourceSet(
+            resource=boot_resource, version="1", label="uploaded"
+        )
+        factory.make_BootResourceFile(
+            resource_set=resource_set,
+            filetype=BOOT_RESOURCE_FILE_TYPE.BOOT_KERNEL,
+        )
+
+        response = self.client.post(
+            self.get_machine_uri(machine),
+            {"op": "deploy", "custom_kernel": "custom/linux-custom"},
+        )
+
+        self.assertEqual(http.client.BAD_REQUEST, response.status_code)
+        self.assertEqual(
+            "Custom kernel 'custom/linux-custom' is not complete "
+            "(missing initrd)",
+            response.content.decode(settings.DEFAULT_CHARSET),
+        )
+
+    def test_POST_deploy_without_custom_boot_assets_keeps_fields_empty(self):
+        self.patch(node_module.Node, "_start")
+        self.patch(machines_module, "get_curtin_merged_config")
+        machine = factory.make_Node(
+            owner=self.user,
+            interface=True,
+            power_type="manual",
+            status=NODE_STATUS.READY,
+            architecture=make_usable_architecture(self),
+        )
+
+        response = self.client.post(
+            self.get_machine_uri(machine), {"op": "deploy"}
+        )
+
+        self.assertEqual(http.client.OK, response.status_code)
+        machine = reload_object(machine)
+        self.assertIsNone(machine.custom_bootloader)
+        self.assertIsNone(machine.custom_kernel)
 
     def test_POST_deploy_validates_hwe_kernel_with_default_distro_series(self):
         architecture = make_usable_architecture(self, subarch_name="generic")

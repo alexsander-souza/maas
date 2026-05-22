@@ -205,6 +205,116 @@ class TestGetConfig(MAASServerTestCase):
             hardware_uuid=node.hardware_uuid,
         )
 
+    def test_uses_custom_kernel_files_when_selected(self):
+        rack_controller = factory.make_RackController()
+        local_ip = factory.make_ip_address()
+        remote_ip = factory.make_ip_address()
+        node = self.make_node(
+            status=NODE_STATUS.DEPLOYING,
+            custom_kernel="custom/linux-custom",
+            custom_kernel_kflavor="lowlatency",
+        )
+        arch, _ = node.split_arch()
+        resource = factory.make_BootResource(
+            rtype=BOOT_RESOURCE_TYPE.UPLOADED,
+            name="custom/linux-custom",
+            architecture=f"{arch}/generic",
+            kflavor="lowlatency",
+            bootloader_type=None,
+        )
+        resource_set = factory.make_BootResourceSet(
+            resource=resource, version="1", label="uploaded"
+        )
+        kernel_file = factory.make_BootResourceFile(
+            resource_set=resource_set,
+            filetype=BOOT_RESOURCE_FILE_TYPE.BOOT_KERNEL,
+            filename_on_disk="custom-kernel",
+        )
+        initrd_file = factory.make_BootResourceFile(
+            resource_set=resource_set,
+            filetype=BOOT_RESOURCE_FILE_TYPE.BOOT_INITRD,
+            filename_on_disk="custom-initrd",
+        )
+        mac = node.get_boot_interface().mac_address
+        self.patch_autospec(boot_module, "event_log_pxe_request")
+
+        config = get_config(
+            rack_controller.system_id,
+            local_ip,
+            remote_ip,
+            mac=mac,
+            hardware_uuid=node.hardware_uuid,
+        )
+
+        self.assertEqual(kernel_file.filename_on_disk, config["kernel"])
+        self.assertEqual(initrd_file.filename_on_disk, config["initrd"])
+
+    def test_falls_back_when_custom_kernel_is_missing(self):
+        rack_controller = factory.make_RackController()
+        local_ip = factory.make_ip_address()
+        remote_ip = factory.make_ip_address()
+        node = self.make_node(
+            status=NODE_STATUS.DEPLOYING,
+            custom_kernel="custom/linux-custom",
+            custom_kernel_kflavor="lowlatency",
+        )
+        mac = node.get_boot_interface().mac_address
+        self.patch_autospec(boot_module, "event_log_pxe_request")
+        maaslog = self.patch(boot_module, "maaslog")
+
+        config = get_config(
+            rack_controller.system_id,
+            local_ip,
+            remote_ip,
+            mac=mac,
+            hardware_uuid=node.hardware_uuid,
+        )
+
+        self.assertIsNotNone(config["kernel"])
+        self.assertIsNotNone(config["initrd"])
+        maaslog.warning.assert_called_once()
+
+    def test_falls_back_when_custom_kernel_latest_set_is_incomplete(self):
+        rack_controller = factory.make_RackController()
+        local_ip = factory.make_ip_address()
+        remote_ip = factory.make_ip_address()
+        node = self.make_node(
+            status=NODE_STATUS.DEPLOYING,
+            custom_kernel="custom/linux-custom",
+            custom_kernel_kflavor="generic",
+        )
+        arch, _ = node.split_arch()
+        resource = factory.make_BootResource(
+            rtype=BOOT_RESOURCE_TYPE.UPLOADED,
+            name="custom/linux-custom",
+            architecture=f"{arch}/generic",
+            kflavor="generic",
+            bootloader_type=None,
+        )
+        resource_set = factory.make_BootResourceSet(
+            resource=resource, version="1", label="uploaded"
+        )
+        factory.make_BootResourceFile(
+            resource_set=resource_set,
+            filetype=BOOT_RESOURCE_FILE_TYPE.BOOT_KERNEL,
+            filename_on_disk="custom-kernel",
+        )
+        mac = node.get_boot_interface().mac_address
+        self.patch_autospec(boot_module, "event_log_pxe_request")
+        maaslog = self.patch(boot_module, "maaslog")
+
+        config = get_config(
+            rack_controller.system_id,
+            local_ip,
+            remote_ip,
+            mac=mac,
+            hardware_uuid=node.hardware_uuid,
+        )
+
+        self.assertIsNotNone(config["kernel"])
+        self.assertIsNotNone(config["initrd"])
+        maaslog.warning.assert_called_once()
+
     def test_purpose_local_does_less_work(self):
         rack_controller = factory.make_RackController()
         local_ip = factory.make_ip_address()

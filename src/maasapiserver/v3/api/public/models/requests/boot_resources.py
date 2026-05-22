@@ -5,7 +5,7 @@ import re
 from typing import Annotated
 
 from fastapi import Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from maascommon.enums.boot_resources import (
     BootResourceFileType,
@@ -301,6 +301,102 @@ class BootResourceCreateRequest(BaseModel):
         )
 
 
+class BootloaderUploadRequest(BaseModel):
+    """Headers for POST /boot_assets/bootloaders."""
+
+    x_name: Annotated[
+        str,
+        Field(
+            alias="x-name",
+            description="Bootloader asset name (e.g. ubuntu/jammy)",
+        ),
+    ]
+    x_architecture: Annotated[
+        str,
+        Field(
+            alias="x-architecture",
+            description="Architecture string (arch/subarch)",
+        ),
+    ]
+    x_sha256: Annotated[
+        str,
+        Field(
+            alias="x-sha256",
+            description="64-char hex SHA-256 of uploaded tarball",
+        ),
+    ]
+    x_primary_file: Annotated[
+        str,
+        Field(
+            alias="x-primary-file",
+            description="Entry-point filename, e.g. shimx64.efi",
+        ),
+    ]
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    @model_validator(mode="after")
+    def validate_primary_file(self) -> "BootloaderUploadRequest":
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", self.x_primary_file):
+            raise ValueError(
+                "x-primary-file must match ^[A-Za-z0-9._-]{1,64}$ (no path separators)"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_sha256(self) -> "BootloaderUploadRequest":
+        if not re.fullmatch(r"[0-9a-fA-F]{64}", self.x_sha256):
+            raise ValueError("x-sha256 must be exactly 64 hex characters")
+        return self
+
+    @model_validator(mode="after")
+    def validate_architecture(self) -> "BootloaderUploadRequest":
+        if not re.fullmatch(
+            r"[a-zA-Z0-9]+/[a-zA-Z0-9.\-]+", self.x_architecture
+        ):
+            raise ValueError("x-architecture must be in form 'arch/subarch'")
+        return self
+
+
+class KernelUploadRequest(BaseModel):
+    """Headers for POST /boot_assets/kernels."""
+
+    x_name: Annotated[str, Field(alias="x-name")]
+    x_architecture: Annotated[str, Field(alias="x-architecture")]
+    x_kflavor: Annotated[str, Field(alias="x-kflavor", max_length=32)]
+    x_sha256: Annotated[str, Field(alias="x-sha256")]
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    @model_validator(mode="after")
+    def validate_sha256(self) -> "KernelUploadRequest":
+        if not re.fullmatch(r"[0-9a-fA-F]{64}", self.x_sha256):
+            raise ValueError("x-sha256 must be exactly 64 hex characters")
+        return self
+
+    @model_validator(mode="after")
+    def validate_architecture(self) -> "KernelUploadRequest":
+        if not re.fullmatch(
+            r"[a-zA-Z0-9]+/[a-zA-Z0-9.\-]+", self.x_architecture
+        ):
+            raise ValueError("x-architecture must be in form 'arch/subarch'")
+        return self
+
+
+class InitrdUploadRequest(BaseModel):
+    """Headers for POST /boot_assets/kernels/{id}/initrd."""
+
+    x_sha256: Annotated[str, Field(alias="x-sha256")]
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    @model_validator(mode="after")
+    def validate_sha256(self) -> "InitrdUploadRequest":
+        if not re.fullmatch(r"[0-9a-fA-F]{64}", self.x_sha256):
+            raise ValueError("x-sha256 must be exactly 64 hex characters")
+        return self
+
+
 class CustomImageFilterParams(BaseModel):
     ids: list[int] | None = Field(
         Query(
@@ -313,6 +409,24 @@ class CustomImageFilterParams(BaseModel):
         Query(
             default=None,
             description="Filter by file type (e.g., self-extracting for switch images)",
+        )
+    )
+    type: str | None = Field(
+        Query(
+            default=None,
+            description="Filter by asset type: 'bootloader', 'kernel', or 'image'",
+        )
+    )
+    name: str | None = Field(
+        Query(default=None, description="Exact match on asset name")
+    )
+    architecture: str | None = Field(
+        Query(default=None, description="Exact match on architecture")
+    )
+    kflavor: str | None = Field(
+        Query(
+            default=None,
+            description="Exact match on kflavor (only applies to kernels)",
         )
     )
 
@@ -328,6 +442,20 @@ class CustomImageFilterParams(BaseModel):
                     )
                 )
             )
+        if self.type is not None:
+            clauses.append(
+                BootResourceClauseFactory.with_type_filter(self.type)
+            )
+        if self.name is not None:
+            clauses.append(BootResourceClauseFactory.with_name(self.name))
+        if self.architecture is not None:
+            clauses.append(
+                BootResourceClauseFactory.with_architecture(self.architecture)
+            )
+        if self.kflavor is not None:
+            clauses.append(
+                BootResourceClauseFactory.with_kflavor(self.kflavor)
+            )
 
         if len(clauses) == 0:
             return None
@@ -342,4 +470,12 @@ class CustomImageFilterParams(BaseModel):
             parts.extend([f"id={id}" for id in self.ids])
         if self.file_type is not None:
             parts.append(f"file_type={self.file_type}")
+        if self.type is not None:
+            parts.append(f"type={self.type}")
+        if self.name is not None:
+            parts.append(f"name={self.name}")
+        if self.architecture is not None:
+            parts.append(f"architecture={self.architecture}")
+        if self.kflavor is not None:
+            parts.append(f"kflavor={self.kflavor}")
         return "&".join(parts) if parts else None

@@ -222,6 +222,38 @@ class TestGetConfig(MAASTestCase):
             )
         )
 
+    def test_renders_host_boot_filename_when_present(self):
+        if self.ipv6:
+            self.skipTest(
+                "host filename directives are only rendered for DHCPv4"
+            )
+        params = make_sample_params_only(ipv6=False)
+        params["hosts"] = [
+            {
+                **make_host(ipv6=False),
+                "boot_filename": "custom-bootloaders/12345678/shimx64.efi",
+            }
+        ]
+
+        rendered = config.get_config(self.template, **params)
+
+        self.assertIn(
+            'filename "custom-bootloaders/12345678/shimx64.efi";',
+            rendered,
+        )
+
+    def test_omits_host_boot_filename_when_absent(self):
+        if self.ipv6:
+            self.skipTest(
+                "host filename directives are only rendered for DHCPv4"
+            )
+        params = make_sample_params_only(ipv6=False)
+        params["hosts"] = [make_host(ipv6=False)]
+
+        rendered = config.get_config(self.template, **params)
+
+        self.assertNotIn("custom-bootloaders/", rendered)
+
     def test_complains_if_too_few_parameters(self):
         params = make_sample_params(self, ipv6=self.ipv6)
         del params["hosts"][0]["mac"]

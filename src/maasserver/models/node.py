@@ -1140,6 +1140,18 @@ class Node(CleanSave, TimestampedModel):
 
     hwe_kernel = CharField(max_length=31, blank=True, null=True)
 
+    custom_bootloader = CharField(
+        max_length=255, blank=True, null=True, default=None
+    )
+
+    custom_kernel = CharField(
+        max_length=255, blank=True, null=True, default=None
+    )
+
+    custom_kernel_kflavor = CharField(
+        max_length=32, blank=True, null=True, default="generic"
+    )
+
     node_type = IntegerField(
         choices=NODE_TYPE_CHOICES, editable=False, default=NODE_TYPE.DEFAULT
     )

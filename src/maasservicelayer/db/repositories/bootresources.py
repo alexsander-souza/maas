@@ -92,6 +92,53 @@ class BootResourceClauseFactory(ClauseFactory):
         )
 
     @classmethod
+    def with_bootloader_type_not_null(cls) -> Clause:
+        return Clause(
+            condition=BootResourceTable.c.bootloader_type.isnot(None)
+        )
+
+    @classmethod
+    def with_kflavor_not_null(cls) -> Clause:
+        return Clause(condition=BootResourceTable.c.kflavor.isnot(None))
+
+    @classmethod
+    def with_kflavor(cls, kflavor: str) -> Clause:
+        return Clause(condition=eq(BootResourceTable.c.kflavor, kflavor))
+
+    @classmethod
+    def with_custom_bootloader_type(cls) -> Clause:
+        return cls.and_clauses(
+            [
+                cls.with_rtype(BootResourceType.UPLOADED),
+                cls.with_bootloader_type_not_null(),
+            ]
+        )
+
+    @classmethod
+    def with_custom_kernel_type(cls) -> Clause:
+        return cls.and_clauses(
+            [
+                cls.with_rtype(BootResourceType.UPLOADED),
+                cls.with_kflavor_not_null(),
+                cls.with_bootloader_type(None),
+            ]
+        )
+
+    @classmethod
+    def with_type_filter(cls, asset_type: str) -> Clause:
+        if asset_type == "bootloader":
+            return cls.with_custom_bootloader_type()
+        if asset_type == "kernel":
+            return cls.with_custom_kernel_type()
+        return cls.and_clauses(
+            [
+                cls.with_rtype(BootResourceType.UPLOADED),
+                cls.with_bootloader_type(None),
+                Clause(condition=BootResourceTable.c.kflavor.is_(None)),
+            ]
+        )
+
+    @classmethod
     def with_selection_boot_source_id(cls, boot_source_id: int) -> Clause:
         return Clause(
             condition=eq(

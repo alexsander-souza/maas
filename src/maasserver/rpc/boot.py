@@ -13,7 +13,11 @@ from netaddr import IPAddress
 from maascommon.utils.url import splithost
 from maasserver.compose_preseed import RSYSLOG_PORT
 from maasserver.dns.config import get_resource_name_for_subnet
-from maasserver.enum import BOOT_RESOURCE_FILE_TYPE, INTERFACE_TYPE
+from maasserver.enum import (
+    BOOT_RESOURCE_FILE_TYPE,
+    BOOT_RESOURCE_TYPE,
+    INTERFACE_TYPE,
+)
 from maasserver.fields import normalise_macaddress
 from maasserver.models import (
     BootResource,
@@ -403,6 +407,57 @@ def get_boot_config_for_machine(
             subarch = "no-such-kernel"
 
     return boot_osystem, boot_series, subarch, final_osystem, final_series
+
+
+def get_custom_kernel_filenames(
+    machine: Node,
+) -> tuple[str, str] | None:
+    if not machine.custom_kernel:
+        return None
+
+    arch, _ = machine.split_arch()
+    custom_resource = BootResource.objects.filter(
+        name=machine.custom_kernel,
+        architecture__startswith=f"{arch}/",
+        rtype=BOOT_RESOURCE_TYPE.UPLOADED,
+        kflavor=machine.custom_kernel_kflavor or "generic",
+        bootloader_type__isnull=True,
+    ).first()
+    if custom_resource is None:
+        maaslog.warning(
+            "Custom kernel '%s' not found for machine %s; falling back "
+            "to standard boot files.",
+            machine.custom_kernel,
+            machine.system_id,
+        )
+        return None
+
+    latest_set = custom_resource.get_latest_set()
+    if latest_set is None:
+        maaslog.warning(
+            "Custom kernel '%s' has no versions for machine %s; falling "
+            "back to standard boot files.",
+            machine.custom_kernel,
+            machine.system_id,
+        )
+        return None
+
+    kernel_file = latest_set.files.filter(
+        filetype=BOOT_RESOURCE_FILE_TYPE.BOOT_KERNEL
+    ).first()
+    initrd_file = latest_set.files.filter(
+        filetype=BOOT_RESOURCE_FILE_TYPE.BOOT_INITRD
+    ).first()
+    if kernel_file is None or initrd_file is None:
+        maaslog.warning(
+            "Custom kernel '%s' is incomplete for machine %s; falling back "
+            "to standard boot files.",
+            machine.custom_kernel,
+            machine.system_id,
+        )
+        return None
+
+    return kernel_file.filename_on_disk, initrd_file.filename_on_disk
 
 
 def get_base_url_for_local_ip(
@@ -799,6 +854,10 @@ def get_config(
         commissioning_osystem=configs["commissioning_osystem"],
         commissioning_distro_series=configs["commissioning_distro_series"],
     )
+    if purpose != "commissioning":
+        custom_kernel_filenames = get_custom_kernel_filenames(machine)
+        if custom_kernel_filenames is not None:
+            kernel, initrd = custom_kernel_filenames
     if not all([kernel, initrd, rootfs]):
         maaslog.warning(
             (

@@ -23,12 +23,19 @@ from maasserver.dns.zonegenerator import (
     get_dns_search_paths,
     get_dns_server_addresses,
 )
-from maasserver.enum import INTERFACE_TYPE, IPADDRESS_TYPE, IPRANGE_TYPE
+from maasserver.enum import (
+    BOOT_RESOURCE_TYPE,
+    INTERFACE_TYPE,
+    IPADDRESS_TYPE,
+    IPRANGE_TYPE,
+)
 from maasserver.exceptions import UnresolvableHost
 from maasserver.models import (
+    BootResource,
     Config,
     DHCPSnippet,
     Domain,
+    Node,
     RackController,
     ReservedIP,
     StaticIPAddress,
@@ -319,6 +326,33 @@ def make_dhcp_snippet(dhcp_snippet):
     }
 
 
+def _get_boot_filename_for_node(node, bootloader_cache):
+    if node is None or not node.custom_bootloader:
+        return None
+
+    arch, _ = node.split_arch()
+    boot_resource = bootloader_cache.get((node.custom_bootloader, arch))
+    if boot_resource is None:
+        return None
+
+    primary_file = boot_resource.extra.get("primary_file")
+    if not primary_file:
+        return None
+
+    latest_set = boot_resource.get_latest_set()
+    if latest_set is None:
+        return None
+
+    boot_file = latest_set.files.first()
+    if boot_file is None:
+        return None
+
+    path = f"custom-bootloaders/{boot_file.sha256[:8]}/{primary_file}"
+    if len(path) > 128:
+        return None
+    return path
+
+
 def make_hosts_for_subnets(
     subnets: list[Subnet], nodes_dhcp_snippets: list | None = None
 ) -> list[dict]:
@@ -348,15 +382,53 @@ def make_hosts_for_subnets(
         ip__isnull=False,
         temp_expires_on__isnull=True,
     ).order_by("id")
+
+    # Pre-fetch all custom bootloader resources referenced by nodes in these
+    # subnets so _get_boot_filename_for_node avoids per-host DB queries.
+    custom_bootloader_names = set(
+        Node.objects.filter(
+            current_config__interface__ip_addresses__in=sips,
+            custom_bootloader__isnull=False,
+        )
+        .exclude(custom_bootloader="")
+        .values_list("custom_bootloader", flat=True)
+        .distinct()
+    )
+    bootloader_resources = BootResource.objects.filter(
+        name__in=custom_bootloader_names,
+        rtype=BOOT_RESOURCE_TYPE.UPLOADED,
+        bootloader_type__isnull=False,
+    ).prefetch_related("sets", "sets__files")
+    # Keyed by (name, arch-prefix) for O(1) lookup.
+    bootloader_cache: dict[tuple[str, str], BootResource] = {}
+    for br in bootloader_resources:
+        arch, _ = br.architecture.split("/", 1)
+        bootloader_cache[(br.name, arch)] = br
+
     hosts = []
     interface_ids = set()
     for sip in sips:
-        # Skip blank IP addresses.
-        if sip.ip == "":
-            continue
-        # Skip temp IP addresses.
-        if sip.temp_expires_on:
-            continue
+        assert sip.ip != "", (
+            "queryset filter ip__isnull=False must exclude blank IPs"
+        )
+        assert not sip.temp_expires_on, (
+            "queryset filter temp_expires_on__isnull=True must exclude temp IPs"
+        )
+
+        def make_host_entry(iface, ip=str(sip.ip)):
+            host = {
+                "host": make_interface_hostname(iface),
+                "mac": str(iface.mac_address),
+                "ip": ip,
+                "dhcp_snippets": get_dhcp_snippets_for_interface(iface),
+            }
+            boot_filename = _get_boot_filename_for_node(
+                iface.node_config.node if iface.node_config else None,
+                bootloader_cache,
+            )
+            if boot_filename is not None:
+                host["boot_filename"] = boot_filename
+            return host
 
         # Add all interfaces attached to this IP address.
         for interface in sip.interface_set.order_by("id"):
@@ -374,37 +446,8 @@ def make_hosts_for_subnets(
                     # from the bond.
                     if parent.mac_address != interface.mac_address:
                         interface_ids.add(parent.id)
-                        hosts.append(
-                            {
-                                "host": make_interface_hostname(parent),
-                                "mac": str(parent.mac_address),
-                                "ip": str(sip.ip),
-                                "dhcp_snippets": get_dhcp_snippets_for_interface(
-                                    parent
-                                ),
-                            }
-                        )
-                hosts.append(
-                    {
-                        "host": make_interface_hostname(interface),
-                        "mac": str(interface.mac_address),
-                        "ip": str(sip.ip),
-                        "dhcp_snippets": get_dhcp_snippets_for_interface(
-                            interface
-                        ),
-                    }
-                )
-            else:
-                hosts.append(
-                    {
-                        "host": make_interface_hostname(interface),
-                        "mac": str(interface.mac_address),
-                        "ip": str(sip.ip),
-                        "dhcp_snippets": get_dhcp_snippets_for_interface(
-                            interface
-                        ),
-                    }
-                )
+                        hosts.append(make_host_entry(parent))
+            hosts.append(make_host_entry(interface))
 
     known_mac_addresses = [host["mac"] for host in hosts]
 
@@ -782,14 +825,8 @@ def get_dhcp_configuration(rack_controller, test_dhcp_snippet=None):
     ]
 
     # Configure both DHCPv4 and DHCPv6 on the rack controller.
-    failover_peers_v4 = []
-    shared_networks_v4 = []
-    hosts_v4 = []
-    interfaces_v4 = set()
-    failover_peers_v6 = []
-    shared_networks_v6 = []
-    hosts_v6 = []
-    interfaces_v6 = set()
+    fp4, sn4, hosts4, ifaces4 = [], [], [], set()
+    fp6, sn6, hosts6, ifaces6 = [], [], [], set()
 
     # DNS can either go through the rack controller or directly to the
     # region controller.
@@ -810,73 +847,51 @@ def get_dhcp_configuration(rack_controller, test_dhcp_snippet=None):
         if name != default_domain.name
     ]
     for vlan, (subnets_v4, subnets_v6) in vlan_subnets.items():
-        # IPv4
-        if len(subnets_v4) > 0:
+        for ver, subnets, fp, sn, hosts, ifaces in (
+            (4, subnets_v4, fp4, sn4, hosts4, ifaces4),
+            (6, subnets_v6, fp6, sn6, hosts6, ifaces6),
+        ):
+            if not subnets:
+                continue
             config = get_dhcp_configure_for(
-                4,
+                ver,
                 rack_controller,
                 vlan,
-                subnets_v4,
+                subnets,
                 ntp_servers,
                 default_domain,
                 search_list=search_list,
                 dhcp_snippets=dhcp_snippets,
                 use_rack_proxy=use_rack_proxy,
             )
-            failover_peer, subnets, hosts, interface = config
+            failover_peer, subnet_configs, new_hosts, interface = config
             if failover_peer is not None:
-                failover_peers_v4.append(failover_peer)
+                fp.append(failover_peer)
             shared_network = {
                 "name": "vlan-%d" % vlan.id,
                 "mtu": vlan.mtu,
-                "subnets": subnets,
+                "subnets": subnet_configs,
             }
-            shared_networks_v4.append(shared_network)
-            hosts_v4.extend(hosts)
+            sn.append(shared_network)
+            hosts.extend(new_hosts)
             if interface is not None:
-                interfaces_v4.add(interface)
-                shared_network["interface"] = interface
-        # IPv6
-        if len(subnets_v6) > 0:
-            config = get_dhcp_configure_for(
-                6,
-                rack_controller,
-                vlan,
-                subnets_v6,
-                ntp_servers,
-                default_domain,
-                search_list=search_list,
-                dhcp_snippets=dhcp_snippets,
-                use_rack_proxy=use_rack_proxy,
-            )
-            failover_peer, subnets, hosts, interface = config
-            if failover_peer is not None:
-                failover_peers_v6.append(failover_peer)
-            shared_network = {
-                "name": "vlan-%d" % vlan.id,
-                "mtu": vlan.mtu,
-                "subnets": subnets,
-            }
-            shared_networks_v6.append(shared_network)
-            hosts_v6.extend(hosts)
-            if interface is not None:
-                interfaces_v6.add(interface)
+                ifaces.add(interface)
                 shared_network["interface"] = interface
     # When no interfaces exist for each IP version clear the shared networks
     # as DHCP server cannot be started and needs to be stopped.
-    if len(interfaces_v4) == 0:
-        shared_networks_v4 = {}
-    if len(interfaces_v6) == 0:
-        shared_networks_v6 = {}
+    if len(ifaces4) == 0:
+        sn4 = {}
+    if len(ifaces6) == 0:
+        sn6 = {}
     return DHCPConfigurationForRack(
-        failover_peers_v4,
-        shared_networks_v4,
-        hosts_v4,
-        interfaces_v4,
-        failover_peers_v6,
-        shared_networks_v6,
-        hosts_v6,
-        interfaces_v6,
+        fp4,
+        sn4,
+        hosts4,
+        ifaces4,
+        fp6,
+        sn6,
+        hosts6,
+        ifaces6,
         get_omapi_key(),
         global_dhcp_snippets,
     )

@@ -4,6 +4,7 @@
 """Common responses for boot resources and selections."""
 
 from datetime import datetime
+from typing import Self
 
 from pydantic import BaseModel, Field
 
@@ -31,18 +32,20 @@ class ImageResponse(HalResponse[BaseHal]):
     release: str
     title: str
     architecture: str
+    type: str = "image"
     boot_source_id: int | None = None
 
     @classmethod
     def from_selection(
         cls, selection: BootSourceSelection, self_base_hyperlink: str
-    ):
+    ) -> Self:
         return cls(
             id=selection.id,
             os=selection.os,
             release=selection.release,
             title=format_image_title(selection.os, selection.release),
             architecture=selection.arch,
+            type="image",
             boot_source_id=selection.boot_source_id,
             hal_links=BaseHal(  # pyright: ignore [reportCallIssue]
                 self=BaseHref(
@@ -54,9 +57,15 @@ class ImageResponse(HalResponse[BaseHal]):
     @classmethod
     def from_boot_resource(
         cls, boot_resource: BootResource, self_base_hyperlink: str
-    ):
+    ) -> Self:
         arch, _ = boot_resource.split_arch()
         osystem, release = boot_resource.split_name()
+        if boot_resource.bootloader_type is not None:
+            asset_type = "bootloader"
+        elif boot_resource.kflavor is not None:
+            asset_type = "kernel"
+        else:
+            asset_type = "image"
         return cls(
             id=boot_resource.id,
             os=osystem,
@@ -65,6 +74,7 @@ class ImageResponse(HalResponse[BaseHal]):
                 osystem, release, boot_resource.get_title()
             ),
             architecture=arch,
+            type=asset_type,
             boot_source_id=None,
             hal_links=BaseHal(  # pyright: ignore [reportCallIssue]
                 self=BaseHref(

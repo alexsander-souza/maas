@@ -2,6 +2,7 @@
 # GNU Affero General Public License version 3 (see the file LICENSE).
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from maascommon.enums.boot_resources import (
@@ -18,7 +19,9 @@ from maasservicelayer.db.repositories.bootresources import (
     BootResourceClauseFactory,
     BootResourcesRepository,
 )
+from maasservicelayer.db.tables import BootResourceTable
 from maasservicelayer.models.bootresources import BootResource
+from maasservicelayer.utils.date import utcnow
 from tests.fixtures.factories.bootresourcefiles import (
     create_test_bootresourcefile_entry,
 )
@@ -108,6 +111,25 @@ class TestBootResourceClauseFactory:
             "maasserver_bootsourceselection JOIN maasserver_bootresource ON maasserver_bootsourceselection.id = maasserver_bootresource.selection_id"
             in compiled_joins
         )
+
+    def test_with_custom_bootloader_type(self) -> None:
+        clause = BootResourceClauseFactory.with_custom_bootloader_type()
+        compiled = str(
+            clause.condition.compile(compile_kwargs={"literal_binds": True})
+        )
+        assert "maasserver_bootresource.rtype = 2" in compiled
+        assert (
+            "maasserver_bootresource.bootloader_type IS NOT NULL" in compiled
+        )
+
+    def test_with_custom_kernel_type(self) -> None:
+        clause = BootResourceClauseFactory.with_custom_kernel_type()
+        compiled = str(
+            clause.condition.compile(compile_kwargs={"literal_binds": True})
+        )
+        assert "maasserver_bootresource.rtype = 2" in compiled
+        assert "maasserver_bootresource.kflavor IS NOT NULL" in compiled
+        assert "maasserver_bootresource.bootloader_type IS NULL" in compiled
 
     def test_with_filetype(self) -> None:
         clause = BootResourceClauseFactory.with_filetype(
@@ -603,3 +625,143 @@ class TestBootResourceRepository:
         assert len(result.items) == 2
         returned_ids = {item.id for item in result.items}
         assert returned_ids == set(target_ids)
+
+    async def test_uploaded_bootloader_identity_is_unique(
+        self,
+        db_connection: AsyncConnection,
+    ) -> None:
+        now = utcnow()
+        values = {
+            "created": now,
+            "updated": now,
+            "rtype": BootResourceType.UPLOADED,
+            "name": "ubuntu/jammy",
+            "architecture": "amd64/generic",
+            "extra": {"primary_file": "shimx64.efi"},
+            "bootloader_type": "uefi",
+            "kflavor": None,
+            "rolling": False,
+            "base_image": "",
+            "alias": None,
+            "last_deployed": None,
+            "selection_id": None,
+        }
+        await db_connection.execute(BootResourceTable.insert(), values)
+
+        with pytest.raises(IntegrityError):
+            await db_connection.execute(BootResourceTable.insert(), values)
+
+    async def test_synced_bootloader_can_share_uploaded_identity(
+        self,
+        db_connection: AsyncConnection,
+    ) -> None:
+        now = utcnow()
+        await db_connection.execute(
+            BootResourceTable.insert(),
+            {
+                "created": now,
+                "updated": now,
+                "rtype": BootResourceType.UPLOADED,
+                "name": "ubuntu/jammy",
+                "architecture": "amd64/generic",
+                "extra": {"primary_file": "shimx64.efi"},
+                "bootloader_type": "uefi",
+                "kflavor": None,
+                "rolling": False,
+                "base_image": "",
+                "alias": None,
+                "last_deployed": None,
+                "selection_id": None,
+            },
+        )
+
+        result = await db_connection.execute(
+            BootResourceTable.insert().returning(BootResourceTable.c.id),
+            {
+                "created": now,
+                "updated": now,
+                "rtype": BootResourceType.SYNCED,
+                "name": "ubuntu/jammy",
+                "architecture": "amd64/generic",
+                "extra": {},
+                "bootloader_type": "uefi",
+                "kflavor": None,
+                "rolling": False,
+                "base_image": "",
+                "alias": None,
+                "last_deployed": None,
+                "selection_id": None,
+            },
+        )
+
+        assert result.scalar_one() is not None
+
+    async def test_uploaded_kernel_identity_is_unique(
+        self,
+        db_connection: AsyncConnection,
+    ) -> None:
+        now = utcnow()
+        values = {
+            "created": now,
+            "updated": now,
+            "rtype": BootResourceType.UPLOADED,
+            "name": "ubuntu/noble",
+            "architecture": "amd64/generic",
+            "extra": {"subarches": "generic"},
+            "bootloader_type": None,
+            "kflavor": "generic",
+            "rolling": False,
+            "base_image": "",
+            "alias": None,
+            "last_deployed": None,
+            "selection_id": None,
+        }
+        await db_connection.execute(BootResourceTable.insert(), values)
+
+        with pytest.raises(IntegrityError):
+            await db_connection.execute(BootResourceTable.insert(), values)
+
+    async def test_synced_kernel_can_share_uploaded_identity(
+        self,
+        db_connection: AsyncConnection,
+    ) -> None:
+        now = utcnow()
+        await db_connection.execute(
+            BootResourceTable.insert(),
+            {
+                "created": now,
+                "updated": now,
+                "rtype": BootResourceType.UPLOADED,
+                "name": "ubuntu/noble",
+                "architecture": "amd64/generic",
+                "extra": {"subarches": "generic"},
+                "bootloader_type": None,
+                "kflavor": "generic",
+                "rolling": False,
+                "base_image": "",
+                "alias": None,
+                "last_deployed": None,
+                "selection_id": None,
+            },
+        )
+
+        result = await db_connection.execute(
+            BootResourceTable.insert().returning(BootResourceTable.c.id),
+            {
+                "created": now,
+                "updated": now,
+                "rtype": BootResourceType.SYNCED,
+                "name": "ubuntu/noble",
+                "architecture": "amd64/generic",
+                "extra": {"subarches": "generic"},
+                "bootloader_type": None,
+                "kflavor": "generic",
+                "rolling": False,
+                "base_image": "",
+                "alias": None,
+                "last_deployed": None,
+                "selection_id": None,
+            },
+        )
+
+        assert result.scalar_one() is not None
