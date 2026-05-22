@@ -87,8 +87,6 @@ src/maasservicelayer/
 
 src/maasserver/
 ├── models/node.py                 # Add custom_bootloader, custom_kernel, custom_kernel_kflavor fields
-├── migrations/maasserver/
-│   └── NNNN_custom_boot_fields_on_node.py
 ├── api/machines.py                # Add custom_bootloader, custom_kernel, custom_kernel_kflavor to deploy()
 ├── rpc/boot.py                    # Add custom kernel resolution before get_boot_filenames()
 └── dhcp.py                        # Add boot_filename key to host dict when custom_bootloader set
