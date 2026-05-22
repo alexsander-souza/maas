@@ -89,7 +89,7 @@ When a custom bootloader is selected, MAAS updates the Rack Controller's DHCP co
 2. **Given** no `custom_bootloader` parameter, **When** the deploy is triggered, **Then** the machine receives the default Simplestreams bootloader.
 3. **Given** a `custom_bootloader` whose architecture does not match the machine's architecture, **When** the deploy is triggered, **Then** the request is rejected with a 400 error.
 4. **Given** a non-existent `custom_bootloader` name, **When** the deploy is triggered, **Then** the request is rejected with a 400 error.
-5. **Given** a `custom_kernel` and `custom_kernel_kflavor` on the deploy request, **When** the deploy is triggered, **Then** the machine boots with that kernel+initrd pair (latest version).
+5. **Given** a `custom_kernel` value with an optional `:kflavor` suffix on the deploy request (e.g. `ubuntu/noble` or `ubuntu/noble:lowlatency`), **When** the deploy is triggered, **Then** the machine boots with that kernel+initrd pair (latest version).
 6. **Given** a user without deployment permission on the target machine, **When** the deploy is triggered with a custom asset, **Then** the request is rejected with a 403 error.
 7. **Given** a machine already deployed with version N, **When** version N+1 is uploaded, **Then** the running machine is unaffected and new deployments use version N+1.
 8. **Given** a deploy request with an incomplete kernel asset (missing initrd), **When** submitted, **Then** the request is rejected with a 400 error.
@@ -119,7 +119,7 @@ An infrastructure operator wants machines to receive boot files at network speed
 - What happens when a bootloader upload succeeds but distribution to a remote Region fails? The asset remains available on the originating Region and Rack Controllers served by that Region; other Regions and their Racks will not have the asset until the distribution is retried.
 - What happens when the primary EFI filename submitted at upload time contains path separators or shell metacharacters? The value must be rejected at upload time before storage, to prevent DHCP config injection.
 - What happens if the combined DHCP option 67 value (extraction path + bootloader filename) would exceed 128 bytes? The system must enforce a short, fixed-depth extraction path at upload time, ensuring the constraint is always met without per-upload validation.
-- What happens when `custom_kernel` is provided without `custom_kernel_kflavor`? The deploy request must default `kflavor` to `generic` and document this behaviour.
+- The `custom_kernel` deploy parameter accepts an optional `:kflavor` suffix (e.g. `ubuntu/noble:lowlatency`). When the suffix is absent, kflavor defaults to `generic`. A separate `custom_kernel_kflavor` parameter is NOT added — the `hwe_kernel` parameter is also not reused, as it selects a Simplestreams kernel version (used as `subarch` in Simplestreams lookup) and is entirely bypassed when `custom_kernel` is set; overloading it would conflate two incompatible meanings on `Node.hwe_kernel`.
 - What happens when the Region is asked for boot parameters for a machine whose stored custom kernel asset has been deleted since deployment? The Region must detect the missing asset and fall back to the standard Simplestreams kernel, logging a warning.
 
 ## Requirements *(mandatory)*

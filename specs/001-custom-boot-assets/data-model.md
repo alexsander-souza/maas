@@ -90,7 +90,9 @@ Two nullable fields added to the Django `Node` model (`maasserver_node` table). 
 |---|---|---|---|
 | `custom_bootloader` | `CharField(max_length=255, blank=True, null=True)` | `custom_bootloader` | Asset name stored at deploy time, e.g. `ubuntu/jammy`. Null = use Simplestreams default. |
 | `custom_kernel` | `CharField(max_length=255, blank=True, null=True)` | `custom_kernel` | Kernel asset name, e.g. `ubuntu/noble`. Null = use Simplestreams default. |
-| `custom_kernel_kflavor` | `CharField(max_length=32, blank=True, default="generic")` | `custom_kernel_kflavor` | Kernel flavour, defaults to `generic`. Only meaningful when `custom_kernel` is set. |
+| `custom_kernel_kflavor` | `CharField(max_length=32, blank=True, default="generic")` | `custom_kernel_kflavor` | Kernel flavour parsed from the `name:kflavor` deploy parameter, defaults to `generic`. Stored separately to avoid re-parsing at PXE boot time. |
+
+> **Design note**: the `hwe_kernel` Node field was considered as a kflavor carrier but rejected: `hwe_kernel` maps to the Simplestreams `subarch` string and is bypassed entirely when `custom_kernel` is set. Reusing it would create a field whose meaning changes based on runtime context.
 
 These fields are:
 - Set by `MachineHandler.deploy()` when `custom_bootloader` / `custom_kernel` parameters are supplied

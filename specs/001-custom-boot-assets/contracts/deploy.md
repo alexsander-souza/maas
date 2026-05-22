@@ -11,8 +11,10 @@ Three optional `multipart/form-data` parameters are added. All existing paramete
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `custom_bootloader` | string | — (omit to use default) | Name of the uploaded bootloader asset to use (e.g. `ubuntu/jammy`). Architecture is matched automatically to the machine's architecture. |
-| `custom_kernel` | string | — (omit to use default) | Name of the uploaded kernel asset to use (e.g. `ubuntu/noble`). Architecture is matched automatically. |
-| `custom_kernel_kflavor` | string | `generic` | Kernel flavour for custom kernel selection. Only meaningful when `custom_kernel` is provided. |
+| `custom_kernel` | string | — (omit to use default) | Name and optional kflavor of the uploaded kernel asset, in the form `name` or `name:kflavor` (e.g. `ubuntu/noble` or `ubuntu/noble:lowlatency`). kflavor defaults to `generic` when omitted. Architecture is matched automatically. |
+
+> **Note — why not reuse `hwe_kernel`?**
+> `hwe_kernel` selects a Simplestreams kernel *version* (e.g. `hwe-22.04`) and is stored on the Node as the Simplestreams `subarch`. When `custom_kernel` is set the Simplestreams lookup is bypassed entirely, making `hwe_kernel` irrelevant in that code path. Reusing it to carry kflavor would overload the field with two incompatible meanings depending on runtime context. The `name:kflavor` encoding keeps the deploy API to two new parameters with no ambiguity.
 
 ---
 
@@ -27,11 +29,11 @@ When `custom_bootloader` is provided:
 6. Await DHCP update completion before powering on the machine.
 
 When `custom_kernel` is provided:
-1. Default `custom_kernel_kflavor` to `generic` if omitted.
-2. Look up `BootResource` where `name = custom_kernel`, `architecture = machine.architecture`, `rtype = UPLOADED`, `kflavor = custom_kernel_kflavor`, `bootloader_type IS NULL`.
-3. If not found → **HTTP 400** `custom_kernel "{name}/{kflavor}" not found`.
+1. Parse `name:kflavor` — if no `:` separator, kflavor defaults to `generic`.
+2. Look up `BootResource` where `name = parsed_name`, `architecture = machine.architecture`, `rtype = UPLOADED`, `kflavor = parsed_kflavor`, `bootloader_type IS NULL`.
+3. If not found → **HTTP 400** `custom_kernel "{name}:{kflavor}" not found`.
 4. Resolve latest complete `BootResourceSet`. If incomplete → **HTTP 400** `custom_kernel asset is incomplete (missing initrd)`.
-5. Store `machine.custom_kernel = custom_kernel`, `machine.custom_kernel_kflavor = custom_kernel_kflavor`.
+5. Store `machine.custom_kernel = name`, `machine.custom_kernel_kflavor = kflavor`.
 
 ---
 

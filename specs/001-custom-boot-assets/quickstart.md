@@ -129,8 +129,7 @@ maas <profile> machine deploy $SYSTEM_ID \
 
 ```bash
 maas <profile> machine deploy $SYSTEM_ID \
-  custom_kernel=ubuntu/noble \
-  custom_kernel_kflavor=generic
+  custom_kernel=ubuntu/noble:generic
 ```
 
 ---
