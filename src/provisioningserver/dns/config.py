@@ -222,6 +222,8 @@ def generate_rndc(
     rndc_content = call_and_check(
         [
             "rndc-confgen",
+            "-a",
+            "hmac-sha256",
             "-b",
             "256",
             "-k",

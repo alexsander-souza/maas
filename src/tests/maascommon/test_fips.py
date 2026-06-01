@@ -35,19 +35,20 @@ class TestFIPS:
     def test_fips_status_model(self):
         status = fips_module.FIPSStatus(
             fips_enabled=True,
-            source="/proc/sys/crypto/fips_enabled",
+            detection_source="/proc/sys/crypto/fips_enabled",
         )
 
         assert status.fips_enabled is True
-        assert status.source == "/proc/sys/crypto/fips_enabled"
+        assert status.detection_source == "/proc/sys/crypto/fips_enabled"
 
-    def test_get_fips_ssh_disabled_algorithms_excludes_non_fips(self):
-        result = fips_module.get_fips_ssh_disabled_algorithms()
+    def test_get_fips_ssh_config_returns_allow_lists(self):
+        result = fips_module.get_fips_ssh_config()
 
-        assert "hmac-md5" in result["macs"]
-        assert "3des-cbc" in result["ciphers"]
-        assert "hmac-sha2-256" not in result["macs"]
-        assert "aes128-ctr" not in result["ciphers"]
+        # The function returns explicit allow-lists, not disabled sets.
+        assert "hmac-md5" not in result["macs"]
+        assert "3des-cbc" not in result["ciphers"]
+        assert "hmac-sha2-256" in result["macs"]
+        assert "aes128-ctr" in result["ciphers"]
 
     def test_fips_ssh_config_singleton(self):
         assert isinstance(

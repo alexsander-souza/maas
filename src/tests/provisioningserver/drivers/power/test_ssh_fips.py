@@ -10,11 +10,11 @@ from maascommon.fips import FIPS_SSH_CONFIG
 from maascommon.logging.security import FIPS_CRYPTO_ERROR, FIPS_SSH_AUTH
 from provisioningserver.drivers.power.utils import connect_ssh
 
-_FIPS_DISABLED_ALGORITHMS = {
-    "ciphers": ["arcfour", "blowfish-cbc"],
-    "kex": ["diffie-hellman-group1-sha1"],
-    "macs": ["hmac-md5"],
-    "keys": ["ssh-dss"],
+_FIPS_SSH_KWARGS = {
+    "ciphers": list(FIPS_SSH_CONFIG.ciphers),
+    "kex": list(FIPS_SSH_CONFIG.kex),
+    "macs": list(FIPS_SSH_CONFIG.macs),
+    "key_types": list(FIPS_SSH_CONFIG.key_types),
 }
 
 
@@ -57,8 +57,8 @@ class TestConnectSSH:
                 return_value=mock_client,
             ),
             patch(
-                "provisioningserver.drivers.power.utils.get_fips_ssh_disabled_algorithms",
-                return_value=_FIPS_DISABLED_ALGORITHMS,
+                "provisioningserver.drivers.power.utils.get_fips_ssh_config",
+                return_value=_FIPS_SSH_KWARGS,
             ),
         ):
             connect_ssh("test-driver", "10.0.0.1", "admin", "secret")
@@ -86,7 +86,7 @@ class TestConnectSSH:
         policy_arg = mock_client.set_missing_host_key_policy.call_args[0][0]
         assert isinstance(policy_arg, AutoAddPolicy)
 
-    def test_passes_disabled_algorithms_in_fips_mode(self) -> None:
+    def test_passes_fips_ssh_config_in_fips_mode(self) -> None:
         mock_client = _make_ssh_client_mock()
 
         with (
@@ -99,18 +99,18 @@ class TestConnectSSH:
                 return_value=mock_client,
             ),
             patch(
-                "provisioningserver.drivers.power.utils.get_fips_ssh_disabled_algorithms",
-                return_value=_FIPS_DISABLED_ALGORITHMS,
+                "provisioningserver.drivers.power.utils.get_fips_ssh_config",
+                return_value=_FIPS_SSH_KWARGS,
             ),
         ):
             connect_ssh("test-driver", "10.0.0.1", "admin", "secret")
 
         assert (
-            mock_client.connect.call_args[1].get("disabled_algorithms")
-            == _FIPS_DISABLED_ALGORITHMS
+            {k: v for k, v in mock_client.connect.call_args[1].items() if k in _FIPS_SSH_KWARGS}
+            == _FIPS_SSH_KWARGS
         )
 
-    def test_no_disabled_algorithms_outside_fips_mode(self) -> None:
+    def test_no_fips_kwargs_outside_fips_mode(self) -> None:
         mock_client = _make_ssh_client_mock()
 
         with (
@@ -125,9 +125,10 @@ class TestConnectSSH:
         ):
             connect_ssh("test-driver", "10.0.0.1", "admin", "secret")
 
-        assert (
-            mock_client.connect.call_args[1].get("disabled_algorithms") is None
-        )
+        # In non-FIPS mode, no FIPS algorithm kwargs should be passed.
+        connect_kwargs = mock_client.connect.call_args[1]
+        for key in _FIPS_SSH_KWARGS:
+            assert key not in connect_kwargs
 
     def test_emits_fips_ssh_auth_log_on_successful_connection(self) -> None:
         mock_client = _make_ssh_client_mock()
@@ -142,8 +143,8 @@ class TestConnectSSH:
                 return_value=mock_client,
             ),
             patch(
-                "provisioningserver.drivers.power.utils.get_fips_ssh_disabled_algorithms",
-                return_value=_FIPS_DISABLED_ALGORITHMS,
+                "provisioningserver.drivers.power.utils.get_fips_ssh_config",
+                return_value=_FIPS_SSH_KWARGS,
             ),
             patch(
                 "provisioningserver.drivers.power.utils.logger"
@@ -170,8 +171,8 @@ class TestConnectSSH:
                 return_value=mock_client,
             ),
             patch(
-                "provisioningserver.drivers.power.utils.get_fips_ssh_disabled_algorithms",
-                return_value=_FIPS_DISABLED_ALGORITHMS,
+                "provisioningserver.drivers.power.utils.get_fips_ssh_config",
+                return_value=_FIPS_SSH_KWARGS,
             ),
             patch(
                 "provisioningserver.drivers.power.utils.logger"
@@ -231,7 +232,7 @@ class TestGenerateSSHKeyFIPSSafe:
     def test_rejects_dsa_in_fips_mode(self) -> None:
         from provisioningserver.security import (
             FIPSCryptoError,
-            generate_ssh_key_fips_safe,
+            generate_ssh_key,
         )
 
         with (
@@ -241,12 +242,12 @@ class TestGenerateSSHKeyFIPSSafe:
             ),
             pytest.raises(FIPSCryptoError, match="DSA"),
         ):
-            generate_ssh_key_fips_safe("dsa")
+            generate_ssh_key("dsa")
 
     def test_rejects_rsa_below_2048_in_fips_mode(self) -> None:
         from provisioningserver.security import (
             FIPSCryptoError,
-            generate_ssh_key_fips_safe,
+            generate_ssh_key,
         )
 
         with (
@@ -256,12 +257,12 @@ class TestGenerateSSHKeyFIPSSafe:
             ),
             pytest.raises(FIPSCryptoError, match="1024"),
         ):
-            generate_ssh_key_fips_safe("rsa", bits=1024)
+            generate_ssh_key("rsa", bits=1024)
 
     def test_rejects_ed25519_in_fips_mode(self) -> None:
         from provisioningserver.security import (
             FIPSCryptoError,
-            generate_ssh_key_fips_safe,
+            generate_ssh_key,
         )
 
         with (
@@ -271,17 +272,17 @@ class TestGenerateSSHKeyFIPSSafe:
             ),
             pytest.raises(FIPSCryptoError, match="ED25519"),
         ):
-            generate_ssh_key_fips_safe("ed25519")
+            generate_ssh_key("ed25519")
 
     def test_accepts_rsa_2048_in_fips_mode(self) -> None:
         from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 
-        from provisioningserver.security import generate_ssh_key_fips_safe
+        from provisioningserver.security import generate_ssh_key
 
         with patch(
             "provisioningserver.security.is_fips_enabled", return_value=True
         ):
-            key = generate_ssh_key_fips_safe("rsa", bits=2048)
+            key = generate_ssh_key("rsa", bits=2048)
 
         assert isinstance(key, RSAPrivateKey)
         assert key.key_size == 2048
@@ -291,24 +292,24 @@ class TestGenerateSSHKeyFIPSSafe:
             EllipticCurvePrivateKey,
         )
 
-        from provisioningserver.security import generate_ssh_key_fips_safe
+        from provisioningserver.security import generate_ssh_key
 
         with patch(
             "provisioningserver.security.is_fips_enabled", return_value=True
         ):
-            key = generate_ssh_key_fips_safe("ecdsa")
+            key = generate_ssh_key("ecdsa")
 
         assert isinstance(key, EllipticCurvePrivateKey)
 
     def test_defaults_rsa_to_4096_bits_in_fips_mode(self) -> None:
         from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 
-        from provisioningserver.security import generate_ssh_key_fips_safe
+        from provisioningserver.security import generate_ssh_key
 
         with patch(
             "provisioningserver.security.is_fips_enabled", return_value=True
         ):
-            key = generate_ssh_key_fips_safe("rsa")
+            key = generate_ssh_key("rsa")
 
         assert isinstance(key, RSAPrivateKey)
         assert key.key_size == 4096
@@ -316,24 +317,24 @@ class TestGenerateSSHKeyFIPSSafe:
     def test_allows_dsa_outside_fips_mode(self) -> None:
         from cryptography.hazmat.primitives.asymmetric.dsa import DSAPrivateKey
 
-        from provisioningserver.security import generate_ssh_key_fips_safe
+        from provisioningserver.security import generate_ssh_key
 
         with patch(
             "provisioningserver.security.is_fips_enabled", return_value=False
         ):
-            key = generate_ssh_key_fips_safe("dsa")
+            key = generate_ssh_key("dsa")
 
         assert isinstance(key, DSAPrivateKey)
 
     def test_allows_rsa_below_2048_outside_fips_mode(self) -> None:
         from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 
-        from provisioningserver.security import generate_ssh_key_fips_safe
+        from provisioningserver.security import generate_ssh_key
 
         with patch(
             "provisioningserver.security.is_fips_enabled", return_value=False
         ):
-            key = generate_ssh_key_fips_safe("rsa", bits=1024)
+            key = generate_ssh_key("rsa", bits=1024)
 
         assert isinstance(key, RSAPrivateKey)
         assert key.key_size == 1024
@@ -343,17 +344,17 @@ class TestGenerateSSHKeyFIPSSafe:
             Ed25519PrivateKey,
         )
 
-        from provisioningserver.security import generate_ssh_key_fips_safe
+        from provisioningserver.security import generate_ssh_key
 
         with patch(
             "provisioningserver.security.is_fips_enabled", return_value=False
         ):
-            key = generate_ssh_key_fips_safe("ed25519")
+            key = generate_ssh_key("ed25519")
 
         assert isinstance(key, Ed25519PrivateKey)
 
     def test_raises_for_unknown_key_type(self) -> None:
-        from provisioningserver.security import generate_ssh_key_fips_safe
+        from provisioningserver.security import generate_ssh_key
 
         with (
             patch(
@@ -362,4 +363,4 @@ class TestGenerateSSHKeyFIPSSafe:
             ),
             pytest.raises(ValueError, match="Unsupported SSH key type"),
         ):
-            generate_ssh_key_fips_safe("xmss")
+            generate_ssh_key("xmss")

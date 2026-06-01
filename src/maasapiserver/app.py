@@ -48,6 +48,7 @@ class ServerConfig:
     ssl_certfile: str | None = None
     ssl_ca_certs: str | None = None
     ssl_cert_reqs: int = ssl.CERT_NONE
+    ssl_version: int = ssl.PROTOCOL_TLS_SERVER
     http: type[asyncio.Protocol] | HTTPProtocolType = "auto"
 
 
@@ -126,6 +127,7 @@ class App:
             ssl_certfile=self._server_config.ssl_certfile,
             ssl_ca_certs=self._server_config.ssl_ca_certs,
             ssl_cert_reqs=self._server_config.ssl_cert_reqs,
+            ssl_version=self._server_config.ssl_version,
             # We configure the logging OUTSIDE the library in order to use our custom json formatter.
             log_config=None,
             http=self._server_config.http,

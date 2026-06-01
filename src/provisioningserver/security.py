@@ -101,11 +101,11 @@ def validate_key_fips_compliance(key: object) -> None:
                 )
 
 
-def generate_ssh_key_fips_safe(
+def generate_ssh_key(
     key_type: str,
     bits: int | None = None,
 ) -> object:
-    """Generate an SSH key pair enforcing FIPS 140-2/140-3 restrictions.
+    """Generate an SSH key pair enforcing FIPS 140-2/140-3 restrictions when FIPS mode is active.
 
     Rejects DSA and ed25519 in FIPS mode.  RSA keys < 2048 bits are also
     rejected.  On non-FIPS hosts the function performs best-effort generation

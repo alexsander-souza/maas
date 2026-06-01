@@ -13,7 +13,8 @@ logger = structlog.getLogger()
 
 class FIPSStatus(BaseModel):
     fips_enabled: bool
-    source: str = FIPS_ENABLED_PATH
+    detection_source: str = FIPS_ENABLED_PATH
+    detection_error: str | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -80,36 +81,19 @@ def is_fips_enabled() -> bool:
     return _fips_value
 
 
-def get_fips_ssh_disabled_algorithms() -> dict[str, list[str]]:
-    """Return a disabled_algorithms dict for paramiko that restricts to FIPS-approved algorithms."""
-    import paramiko
+def get_fips_ssh_config() -> dict[str, list[str]]:
+    """Return paramiko keyword arguments that restrict SSH algorithms to FIPS-approved sets.
 
-    allowed_ciphers = set(FIPS_SSH_CONFIG.ciphers)
-    allowed_kex = set(FIPS_SSH_CONFIG.kex)
-    allowed_macs = set(FIPS_SSH_CONFIG.macs)
-    allowed_keys = set(FIPS_SSH_CONFIG.key_types)
-
+    Returns a dict with ``ciphers``, ``kex``, ``macs``, and ``key_types`` keys
+    containing the explicit allow-lists.  These are passed directly to
+    ``SSHClient.connect()`` to override paramiko's defaults rather than
+    computing a disabled set from paramiko internals.
+    """
     return {
-        "ciphers": [
-            c
-            for c in getattr(paramiko.Transport, "_preferred_ciphers", ())
-            if c not in allowed_ciphers
-        ],
-        "kex": [
-            k
-            for k in getattr(paramiko.Transport, "_preferred_kex", ())
-            if k not in allowed_kex
-        ],
-        "macs": [
-            m
-            for m in getattr(paramiko.Transport, "_preferred_macs", ())
-            if m not in allowed_macs
-        ],
-        "keys": [
-            k
-            for k in getattr(paramiko.Transport, "_preferred_keys", ())
-            if k not in allowed_keys
-        ],
+        "ciphers": list(FIPS_SSH_CONFIG.ciphers),
+        "kex": list(FIPS_SSH_CONFIG.kex),
+        "macs": list(FIPS_SSH_CONFIG.macs),
+        "key_types": list(FIPS_SSH_CONFIG.key_types),
     }
 
 

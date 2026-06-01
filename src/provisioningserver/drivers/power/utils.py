@@ -13,7 +13,7 @@ from twisted.internet._sslverify import (
 from twisted.internet.ssl import platformTrust
 from twisted.web.client import BrowserLikePolicyForHTTPS
 
-from maascommon.fips import get_fips_ssh_disabled_algorithms, is_fips_enabled
+from maascommon.fips import get_fips_ssh_config, is_fips_enabled
 from maascommon.logging.security import (
     FIPS_CRYPTO_ERROR,
     FIPS_SSH_AUTH,
@@ -100,8 +100,8 @@ def connect_ssh(
 ) -> SSHClient:
     """Create and connect a paramiko SSHClient with FIPS-aware settings.
 
-    In FIPS mode this uses ``RejectPolicy`` for host keys and disables
-    non-FIPS algorithms.  On success a structured FIPS_SSH_AUTH log entry
+    In FIPS mode this uses ``RejectPolicy`` for host keys and passes explicit
+    allow-lists for ciphers, kex, MACs, and key types. On success a structured FIPS_SSH_AUTH log entry
     is emitted with the negotiated cipher, MAC, and key type.
 
     On failure ``FIPS_CRYPTO_ERROR`` is logged (in FIPS mode) and the
@@ -114,14 +114,19 @@ def connect_ssh(
     else:
         ssh_client.set_missing_host_key_policy(AutoAddPolicy())
     try:
-        ssh_client.connect(
-            address,
-            username=username,
-            password=password,
-            disabled_algorithms=(
-                get_fips_ssh_disabled_algorithms() if fips else None
-            ),
-        )
+        if fips:
+            ssh_client.connect(
+                hostname=address,
+                username=username,
+                password=password,
+                **get_fips_ssh_config(),  # pyright: ignore[reportArgumentType]
+            )
+        else:
+            ssh_client.connect(
+                hostname=address,
+                username=username,
+                password=password,
+            )
     except (SSHException, EOFError) as e:
         if fips:
             logger.error(

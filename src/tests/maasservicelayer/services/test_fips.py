@@ -25,7 +25,7 @@ class TestFIPSService:
             status = await fips_service.get_fips_status()
         assert isinstance(status, FIPSStatus)
         assert status.fips_enabled is True
-        assert status.source == "/proc/sys/crypto/fips_enabled"
+        assert status.detection_source == "/proc/sys/crypto/fips_enabled"
 
     @pytest.mark.asyncio
     async def test_get_fips_status_when_disabled(self, fips_service):
@@ -36,7 +36,7 @@ class TestFIPSService:
             status = await fips_service.get_fips_status()
         assert isinstance(status, FIPSStatus)
         assert status.fips_enabled is False
-        assert status.source == "/proc/sys/crypto/fips_enabled"
+        assert status.detection_source == "/proc/sys/crypto/fips_enabled"
 
     @pytest.mark.asyncio
     async def test_emit_startup_log_fips_enabled(self, fips_service):
@@ -55,7 +55,7 @@ class TestFIPSService:
         assert any(
             event.get("event") == FIPS_MODE_DETECTED
             and event.get("fips_mode") is True
-            and event.get("source") == "/proc/sys/crypto/fips_enabled"
+            and event.get("detection_source") == "/proc/sys/crypto/fips_enabled"
             for event in log_events
         ), f"Expected FIPS_MODE_DETECTED log event not found in: {log_events}"
 
@@ -76,7 +76,7 @@ class TestFIPSService:
         assert any(
             event.get("event") == FIPS_MODE_DETECTED
             and event.get("fips_mode") is False
-            and event.get("source") == "/proc/sys/crypto/fips_enabled"
+            and event.get("detection_source") == "/proc/sys/crypto/fips_enabled"
             for event in log_events
         ), f"Expected FIPS_MODE_DETECTED log event not found in: {log_events}"
 

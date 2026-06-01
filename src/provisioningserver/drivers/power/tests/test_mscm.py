@@ -164,7 +164,7 @@ class TestMSCMPowerDriver(MAASTestCase):
             context["power_address"],
             username=context["power_user"],
             password=context["power_pass"],
-            disabled_algorithms=None,
+
         )
         ssh_client.exec_command.assert_called_once_with(command)
 
@@ -173,10 +173,10 @@ class TestMSCMPowerDriver(MAASTestCase):
         command = factory.make_name("command")
         context = make_context()
         self.patch(mscm_module, "is_fips_enabled").return_value = True
-        get_fips_ssh_disabled_algorithms = self.patch(
-            mscm_module, "get_fips_ssh_disabled_algorithms"
+        get_fips_ssh_config = self.patch(
+            mscm_module, "get_fips_ssh_config"
         )
-        get_fips_ssh_disabled_algorithms.return_value = {
+        get_fips_ssh_config.return_value = {
             "ciphers": [],
             "kex": [],
             "macs": [],
@@ -200,7 +200,10 @@ class TestMSCMPowerDriver(MAASTestCase):
             context["power_address"],
             username=context["power_user"],
             password=context["power_pass"],
-            disabled_algorithms=get_fips_ssh_disabled_algorithms.return_value,
+            ciphers=get_fips_ssh_config.return_value["ciphers"],
+            kex=get_fips_ssh_config.return_value["kex"],
+            macs=get_fips_ssh_config.return_value["macs"],
+            key_types=get_fips_ssh_config.return_value["key_types"],
         )
 
     @settings(deadline=None)
