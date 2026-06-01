@@ -120,5 +120,12 @@ cd src/host-info && make test
 
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
-shell commands, and other important information, read the current plan
+shell commands, and other important information, read the current plan at
+`specs/001-fips-compliant-maas/plan.md`.
+
+Key design artifacts:
+- Research findings: `specs/001-fips-compliant-maas/research.md`
+- Data model: `specs/001-fips-compliant-maas/data-model.md`
+- API FIPS impact reference: `specs/001-fips-compliant-maas/contracts/api-fips-impact-reference.md`
+- Dev/test guide: `specs/001-fips-compliant-maas/quickstart.md`
 <!-- SPECKIT END -->
