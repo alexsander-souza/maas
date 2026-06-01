@@ -38,7 +38,6 @@
 - [x] T008b [P] Enforce TLS 1.2 minimum (unconditional) at all TLS context construction sites — Python: `ctx.minimum_version = ssl.TLSVersion.TLSv1_2`; Go: `MinVersion: tls.VersionTLS12`; 13 sites already had it set; fixed 1 remaining: `src/maascli/utils.py` (replaced `ssl.get_server_certificate` with explicit context + `wrap_socket`); no Go TLS sites exist; uvicorn TLS is terminated by nginx (already enforced in nginx config)
 - [x] T008c [P] Flag SHA-1 display uses with `usedforsecurity=False` (unconditional) — API documentation ETag in `src/maasserver/api/doc.py` (reverted SHA-256 back to SHA-1 + `usedforsecurity=False`), WebSocket RFC 6455 handshake in `src/maasserver/websockets/websockets.py` (`sha1(..., usedforsecurity=False)`), SSHFP test fingerprint in `src/maasserver/testing/factory.py` (`hashlib.sha1(usedforsecurity=False)`)
 - [x] T008d [P] Use `secrets.randbits(64)` for X.509 certificate serial number generation (unconditional) in `src/provisioningserver/certificates.py` — replaced `random.randint` usage
-- [x] T008e [P] Configure nginx to proxy all WebSocket upgrade requests (unconditional) — added `location /MAAS/ws` block with `proxy_http_version 1.1`, `Upgrade $http_upgrade`, `Connection "upgrade"` directives in `src/maasserver/templates/http/regiond.nginx.conf.template`
 - [x] T008f [P] Replace `md5()` with `sha256()` in PostgreSQL index functions (unconditional) — updated `maasserver_bmc_power_type_parameters_idx` in `src/maasservicelayer/db/tables.py` to use `func.sha256(text("power_parameters::text::bytea"))`; created Alembic migration `src/maasservicelayer/db/alembic/versions/0022_replace_bmc_md5_index_with_sha256.py` (drop + recreate index with `sha256(power_parameters::text::bytea)`); no Django migration changes (per project rules); no test fixture changes needed (index is transparent to tests)
 
 ### Phase 2B: FIPS Detection & Utilities (FIPS-Conditional)
@@ -270,7 +269,6 @@ Phase 1 (Setup)
 ```
 T008a Fernet→AES-256-GCM        T008b TLS 1.2 minimum
 T008c SHA-1 usedforsecurity=False  T008d X.509 serial CSPRNG
-T008e nginx WebSocket proxy
 ```
 
 **Phase 2B Parallel Set A** (after T004 is complete):
@@ -355,7 +353,7 @@ T037 (error schema first) → T035, T036 (API gates) → T038, T039 tests
 
 | Phase | Dev A | Dev B | Dev C | Dev D | Dev E |
 |-------|-------|-------|-------|-------|-------|
-| Phase 2A | T008a, T008b | T008c, T008d | T008e (nginx) | T008f (sha256 index) | — |
+| Phase 2A | T008a, T008b | T008c, T008d | — | T008f (sha256 index) | — |
 | Phase 2B | T004, T005 | T006, T007 | T008 (Go OMAPI) | T009 (tests) | T010 (tests) |
 | Phase 3 | T011, T012, T013 | T014, T015 | T016–T018 | T019–T021 | T022–T024, T023a |
 | Phase 4+5 | T027–T028 | T029–T031 | T032–T034 | T035–T037 | T038–T039 |
@@ -370,7 +368,7 @@ T037 (error schema first) → T035, T036 (API gates) → T038, T039 tests
 - Tasks marked `[P]` operate on distinct files with no dependency on incomplete sibling tasks — safe to run in parallel
 - `[Story]` label maps each task to its user story for traceability (US1–US6)
 - FIPS detection (`is_fips_enabled()`) is always mocked in unit tests; only integration tests (`tests/integration/test_fips_compliance.py`) require a real FIPS Ubuntu host
-- **Unconditional changes** (Phase 2A): FR-029 (OMAPI HMAC-SHA256), FR-030 (nginx WebSocket proxy), FR-032 (Fernet→AES-256-GCM), FR-034 (TLS 1.2 minimum), FR-035 (SHA-1 `usedforsecurity=False`), FR-036 (X.509 serial CSPRNG), FR-037 (sha256 index functions) — all apply to all MAAS hosts
+- **Unconditional changes** (Phase 2A): FR-029 (OMAPI HMAC-SHA256), FR-032 (Fernet→AES-256-GCM), FR-034 (TLS 1.2 minimum), FR-035 (SHA-1 `usedforsecurity=False`), FR-036 (X.509 serial CSPRNG), FR-037 (sha256 index functions) — all apply to all MAAS hosts
 - **FIPS-conditional changes** (Phase 2B, 3, 4, 5, 6, 6A): FR-031 (PostgreSQL MD5 detection), FR-033 (Go FIPS activation), SSH/TLS enforcement, driver restrictions — only when `fips_enabled=True`
 - VMware TLS fix (T016) is also unconditional — replacing `ssl.PROTOCOL_SSLv23` is a security improvement for all hosts
 - Commit scope convention: `feat(common):`, `feat(api):`, `feat(service):`, `fix(provisioning):`, `feat(agent):`, `test(api):`, `ci:` per MAAS Conventional Commits spec

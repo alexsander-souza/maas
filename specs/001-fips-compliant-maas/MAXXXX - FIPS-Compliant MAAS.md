@@ -25,7 +25,7 @@ The specific pain points are:
 
 ## Key Design Decisions
 
-- **FIPS deployments are green-field**: All FIPS deployments are assumed to be new installations with no existing Fernet-encrypted secrets. The Fernet-to-AES-256-GCM migration (requirement 7) only runs on non-FIPS hosts during upgrades. FIPS hosts start fresh with AES-256-GCM from day one, avoiding the bootstrapping problem of decrypting Fernet secrets in FIPS mode.
+- **Fernet backward compatibility**: The AES-256-GCM replacement in `provisioningserver/security.py` includes a backward-compatibility path that auto-detects and decrypts legacy Fernet tokens (identified by the `0x80` version byte prefix). This works on both FIPS and non-FIPS hosts because the legacy Fernet decryption uses the same PBKDF2-derived key material — no DB migration or secret re-encryption is needed since tokens are ephemeral RPC payloads, not stored at rest.
 - **Single package, runtime detection**: A separate FIPS snap would require a parallel build and distribution channel. Runtime detection via `/proc/sys/crypto/fips_enabled` achieves the same result with a single artifact, consistent with how Ubuntu Pro FIPS is designed to work. The snap package is the primary delivery mechanism for the FIPS-compliant MVP; `.deb` packaging is deferred.
 - **`core` snap baseline**: A FIPS-enabled `core26` snap (`fips-updates/stable` channel) is not yet available (ETA early 2027). For the MVP, MAAS will ship with the standard `core26` snap and rely on the host's FIPS kernel modules at the OS level. Once a FIPS-enabled `core26` becomes available, the installation guide will document the channel switch as a manual prerequisite step.
 - **HMAC-SHA256 upgrade applied unconditionally**: Applying the OMAPI and rndc algorithm changes only in FIPS mode would leave non-FIPS hosts using HMAC-MD5 indefinitely. HMAC-SHA256 is a safe, non-breaking upgrade on all hosts, so the change is applied unconditionally.
@@ -46,11 +46,11 @@ An administrator at a government or regulated-enterprise organization installs M
 #### Work Items
 
 - Implement FIPS mode detection utilities (requirements 1, 2): Python utility in `maascommon`, Go module in `maasagent`.  
-- Implement power driver classification and FIPS-conditional enforcement (requirements 11, 12): IPMI cipher suite enforcement, SSL verification requirements, and unsupported driver rejection.
+- Implement power driver classification and FIPS-conditional enforcement (requirements 12, 13): IPMI cipher suite enforcement, SSL verification requirements, and unsupported driver rejection.
 - Apply SSH and TLS algorithm hardening (requirements 3, 8): enforce FIPS-approved algorithms across all paramiko clients and TLS context construction sites.
-- Upgrade DHCP/DNS HMAC algorithms and key generation (requirements 4, 5, 6): replace HMAC-MD5 with HMAC-SHA256, enforce RSA/ECDSA key constraints, use CSPRNG for certificate serial numbers.
+- Upgrade DHCP/DNS HMAC algorithms and key generation (requirements 4, 5, 6, 11): replace HMAC-MD5 with HMAC-SHA256, enforce RSA/ECDSA key constraints, use CSPRNG for certificate serial numbers, and replace the PostgreSQL BMC index MD5 hash.
 - Apply unconditional hardening changes (requirements 7, 9): Fernet→AES-256-GCM migration, SHA-1→SHA-256 for display uses.
-- Implement FIPS-conditional startup gates (requirement 13): Go FIPS activation.
+- Implement FIPS-conditional startup gates (requirement 14): Go FIPS activation.
 - Document the `core` snap situation: MVP uses standard `core26` with host OS FIPS kernel modules; provide guidance for switching to the `fips-updates/stable` channel once a FIPS-enabled `core26` ships (ETA early 2027).
 
 ### **\[2\] As an infrastructure administrator, I want MAAS to expose its detected FIPS state via the API and startup logs, so that I can confirm FIPS-compliant operation without inspecting cryptographic operations directly or accessing the build pipeline.**
@@ -77,7 +77,7 @@ A compliance auditor reviewing a regulated MAAS deployment needs to confirm that
 #### Acceptance criteria
 
 - Given MAAS is running on a FIPS-enabled host, when any outbound TLS connection is made, then the journal contains a `fips_tls_handshake` event with fields `cipher_suite`, `protocol_version`, `peer`, `cert_issuer`, and `cert_valid`.  
-- Given MAAS is running on a FIPS-enabled host, when a paramiko SSH session is established, then the journal contains a `fips_ssh_auth` event with fields `key_type`, `kex`, `cipher`, `mac`, `peer`, and `result`.  
+- Given MAAS is running on a FIPS-enabled host, when a paramiko SSH session is established, then the journal contains a `fips_ssh_authentication` event with fields `key_type`, `kex`, `cipher`, `mac`, `peer`, and `result`.
 - Given MAAS is running on a FIPS-enabled host, when a FIPS violation is detected (algorithm rejected, driver unsupported), then the journal contains a `fips_crypto_error` or `fips_driver_rejected` event with fields identifying the operation, algorithm, and peer.  
 - Given FIPS mode is active, when a user submits a `POST /MAAS/a/v3/users/{username}/sshkeys` request with a DSA or Ed25519 key, or an RSA key under 2,048 bits, then the API returns HTTP 422 with `"fips_violation": true` in the response body.  
 - Given FIPS mode is active, when a user submits a `POST /MAAS/a/v3/sslkeys` request with a SHA-1 or MD5-signed certificate, then the API returns HTTP 422 with `"fips_violation": true` in the response body.  
@@ -86,7 +86,7 @@ A compliance auditor reviewing a regulated MAAS deployment needs to confirm that
 #### Work Items
 
 - Emit `fips_tls_handshake` structured log events at all outbound Twisted/pyOpenSSL TLS connection sites.  
-- Emit `fips_ssh_auth` structured log events after each paramiko SSH session negotiation in hmc, mscm, and wedge drivers.  
+- Emit `fips_ssh_authentication` structured log events after each paramiko SSH session negotiation in hmc, mscm, and wedge drivers.
 - Emit `fips_crypto_error` and `fips_driver_rejected` structured log events at every FIPS rejection site.  
 - Add FIPS SSH key algorithm validation to the SSH keys API handler; return a shared FIPS violation error response on rejection.  
 - Add FIPS TLS certificate algorithm validation to the SSL keys API handler; return a shared FIPS violation error response on rejection.  
@@ -187,7 +187,7 @@ Enforce RSA ≥ 2,048-bit and ECDSA P-256+ in certificate and key generation; re
 
 #### 7\. Fernet to AES-256-GCM migration (Unconditional)
 
-Replace Fernet (a symmetric encryption recipe from the cryptography library) with AES-256-GCM in `provisioningserver/rpc/utils.py` for region↔rack RPC encryption using `cryptography.hazmat.primitives.ciphers.aead.AESGCM` with a 256-bit key (`os.urandom(32)`) and a 96-bit nonce (`os.urandom(12)`) per encryption operation. On first startup after upgrade, detect existing Fernet-encrypted secrets (Fernet tokens begin with a base64-encoded `0x80` version byte) and re-encrypt them with AES-256-GCM, then discard the old Fernet key.
+Replace Fernet with AES-256-GCM in `provisioningserver/security.py` for region↔rack RPC encryption using `cryptography.hazmat.primitives.ciphers.aead.AESGCM` with a 256-bit key (`os.urandom(32)`) and a 96-bit nonce (`os.urandom(12)`) per encryption operation. Legacy Fernet tokens (detected by the base64-encoded `0x80` version byte prefix) are automatically decrypted via a backward-compatibility path (`_is_fernet_token` + `_fernet_decrypt`); no DB migration is needed because tokens are ephemeral RPC payloads, not stored at rest.
 
 #### 8\. TLS 1.2 minimum version (Unconditional)
 
@@ -201,19 +201,23 @@ Flag all SHA-1 invocations used for display or non-security purposes with `hashl
 
 Replace `random.randint` with `secrets.randbits(64)` for X.509 certificate serial number generation in `provisioningserver/certificates.py`.
 
+#### 11\. PostgreSQL BMC index MD5 replacement (Unconditional)
+
+Replace `md5(power_parameters::text)` with `sha256(power_parameters::text::bytea)` in the `maasserver_bmc_power_type_parameters_idx` unique index. Uses PostgreSQL built-in `sha256(bytea)` function — no `pgcrypto` extension required. Applied unconditionally on all hosts.
+
 ### **Power Drivers**
 
-#### 11\. Power driver FIPS enforcement (FIPS-conditional)
+#### 12\. Power driver FIPS enforcement (FIPS-conditional)
 
 Enforce IPMI cipher suite 17 in FIPS mode; reject suites 3, 8, and 12\. Remediate the VMware driver's legacy SSL context (`ssl.PROTOCOL_SSLv23` / `ssl.CERT_NONE`) to use a modern TLS context. Enforce HTTPS and TLS certificate verification for the AMT driver; reject plain HTTP on port 16992\. Enforce `verify_ssl=True` for hmcz, proxmox, and webhook drivers.
 
-#### 12\. Unsupported power driver rejection (FIPS-conditional)
+#### 13\. Unsupported power driver rejection (FIPS-conditional)
 
 Classify and reject the nine UNSUPPORTED-IN-FIPS drivers (apc, eaton, raritan, dli, msftocs, recs, seamicro, ucsm, moonshot) at call time when FIPS is active, returning a 422 response with `fips_supported_alternatives`.
 
 ### **Startup Gates**
 
-#### 13\. Go services FIPS activation (FIPS-conditional)
+#### 14\. Go services FIPS activation (FIPS-conditional)
 
 Set `GODEBUG=fips140=on` before any cryptographic operations in Go services when FIPS mode is detected, using a wrapper script within the snap that reads `/proc/sys/crypto/fips_enabled` at runtime and exports the variable before exec-ing the Go binary. This applies to both third-party binaries (Temporal server) and MAAS-owned Go binaries (maas-agent).
 
