@@ -4,7 +4,9 @@
 from typing import Union
 
 from fastapi import Depends, Header, Response
+from fastapi.responses import JSONResponse
 from starlette import status
+import structlog
 
 from maasapiserver.common.api.base import Handler, handler
 from maasapiserver.common.api.models.responses.errors import (
@@ -18,6 +20,9 @@ from maasapiserver.v3.api.public.models.requests.sslkeys import SSLKeyRequest
 from maasapiserver.v3.api.public.models.responses.base import (
     OPENAPI_ETAG_HEADER,
 )
+from maasapiserver.v3.api.public.models.responses.fips import (
+    FIPSViolationBodyResponse,
+)
 from maasapiserver.v3.api.public.models.responses.sslkey import (
     SSLKeyListResponse,
     SSLKeyResponse,
@@ -29,11 +34,15 @@ from maasapiserver.v3.auth.base import (
     get_authenticated_user,
 )
 from maasapiserver.v3.constants import V3_API_PREFIX
+from maascommon.fips import is_fips_enabled, validate_ssl_cert_fips_compliance
+from maascommon.logging.security import FIPS_CRYPTO_ERROR
 from maasservicelayer.db.filters import QuerySpec
 from maasservicelayer.db.repositories.sslkeys import SSLKeyClauseFactory
 from maasservicelayer.exceptions.catalog import NotFoundException
 from maasservicelayer.models.auth import AuthenticatedUser
 from maasservicelayer.services import ServiceCollectionV3
+
+logger = structlog.getLogger()
 
 
 class SSLKeysHandler(Handler):
@@ -199,6 +208,7 @@ class SSLKeysHandler(Handler):
                 "headers": {"ETag": OPENAPI_ETAG_HEADER},
             },
             409: {"model": ConflictBodyResponse},
+            422: {"model": FIPSViolationBodyResponse},
         },
         status_code=201,
         response_model_exclude_none=True,
@@ -212,8 +222,31 @@ class SSLKeysHandler(Handler):
             get_authenticated_user
         ),
         services: ServiceCollectionV3 = Depends(services),  # noqa: B008
-    ) -> SSLKeyResponse:
+    ) -> Union[SSLKeyResponse, JSONResponse]:
         assert authenticated_user is not None
+
+        # FIPS API boundary enforcement: reject TLS certificates that use
+        # algorithms not approved by FIPS 140-2/140-3 before persisting.
+        if is_fips_enabled():
+            valid, reason, alternatives = validate_ssl_cert_fips_compliance(
+                sslkey_request.key
+            )
+            if not valid:
+                logger.error(
+                    FIPS_CRYPTO_ERROR,
+                    operation="ssl_cert_import",
+                    reason=reason,
+                )
+                body = FIPSViolationBodyResponse(
+                    message=(
+                        reason or "FIPS violation: algorithm not permitted."
+                    ),
+                    allowed_values=alternatives,
+                )
+                return JSONResponse(
+                    content=body.model_dump(exclude_none=True),
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                )
 
         builder = sslkey_request.to_builder()
         builder.user_id = authenticated_user.id

@@ -4,6 +4,8 @@
 from typing import Union
 
 from fastapi import Depends, Header, Response, status
+from fastapi.responses import JSONResponse
+import structlog
 
 from maasapiserver.common.api.base import Handler, handler
 from maasapiserver.common.api.models.responses.errors import (
@@ -17,6 +19,9 @@ from maasapiserver.v3.api.public.models.requests.sshkeys import (
     SshKeyImportFromSourceRequest,
     SshKeyManualUploadRequest,
 )
+from maasapiserver.v3.api.public.models.responses.fips import (
+    FIPSViolationBodyResponse,
+)
 from maasapiserver.v3.api.public.models.responses.sshkeys import (
     SshKeyResponse,
     SshKeysListResponse,
@@ -26,11 +31,15 @@ from maasapiserver.v3.auth.base import (
     get_authenticated_user,
 )
 from maasapiserver.v3.constants import V3_API_PREFIX
+from maascommon.fips import is_fips_enabled, validate_ssh_key_fips_compliance
+from maascommon.logging.security import FIPS_CRYPTO_ERROR
 from maasservicelayer.db.filters import QuerySpec
 from maasservicelayer.db.repositories.sshkeys import SshKeyClauseFactory
 from maasservicelayer.exceptions.catalog import NotFoundException
 from maasservicelayer.models.auth import AuthenticatedUser
 from maasservicelayer.services import ServiceCollectionV3
+
+logger = structlog.getLogger()
 
 
 class SshKeysHandler(Handler):
@@ -138,6 +147,7 @@ class SshKeysHandler(Handler):
             201: {"model": SshKeyResponse},
             401: {"model": UnauthorizedBodyResponse},
             409: {"model": ConflictBodyResponse},
+            422: {"model": FIPSViolationBodyResponse},
         },
         response_model_exclude_none=True,
         status_code=201,
@@ -151,8 +161,31 @@ class SshKeysHandler(Handler):
             get_authenticated_user
         ),
         services: ServiceCollectionV3 = Depends(services),  # noqa: B008
-    ) -> SshKeyResponse:
+    ) -> Union[SshKeyResponse, JSONResponse]:
         assert authenticated_user is not None
+
+        # FIPS API boundary enforcement: reject non-FIPS-approved SSH key
+        # algorithms before persisting the key.
+        if is_fips_enabled():
+            valid, reason, alternatives = validate_ssh_key_fips_compliance(
+                sshkey_request.key
+            )
+            if not valid:
+                logger.error(
+                    FIPS_CRYPTO_ERROR,
+                    operation="ssh_key_import",
+                    reason=reason,
+                )
+                body = FIPSViolationBodyResponse(
+                    message=reason
+                    or "FIPS violation: algorithm not permitted.",
+                    allowed_values=alternatives,
+                )
+                return JSONResponse(
+                    content=body.model_dump(exclude_none=True),
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                )
+
         builder = sshkey_request.to_builder(authenticated_user.id)
         created_sshkey = await services.sshkeys.create(builder)
         response.headers["ETag"] = created_sshkey.etag()

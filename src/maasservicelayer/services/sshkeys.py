@@ -104,6 +104,7 @@ class SshKeysService(BaseService[SshKey, SshKeysRepository, SshKeyBuilder]):
     @Service.from_cache_or_execute("session")
     def _get_session(self) -> ClientSession:
         context = ssl.create_default_context(cafile=SYSTEM_CA_FILE)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
         tcp_conn = TCPConnector(ssl=context)
         return ClientSession(trust_env=True, connector=tcp_conn)
 

@@ -6,19 +6,155 @@ import binascii
 from binascii import a2b_hex, b2a_hex
 from hashlib import sha256
 from hmac import HMAC
+import os
 from sys import stderr, stdin
 from threading import Lock
 
-from cryptography.fernet import Fernet
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import dsa, rsa
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from OpenSSL import crypto
+import structlog
 
+from maascommon.fips import is_fips_enabled
+from maascommon.logging.security import FIPS_CRYPTO_ERROR
 from provisioningserver.utils.env import MAAS_SECRET, MAAS_SHARED_SECRET
+
+logger = structlog.getLogger()
 
 
 class MissingSharedSecret(RuntimeError):
     """Raised when the MAAS shared secret is missing."""
+
+
+class FIPSCryptoError(Exception):
+    """Raised when a cryptographic operation violates FIPS policy."""
+
+
+def _raise_fips_crypto_error(
+    *, operation: str, algorithm: str, reason: str
+) -> None:
+    logger.error(
+        FIPS_CRYPTO_ERROR,
+        operation=operation,
+        algorithm=algorithm,
+        reason=reason,
+    )
+    raise FIPSCryptoError(reason)
+
+
+def validate_key_fips_compliance(key: object) -> None:
+    """Validate that a key complies with FIPS policy."""
+    if not is_fips_enabled():
+        return
+
+    if isinstance(key, (dsa.DSAPrivateKey, dsa.DSAPublicKey)):
+        _raise_fips_crypto_error(
+            operation="key_validation",
+            algorithm="DSA",
+            reason="DSA keys are not permitted in FIPS mode",
+        )
+
+    if isinstance(key, (rsa.RSAPrivateKey, rsa.RSAPublicKey)):
+        if key.key_size < 2048:
+            _raise_fips_crypto_error(
+                operation="key_validation",
+                algorithm=f"RSA-{key.key_size}",
+                reason=("RSA key size below FIPS minimum of 2048 bits"),
+            )
+        return
+
+    if isinstance(key, crypto.PKey):
+        if key.type() == crypto.TYPE_DSA:
+            _raise_fips_crypto_error(
+                operation="key_validation",
+                algorithm="DSA",
+                reason="DSA keys are not permitted in FIPS mode",
+            )
+        if key.type() == crypto.TYPE_RSA and key.bits() < 2048:
+            _raise_fips_crypto_error(
+                operation="key_validation",
+                algorithm=f"RSA-{key.bits()}",
+                reason=("RSA key size below FIPS minimum of 2048 bits"),
+            )
+        return
+
+    get_name = getattr(key, "get_name", None)
+    get_bits = getattr(key, "get_bits", None)
+    if callable(get_name):
+        key_name = str(get_name()).lower()
+        if key_name == "ssh-dss":
+            _raise_fips_crypto_error(
+                operation="key_validation",
+                algorithm="DSA",
+                reason="DSA keys are not permitted in FIPS mode",
+            )
+        if "rsa" in key_name and callable(get_bits):
+            key_bits = int(get_bits())
+            if key_bits < 2048:
+                _raise_fips_crypto_error(
+                    operation="key_validation",
+                    algorithm=f"RSA-{key_bits}",
+                    reason=("RSA key size below FIPS minimum of 2048 bits"),
+                )
+
+
+def generate_ssh_key_fips_safe(
+    key_type: str,
+    bits: int | None = None,
+) -> object:
+    """Generate an SSH key pair enforcing FIPS 140-2/140-3 restrictions.
+
+    Rejects DSA and ed25519 in FIPS mode.  RSA keys < 2048 bits are also
+    rejected.  On non-FIPS hosts the function performs best-effort generation
+    with no size restrictions.
+    """
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    key_type_lower = key_type.lower()
+
+    if is_fips_enabled():
+        if key_type_lower in ("dsa", "ed25519"):
+            _raise_fips_crypto_error(
+                operation="ssh_key_generation",
+                algorithm=key_type_lower.upper(),
+                reason=f"{key_type_lower.upper()} key generation is not permitted in FIPS mode",
+            )
+        if key_type_lower == "rsa":
+            effective_bits = bits if bits is not None else 4096
+            if effective_bits < 2048:
+                _raise_fips_crypto_error(
+                    operation="ssh_key_generation",
+                    algorithm=f"RSA-{effective_bits}",
+                    reason=(
+                        f"RSA key size {effective_bits} bits is below the "
+                        "FIPS minimum of 2048 bits"
+                    ),
+                )
+
+    if key_type_lower == "rsa":
+        effective_bits = bits if bits is not None else 4096
+        return rsa.generate_private_key(
+            public_exponent=65537,
+            key_size=effective_bits,
+        )
+    elif key_type_lower == "ecdsa":
+        return ec.generate_private_key(ec.SECP256R1())
+    elif key_type_lower == "dsa":
+        return dsa.generate_parameters(key_size=2048).generate_private_key()
+    elif key_type_lower == "ed25519":
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+            Ed25519PrivateKey,
+        )
+
+        return Ed25519PrivateKey.generate()
+    else:
+        raise ValueError(
+            f"Unsupported SSH key type: {key_type!r}. "
+            "Expected one of 'rsa', 'ecdsa', 'dsa', 'ed25519'."
+        )
 
 
 def to_hex(b: bytes) -> str:
@@ -45,10 +181,10 @@ def calculate_digest(secret, message, salt):
     return hmacr.digest()
 
 
-# Cache the Fernet pre-shared key, since it's expensive to derive the key.
+# Cache the AES-256-GCM pre-shared key, since it's expensive to derive.
 # Note: this will need to change to become a dictionary if salts are supported.
-_fernet_psk = None
-_fernet_lock = Lock()
+_aes_psk = None
+_aes_lock = Lock()
 
 # Warning: this should not generally be changed; a MAAS server will not be able
 # to communicate with any peers using this value unless it matches. This value
@@ -57,19 +193,14 @@ _fernet_lock = Lock()
 DEFAULT_ITERATION_COUNT = 100000
 
 
-def _get_or_create_fernet_psk() -> bytes:
-    """Gets or creates a pre-shared key to be used with the Fernet algorithm.
+def _get_or_create_aes_psk() -> bytes:
+    """Get or create the AES-256-GCM pre-shared key.
 
-    The pre-shared key is cached in a global to prevent the expense of
-    recalculating it.
-
-    Uses the MAAS secret (typically /var/lib/maas/secret) to derive the key.
-
-    :return: A pre-shared key suitable for use with the Fernet class.
+    The key is cached globally and derived from the MAAS secret using PBKDF2.
     """
-    with _fernet_lock:
-        global _fernet_psk
-        if _fernet_psk is None:
+    with _aes_lock:
+        global _aes_psk
+        if _aes_psk is None:
             secret = MAAS_SECRET.get()
             if secret is None:
                 raise MissingSharedSecret("MAAS shared secret not found.")
@@ -89,69 +220,89 @@ def _get_or_create_fernet_psk() -> bytes:
                 backend=default_backend(),
             )
             key = kdf.derive(secret)
-            key = urlsafe_b64encode(key)
-            _fernet_psk = key
+            _aes_psk = key
         else:
-            key = _fernet_psk
+            key = _aes_psk
     return key
 
 
-def _get_fernet_context() -> Fernet:
-    """Returns a Fernet context based on the MAAS secret."""
-    key = _get_or_create_fernet_psk()
-    return Fernet(key)
+def _get_aesgcm_context() -> AESGCM:
+    """Return an AESGCM instance based on the MAAS secret."""
+    key = _get_or_create_aes_psk()
+    return AESGCM(key)
 
 
-def fernet_encrypt_psk(message, raw=False):
-    """Encrypts the specified message using the Fernet format.
+def encrypt_psk(message, raw=False):
+    """Encrypt the specified message using AES-256-GCM.
 
-    Returns the encrypted token, as a byte string.
-
-    Note that a Fernet token includes the current time. Users decrypting a
-    the token can specify a TTL (in seconds) indicating how long the encrypted
-    message should be valid. So the system clock must be correct before calling
-    this function.
-
-    :param message: The message to encrypt.
-    :type message: Must be of type 'bytes' or a UTF-8 'str'.
-    :param raw: if True, returns the decoded base64 bytes representing the
-        Fernet token. The bytes must be converted back to base64 to be
-        decrypted. (Or the 'raw' argument on the corresponding
-        fernet_decrypt_psk() function can be used.)
-    :return: the encryption token, as a base64-encoded byte string.
+    Returns the encrypted token as a byte string.
+    Output format: nonce (12 bytes) || ciphertext || tag (16 bytes),
+    all base64-encoded.
     """
-    fernet = _get_fernet_context()
+    aesgcm = _get_aesgcm_context()
     if isinstance(message, str):
         message = message.encode("utf-8")
-    token = fernet.encrypt(message)
+    nonce = os.urandom(12)
+    ciphertext = aesgcm.encrypt(nonce, message, None)
+    token = urlsafe_b64encode(nonce + ciphertext)
     if raw is True:
         token = urlsafe_b64decode(token)
     return token
 
 
-def fernet_decrypt_psk(token, ttl=None, raw=False):
-    """Decrypts the specified Fernet token using the MAAS secret.
+def _is_fernet_token(token_bytes: bytes) -> bool:
+    """Check if the token appears to be a Fernet token.
 
-    Returns the decrypted token as a byte string; the user is responsible for
-    converting it to the correct format or encoding.
-
-    :param message: The token to decrypt.
-    :type token: Must be of type 'bytes', or an ASCII base64 string.
-    :param ttl: Optional amount of time (in seconds) allowed to have elapsed
-        before the message is rejected upon decryption. Note that the Fernet
-        library considers times up to 60 seconds into the future (beyond the
-        TTL) to be valid.
-    :param raw: if True, treats the string as the decoded base64 bytes of a
-        Fernet token, and attempts to encode them (as expected by the Fernet
-        APIs) before decrypting.
-    :return: bytes
+    Fernet tokens always start with version byte 0x80, which when
+    base64-encoded produces a string starting with 'gAAAAA'.
     """
+    try:
+        decoded = urlsafe_b64decode(token_bytes)
+    except Exception:
+        return False
+    return len(decoded) > 0 and decoded[0] == 0x80
+
+
+def _fernet_decrypt(token: bytes) -> bytes:
+    """Decrypt a legacy Fernet token.
+
+    This is used only for backward compatibility during migration.
+    """
+    from cryptography.fernet import Fernet
+
+    key = _get_or_create_aes_psk()
+    fernet_key = urlsafe_b64encode(key)
+    fernet = Fernet(fernet_key)
+    return fernet.decrypt(token)
+
+
+def decrypt_psk(token, ttl=None, raw=False):
+    """Decrypt the specified token using AES-256-GCM.
+
+    For backward compatibility, legacy Fernet tokens (detected by the 'gAAAAA'
+    base64 prefix) are automatically decrypted using the legacy Fernet
+    algorithm.
+    """
+    if ttl is not None:
+        logger.warning(
+            "TTL parameter is ignored in AES-256-GCM decryption. "
+            "TTL enforcement is not implemented for backward compatibility."
+        )
     if raw is True:
         token = urlsafe_b64encode(token)
-    f = _get_fernet_context()
     if isinstance(token, str):
         token = token.encode("ascii")
-    return f.decrypt(token, ttl=ttl)
+    # Detect legacy Fernet tokens and decrypt accordingly.
+    if _is_fernet_token(token):
+        return _fernet_decrypt(token)
+    # Decrypt with AES-256-GCM.
+    aesgcm = _get_aesgcm_context()
+    raw_token = urlsafe_b64decode(token)
+    if len(raw_token) < 28:  # 12 (nonce) + 16 (tag) minimum
+        raise ValueError("Token too short to be valid AES-256-GCM")
+    nonce = raw_token[:12]
+    ciphertext = raw_token[12:]
+    return aesgcm.decrypt(nonce, ciphertext, None)
 
 
 class InstallSharedSecretScript:

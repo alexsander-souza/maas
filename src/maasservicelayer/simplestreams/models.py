@@ -45,6 +45,9 @@ from pydantic import (
     model_validator,
     ValidationError,
 )
+import structlog
+
+logger = structlog.getLogger()
 
 VersionT = TypeVar("VersionT", bound="Version")
 ProductT = TypeVar("ProductT", bound="Product")

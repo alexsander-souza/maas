@@ -43,6 +43,7 @@ class TestWedgePowerDriver(MAASTestCase):
         driver = WedgePowerDriver()
         command = factory.make_name("command")
         context = make_context()
+        self.patch(wedge_module, "is_fips_enabled").return_value = False
         SSHClient = self.patch(wedge_module, "SSHClient")
         AutoAddPolicy = self.patch(wedge_module, "AutoAddPolicy")
         ssh_client = SSHClient.return_value
@@ -61,8 +62,44 @@ class TestWedgePowerDriver(MAASTestCase):
             context["power_address"],
             username=context["power_user"],
             password=context["power_pass"],
+            disabled_algorithms=None,
         )
         ssh_client.exec_command.assert_called_once_with(command)
+
+    def test_run_wedge_command_uses_fips_ssh_configuration(self):
+        driver = WedgePowerDriver()
+        command = factory.make_name("command")
+        context = make_context()
+        self.patch(wedge_module, "is_fips_enabled").return_value = True
+        get_fips_ssh_disabled_algorithms = self.patch(
+            wedge_module, "get_fips_ssh_disabled_algorithms"
+        )
+        get_fips_ssh_disabled_algorithms.return_value = {
+            "ciphers": [],
+            "kex": [],
+            "macs": [],
+            "keys": [],
+        }
+        SSHClient = self.patch(wedge_module, "SSHClient")
+        RejectPolicy = self.patch(wedge_module, "RejectPolicy")
+        ssh_client = SSHClient.return_value
+        expected = factory.make_name("output").encode("utf-8")
+        stdout = BytesIO(expected)
+        streams = factory.make_streams(stdout=stdout)
+        ssh_client.exec_command = Mock(return_value=streams)
+
+        output = driver.run_wedge_command(command, **context)
+
+        self.assertEqual(expected.decode("utf-8"), output)
+        ssh_client.set_missing_host_key_policy.assert_called_once_with(
+            RejectPolicy.return_value
+        )
+        ssh_client.connect.assert_called_once_with(
+            context["power_address"],
+            username=context["power_user"],
+            password=context["power_pass"],
+            disabled_algorithms=get_fips_ssh_disabled_algorithms.return_value,
+        )
 
     @settings(deadline=None)
     @given(sampled_from([SSHException, EOFError, SOCKETError]))
@@ -70,6 +107,7 @@ class TestWedgePowerDriver(MAASTestCase):
         driver = WedgePowerDriver()
         command = factory.make_name("command")
         context = make_context()
+        self.patch(wedge_module, "is_fips_enabled").return_value = False
         self.patch(wedge_module, "AutoAddPolicy")
         SSHClient = self.patch(wedge_module, "SSHClient")
         ssh_client = SSHClient.return_value

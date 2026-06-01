@@ -22,7 +22,7 @@ from cryptography.fernet import InvalidToken
 from ulid import ULID
 
 from provisioningserver.path import get_path
-from provisioningserver.security import fernet_decrypt_psk, fernet_encrypt_psk
+from provisioningserver.security import decrypt_psk, encrypt_psk
 from provisioningserver.utils import sudo
 from provisioningserver.utils.network import format_eui
 from provisioningserver.utils.pcap import PCAP, PCAPError
@@ -134,7 +134,7 @@ def create_beacon_payload(beacon_type, payload=None, version=PROTOCOL_VERSION):
         payload["type"] = beacon_type_code
         data_bytes = BSON.encode(payload)
         compressed_bytes = compress(data_bytes, compresslevel=9)
-        payload_bytes = fernet_encrypt_psk(compressed_bytes, raw=True)
+        payload_bytes = encrypt_psk(compressed_bytes, raw=True)
     else:
         payload_bytes = b""
     beacon_bytes = struct.pack(
@@ -182,9 +182,7 @@ def read_beacon_payload(beacon_bytes):
             pass
         else:
             try:
-                decrypted_data = fernet_decrypt_psk(
-                    payload_bytes, ttl=60, raw=True
-                )
+                decrypted_data = decrypt_psk(payload_bytes, ttl=60, raw=True)
             except InvalidToken:
                 raise InvalidBeaconingPacket(  # noqa: B904
                     "Failed to decrypt inner payload: check MAAS secret key."
