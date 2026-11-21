@@ -54,9 +54,7 @@ from provisioningserver.rpc.exceptions import BootConfigNoResponse
 from provisioningserver.rpc.region import GetBootConfig
 from provisioningserver.testing.config import ClusterConfigurationFixture
 from tests.provisioningserver.boot.test_pxe import compose_config_path
-from tests.provisioningserver.test_kernel_opts import (
-    make_kernel_parameters,
-)
+from tests.provisioningserver.test_kernel_opts import make_kernel_parameters
 
 TIMEOUT = get_testing_timeout()
 

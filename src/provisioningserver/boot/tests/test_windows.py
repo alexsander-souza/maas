@@ -28,9 +28,7 @@ from provisioningserver.boot.windows import Bcd, WindowsPXEBootMethod
 from provisioningserver.rpc.exceptions import NoSuchNode
 from provisioningserver.rpc.region import RequestNodeInfoByMACAddress
 from provisioningserver.testing.config import ClusterConfigurationFixture
-from tests.provisioningserver.test_kernel_opts import (
-    make_kernel_parameters,
-)
+from tests.provisioningserver.test_kernel_opts import make_kernel_parameters
 
 TIMEOUT = get_testing_timeout()
 
