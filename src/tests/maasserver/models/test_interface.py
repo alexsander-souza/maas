@@ -1797,19 +1797,20 @@ class TestPhysicalInterface(MAASServerTestCase):
 
 class TestPhysicalInterfaceTransactional(MAASTransactionServerTestCase):
     def test_duplicate_physical_macs_not_allowed(self):
-        def _create_physical(mac):
-            node = factory.make_Node(power_type="manual")
-            vlan = factory.make_VLAN(dhcp_on=True)
+        mac = factory.make_mac_address()
+        node = factory.make_Node(power_type="manual")
+        vlan = factory.make_VLAN(dhcp_on=True)
+
+        def _create_physical():
             factory.make_Interface(
                 INTERFACE_TYPE.PHYSICAL, node=node, vlan=vlan, mac_address=mac
             )
 
-        def create_physical(mac):
+        def create_physical():
             with transaction.atomic():
-                _create_physical(mac)
+                _create_physical()
 
-        mac = factory.make_mac_address()
-        t = threading.Thread(target=create_physical, args=(mac,))
+        t = threading.Thread(target=create_physical)
 
         with transaction.atomic():
             # Perform an actual query so that Django actually
@@ -1821,7 +1822,7 @@ class TestPhysicalInterfaceTransactional(MAASTransactionServerTestCase):
             t.join()
 
             # Should fail as this is a duplicate physical MAC address.
-            self.assertRaises(IntegrityError, _create_physical, mac)
+            self.assertRaises(IntegrityError, _create_physical)
 
 
 class TestInterfaceMTU(MAASServerTestCase):

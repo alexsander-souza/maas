@@ -75,7 +75,7 @@ def load_initial_db_file(cluster, template_name, path):
 
 @contextmanager
 def connect(cluster):
-    conn = cluster.connect()
+    conn = cluster.connect(database="postgres")
     conn.autocommit = True
     yield conn
     conn.close()
