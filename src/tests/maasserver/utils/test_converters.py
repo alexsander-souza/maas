@@ -5,16 +5,17 @@
 
 from textwrap import dedent
 
+import pytest
+
 from maasserver.utils.converters import (
     machine_readable_bytes,
     round_size_to_nearest_block,
     systemd_interval_to_calendar,
     XMLToYAML,
 )
-from maastesting.testcase import MAASTestCase
 
 
-class TestXMLToYAML(MAASTestCase):
+class TestXMLToYAML:
     def test_xml_to_yaml_converts_xml(self):
         # This test is similar to the test above but this one
         # checks that tags with colons works as expected.
@@ -34,101 +35,84 @@ class TestXMLToYAML(MAASTestCase):
         """
         )
         yml = XMLToYAML(xml)
-        self.assertEqual(yml.convert(), expected_result)
+        assert yml.convert() == expected_result
 
 
-class TestMachineReadableBytes(MAASTestCase):
+class TestMachineReadableBytes:
     """Testing the human->machine byte count converter"""
 
     def test_suffixes(self):
-        self.assertEqual(machine_readable_bytes("987"), 987)
-        self.assertEqual(machine_readable_bytes("987K"), 987000)
-        self.assertEqual(machine_readable_bytes("987M"), 987000000)
-        self.assertEqual(machine_readable_bytes("987G"), 987000000000)
-        self.assertEqual(machine_readable_bytes("987T"), 987000000000000)
-        self.assertEqual(machine_readable_bytes("987P"), 987000000000000000)
-        self.assertEqual(machine_readable_bytes("987E"), 987000000000000000000)
-        self.assertEqual(machine_readable_bytes("987k"), 987000)
-        self.assertEqual(machine_readable_bytes("987m"), 987000000)
-        self.assertEqual(machine_readable_bytes("987g"), 987000000000)
-        self.assertEqual(machine_readable_bytes("987t"), 987000000000000)
-        self.assertEqual(machine_readable_bytes("987p"), 987000000000000000)
-        self.assertEqual(machine_readable_bytes("987e"), 987000000000000000000)
+        assert machine_readable_bytes("987") == 987
+        assert machine_readable_bytes("987K") == 987000
+        assert machine_readable_bytes("987M") == 987000000
+        assert machine_readable_bytes("987G") == 987000000000
+        assert machine_readable_bytes("987T") == 987000000000000
+        assert machine_readable_bytes("987P") == 987000000000000000
+        assert machine_readable_bytes("987E") == 987000000000000000000
+        assert machine_readable_bytes("987k") == 987000
+        assert machine_readable_bytes("987m") == 987000000
+        assert machine_readable_bytes("987g") == 987000000000
+        assert machine_readable_bytes("987t") == 987000000000000
+        assert machine_readable_bytes("987p") == 987000000000000000
+        assert machine_readable_bytes("987e") == 987000000000000000000
 
-        self.assertRaises(ValueError, machine_readable_bytes, "987Z")
+        with pytest.raises(ValueError):
+            machine_readable_bytes("987Z")
 
 
-class TestRoundSizeToNearestBlock(MAASTestCase):
+class TestRoundSizeToNearestBlock:
     def test_round_up_adds_extra_block(self):
         block_size = 4096
         size = block_size + 1
-        self.assertEqual(
-            2 * block_size,
-            round_size_to_nearest_block(size, block_size, True),
-            "Should add an extra block to the size.",
-        )
+        assert (
+            round_size_to_nearest_block(size, block_size, True)
+            == 2 * block_size
+        ), "Should add an extra block to the size."
 
     def test_round_up_doesnt_add_extra_block(self):
         block_size = 4096
         size = block_size
-        self.assertEqual(
-            size,
-            round_size_to_nearest_block(size, block_size, True),
-            "Shouldn't add an extra block to the size.",
+        assert round_size_to_nearest_block(size, block_size, True) == size, (
+            "Shouldn't add an extra block to the size."
         )
 
     def test_round_down_removes_block(self):
         block_size = 4096
         size = block_size + 1
-        self.assertEqual(
-            1 * block_size,
-            round_size_to_nearest_block(size, block_size, False),
-            "Should remove block from the size.",
-        )
+        assert (
+            round_size_to_nearest_block(size, block_size, False)
+            == 1 * block_size
+        ), "Should remove block from the size."
 
     def test_round_down_doesnt_remove_block(self):
         block_size = 4096
         size = block_size * 2
-        self.assertEqual(
-            size,
-            round_size_to_nearest_block(size, block_size, False),
-            "Shouldn't remove a block from the size.",
+        assert round_size_to_nearest_block(size, block_size, False) == size, (
+            "Shouldn't remove a block from the size."
         )
 
 
-class TestSystemdIntervalToCalendar(MAASTestCase):
+class TestSystemdIntervalToCalendar:
     def test_every_2_hours(self):
         interval = "2h"
-        self.assertEqual(
-            "*-*-* 00/2:00:00", systemd_interval_to_calendar(interval)
-        )
+        assert systemd_interval_to_calendar(interval) == "*-*-* 00/2:00:00"
 
     def test_every_hour(self):
         interval = "1h"
-        self.assertEqual(
-            "*-*-* *:00:00", systemd_interval_to_calendar(interval)
-        )
+        assert systemd_interval_to_calendar(interval) == "*-*-* *:00:00"
 
     def test_every_hour_and_a_half(self):
         interval = "1h 30m"
-        self.assertEqual(
-            "*-*-* *:00/30:00", systemd_interval_to_calendar(interval)
-        )
+        assert systemd_interval_to_calendar(interval) == "*-*-* *:00/30:00"
 
     def test_every_30_minutes(self):
         interval = "30m"
-        self.assertEqual(
-            "*-*-* *:00/30:00", systemd_interval_to_calendar(interval)
-        )
+        assert systemd_interval_to_calendar(interval) == "*-*-* *:00/30:00"
 
     def test_every_30_minutes_5_seconds(self):
         interval = "30m 5s"
-        self.assertEqual(
-            "*-*-* *:00/30:00/5", systemd_interval_to_calendar(interval)
-        )
+        assert systemd_interval_to_calendar(interval) == "*-*-* *:00/30:00/5"
 
     def test_every_15_seconds(self):
         interval = "15s"
-        self.assertEqual(
-            "*-*-* *:*:00/15", systemd_interval_to_calendar(interval)
-        )
+        assert systemd_interval_to_calendar(interval) == "*-*-* *:*:00/15"

@@ -11,7 +11,6 @@ and binding is driven by the merged api_bind key.
 
 import tempita
 
-from maastesting.testcase import MAASTestCase
 from provisioningserver.rackdservices.http import compose_listen_addresses
 from provisioningserver.utils import locate_template
 
@@ -56,68 +55,68 @@ HARDENING_VARS = {
 HARDENING_VARS_WILDCARD = {**HARDENING_VARS, "api_bind": ""}
 
 
-class TestNginxTemplateNeverTLS(MAASTestCase):
+class TestNginxTemplateNeverTLS:
     """The rack server is plain HTTP on 5248 in every mode."""
 
     def test_listen_on_5248_without_hardening(self):
         rendered = _render()
-        self.assertIn("listen [::]:5248;", rendered)
-        self.assertIn("listen 5248;", rendered)
+        assert "listen [::]:5248;" in rendered
+        assert "listen 5248;" in rendered
 
     def test_no_ssl_directives_without_hardening(self):
         rendered = _render()
-        self.assertNotIn("ssl_protocols", rendered)
-        self.assertNotIn("ssl_certificate", rendered)
+        assert "ssl_protocols" not in rendered
+        assert "ssl_certificate" not in rendered
 
     def test_no_ssl_directives_with_hardening(self):
         rendered = _render(HARDENING_VARS)
-        self.assertNotIn("ssl_protocols", rendered)
-        self.assertNotIn("ssl_certificate", rendered)
-        self.assertNotIn(" ssl;", rendered)
-        self.assertNotIn("Strict-Transport-Security", rendered)
+        assert "ssl_protocols" not in rendered
+        assert "ssl_certificate" not in rendered
+        assert " ssl;" not in rendered
+        assert "Strict-Transport-Security" not in rendered
 
 
-class TestNginxTemplateBinding(MAASTestCase):
+class TestNginxTemplateBinding:
     """Binding is driven by the merged api_bind key."""
 
     def test_wildcard_when_no_bind(self):
         rendered = _render({"api_bind": ""})
-        self.assertIn("listen [::]:5248;", rendered)
-        self.assertIn("listen 5248;", rendered)
+        assert "listen [::]:5248;" in rendered
+        assert "listen 5248;" in rendered
 
     def test_ipv4_bind_only(self):
         rendered = _render({"api_bind": "10.0.0.5"})
-        self.assertIn("listen 10.0.0.5:5248;", rendered)
-        self.assertNotIn("listen 5248;", rendered)
-        self.assertNotIn("listen [::]:5248;", rendered)
+        assert "listen 10.0.0.5:5248;" in rendered
+        assert "listen 5248;" not in rendered
+        assert "listen [::]:5248;" not in rendered
 
     def test_ipv6_bind_only(self):
         rendered = _render({"api_bind": "fd00::5"})
-        self.assertIn("listen [fd00::5]:5248;", rendered)
-        self.assertNotIn("listen 5248;", rendered)
-        self.assertNotIn("listen [::]:5248;", rendered)
+        assert "listen [fd00::5]:5248;" in rendered
+        assert "listen 5248;" not in rendered
+        assert "listen [::]:5248;" not in rendered
 
     def test_dual_stack_bind(self):
         rendered = _render({"api_bind": ["10.0.0.5", "fd00::5"]})
-        self.assertIn("listen 10.0.0.5:5248;", rendered)
-        self.assertIn("listen [fd00::5]:5248;", rendered)
+        assert "listen 10.0.0.5:5248;" in rendered
+        assert "listen [fd00::5]:5248;" in rendered
 
 
-class TestNginxTemplateUpstreamPort(MAASTestCase):
+class TestNginxTemplateUpstreamPort:
     """The upstream region API port is configurable, default 5240."""
 
     def test_default_upstream_port(self):
         rendered = _render({"upstream_http": ["10.0.0.1"]})
-        self.assertIn("server 10.0.0.1:5240;", rendered)
+        assert "server 10.0.0.1:5240;" in rendered
 
     def test_custom_upstream_port(self):
         rendered = _render(
             {"upstream_http": ["10.0.0.1"], "api_upstream_port": 6240}
         )
-        self.assertIn("server 10.0.0.1:6240;", rendered)
+        assert "server 10.0.0.1:6240;" in rendered
 
 
-class TestNginxTemplateRateLimiting(MAASTestCase):
+class TestNginxTemplateRateLimiting:
     """Rate/burst/conn limits apply with defaults regardless of hardening."""
 
     def test_rate_limit_zone_present_without_hardening(self):
@@ -128,81 +127,81 @@ class TestNginxTemplateRateLimiting(MAASTestCase):
                 "api_conn_limit": 50,
             }
         )
-        self.assertIn(
-            "limit_req_zone $binary_remote_addr zone=api_rate:10m rate=5r/s;",
-            rendered,
+        assert (
+            "limit_req_zone $binary_remote_addr zone=api_rate:10m rate=5r/s;"
+            in rendered
         )
-        self.assertIn(
-            "limit_conn_zone $binary_remote_addr zone=api_conn:10m;", rendered
+        assert (
+            "limit_conn_zone $binary_remote_addr zone=api_conn:10m;"
+            in rendered
         )
 
     def test_rate_limit_applied_with_and_without_hardening(self):
         for extra in (None, HARDENING_VARS):
             rendered = _render(extra)
-            self.assertIn(
-                "limit_req zone=api_rate burst=20 nodelay;", rendered
-            )
-            self.assertIn("limit_conn api_conn 100;", rendered)
+            assert "limit_req zone=api_rate burst=20 nodelay;" in rendered
+
+            assert "limit_conn api_conn 100;" in rendered
 
     def test_no_rate_limit_zone_when_rate_empty(self):
         # api_rate_limit_burst and api_conn_limit are only interpolated inside
         # the {{if api_rate_limit_rate}} block, so they are not required here.
         rendered = _render({"api_rate_limit_rate": ""})
-        self.assertNotIn("limit_req_zone", rendered)
-        self.assertNotIn("limit_conn_zone", rendered)
+        assert "limit_req_zone" not in rendered
+        assert "limit_conn_zone" not in rendered
 
 
-class TestNginxTemplateSecurityHeaders(MAASTestCase):
+class TestNginxTemplateSecurityHeaders:
     """Security headers are added only when hardening is active."""
 
     def test_no_security_headers_without_hardening(self):
         rendered = _render()
-        self.assertNotIn("X-Frame-Options", rendered)
-        self.assertNotIn("Content-Security-Policy", rendered)
-        self.assertNotIn("server_tokens off;", rendered)
+        assert "X-Frame-Options" not in rendered
+        assert "Content-Security-Policy" not in rendered
+        assert "server_tokens off;" not in rendered
 
     def test_security_headers_with_hardening(self):
         rendered = _render(HARDENING_VARS)
-        self.assertIn("server_tokens off;", rendered)
-        self.assertIn('add_header X-Frame-Options "DENY" always;', rendered)
-        self.assertIn(
-            'add_header X-Content-Type-Options "nosniff" always;', rendered
+        assert "server_tokens off;" in rendered
+        assert 'add_header X-Frame-Options "DENY" always;' in rendered
+        assert (
+            'add_header X-Content-Type-Options "nosniff" always;' in rendered
         )
-        self.assertIn(
-            'add_header Referrer-Policy "strict-origin-when-cross-origin" always;',
-            rendered,
+        assert (
+            'add_header Referrer-Policy "strict-origin-when-cross-origin" always;'
+            in rendered
         )
-        self.assertIn(
-            'add_header X-XSS-Protection "1; mode=block" always;', rendered
+        assert (
+            'add_header X-XSS-Protection "1; mode=block" always;' in rendered
         )
 
     def test_content_security_policy_with_hardening(self):
         rendered = _render(HARDENING_VARS)
-        self.assertIn(
+        assert (
             "add_header Content-Security-Policy"
-            " \"default-src 'none'; frame-ancestors 'none'\" always;",
-            rendered,
+            " \"default-src 'none'; frame-ancestors 'none'\" always;"
+            in rendered
         )
 
     def test_trace_and_options_blocked_with_444(self):
         rendered = _render(HARDENING_VARS)
-        self.assertIn("return 444;", rendered)
-        self.assertIn("TRACE", rendered)
-        self.assertIn("OPTIONS", rendered)
+        assert "return 444;" in rendered
+        assert "TRACE" in rendered
+        assert "OPTIONS" in rendered
 
     def test_no_trace_block_without_hardening(self):
         rendered = _render()
-        self.assertNotIn("return 444;", rendered)
+        assert "return 444;" not in rendered
 
 
-class TestNginxTemplateLocations(MAASTestCase):
+class TestNginxTemplateLocations:
     """Location blocks are unaffected by hardening."""
 
     def test_location_blocks_present_regardless_of_hardening(self):
         for extra in (None, HARDENING_VARS):
             rendered = _render(extra)
-            self.assertIn("location /machine-resources/", rendered)
+            assert "location /machine-resources/" in rendered
             # The rackd metadata/boot HTTP service (port 5249) binds to
             # ::1 only (see `ProvisioningServiceMaker._makeHTTPService`),
             # so nginx must dial it there rather than via "localhost".
-            self.assertIn("proxy_pass http://[::1]:5249/boot/;", rendered)
+            assert "proxy_pass http://[::1]:5249/boot/;" in rendered

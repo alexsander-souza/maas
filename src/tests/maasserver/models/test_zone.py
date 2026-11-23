@@ -3,30 +3,32 @@
 
 """Test Zone objects."""
 
+import pytest
+
 from maasserver.enum import NODE_TYPE
 from maasserver.models.defaultresource import DefaultResource
 from maasserver.models.zone import Zone
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from maasserver.utils.orm import reload_object
 
 
-class TestZoneManager(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestZoneManager:
     """Tests for `Zone` manager."""
 
     DEFAULT_ZONE_NAME = "default"
 
     def test_get_default_zone_returns_default_zone(self):
-        self.assertEqual(
-            self.DEFAULT_ZONE_NAME,
-            DefaultResource.objects.get_default_zone().name,
+        assert (
+            self.DEFAULT_ZONE_NAME
+            == DefaultResource.objects.get_default_zone().name
         )
 
     def test_get_default_zone_ignores_other_zones(self):
         factory.make_Zone()
-        self.assertEqual(
-            self.DEFAULT_ZONE_NAME,
-            DefaultResource.objects.get_default_zone().name,
+        assert (
+            self.DEFAULT_ZONE_NAME
+            == DefaultResource.objects.get_default_zone().name
         )
 
     def test_get_renamed_default_zone(self):
@@ -34,12 +36,11 @@ class TestZoneManager(MAASServerTestCase):
         default_zone.name = "myzone"
         default_zone.save()
 
-        self.assertEqual(
-            "myzone", DefaultResource.objects.get_default_zone().name
-        )
+        assert DefaultResource.objects.get_default_zone().name == "myzone"
 
 
-class TestZone(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestZone:
     """Tests for :class:`Zone`."""
 
     def test_init(self):
@@ -53,30 +54,27 @@ class TestZone(MAASServerTestCase):
         zone.node_set.add(node1)
         zone.node_set.add(node2)
 
-        self.assertEqual(
-            (
-                set(zone.node_set.all()),
-                zone.name,
-                zone.description,
-                node1.zone,
-                node2.zone,
-            ),
-            ({node1, node2}, name, description, zone, zone),
-        )
+        assert (
+            set(zone.node_set.all()),
+            zone.name,
+            zone.description,
+            node1.zone,
+            node2.zone,
+        ) == ({node1, node2}, name, description, zone, zone)
 
     def test_delete_deletes_zone(self):
         zone = factory.make_Zone()
         zone.delete()
-        self.assertIsNone(reload_object(zone))
+        assert reload_object(zone) is None
 
     def test_delete_severs_link_to_nodes(self):
         zone = factory.make_Zone()
         node = factory.make_Node(zone=zone)
         zone.delete()
-        self.assertIsNone(reload_object(zone))
+        assert reload_object(zone) is None
         node = reload_object(node)
-        self.assertIsNotNone(node)
-        self.assertEqual(DefaultResource.objects.get_default_zone(), node.zone)
+        assert node is not None
+        assert DefaultResource.objects.get_default_zone() == node.zone
 
     def test_nodes_only_set(self):
         """zone.node_only_set has only type node."""
@@ -89,13 +87,13 @@ class TestZone(MAASServerTestCase):
         rack_controller = factory.make_Node(
             zone=zone, node_type=NODE_TYPE.RACK_CONTROLLER
         )
-        self.assertEqual(zone.node_only_set.count(), 3)
-        self.assertIn(node1, zone.node_only_set)
-        self.assertIn(node2, zone.node_only_set)
-        self.assertIn(node3, zone.node_only_set)
-        self.assertNotIn(device1, zone.node_only_set)
-        self.assertNotIn(device2, zone.node_only_set)
-        self.assertNotIn(rack_controller, zone.node_only_set)
+        assert zone.node_only_set.count() == 3
+        assert node1 in zone.node_only_set
+        assert node2 in zone.node_only_set
+        assert node3 in zone.node_only_set
+        assert device1 not in zone.node_only_set
+        assert device2 not in zone.node_only_set
+        assert rack_controller not in zone.node_only_set
 
     def test_devices_only_set(self):
         """zone.devices_only_set has only type device."""
@@ -108,13 +106,13 @@ class TestZone(MAASServerTestCase):
         rack_controller = factory.make_Node(
             zone=zone, node_type=NODE_TYPE.RACK_CONTROLLER
         )
-        self.assertEqual(zone.device_only_set.count(), 2)
-        self.assertNotIn(node1, zone.device_only_set)
-        self.assertNotIn(node2, zone.device_only_set)
-        self.assertNotIn(node3, zone.device_only_set)
-        self.assertIn(device1, zone.device_only_set)
-        self.assertIn(device2, zone.device_only_set)
-        self.assertNotIn(rack_controller, zone.node_only_set)
+        assert zone.device_only_set.count() == 2
+        assert node1 not in zone.device_only_set
+        assert node2 not in zone.device_only_set
+        assert node3 not in zone.device_only_set
+        assert device1 in zone.device_only_set
+        assert device2 in zone.device_only_set
+        assert rack_controller not in zone.node_only_set
 
     def test_rack_controllers_only_set(self):
         """zone.rack_controllers_only_set has only type rack_controller."""
@@ -127,10 +125,10 @@ class TestZone(MAASServerTestCase):
         rack_controller = factory.make_Node(
             zone=zone, node_type=NODE_TYPE.RACK_CONTROLLER
         )
-        self.assertEqual(zone.device_only_set.count(), 2)
-        self.assertNotIn(node1, zone.rack_controller_only_set)
-        self.assertNotIn(node2, zone.rack_controller_only_set)
-        self.assertNotIn(node3, zone.rack_controller_only_set)
-        self.assertNotIn(device1, zone.rack_controller_only_set)
-        self.assertNotIn(device2, zone.rack_controller_only_set)
-        self.assertIn(rack_controller, zone.rack_controller_only_set)
+        assert zone.device_only_set.count() == 2
+        assert node1 not in zone.rack_controller_only_set
+        assert node2 not in zone.rack_controller_only_set
+        assert node3 not in zone.rack_controller_only_set
+        assert device1 not in zone.rack_controller_only_set
+        assert device2 not in zone.rack_controller_only_set
+        assert rack_controller in zone.rack_controller_only_set

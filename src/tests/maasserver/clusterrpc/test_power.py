@@ -4,6 +4,7 @@
 import random
 from unittest.mock import Mock
 
+import pytest
 from twisted.internet import reactor
 from twisted.internet.defer import fail, inlineCallbacks, succeed
 from twisted.internet.task import deferLater
@@ -16,10 +17,6 @@ from maasserver.clusterrpc.power import (
     power_query_all,
 )
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import (
-    MAASServerTestCase,
-    MAASTransactionServerTestCase,
-)
 from maasserver.utils.orm import transactional
 from maasserver.utils.threads import deferToDatabase
 from maastesting.crochet import wait_for
@@ -36,7 +33,8 @@ def make_node_with_power_info():
     return node, power_info
 
 
-class TestPowerQuery(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestPowerQuery:
     """Tests for `power_query`."""
 
     def test_power_querys_single_node(self):
@@ -60,7 +58,8 @@ class TestPowerQuery(MAASServerTestCase):
         )
 
 
-class TestPowerDriverCheck(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestPowerDriverCheck:
     """Tests for `power_driver_check`."""
 
     def test_handled(self):
@@ -75,12 +74,14 @@ class TestPowerDriverCheck(MAASServerTestCase):
         )
 
 
-class TestPowerQueryAll(MAASTransactionServerTestCase):
+@pytest.mark.allow_transactions
+@pytest.mark.usefixtures("maas_region_test", "factory", "transactional_maasdb")
+class TestPowerQueryAll:
     """Tests for `power_query_all`."""
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_PowerQuery_on_all_clients(self):
+    def test_calls_PowerQuery_on_all_clients(self, mocker):
         node, power_info = yield deferToDatabase(make_node_with_power_info)
 
         successful_rack_ids = [
@@ -108,18 +109,20 @@ class TestPowerQueryAll(MAASTransactionServerTestCase):
             client.return_value = fail(factory.make_exception())
             clients.append(client)
 
-        self.patch(power_module, "getAllClients").return_value = clients
+        mocker.patch.object(
+            power_module, "getAllClients", return_value=clients
+        )
         power_state, success_racks, failed_racks = yield power_query_all(
             node.system_id, node.hostname, power_info
         )
 
-        self.assertEqual(pick_best_power_state(power_states), power_state)
-        self.assertCountEqual(successful_rack_ids, success_racks)
-        self.assertCountEqual(error_rack_ids + failed_rack_ids, failed_racks)
+        assert power_state == pick_best_power_state(power_states)
+        assert sorted(successful_rack_ids) == sorted(success_racks)
+        assert sorted(error_rack_ids + failed_rack_ids) == sorted(failed_racks)
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_handles_timeout(self):
+    def test_handles_timeout(self, mocker):
         node, power_info = yield deferToDatabase(make_node_with_power_info)
 
         def defer_way_later(*args, **kwargs):
@@ -131,11 +134,13 @@ class TestPowerQueryAll(MAASTransactionServerTestCase):
         client.ident = rack_id
         client.side_effect = defer_way_later
 
-        self.patch(power_module, "getAllClients").return_value = [client]
+        mocker.patch.object(
+            power_module, "getAllClients", return_value=[client]
+        )
         power_state, success_racks, failed_racks = yield power_query_all(
             node.system_id, node.hostname, power_info, timeout=0.5
         )
 
-        self.assertEqual(POWER_STATE.UNKNOWN, power_state)
-        self.assertEqual(set(), success_racks)
-        self.assertEqual({rack_id}, failed_racks)
+        assert power_state == POWER_STATE.UNKNOWN
+        assert success_racks == set()
+        assert failed_racks == {rack_id}

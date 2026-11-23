@@ -7,22 +7,21 @@ from argparse import ArgumentParser
 import io
 import os
 
+import pytest
+
 from maastesting.factory import factory
-from maastesting.testcase import MAASTestCase
 from provisioningserver.dns.commands.setup_dns import add_arguments, run
 from provisioningserver.dns.config import (
     MAAS_NAMED_CONF_NAME,
     MAAS_RNDC_CONF_NAME,
 )
-from provisioningserver.dns.testing import (
-    patch_dns_config_path,
-    patch_zone_file_config_path,
-)
 
 
-class TestSetupCommand(MAASTestCase):
-    def setUp(self):
-        super().setUp()
+class TestSetupCommand:
+    """Tests for the setup-dns command."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self):
         self.output = io.StringIO()
         self.error_output = io.StringIO()
         self.parser = ArgumentParser()
@@ -32,29 +31,28 @@ class TestSetupCommand(MAASTestCase):
         parsed_args = self.parser.parse_args([*args])
         return run(parsed_args, stdout=self.output, stderr=self.error_output)
 
-    def test_writes_configuration(self):
-        dns_conf_dir = self.make_dir()
-        patch_dns_config_path(self, dns_conf_dir)
-        patch_zone_file_config_path(self, dns_conf_dir)
+    def test_writes_configuration(self, tmp_path, monkeypatch):
+        dns_conf_dir = tmp_path / "dns"
+        dns_conf_dir.mkdir()
+        monkeypatch.setenv("MAAS_DNS_CONFIG_DIR", str(dns_conf_dir))
+        monkeypatch.setenv("MAAS_BIND_CONFIG_DIR", str(dns_conf_dir))
+        monkeypatch.setenv("MAAS_ZONE_FILE_CONFIG_DIR", str(dns_conf_dir))
         self.run_command()
         named_config = os.path.join(dns_conf_dir, MAAS_NAMED_CONF_NAME)
         rndc_conf_path = os.path.join(dns_conf_dir, MAAS_RNDC_CONF_NAME)
-        self.assertTrue(os.path.exists(rndc_conf_path))
-        self.assertTrue(os.path.exists(named_config))
+        assert os.path.exists(rndc_conf_path)
+        assert os.path.exists(named_config)
 
-    def test_does_not_overwrite_config(self):
-        dns_conf_dir = self.make_dir()
-        zone_file_dir = self.make_dir()
-        patch_dns_config_path(self, dns_conf_dir)
-        patch_zone_file_config_path(self, zone_file_dir)
+    def test_does_not_overwrite_config(self, tmp_path, monkeypatch):
+        dns_conf_dir = tmp_path / "dns"
+        dns_conf_dir.mkdir()
+        zone_file_dir = tmp_path / "zone"
+        zone_file_dir.mkdir()
+        monkeypatch.setenv("MAAS_DNS_CONFIG_DIR", str(dns_conf_dir))
+        monkeypatch.setenv("MAAS_BIND_CONFIG_DIR", str(dns_conf_dir))
+        monkeypatch.setenv("MAAS_ZONE_FILE_CONFIG_DIR", str(zone_file_dir))
         random_content = factory.make_string()
-        factory.make_file(
-            location=dns_conf_dir,
-            name=MAAS_NAMED_CONF_NAME,
-            contents=random_content,
-        )
+        (dns_conf_dir / MAAS_NAMED_CONF_NAME).write_text(random_content)
         self.run_command("--no-clobber")
-        with open(os.path.join(dns_conf_dir, MAAS_NAMED_CONF_NAME), "r") as fh:
-            contents = fh.read()
-
-        self.assertIn(random_content, contents)
+        contents = (dns_conf_dir / MAAS_NAMED_CONF_NAME).read_text()
+        assert random_content in contents

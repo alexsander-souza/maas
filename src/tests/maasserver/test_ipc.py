@@ -1,6 +1,5 @@
 # Copyright 2018-2020 Canonical Ltd.  This software is licensed under the
 # GNU Affero General Public License version 3 (see the file LICENSE).
-
 """Tests for `maasserver.ipc`"""
 
 from datetime import timedelta
@@ -9,7 +8,7 @@ import random
 from unittest.mock import MagicMock
 import uuid
 
-from fixtures import EnvironmentVariableFixture
+import pytest
 from twisted.internet import reactor
 from twisted.internet.defer import DeferredList, inlineCallbacks, succeed
 
@@ -20,7 +19,6 @@ from maasserver.ipc import (
     IPCMasterService,
     IPCWorkerService,
 )
-from maasserver.models import dnspublication as dnspublications_module
 from maasserver.models import timestampedmodel
 from maasserver.models.node import RegionController
 from maasserver.models.regioncontrollerprocess import RegionControllerProcess
@@ -33,90 +31,82 @@ from maasserver.models.timestampedmodel import now
 from maasserver.rpc.regionservice import RegionService
 from maasserver.testing.factory import factory
 from maasserver.testing.orm import reload_objects
-from maasserver.testing.testcase import MAASTransactionServerTestCase
 from maasserver.utils.orm import reload_object
 from maasserver.utils.threads import deferToDatabase
 import maasserver.workers as workers_module
 from maastesting.crochet import wait_for
-from maastesting.fixtures import TempDirectory
-from maastesting.runtest import MAASCrochetRunTest
-from maastesting.testcase import MAASTestCase
 from metadataserver.builtin_scripts import load_builtin_scripts
 from provisioningserver.utils import ipaddr
+from provisioningserver.utils.testing import MAASIDFixture
 from provisioningserver.utils.twisted import callOut, DeferredValue
 
 wait_for_reactor = wait_for()
 
 
-class TestGetIPCSocketPath(MAASTestCase):
-    def test_returns_ipc_socket_env(self):
+class TestGetIPCSocketPath:
+    def test_returns_ipc_socket_env(self, mocker):
         path = factory.make_name("path")
-        self.useFixture(
-            EnvironmentVariableFixture("MAAS_IPC_SOCKET_PATH", path)
-        )
-        self.assertEqual(path, get_ipc_socket_path())
+        mocker.patch.dict(os.environ, {"MAAS_IPC_SOCKET_PATH": path})
+        assert get_ipc_socket_path() == path
 
-    def test_returns_ipc_from_maas_data(self):
+    def test_returns_ipc_from_maas_data(self, mocker):
         path = factory.make_name("path")
-        self.useFixture(EnvironmentVariableFixture("MAAS_DATA", path))
-        self.assertEqual(
-            os.path.join(path, "maas-regiond.sock"), get_ipc_socket_path()
-        )
+        mocker.patch.dict(os.environ, {"MAAS_DATA": path})
+        assert os.path.join(path, "maas-regiond.sock") == get_ipc_socket_path()
 
-    def test_returns_ipc_at_default_location(self):
-        self.useFixture(EnvironmentVariableFixture("MAAS_DATA", None))
-        self.assertEqual(
-            "/var/lib/maas/maas-regiond.sock", get_ipc_socket_path()
-        )
+    def test_returns_ipc_at_default_location(self, mocker):
+        mocker.patch.dict(os.environ, {}, clear=True)
+        assert get_ipc_socket_path() == "/var/lib/maas/maas-regiond.sock"
 
 
-class TestIPCMasterServiceGetListenAddresses(MAASTestCase):
+class TestIPCMasterServiceGetListenAddresses:
     """`_getListenAddresses` mirrors `eventloop.resolve_rpc_bind_addresses`,
     the same resolution `RegionService` uses to bind, so what's advertised
     to rack controllers always matches what's actually listening."""
 
-    def test_prefers_configured_rpc_bind(self):
+    def test_prefers_configured_rpc_bind(self, mocker, tmp_path):
         from maasserver.config import RegionConfiguration
 
         master = IPCMasterService(
-            reactor, socket_path=os.path.join(self.make_dir(), "ipc.sock")
+            reactor, socket_path=str(tmp_path / "ipc.sock")
         )
-        mock_open = self.patch(RegionConfiguration, "open")
+        mock_open = mocker.patch.object(RegionConfiguration, "open")
         mock_cfg = mock_open.return_value.__enter__.return_value
         mock_cfg.rpc_bind = ["10.0.0.1", "10.0.0.2"]
         mock_open.return_value.__exit__.return_value = False
 
-        self.assertEqual(
-            {("10.0.0.1", 5250), ("10.0.0.2", 5250)},
-            master._getListenAddresses(5250),
-        )
+        assert master._getListenAddresses(5250) == {
+            ("10.0.0.1", 5250),
+            ("10.0.0.2", 5250),
+        }
 
-    def test_derives_from_maas_url_under_hardening_when_unset(self):
+    def test_derives_from_maas_url_under_hardening_when_unset(
+        self, mocker, tmp_path
+    ):
         import maascommon.hardening as hardening_module
         from maasserver.config import RegionConfiguration
         import provisioningserver.utils.network as network_module
 
         master = IPCMasterService(
-            reactor, socket_path=os.path.join(self.make_dir(), "ipc.sock")
+            reactor, socket_path=str(tmp_path / "ipc.sock")
         )
-        mock_open = self.patch(RegionConfiguration, "open")
+        mock_open = mocker.patch.object(RegionConfiguration, "open")
         mock_cfg = mock_open.return_value.__enter__.return_value
         mock_cfg.rpc_bind = []
         mock_cfg.maas_url = "http://10.0.0.9:5240/MAAS"
         mock_open.return_value.__exit__.return_value = False
-        self.patch(
+        mocker.patch.object(
             network_module, "get_source_address_for_url"
         ).return_value = "10.0.0.9"
-        self.patch(
+        mocker.patch.object(
             hardening_module, "is_hardening_enabled"
         ).return_value = True
 
-        self.assertEqual(
-            {("10.0.0.9", 5250)},
-            master._getListenAddresses(5250),
-        )
+        assert master._getListenAddresses(5250) == {("10.0.0.9", 5250)}
 
-    def test_falls_back_to_discovery_when_hardening_inactive_and_unset(self):
+    def test_falls_back_to_discovery_when_hardening_inactive_and_unset(
+        self, mocker, tmp_path
+    ):
         # Outside hardening, `resolve_rpc_bind_addresses` returns an empty
         # list for an unset `rpc_bind` without even attempting to derive
         # from `maas_url` (the RPC listener itself binds every interface
@@ -126,59 +116,64 @@ class TestIPCMasterServiceGetListenAddresses(MAASTestCase):
         from maasserver.config import RegionConfiguration
 
         master = IPCMasterService(
-            reactor, socket_path=os.path.join(self.make_dir(), "ipc.sock")
+            reactor, socket_path=str(tmp_path / "ipc.sock")
         )
-        mock_open = self.patch(RegionConfiguration, "open")
+        mock_open = mocker.patch.object(RegionConfiguration, "open")
         mock_cfg = mock_open.return_value.__enter__.return_value
         mock_cfg.rpc_bind = []
         mock_cfg.maas_url = "http://10.0.0.9:5240/MAAS"
         mock_open.return_value.__exit__.return_value = False
-        self.patch(ipc, "get_all_interface_source_addresses").return_value = {
-            "10.0.0.9"
-        }
+        mocker.patch.object(
+            ipc, "get_all_interface_source_addresses"
+        ).return_value = {"10.0.0.9"}
 
-        self.assertEqual(
-            {("10.0.0.9", 5250)},
-            master._getListenAddresses(5250),
-        )
+        assert master._getListenAddresses(5250) == {("10.0.0.9", 5250)}
 
-    def test_falls_back_to_discovery_when_maas_url_unresolvable(self):
+    def test_falls_back_to_discovery_when_maas_url_unresolvable(
+        self, mocker, tmp_path
+    ):
         from maasserver.config import RegionConfiguration
         import provisioningserver.utils.network as network_module
 
         master = IPCMasterService(
-            reactor, socket_path=os.path.join(self.make_dir(), "ipc.sock")
+            reactor, socket_path=str(tmp_path / "ipc.sock")
         )
-        mock_open = self.patch(RegionConfiguration, "open")
+        mock_open = mocker.patch.object(RegionConfiguration, "open")
         mock_cfg = mock_open.return_value.__enter__.return_value
         mock_cfg.rpc_bind = []
         mock_cfg.maas_url = "http://unreachable.invalid:5240/MAAS"
         mock_open.return_value.__exit__.return_value = False
-        self.patch(
+        mocker.patch.object(
             network_module, "get_source_address_for_url"
         ).return_value = None
-        self.patch(ipc, "get_all_interface_source_addresses").return_value = {
-            "10.0.0.9"
-        }
+        mocker.patch.object(
+            ipc, "get_all_interface_source_addresses"
+        ).return_value = {"10.0.0.9"}
 
-        self.assertEqual(
-            {("10.0.0.9", 5250)},
-            master._getListenAddresses(5250),
-        )
+        assert master._getListenAddresses(5250) == {("10.0.0.9", 5250)}
 
 
-class TestIPCCommunication(MAASTransactionServerTestCase):
-    run_tests_with = MAASCrochetRunTest
-
-    def setUp(self):
-        super().setUp()
-        self.ipc_path = os.path.join(
-            self.useFixture(TempDirectory()).path, "maas-regiond.sock"
-        )
-        self.patch(ipaddr, "get_ip_addr").return_value = {}
-        self.patch(ipc, "get_all_interface_addresses")
-        self.patch(ipc, "get_all_interface_source_addresses")
-        self.patch(dnspublications_module, "post_commit_do")
+@pytest.mark.allow_transactions
+@pytest.mark.usefixtures("transactional_maasdb", "maas_region_test", "factory")
+class TestIPCCommunication:
+    @pytest.fixture(autouse=True)
+    def _setup(
+        self,
+        mocker,
+        tmp_path,
+        request,
+        transactional_maasdb,
+        maas_region_test,
+        factory,
+    ):
+        self.ipc_path = str(tmp_path / "maas-regiond.sock")
+        mocker.patch.object(ipaddr, "get_ip_addr", return_value={})
+        mocker.patch.object(ipc, "get_all_interface_addresses")
+        mocker.patch.object(ipc, "get_all_interface_source_addresses")
+        running_region = factory.make_RegionController()
+        maas_id_fixture = MAASIDFixture(running_region.system_id)
+        maas_id_fixture.setUp()
+        request.addfinalizer(maas_id_fixture.cleanUp)
 
     def make_IPCMasterService(self, workers=None, run_loop=False):
         master = IPCMasterService(
@@ -194,7 +189,7 @@ class TestIPCCommunication(MAASTransactionServerTestCase):
 
         return master
 
-    def wrap_async_method(self, obj, method_name):
+    def wrap_async_method(self, mocker, obj, method_name):
         dv = DeferredValue()
         original_method = getattr(obj, method_name)
 
@@ -203,15 +198,19 @@ class TestIPCCommunication(MAASTransactionServerTestCase):
             d.addCallback(callOut, dv.set, None)
             return d
 
-        new_method = self.patch(obj, method_name)
+        new_method = mocker.patch.object(obj, method_name)
         new_method.side_effect = mock_method
         return dv
 
-    def make_IPCMasterService_with_wrap(self, workers=None, run_loop=False):
+    def make_IPCMasterService_with_wrap(
+        self, mocker, workers=None, run_loop=False
+    ):
         master = self.make_IPCMasterService(workers=workers, run_loop=run_loop)
 
-        dv_connected = self.wrap_async_method(master, "registerWorker")
-        dv_disconnected = self.wrap_async_method(master, "unregisterWorker")
+        dv_connected = self.wrap_async_method(mocker, master, "registerWorker")
+        dv_disconnected = self.wrap_async_method(
+            mocker, master, "unregisterWorker"
+        )
 
         return master, dv_connected, dv_disconnected
 
@@ -221,51 +220,51 @@ class TestIPCCommunication(MAASTransactionServerTestCase):
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_worker_registers_and_deregisters(self):
+    def test_worker_registers_and_deregisters(self, mocker):
         yield deferToDatabase(load_builtin_scripts)
         pid = random.randint(1, 512)
-        self.patch(os, "getpid").return_value = pid
+        mocker.patch.object(os, "getpid").return_value = pid
         (
             master,
             connected,
             disconnected,
-        ) = self.make_IPCMasterService_with_wrap()
+        ) = self.make_IPCMasterService_with_wrap(mocker)
         yield master.startService()
         worker = IPCWorkerService(reactor, socket_path=self.ipc_path)
         yield worker.startService()
 
         yield connected.get(timeout=2)
-        self.assertIn(pid, master.connections)
+        assert pid in master.connections
 
         def getProcessFromDB():
             region = RegionController.objects.get_running_controller()
             return RegionControllerProcess.objects.get(region=region, pid=pid)
 
         process = yield deferToDatabase(getProcessFromDB)
-        self.assertEqual(process.id, master.connections[pid]["process_id"])
+        assert master.connections[pid]["process_id"] == process.id
 
         worker_procId = yield worker.processId.get(timeout=2)
-        self.assertEqual(process.id, worker_procId)
+        assert worker_procId == process.id
 
         yield worker.stopService()
 
         yield disconnected.get(timeout=2)
-        self.assertEqual({}, master.connections)
+        assert master.connections == {}
 
         process = yield deferToDatabase(reload_object, process)
-        self.assertIsNone(process)
+        assert process is None
 
         yield master.stopService()
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_master_calls_killWorker_on_deregister(self):
+    def test_master_calls_killWorker_on_deregister(self, mocker):
         yield deferToDatabase(load_builtin_scripts)
         pid = random.randint(1, 512)
-        self.patch(os, "getpid").return_value = pid
+        mocker.patch.object(os, "getpid").return_value = pid
         workers = MagicMock()
         master, connected, disconnected = self.make_IPCMasterService_with_wrap(
-            workers=workers
+            mocker, workers=workers
         )
         yield master.startService()
         worker = IPCWorkerService(reactor, socket_path=self.ipc_path)
@@ -280,16 +279,18 @@ class TestIPCCommunication(MAASTransactionServerTestCase):
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_worker_registers_rpc_endpoints(self):
+    def test_worker_registers_rpc_endpoints(self, mocker):
         yield deferToDatabase(load_builtin_scripts)
         pid = random.randint(1, 512)
-        self.patch(os, "getpid").return_value = pid
+        mocker.patch.object(os, "getpid").return_value = pid
         (
             master,
             connected,
             disconnected,
-        ) = self.make_IPCMasterService_with_wrap()
-        rpc_started = self.wrap_async_method(master, "registerWorkerRPC")
+        ) = self.make_IPCMasterService_with_wrap(mocker)
+        rpc_started = self.wrap_async_method(
+            mocker, master, "registerWorkerRPC"
+        )
         yield master.startService()
 
         worker = IPCWorkerService(reactor, socket_path=self.ipc_path)
@@ -315,9 +316,8 @@ class TestIPCCommunication(MAASTransactionServerTestCase):
             }
 
         endpoints = yield deferToDatabase(getEndpoints)
-        self.assertEqual(
-            master._getListenAddresses(master.connections[pid]["rpc"]["port"]),
-            endpoints,
+        assert endpoints == master._getListenAddresses(
+            master.connections[pid]["rpc"]["port"]
         )
 
         yield rpc.stopService()
@@ -327,9 +327,11 @@ class TestIPCCommunication(MAASTransactionServerTestCase):
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_registerWorker_sets_regiond_degraded_with_less_than_workers(self):
+    def test_registerWorker_sets_regiond_degraded_with_less_than_workers(
+        self, mocker
+    ):
         # In case you run the test suite on a VM with 1 core, the MAX_WORKERS_COUNT is set to 1 so we have to patch it in order to test this scenario.
-        self.patch(workers_module, "MAX_WORKERS_COUNT", 4)
+        mocker.patch.object(workers_module, "MAX_WORKERS_COUNT", 4)
         yield deferToDatabase(load_builtin_scripts)
         master = self.make_IPCMasterService()
         yield master.startService()
@@ -338,25 +340,27 @@ class TestIPCCommunication(MAASTransactionServerTestCase):
 
         regiond_service = yield deferToDatabase(self.getRegiondService)
 
-        self.assertEqual(regiond_service.status, SERVICE_STATUS.DEGRADED)
-        self.assertEqual(
-            regiond_service.status_info,
-            f"1 process running but {workers.MAX_WORKERS_COUNT} were expected.",
+        assert SERVICE_STATUS.DEGRADED == regiond_service.status
+        assert (
+            f"1 process running but {workers.MAX_WORKERS_COUNT} were expected."
+            == regiond_service.status_info
         )
         yield master.stopService()
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_worker_registers_and_unregister_rpc_connection(self):
+    def test_worker_registers_and_unregister_rpc_connection(self, mocker):
         yield deferToDatabase(load_builtin_scripts)
         pid = random.randint(1, 512)
-        self.patch(os, "getpid").return_value = pid
+        mocker.patch.object(os, "getpid").return_value = pid
         (
             master,
             connected,
             disconnected,
-        ) = self.make_IPCMasterService_with_wrap()
-        rpc_started = self.wrap_async_method(master, "registerWorkerRPC")
+        ) = self.make_IPCMasterService_with_wrap(mocker)
+        rpc_started = self.wrap_async_method(
+            mocker, master, "registerWorkerRPC"
+        )
         yield master.startService()
 
         worker = IPCWorkerService(reactor, socket_path=self.ipc_path)
@@ -388,15 +392,14 @@ class TestIPCCommunication(MAASTransactionServerTestCase):
             ).first()
 
         connection = yield deferToDatabase(getConnection)
-        self.assertIsNotNone(connection)
-        self.assertEqual(
-            {connid: (rackd.system_id, address, port)},
-            master.connections[pid]["rpc"]["connections"],
-        )
+        assert connection is not None
+        assert master.connections[pid]["rpc"]["connections"] == {
+            connid: (rackd.system_id, address, port)
+        }
 
         yield worker.rpcUnregisterConnection(connid)
         connection = yield deferToDatabase(getConnection)
-        self.assertIsNone(connection)
+        assert connection is None
 
         yield rpc.stopService()
         yield worker.stopService()
@@ -426,7 +429,7 @@ class TestIPCCommunication(MAASTransactionServerTestCase):
             process = yield deferToDatabase(
                 RegionControllerProcess.objects.get, id=data["process_id"]
             )
-            self.assertEqual(pid, process.pid)
+            assert process.pid == pid
 
         yield master.stopService()
 
@@ -467,17 +470,19 @@ class TestIPCCommunication(MAASTransactionServerTestCase):
         old_other_region_process = yield deferToDatabase(
             reload_object, old_other_region_process
         )
-        self.assertIsNone(old_region_process)
-        self.assertIsNone(old_other_region_process)
+        assert old_region_process is None
+        assert old_other_region_process is None
 
         yield master.stopService()
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_update_updates_updated_time_on_processes(self):
+    def test_update_updates_updated_time_on_processes(self, mocker):
         yield deferToDatabase(load_builtin_scripts)
         current_time = now()
-        self.patch(timestampedmodel, "now").return_value = current_time
+        mocker.patch.object(
+            timestampedmodel, "now"
+        ).return_value = current_time
 
         master = self.make_IPCMasterService()
         yield master.startService()
@@ -499,7 +504,7 @@ class TestIPCCommunication(MAASTransactionServerTestCase):
         yield master.update()
 
         region_process = yield deferToDatabase(reload_object, region_process)
-        self.assertEqual(current_time, region_process.updated)
+        assert region_process.updated == current_time
 
         yield master.stopService()
 
@@ -518,8 +523,8 @@ class TestIPCCommunication(MAASTransactionServerTestCase):
 
         # The service status for the region should now be running.
         regiond_service = yield deferToDatabase(self.getRegiondService)
-        self.assertEqual(regiond_service.status, SERVICE_STATUS.RUNNING)
-        self.assertEqual(regiond_service.status_info, "")
+        assert SERVICE_STATUS.RUNNING == regiond_service.status
+        assert "" == regiond_service.status_info
 
         # Delete all the processes and an update should re-create them
         # and the service status should still be running.
@@ -531,22 +536,22 @@ class TestIPCCommunication(MAASTransactionServerTestCase):
 
         yield master.update()
         regiond_service = yield deferToDatabase(self.getRegiondService)
-        self.assertEqual(regiond_service.status, SERVICE_STATUS.RUNNING)
-        self.assertEqual(regiond_service.status_info, "")
+        assert SERVICE_STATUS.RUNNING == regiond_service.status
+        assert "" == regiond_service.status_info
 
         yield master.stopService()
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_update_calls_mark_dead_on_regions_without_processes(self):
+    def test_update_calls_mark_dead_on_regions_without_processes(self, mocker):
         yield deferToDatabase(load_builtin_scripts)
         master = self.make_IPCMasterService()
         yield master.startService()
 
-        mock_mark_dead = self.patch(Service.objects, "mark_dead")
-        other_region = yield deferToDatabase(factory.make_RegionController)
+        mock_mark_dead = mocker.patch.object(Service.objects, "mark_dead")
 
         pid = random.randint(1, 512)
+        other_region = yield deferToDatabase(factory.make_RegionController)
         yield master.registerWorker(pid, MagicMock())
         yield master.update()
 
@@ -588,7 +593,7 @@ class TestIPCCommunication(MAASTransactionServerTestCase):
         rpc_connections = yield deferToDatabase(
             reload_connections, rpc_connections
         )
-        self.assertEqual(rpc_connections, [])
+        assert [] == rpc_connections
 
         yield master.stopService()
 
@@ -640,8 +645,9 @@ class TestIPCCommunication(MAASTransactionServerTestCase):
 
         count = yield deferToDatabase(_get_conn_count)
 
-        self.assertEqual(
-            count, len(master.connections[pid]["rpc"]["connections"].values())
+        assert (
+            len(master.connections[pid]["rpc"]["connections"].values())
+            == count
         )
 
         yield master.stopService()
@@ -687,6 +693,6 @@ class TestIPCCommunication(MAASTransactionServerTestCase):
             ).count()
 
         count = yield deferToDatabase(_get_conn_count)
-        self.assertEqual(count, 1)
+        assert 1 == count
 
         yield master.stopService()

@@ -3,8 +3,11 @@
 
 """Tests for `maasserver.routablepairs`."""
 
+from collections import Counter
 from itertools import product, takewhile
 import random
+
+import pytest
 
 from maasserver.models.node import Node
 from maasserver.routablepairs import (
@@ -12,23 +15,23 @@ from maasserver.routablepairs import (
     reduce_routable_address_map,
 )
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 
 
-class TestFindAddressesBetweenNodes(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestFindAddressesBetweenNodes:
     """Tests for `maasserver.routablepairs.find_addresses_between_nodes`."""
 
     def test_yields_nothing_when_no_nodes_given(self):
-        self.assertEqual([], list(find_addresses_between_nodes([], [])))
+        assert [] == list(find_addresses_between_nodes([], []))
 
     def test_rejects_unsaved_nodes_on_the_left(self):
         saved_node, unsaved_node = factory.make_Node(), Node()
-        with self.assertRaisesRegex(AssertionError, ".* not in the database"):
+        with pytest.raises(AssertionError, match=".* not in the database"):
             list(find_addresses_between_nodes([unsaved_node], [saved_node]))
 
     def test_rejects_unsaved_nodes_on_the_right(self):
         saved_node, unsaved_node = factory.make_Node(), Node()
-        with self.assertRaisesRegex(AssertionError, ".* not in the database"):
+        with pytest.raises(AssertionError, match=".* not in the database"):
             list(find_addresses_between_nodes([saved_node], [unsaved_node]))
 
     def make_node_with_address(self, space, cidr):
@@ -50,9 +53,7 @@ class TestFindAddressesBetweenNodes(MAASServerTestCase):
         expected = [left + right]
 
         # A route from node1 to node2 is found.
-        self.assertEqual(
-            expected, list(find_addresses_between_nodes([node1], [node2]))
-        )
+        assert expected == list(find_addresses_between_nodes([node1], [node2]))
 
     def test_yields_routes_between_multiple_nodes_on_same_space(self):
         space = factory.make_Space()
@@ -72,11 +73,10 @@ class TestFindAddressesBetweenNodes(MAASServerTestCase):
         ]
 
         # A route from each node on the left is found to each on the right.
-        self.assertCountEqual(
-            expected,
+        assert Counter(expected) == Counter(
             find_addresses_between_nodes(
                 (node for node, _ in lefts), (node for node, _ in rights)
-            ),
+            )
         )
 
     def test_does_not_contain_routes_between_nodes_on_differing_spaces(self):
@@ -90,9 +90,7 @@ class TestFindAddressesBetweenNodes(MAASServerTestCase):
         expected = []
 
         # No routable addresses are found.
-        self.assertEqual(
-            expected, list(find_addresses_between_nodes([node1], [node2]))
-        )
+        assert expected == list(find_addresses_between_nodes([node1], [node2]))
 
     def test_does_not_contain_routes_between_addrs_of_diff_network_fams(self):
         space = factory.make_Space()  # One space.
@@ -106,9 +104,7 @@ class TestFindAddressesBetweenNodes(MAASServerTestCase):
         expected = []
 
         # No routable addresses are found.
-        self.assertEqual(
-            expected, list(find_addresses_between_nodes([node1], [node2]))
-        )
+        assert expected == list(find_addresses_between_nodes([node1], [node2]))
 
     def gen_disjoint_networks(self):
         """Generate disjoint networks.
@@ -215,10 +211,7 @@ class TestFindAddressesBetweenNodes(MAASServerTestCase):
                 sip_same_space.get_ipaddress(),
             ),
         ]
-        self.assertEqual(
-            list(find_addresses_between_nodes(lefts, rights)),
-            expected,
-        )
+        assert list(find_addresses_between_nodes(lefts, rights)) == expected
 
         # Same node, same space, different VLAN and subnet. We did not add
         # this earlier because its existence allows for a large number of
@@ -251,7 +244,7 @@ class TestFindAddressesBetweenNodes(MAASServerTestCase):
             (lambda route: route[0] == route[2]),  # Route is mutual.
             find_addresses_between_nodes(lefts, [origin, *rights]),
         )
-        self.assertCountEqual(expected_mutual, observed_mutual)
+        assert Counter(expected_mutual) == Counter(observed_mutual)
 
     def test_doesnt_include_matches_between_undefined_spaces(self):
         network1 = next(self.gen_disjoint_networks())
@@ -286,19 +279,20 @@ class TestFindAddressesBetweenNodes(MAASServerTestCase):
         no_matches = list(
             find_addresses_between_nodes({origin}, {node_no_match})
         )
-        self.assertEqual([], no_matches)
+        assert [] == no_matches
 
 
-class TestReduceRoutableAddressMap(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestReduceRoutableAddressMap:
     def test_first_address(self):
         address_map = {
             factory.make_Node(): ["1.1.1.1", "2.2.2.2"],
             factory.make_Node(): ["3.3.3.3"],
         }
-        self.assertEqual(
-            list(reduce_routable_address_map(address_map)),
-            ["1.1.1.1", "3.3.3.3"],
-        )
+        assert list(reduce_routable_address_map(address_map)) == [
+            "1.1.1.1",
+            "3.3.3.3",
+        ]
 
     def test_ignore_empty_address_list(self):
         address_map = {
@@ -306,7 +300,7 @@ class TestReduceRoutableAddressMap(MAASServerTestCase):
             factory.make_Node(): [],
             factory.make_Node(): ["3.3.3.3"],
         }
-        self.assertEqual(
-            list(reduce_routable_address_map(address_map)),
-            ["1.1.1.1", "3.3.3.3"],
-        )
+        assert list(reduce_routable_address_map(address_map)) == [
+            "1.1.1.1",
+            "3.3.3.3",
+        ]

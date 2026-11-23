@@ -4,58 +4,55 @@
 """Tests for `provisioningserver.boot.s390x`."""
 
 import random
+import re
 
 from maastesting.factory import factory
-from maastesting.testcase import MAASTestCase
 from provisioningserver.boot import s390x_partition as s390x_partition_module
 from provisioningserver.boot.s390x import format_bootif
 from provisioningserver.boot.s390x_partition import S390XPartitionBootMethod
 from tests.provisioningserver.test_kernel_opts import make_kernel_parameters
 
 
-class TestS390XPartitionBootMethod(MAASTestCase):
+class TestS390XPartitionBootMethod:
     def test_settings(self):
         s390x_partition = S390XPartitionBootMethod()
 
-        self.assertEqual("s390x_partition", s390x_partition.name)
-        self.assertEqual("s390x_partition", s390x_partition.bios_boot_method)
-        self.assertEqual("s390x_partition", s390x_partition.template_subdir)
-        self.assertEqual(
-            "s390x_partition/maas", s390x_partition.bootloader_path
-        )
-        self.assertEqual("00:20", s390x_partition.arch_octet)
-        self.assertIsNone(s390x_partition.user_class)
+        assert s390x_partition.name == "s390x_partition"
+        assert s390x_partition.bios_boot_method == "s390x_partition"
+        assert s390x_partition.template_subdir == "s390x_partition"
+        assert s390x_partition.bootloader_path == "s390x_partition/maas"
+        assert s390x_partition.arch_octet == "00:20"
+        assert s390x_partition.user_class is None
 
-    def test_match_path_matches(self):
+    def test_match_path_matches(self, mocker):
         s390x_partition = S390XPartitionBootMethod()
         mac = factory.make_mac_address()
-        self.patch(s390x_partition_module, "get_remote_mac").return_value = mac
+        mocker.patch.object(
+            s390x_partition_module, "get_remote_mac"
+        ).return_value = mac
 
-        self.assertEqual(
-            {
-                "arch": "s390x",
-                "mac": mac,
-            },
-            s390x_partition.match_path(
-                factory.make_name("backend"),
-                s390x_partition.bootloader_path.encode(),
-            ),
-        )
+        assert s390x_partition.match_path(
+            factory.make_name("backend"),
+            s390x_partition.bootloader_path.encode(),
+        ) == {
+            "arch": "s390x",
+            "mac": mac,
+        }
 
     def test_match_path_doesnt_match(self):
         s390x_partition = S390XPartitionBootMethod()
 
-        self.assertIsNone(
+        assert (
             s390x_partition.match_path(
                 factory.make_name("backend"), factory.make_name("path")
             )
+            is None
         )
 
     def test_get_reader_ephemeral(self):
         s390x_partition = S390XPartitionBootMethod()
         mac = factory.make_mac_address()
         params = make_kernel_parameters(
-            self,
             arch="s390x",
             purpose=random.choice(
                 ["commissioning", "enlist", "install", "xinstall"]
@@ -70,12 +67,11 @@ class TestS390XPartitionBootMethod(MAASTestCase):
             rf"(?ms).*^\s+initrd={params.initrd}$",
             rf"(?ms).*^\s+append=.*BOOTIF={format_bootif(mac)}+?$",
         ]:
-            self.assertRegex(output, regex)
+            assert re.search(regex, output)
 
     def test_get_reader_ephemeral_no_mac(self):
         s390x_partition = S390XPartitionBootMethod()
         params = make_kernel_parameters(
-            self,
             arch="s390x",
             purpose=random.choice(
                 ["commissioning", "enlist", "install", "xinstall"]
@@ -89,13 +85,13 @@ class TestS390XPartitionBootMethod(MAASTestCase):
             rf"(?ms).*^\s+initrd={params.initrd}$",
             r"(?ms).*^\s+append=.*$",
         ]:
-            self.assertRegex(output, regex)
+            assert re.search(regex, output)
 
     def test_get_reader_poweroff(self):
         s390x_partition = S390XPartitionBootMethod()
         mac = factory.make_mac_address()
         params = make_kernel_parameters(
-            self, arch="s390x", purpose=random.choice(["local", "poweroff"])
+            arch="s390x", purpose=random.choice(["local", "poweroff"])
         )
 
         output = s390x_partition.get_reader(None, params, mac)
@@ -105,12 +101,12 @@ class TestS390XPartitionBootMethod(MAASTestCase):
             if line.split("#", 1)[0].strip()
         ]
 
-        self.assertEqual([], output)
+        assert output == []
 
     def test_get_reader_poweroff_no_mac(self):
         s390x_partition = S390XPartitionBootMethod()
         params = make_kernel_parameters(
-            self, arch="s390x", purpose=random.choice(["local", "poweroff"])
+            arch="s390x", purpose=random.choice(["local", "poweroff"])
         )
 
         output = s390x_partition.get_reader(None, params)
@@ -120,18 +116,18 @@ class TestS390XPartitionBootMethod(MAASTestCase):
             if line.split("#", 1)[0].strip()
         ]
 
-        self.assertEqual([], output)
+        assert output == []
 
     def test_get_reader_dhcp_relay_appends_bootif(self):
         s390x_partition = S390XPartitionBootMethod()
         mac = "00:16:3e:4a:03:01"
         params = make_kernel_parameters(
-            self, arch="s390x", purpose="install", s390x_lease_mac_address=mac
+            arch="s390x", purpose="install", s390x_lease_mac_address=mac
         )
 
         output = s390x_partition.get_reader(None, params)
         output = output.read(output.size).decode()
-        self.assertRegex(
-            output,
+        assert re.search(
             rf"(?ms).*^\s+append=.*BOOTIF={format_bootif(mac)}+?$",
+            output,
         )

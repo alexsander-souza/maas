@@ -6,16 +6,17 @@
 import random
 
 from django.core.exceptions import ValidationError
+import pytest
 
 from maasserver.models.regioncontrollerprocess import RegionControllerProcess
 from maasserver.models.regioncontrollerprocessendpoint import (
     RegionControllerProcessEndpoint,
 )
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 
 
-class TestRegionControllerProcessEndpoint(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb")
+class TestRegionControllerProcessEndpoint:
     """Tests for the `RegionControllerProcessEndpoint` model."""
 
     def test_process_address_port_are_unique(self):
@@ -29,10 +30,9 @@ class TestRegionControllerProcessEndpoint(MAASServerTestCase):
         RegionControllerProcessEndpoint.objects.create(
             process=process, address=address, port=port
         )
-        self.assertRaises(
-            ValidationError,
-            RegionControllerProcessEndpoint.objects.create,
-            process=process,
-            address=address,
-            port=port,
-        )
+        with pytest.raises(ValidationError):
+            RegionControllerProcessEndpoint.objects.create(
+                process=process,
+                address=address,
+                port=port,
+            )

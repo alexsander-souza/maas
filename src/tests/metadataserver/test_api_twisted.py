@@ -8,9 +8,9 @@ from datetime import datetime, timedelta, timezone
 from io import BytesIO
 import json
 import random
-from unittest import TestCase
 from unittest.mock import call, Mock, sentinel
 
+import pytest
 from twisted.internet.defer import inlineCallbacks, succeed
 from twisted.web.server import NOT_DONE_YET
 from twisted.web.test.requesthelper import DummyRequest
@@ -18,23 +18,20 @@ from twisted.web.test.requesthelper import DummyRequest
 from maasserver.enum import NODE_STATUS
 from maasserver.models import Event, Node, NodeKey
 from maasserver.models import node as node_module
+from maasserver.models.signals import events as events_module
 from maasserver.models.signals.testing import SignalsDisabled
 from maasserver.models.timestampedmodel import now
 from maasserver.node_status import get_node_timeout
 from maasserver.preseed import CURTIN_INSTALL_LOG
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import (
-    MAASServerTestCase,
-    MAASTransactionServerTestCase,
-)
 from maasserver.utils.orm import (
+    post_commit_hooks,
     reload_object,
     transactional,
     TransactionManagementError,
 )
 from maasserver.utils.threads import deferToDatabase
 from maastesting.crochet import wait_for
-from maastesting.testcase import MAASTestCase
 from metadataserver import api
 from metadataserver import api_twisted as api_twisted_module
 from metadataserver.api_twisted import (
@@ -43,11 +40,12 @@ from metadataserver.api_twisted import (
 )
 from metadataserver.enum import RESULT_TYPE, SCRIPT_STATUS
 from provisioningserver.events import EVENT_STATUS_MESSAGES
+from tests.fixtures import mock_openfga, mock_start_workflows  # noqa: F401
 
 wait_for_reactor = wait_for()
 
 
-class TestStatusHandlerResource(MAASTestCase):
+class TestStatusHandlerResource:
     def make_request(self, content=None, token=None):
         request = DummyRequest([])
         if token is None:
@@ -61,28 +59,30 @@ class TestStatusHandlerResource(MAASTestCase):
 
     def test_init__(self):
         resource = StatusHandlerResource(sentinel.status_worker)
-        self.assertIs(sentinel.status_worker, resource.worker)
-        self.assertTrue(resource.isLeaf)
-        self.assertEqual([b"POST"], resource.allowedMethods)
-        self.assertEqual(
-            ["event_type", "origin", "name", "description"],
-            resource.requiredMessageKeys,
-        )
+        assert resource.worker is sentinel.status_worker
+        assert resource.isLeaf
+        assert [b"POST"] == resource.allowedMethods
+        assert [
+            "event_type",
+            "origin",
+            "name",
+            "description",
+        ] == resource.requiredMessageKeys
 
     def test_render_POST_missing_authorization(self):
         resource = StatusHandlerResource(sentinel.status_worker)
         request = DummyRequest([])
         output = resource.render_POST(request)
-        self.assertEqual(b"", output)
-        self.assertEqual(401, request.responseCode)
+        assert b"" == output
+        assert 401 == request.responseCode
 
     def test_render_POST_empty_authorization(self):
         resource = StatusHandlerResource(sentinel.status_worker)
         request = DummyRequest([])
         request.requestHeaders.addRawHeader(b"authorization", "")
         output = resource.render_POST(request)
-        self.assertEqual(b"", output)
-        self.assertEqual(401, request.responseCode)
+        assert b"" == output
+        assert 401 == request.responseCode
 
     def test_render_POST_bad_authorization(self):
         resource = StatusHandlerResource(sentinel.status_worker)
@@ -91,39 +91,39 @@ class TestStatusHandlerResource(MAASTestCase):
             b"authorization", factory.make_name("auth")
         )
         output = resource.render_POST(request)
-        self.assertEqual(b"", output)
-        self.assertEqual(401, request.responseCode)
+        assert b"" == output
+        assert 401 == request.responseCode
 
     def test_render_POST_body_must_be_ascii(self):
         resource = StatusHandlerResource(sentinel.status_worker)
         request = self.make_request(content=b"\xe9")
         output = resource.render_POST(request)
-        self.assertEqual(
+        assert (
             b"Status payload must be ASCII-only: 'ascii' codec can't "
-            b"decode byte 0xe9 in position 0: ordinal not in range(128)",
-            output,
+            b"decode byte 0xe9 in position 0: ordinal not in range(128)"
+            == output
         )
-        self.assertEqual(400, request.responseCode)
+        assert 400 == request.responseCode
 
     def test_render_POST_body_must_be_valid_json(self):
         resource = StatusHandlerResource(sentinel.status_worker)
         request = self.make_request(content=b"testing not json")
         output = resource.render_POST(request)
-        self.assertEqual(
-            b"Status payload is not valid JSON:\ntesting not json\n\n", output
+        assert (
+            b"Status payload is not valid JSON:\ntesting not json\n\n"
+            == output
         )
-        self.assertEqual(400, request.responseCode)
+        assert 400 == request.responseCode
 
     def test_render_POST_validates_required_keys(self):
         resource = StatusHandlerResource(sentinel.status_worker)
         request = self.make_request(content=json.dumps({}).encode("ascii"))
         output = resource.render_POST(request)
-        self.assertEqual(
+        assert (
             b"Missing parameter(s) event_type, origin, name, description "
-            b"in status message.",
-            output,
+            b"in status message." == output
         )
-        self.assertEqual(400, request.responseCode)
+        assert 400 == request.responseCode
 
     def test_render_POST_queue_messages(self):
         status_worker = Mock()
@@ -143,17 +143,35 @@ class TestStatusHandlerResource(MAASTestCase):
             content=json.dumps(message).encode("ascii"), token=token
         )
         output = resource.render_POST(request)
-        self.assertEqual(NOT_DONE_YET, output)
-        self.assertEqual(204, request.responseCode)
+        assert NOT_DONE_YET == output
+        assert 204 == request.responseCode
         status_worker.queueMessage.assert_called_once_with(token, message)
 
 
-class TestStatusWorkerServiceTransactional(MAASTransactionServerTestCase):
-    assertRaises = TestCase.assertRaises
-
-    def setUp(self):
-        super().setUp()
-        self.patch(node_module, "stop_workflow")
+@pytest.mark.allow_transactions
+@pytest.mark.usefixtures("maasdb", "mock_openfga", "mock_start_workflows")
+class TestStatusWorkerServiceTransactional:
+    @pytest.fixture(autouse=True)
+    def _setup(self, mocker):
+        # Check for and reset orphaned post-commit hooks, as
+        # PostCommitHooksTestMixin did.
+        assert len(post_commit_hooks.hooks) == 0, (
+            "One or more post-commit tasks were present before commencing "
+            "this test."
+        )
+        post_commit_hooks.reset()
+        # Disconnect the status transition event, as MAASRegionTestCaseBase
+        # setUpFixtures did.
+        mocker.patch.object(
+            events_module, "STATE_TRANSITION_EVENT_CONNECT", False
+        )
+        mocker.patch.object(node_module, "stop_workflow")
+        yield
+        assert len(post_commit_hooks.hooks) == 0, (
+            "One or more post-commit tasks were present at the end of this "
+            "test."
+        )
+        post_commit_hooks.reset()
 
     @transactional
     def make_nodes_with_tokens(self):
@@ -173,14 +191,14 @@ class TestStatusWorkerServiceTransactional(MAASTransactionServerTestCase):
 
     def test_init__(self):
         worker = StatusWorkerService(sentinel.dbtasks, clock=sentinel.reactor)
-        self.assertEqual(sentinel.dbtasks, worker.dbtasks)
-        self.assertEqual(sentinel.reactor, worker.clock)
-        self.assertEqual(60, worker.step)
-        self.assertEqual((worker._tryUpdateNodes, tuple(), {}), worker.call)
+        assert sentinel.dbtasks == worker.dbtasks
+        assert sentinel.reactor == worker.clock
+        assert 60 == worker.step
+        assert (worker._tryUpdateNodes, tuple(), {}) == worker.call
 
     def test_tryUpdateNodes_returns_None_when_empty_queue(self):
         worker = StatusWorkerService(sentinel.dbtasks)
-        self.assertIsNone(worker._tryUpdateNodes())
+        assert worker._tryUpdateNodes() is None
 
     @wait_for_reactor
     @inlineCallbacks
@@ -207,7 +225,7 @@ class TestStatusWorkerServiceTransactional(MAASTransactionServerTestCase):
     @inlineCallbacks
     def test_processMessages_fails_when_in_transaction(self):
         worker = StatusWorkerService(sentinel.dbtasks)
-        with self.assertRaises(TransactionManagementError):
+        with pytest.raises(TransactionManagementError):
             yield deferToDatabase(
                 transactional(worker._processMessages),
                 sentinel.node,
@@ -218,7 +236,7 @@ class TestStatusWorkerServiceTransactional(MAASTransactionServerTestCase):
     @inlineCallbacks
     def test_processMessageNow_fails_when_in_transaction(self):
         worker = StatusWorkerService(sentinel.dbtasks)
-        with self.assertRaises(TransactionManagementError):
+        with pytest.raises(TransactionManagementError):
             yield deferToDatabase(
                 transactional(worker._processMessageNow),
                 sentinel.node,
@@ -227,9 +245,9 @@ class TestStatusWorkerServiceTransactional(MAASTransactionServerTestCase):
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_processMessages_doesnt_call_when_node_deleted(self):
+    def test_processMessages_doesnt_call_when_node_deleted(self, mocker):
         worker = StatusWorkerService(sentinel.dbtasks)
-        mock_processMessage = self.patch(worker, "_processMessage")
+        mock_processMessage = mocker.patch.object(worker, "_processMessage")
         mock_processMessage.return_value = False
         yield deferToDatabase(
             worker._processMessages,
@@ -242,9 +260,9 @@ class TestStatusWorkerServiceTransactional(MAASTransactionServerTestCase):
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_processMessages_calls_processMessage(self):
+    def test_processMessages_calls_processMessage(self, mocker):
         worker = StatusWorkerService(sentinel.dbtasks)
-        mock_processMessage = self.patch(worker, "_processMessage")
+        mock_processMessage = mocker.patch.object(worker, "_processMessage")
         mock_processMessage.return_value = True
         yield deferToDatabase(
             worker._processMessages,
@@ -260,9 +278,9 @@ class TestStatusWorkerServiceTransactional(MAASTransactionServerTestCase):
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_queueMessages_processes_top_level_message_instantly(self):
+    def test_queueMessages_processes_top_level_message_instantly(self, mocker):
         worker = StatusWorkerService(sentinel.dbtasks)
-        mock_processMessage = self.patch(worker, "_processMessage")
+        mock_processMessage = mocker.patch.object(worker, "_processMessage")
         message = self.make_message()
         message["event_type"] = "finish"
         nodes_with_tokens = yield deferToDatabase(self.make_nodes_with_tokens)
@@ -272,10 +290,14 @@ class TestStatusWorkerServiceTransactional(MAASTransactionServerTestCase):
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_queueMessages_processes_top_level_status_messages_instantly(self):
+    def test_queueMessages_processes_top_level_status_messages_instantly(
+        self, mocker
+    ):
         for name in EVENT_STATUS_MESSAGES.keys():
             worker = StatusWorkerService(sentinel.dbtasks)
-            mock_processMessage = self.patch(worker, "_processMessage")
+            mock_processMessage = mocker.patch.object(
+                worker, "_processMessage"
+            )
             message = self.make_message()
             message["event_type"] = "start"
             message["name"] = name
@@ -288,9 +310,9 @@ class TestStatusWorkerServiceTransactional(MAASTransactionServerTestCase):
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_queueMessages_processes_files_message_instantly(self):
+    def test_queueMessages_processes_files_message_instantly(self, mocker):
         worker = StatusWorkerService(sentinel.dbtasks)
-        mock_processMessage = self.patch(worker, "_processMessage")
+        mock_processMessage = mocker.patch.object(worker, "_processMessage")
         contents = b"These are the contents of the file."
         encoded_content = encode_as_base64(bz2.compress(contents))
         message = self.make_message()
@@ -309,9 +331,11 @@ class TestStatusWorkerServiceTransactional(MAASTransactionServerTestCase):
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_queueMessages_handled_invalid_nodekey_with_instant_msg(self):
+    def test_queueMessages_handled_invalid_nodekey_with_instant_msg(
+        self, mocker
+    ):
         worker = StatusWorkerService(sentinel.dbtasks)
-        mock_processMessage = self.patch(worker, "_processMessage")
+        mock_processMessage = mocker.patch.object(worker, "_processMessage")
         contents = b"These are the contents of the file."
         encoded_content = encode_as_base64(bz2.compress(contents))
         message = self.make_message()
@@ -334,12 +358,31 @@ def encode_as_base64(content):
     return base64.encodebytes(content).decode("ascii")
 
 
-class TestStatusWorkerService(MAASServerTestCase):
-    def setUp(self):
-        super().setUp()
-        self.useFixture(SignalsDisabled("power"))
-        self.patch(api_twisted_module, "signal_workflow")
-        self.patch(node_module, "stop_workflow")
+@pytest.mark.usefixtures("maasdb", "mock_openfga", "mock_start_workflows")
+class TestStatusWorkerService:
+    @pytest.fixture(autouse=True)
+    def _setup(self, mocker):
+        # Check for and reset orphaned post-commit hooks, as
+        # PostCommitHooksTestMixin did.
+        assert len(post_commit_hooks.hooks) == 0, (
+            "One or more post-commit tasks were present before commencing "
+            "this test."
+        )
+        post_commit_hooks.reset()
+        # Disconnect the status transition event, as MAASRegionTestCaseBase
+        # setUpFixtures did.
+        mocker.patch.object(
+            events_module, "STATE_TRANSITION_EVENT_CONNECT", False
+        )
+        with SignalsDisabled("power"):
+            mocker.patch.object(api_twisted_module, "signal_workflow")
+            mocker.patch.object(node_module, "stop_workflow")
+            yield
+        assert len(post_commit_hooks.hooks) == 0, (
+            "One or more post-commit tasks were present at the end of this "
+            "test."
+        )
+        post_commit_hooks.reset()
 
     def processMessage(self, node, payload):
         worker = StatusWorkerService(sentinel.dbtasks)
@@ -358,9 +401,10 @@ class TestStatusWorkerService(MAASServerTestCase):
         }
         self.processMessage(node, payload)
         event = Event.objects.last()
-        self.assertEqual(
-            event.description,
-            CURTIN_INSTALL_LOG + " changed status from 'Pending' to 'Running'",
+        assert (
+            event.description
+            == CURTIN_INSTALL_LOG
+            + " changed status from 'Pending' to 'Running'"
         )
 
     def test_process_message_returns_false_when_node_deleted(self):
@@ -374,7 +418,7 @@ class TestStatusWorkerService(MAASServerTestCase):
             "description": "Command Install",
             "timestamp": datetime.now(timezone.utc),
         }
-        self.assertFalse(self.processMessage(node1, payload))
+        assert not self.processMessage(node1, payload)
 
     def test_status_installation_result_does_not_affect_other_node(self):
         node1 = factory.make_Node(
@@ -396,14 +440,14 @@ class TestStatusWorkerService(MAASServerTestCase):
             "timestamp": datetime.now(timezone.utc),
         }
         self.processMessage(node1, payload)
-        self.assertEqual(NODE_STATUS.DEPLOYING, reload_object(node2).status)
+        assert NODE_STATUS.DEPLOYING == reload_object(node2).status
         # Check last node1 event.
-        self.assertEqual(
-            CURTIN_INSTALL_LOG + " changed status from 'Pending' to 'Running'",
-            Event.objects.filter(node=node1).last().description,
+        assert (
+            CURTIN_INSTALL_LOG + " changed status from 'Pending' to 'Running'"
+            == Event.objects.filter(node=node1).last().description
         )
         # There must be no events for node2.
-        self.assertFalse(Event.objects.filter(node=node2).exists())
+        assert not Event.objects.filter(node=node2).exists()
 
     def test_status_installation_success_leaves_node_deploying(self):
         node = factory.make_Node(
@@ -426,11 +470,11 @@ class TestStatusWorkerService(MAASServerTestCase):
             "timestamp": datetime.now(timezone.utc),
         }
         self.processMessage(node, payload)
-        self.assertEqual(NODE_STATUS.DEPLOYING, reload_object(node).status)
+        assert NODE_STATUS.DEPLOYING == reload_object(node).status
         # Check last node event.
-        self.assertEqual(
-            "/tmp/install.log changed status from 'Pending' to 'Running'",
-            Event.objects.filter(node=node).last().description,
+        assert (
+            "/tmp/install.log changed status from 'Pending' to 'Running'"
+            == Event.objects.filter(node=node).last().description
         )
 
     def test_status_commissioning_failure_leaves_node_failed(self):
@@ -446,18 +490,13 @@ class TestStatusWorkerService(MAASServerTestCase):
             "timestamp": datetime.now(timezone.utc),
         }
         self.processMessage(node, payload)
-        self.assertEqual(
-            NODE_STATUS.FAILED_COMMISSIONING, reload_object(node).status
-        )
+        assert NODE_STATUS.FAILED_COMMISSIONING == reload_object(node).status
         # Check last node event.
-        self.assertEqual(
-            [
-                "'curtin' Commissioning",
-                "Commissioning failed, cloud-init reported a failure (refer "
-                "to the event log for more information)",
-            ],
-            [e.description for e in Event.objects.filter(node=node)],
-        )
+        assert [
+            "'curtin' Commissioning",
+            "Commissioning failed, cloud-init reported a failure (refer "
+            "to the event log for more information)",
+        ] == [e.description for e in Event.objects.filter(node=node)]
 
     def test_status_commissioning_failure_clears_owner(self):
         user = factory.make_User()
@@ -472,12 +511,10 @@ class TestStatusWorkerService(MAASServerTestCase):
             "description": "Commissioning",
             "timestamp": datetime.now(timezone.utc),
         }
-        self.assertEqual(user, node.owner)  # Node has an owner
+        assert user == node.owner  # Node has an owner
         self.processMessage(node, payload)
-        self.assertEqual(
-            NODE_STATUS.FAILED_COMMISSIONING, reload_object(node).status
-        )
-        self.assertIsNone(reload_object(node).owner)
+        assert NODE_STATUS.FAILED_COMMISSIONING == reload_object(node).status
+        assert reload_object(node).owner is None
 
     def test_status_commissioning_failure_aborts_scripts(self):
         # Regression test for LP:1732948
@@ -496,13 +533,11 @@ class TestStatusWorkerService(MAASServerTestCase):
             "description": "Commissioning",
             "timestamp": datetime.now(timezone.utc),
         }
-        self.assertEqual(user, node.owner)  # Node has an owner
+        assert user == node.owner  # Node has an owner
         self.processMessage(node, payload)
-        self.assertEqual(
-            NODE_STATUS.FAILED_COMMISSIONING, reload_object(node).status
-        )
+        assert NODE_STATUS.FAILED_COMMISSIONING == reload_object(node).status
         for script_result in node.get_latest_commissioning_script_results:
-            self.assertEqual(SCRIPT_STATUS.ABORTED, script_result.status)
+            assert SCRIPT_STATUS.ABORTED == script_result.status
 
     def test_status_commissioning_failure_ignored_when_rebooting_running(self):
         user = factory.make_User()
@@ -526,12 +561,10 @@ class TestStatusWorkerService(MAASServerTestCase):
             "description": "Commissioning",
             "timestamp": datetime.now(timezone.utc),
         }
-        self.assertEqual(user, node.owner)  # Node has an owner
+        assert user == node.owner  # Node has an owner
         self.processMessage(node, payload)
-        self.assertEqual(NODE_STATUS.COMMISSIONING, reload_object(node).status)
-        self.assertEqual(
-            SCRIPT_STATUS.RUNNING, reload_object(script_result).status
-        )
+        assert NODE_STATUS.COMMISSIONING == reload_object(node).status
+        assert SCRIPT_STATUS.RUNNING == reload_object(script_result).status
 
     def test_status_commissioning_failure_ignored_when_rebooting_passed(self):
         user = factory.make_User()
@@ -559,10 +592,8 @@ class TestStatusWorkerService(MAASServerTestCase):
             "timestamp": datetime.now(timezone.utc),
         }
         self.processMessage(node, payload)
-        self.assertEqual(NODE_STATUS.COMMISSIONING, reload_object(node).status)
-        self.assertEqual(
-            SCRIPT_STATUS.PASSED, reload_object(script_result).status
-        )
+        assert NODE_STATUS.COMMISSIONING == reload_object(node).status
+        assert SCRIPT_STATUS.PASSED == reload_object(script_result).status
 
     def test_status_installation_failure_leaves_node_failed(self):
         node = factory.make_Node(interface=True, status=NODE_STATUS.DEPLOYING)
@@ -575,14 +606,12 @@ class TestStatusWorkerService(MAASServerTestCase):
             "timestamp": datetime.now(timezone.utc),
         }
         self.processMessage(node, payload)
-        self.assertEqual(
-            NODE_STATUS.FAILED_DEPLOYMENT, reload_object(node).status
-        )
+        assert NODE_STATUS.FAILED_DEPLOYMENT == reload_object(node).status
         # Check last node event.
-        self.assertEqual(
+        assert (
             "Installation failed (refer to the installation"
-            " log for more information).",
-            Event.objects.filter(node=node).last().description,
+            " log for more information)."
+            == Event.objects.filter(node=node).last().description
         )
 
     def test_status_installation_fail_leaves_node_failed(self):
@@ -596,14 +625,12 @@ class TestStatusWorkerService(MAASServerTestCase):
             "timestamp": datetime.now(timezone.utc),
         }
         self.processMessage(node, payload)
-        self.assertEqual(
-            NODE_STATUS.FAILED_DEPLOYMENT, reload_object(node).status
-        )
+        assert NODE_STATUS.FAILED_DEPLOYMENT == reload_object(node).status
         # Check last node event.
-        self.assertEqual(
+        assert (
             "Installation failed (refer to the installation"
-            " log for more information).",
-            Event.objects.filter(node=node).last().description,
+            " log for more information)."
+            == Event.objects.filter(node=node).last().description
         )
 
     def test_status_installation_failure_doesnt_clear_owner(self):
@@ -619,12 +646,10 @@ class TestStatusWorkerService(MAASServerTestCase):
             "description": "Command Install",
             "timestamp": datetime.now(timezone.utc),
         }
-        self.assertEqual(user, node.owner)  # Node has an owner
+        assert user == node.owner  # Node has an owner
         self.processMessage(node, payload)
-        self.assertEqual(
-            NODE_STATUS.FAILED_DEPLOYMENT, reload_object(node).status
-        )
-        self.assertIsNotNone(reload_object(node).owner)
+        assert NODE_STATUS.FAILED_DEPLOYMENT == reload_object(node).status
+        assert reload_object(node).owner is not None
 
     def test_status_installation_failure_fails_script_result(self):
         # Regression test for LP:1701352
@@ -658,9 +683,7 @@ class TestStatusWorkerService(MAASServerTestCase):
             ],
         }
         self.processMessage(node, payload)
-        self.assertEqual(
-            SCRIPT_STATUS.FAILED, reload_object(script_result).status
-        )
+        assert SCRIPT_STATUS.FAILED == reload_object(script_result).status
 
     def test_status_POST_files_none_are_ignored(self):
         user = factory.make_User()
@@ -687,10 +710,10 @@ class TestStatusWorkerService(MAASServerTestCase):
             ],
         }
         self.processMessage(node, payload)
-        self.assertEqual(0, len(list(node.current_installation_script_set)))
+        assert 0 == len(list(node.current_installation_script_set))
 
-    def test_status_commissioning_failure_does_not_populate_tags(self):
-        populate_tags_for_single_node = self.patch(
+    def test_status_commissioning_failure_does_not_populate_tags(self, mocker):
+        populate_tags_for_single_node = mocker.patch.object(
             api, "populate_tags_for_single_node"
         )
         node = factory.make_Node(
@@ -705,9 +728,7 @@ class TestStatusWorkerService(MAASServerTestCase):
             "timestamp": datetime.now(timezone.utc),
         }
         self.processMessage(node, payload)
-        self.assertEqual(
-            NODE_STATUS.FAILED_COMMISSIONING, reload_object(node).status
-        )
+        assert NODE_STATUS.FAILED_COMMISSIONING == reload_object(node).status
         populate_tags_for_single_node.assert_not_called()
 
     def test_status_erasure_failure_leaves_node_failed(self):
@@ -723,17 +744,15 @@ class TestStatusWorkerService(MAASServerTestCase):
             "timestamp": datetime.now(timezone.utc),
         }
         self.processMessage(node, payload)
-        self.assertEqual(
-            NODE_STATUS.FAILED_DISK_ERASING, reload_object(node).status
-        )
+        assert NODE_STATUS.FAILED_DISK_ERASING == reload_object(node).status
         # Check last node event.
-        self.assertEqual(
-            "Failed to erase disks.",
-            Event.objects.filter(node=node).last().description,
+        assert (
+            "Failed to erase disks."
+            == Event.objects.filter(node=node).last().description
         )
 
-    def test_status_erasure_failure_does_not_populate_tags(self):
-        populate_tags_for_single_node = self.patch(
+    def test_status_erasure_failure_does_not_populate_tags(self, mocker):
+        populate_tags_for_single_node = mocker.patch.object(
             api, "populate_tags_for_single_node"
         )
         node = factory.make_Node(
@@ -748,9 +767,7 @@ class TestStatusWorkerService(MAASServerTestCase):
             "timestamp": datetime.now(timezone.utc),
         }
         self.processMessage(node, payload)
-        self.assertEqual(
-            NODE_STATUS.FAILED_DISK_ERASING, reload_object(node).status
-        )
+        assert NODE_STATUS.FAILED_DISK_ERASING == reload_object(node).status
         populate_tags_for_single_node.assert_not_called()
 
     def test_status_erasure_failure_doesnt_clear_owner(self):
@@ -767,10 +784,8 @@ class TestStatusWorkerService(MAASServerTestCase):
             "timestamp": datetime.now(timezone.utc),
         }
         self.processMessage(node, payload)
-        self.assertEqual(
-            NODE_STATUS.FAILED_DISK_ERASING, reload_object(node).status
-        )
-        self.assertEqual(user, node.owner)
+        assert NODE_STATUS.FAILED_DISK_ERASING == reload_object(node).status
+        assert user == node.owner
 
     def test_status_with_file_bad_encoder_fails(self):
         node = factory.make_Node(
@@ -794,7 +809,8 @@ class TestStatusWorkerService(MAASServerTestCase):
                 }
             ],
         }
-        self.assertRaises(ValueError, self.processMessage, node, payload)
+        with pytest.raises(ValueError):
+            self.processMessage(node, payload)
 
     def test_status_with_file_bad_compression_fails(self):
         node = factory.make_Node(
@@ -818,7 +834,8 @@ class TestStatusWorkerService(MAASServerTestCase):
                 }
             ],
         }
-        self.assertRaises(ValueError, self.processMessage, node, payload)
+        with pytest.raises(ValueError):
+            self.processMessage(node, payload)
 
     def test_status_with_file_no_compression_succeeds(self):
         node = factory.make_Node(
@@ -849,7 +866,7 @@ class TestStatusWorkerService(MAASServerTestCase):
             ],
         }
         self.processMessage(node, payload)
-        self.assertEqual(contents, reload_object(script_result).output)
+        assert contents == reload_object(script_result).output
 
     def test_status_with_file_invalid_statuses_fails(self):
         """Adding files should fail for every status that's neither
@@ -887,7 +904,8 @@ class TestStatusWorkerService(MAASServerTestCase):
                     }
                 ],
             }
-            self.assertRaises(ValueError, self.processMessage, node, payload)
+            with pytest.raises(ValueError):
+                self.processMessage(node, payload)
 
     def test_status_with_file_succeeds(self):
         """Adding files should succeed for every status that's either
@@ -925,9 +943,9 @@ class TestStatusWorkerService(MAASServerTestCase):
                 ],
             }
             self.processMessage(node, payload)
-            self.assertEqual(target_status, reload_object(node).status)
+            assert target_status == reload_object(node).status
             # Check the node result.
-            self.assertEqual(contents, reload_object(script_result).output)
+            assert contents == reload_object(script_result).output
 
     def test_status_with_results_succeeds(self):
         """Adding a script result should succeed"""
@@ -962,8 +980,8 @@ class TestStatusWorkerService(MAASServerTestCase):
         }
         self.processMessage(node, payload)
         script_result = reload_object(script_result)
-        self.assertEqual(contents, script_result.output)
-        self.assertEqual(-42, script_result.exit_status)
+        assert contents == script_result.output
+        assert -42 == script_result.exit_status
 
     def test_status_with_results_no_exit_status_defaults_to_zero(self):
         """Adding a script result should succeed without a return code defaults
@@ -997,7 +1015,7 @@ class TestStatusWorkerService(MAASServerTestCase):
             ],
         }
         self.processMessage(node, payload)
-        self.assertEqual(0, reload_object(script_result).exit_status)
+        assert 0 == reload_object(script_result).exit_status
 
     def test_captures_installation_start(self):
         node = factory.make_Node(
@@ -1015,7 +1033,7 @@ class TestStatusWorkerService(MAASServerTestCase):
         script_result = script_set.find_script_result(
             script_name=CURTIN_INSTALL_LOG
         )
-        self.assertEqual(SCRIPT_STATUS.RUNNING, script_result.status)
+        assert SCRIPT_STATUS.RUNNING == script_result.status
 
     def test_resets_status_expires(self):
         node = factory.make_Node(
@@ -1044,20 +1062,16 @@ class TestStatusWorkerService(MAASServerTestCase):
         expected_time = now() + timedelta(
             minutes=get_node_timeout(NODE_STATUS.DEPLOYING)
         )
-        self.assertGreaterEqual(
-            node.status_expires, expected_time - timedelta(minutes=1)
-        )
-        self.assertLessEqual(
-            node.status_expires, expected_time + timedelta(minutes=1)
-        )
+        assert node.status_expires >= expected_time - timedelta(minutes=1)
+        assert node.status_expires <= expected_time + timedelta(minutes=1)
 
-    def test_disk_erasing_machine_failed(self):
+    def test_disk_erasing_machine_failed(self, mocker):
         node = factory.make_Node(
             status=NODE_STATUS.DISK_ERASING,
             status_expires=factory.make_date(),
             with_empty_script_sets=True,
         )
-        release_node_patch = self.patch(Node, "release")
+        release_node_patch = mocker.patch.object(Node, "release")
         payload = {
             "name": "modules-final",
             "description": "running modules for final",
@@ -1068,18 +1082,18 @@ class TestStatusWorkerService(MAASServerTestCase):
         }
         self.processMessage(node, payload)
         node = reload_object(node)
-        self.assertEqual(node.status, NODE_STATUS.FAILED_DISK_ERASING)
+        assert node.status == NODE_STATUS.FAILED_DISK_ERASING
         release_node_patch.assert_not_called()
 
     def test_disk_erasing_machine_transitioned_to_ready_with_modules_final_event(
-        self,
+        self, mocker
     ):
         node = factory.make_Node(
             status=NODE_STATUS.DISK_ERASING,
             status_expires=factory.make_date(),
             with_empty_script_sets=True,
         )
-        release_node_patch = self.patch(Node, "release")
+        release_node_patch = mocker.patch.object(Node, "release")
         payload = {
             "name": "modules-final",
             "description": "running modules for final",
@@ -1094,13 +1108,13 @@ class TestStatusWorkerService(MAASServerTestCase):
         # to make sure its reset but won't fail testing.
         release_node_patch.assert_called_once()
 
-    def test_releasing_machine_failed(self):
+    def test_releasing_machine_failed(self, mocker):
         node = factory.make_Node(
             status=NODE_STATUS.RELEASING,
             status_expires=factory.make_date(),
             with_empty_script_sets=True,
         )
-        release_node_patch = self.patch(Node, "release")
+        release_node_patch = mocker.patch.object(Node, "release")
         payload = {
             "name": "modules-final",
             "description": "running modules for final",
@@ -1111,18 +1125,18 @@ class TestStatusWorkerService(MAASServerTestCase):
         }
         self.processMessage(node, payload)
         node = reload_object(node)
-        self.assertEqual(node.status, NODE_STATUS.FAILED_RELEASING)
+        assert node.status == NODE_STATUS.FAILED_RELEASING
         release_node_patch.assert_not_called()
 
     def test_releasing_machine_transitioned_to_ready_with_modules_final_event(
-        self,
+        self, mocker
     ):
         node = factory.make_Node(
             status=NODE_STATUS.RELEASING,
             status_expires=factory.make_date(),
             with_empty_script_sets=True,
         )
-        release_node_patch = self.patch(Node, "release")
+        release_node_patch = mocker.patch.object(Node, "release")
         payload = {
             "name": "modules-final",
             "description": "running modules for final",

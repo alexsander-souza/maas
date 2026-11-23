@@ -3,6 +3,7 @@
 
 from django.contrib.auth.models import AnonymousUser
 from django.http import HttpRequest
+import pytest
 
 from maascommon.events import AUDIT
 from maascommon.logging.security import USER
@@ -11,11 +12,17 @@ from maasserver.audit import create_audit_event
 from maasserver.enum import ENDPOINT_CHOICES
 from maasserver.models import Event
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from provisioningserver.events import EVENT_TYPES
 
 
-class TestCreateAuditEvent(MAASServerTestCase):
+@pytest.mark.usefixtures(
+    "maasdb",
+    "maas_region_test",
+    "factory",
+    "mock_openfga",
+    "mock_start_workflows",
+)
+class TestCreateAuditEvent:
     def test_create_audit_event_creates_audit_event_without_node(self):
         user = factory.make_User()
         request = HttpRequest()
@@ -24,9 +31,9 @@ class TestCreateAuditEvent(MAASServerTestCase):
         endpoint = factory.pick_choice(ENDPOINT_CHOICES)
         create_audit_event(EVENT_TYPES.NODE_PXE_REQUEST, endpoint, request)
         event = Event.objects.get(node=None, type__level=AUDIT)
-        self.assertIsNotNone(event)
-        self.assertEqual(endpoint, event.endpoint)
-        self.assertEqual("", event.user_agent)
+        assert event is not None
+        assert endpoint == event.endpoint
+        assert "" == event.user_agent
 
     def test_create_audit_event_creates_audit_event_with_user_agent(self):
         node = factory.make_Node()
@@ -44,8 +51,8 @@ class TestCreateAuditEvent(MAASServerTestCase):
             system_id=node.system_id,
         )
         event = Event.objects.get(node=node, type__level=AUDIT)
-        self.assertIsNotNone(event)
-        self.assertEqual(request.headers["user-agent"], event.user_agent)
+        assert event is not None
+        assert request.headers["user-agent"] == event.user_agent
 
     def test_create_audit_event_creates_audit_event_with_description(self):
         node = factory.make_Node()
@@ -65,9 +72,9 @@ class TestCreateAuditEvent(MAASServerTestCase):
             description=description,
         )
         event = Event.objects.get(node=node, type__level=AUDIT)
-        self.assertIsNotNone(event)
-        self.assertEqual(request.headers["user-agent"], event.user_agent)
-        self.assertEqual(description, event.description)
+        assert event is not None
+        assert request.headers["user-agent"] == event.user_agent
+        assert description == event.description
 
     def test_create_audit_event_creates_audit_event_with_AnonymousUser(self):
         request = HttpRequest()
@@ -79,23 +86,23 @@ class TestCreateAuditEvent(MAASServerTestCase):
         endpoint = factory.pick_choice(ENDPOINT_CHOICES)
         create_audit_event(EVENT_TYPES.NODE_PXE_REQUEST, endpoint, request)
         event = Event.objects.get(type__level=AUDIT)
-        self.assertIsNotNone(event)
-        self.assertIsNone(event.user_id)
+        assert event is not None
+        assert event.user_id is None
 
     def test_create_audit_event_creates_audit_event_with_empty_request(self):
         endpoint = factory.pick_choice(ENDPOINT_CHOICES)
         create_audit_event(EVENT_TYPES.SETTINGS, endpoint)
         event = Event.objects.get(type__level=AUDIT)
-        self.assertIsNotNone(event)
-        self.assertIsNone(event.ip_address)
-        self.assertIsNone(event.user_id)
-        self.assertEqual("", event.user_agent)
+        assert event is not None
+        assert event.ip_address is None
+        assert event.user_id is None
+        assert "" == event.user_agent
 
-    def test_create_audit_event_creates_security_log(self):
+    def test_create_audit_event_creates_security_log(self, mocker):
         request = HttpRequest()
         request.user = factory.make_User(username="testuser")
         endpoint = factory.pick_choice(ENDPOINT_CHOICES)
-        mock_logger = self.patch(audit_module, "logger")
+        mock_logger = mocker.patch.object(audit_module, "logger")
         create_audit_event(
             EVENT_TYPES.SETTINGS,
             endpoint,

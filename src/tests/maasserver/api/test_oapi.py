@@ -3,6 +3,7 @@
 
 import json
 
+import pytest
 import yaml
 
 from maasserver.api.doc_oapi import (
@@ -13,11 +14,9 @@ from maasserver.api.doc_oapi import (
 )
 from maasserver.models.config import Config
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
-from maastesting.testcase import MAASTestCase
 
 
-class TestLandingPage(MAASTestCase):
+class TestLandingPage:
     def test_links(self):
         request = factory.make_fake_request()
         page = landing_page(request)
@@ -26,55 +25,70 @@ class TestLandingPage(MAASTestCase):
         host = request.get_host()
         for link in resources:
             href = f"http://{host}{link['path']}"
-            self.assertEqual(link["href"], href)
-        self.assertEqual(resources[0]["type"], page["content-type"])
+            assert link["href"] == href
+        assert resources[0]["type"] == page["content-type"]
 
 
-class TestApiEndpoint(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestApiEndpoint:
     def test_required_fields(self):
         request = factory.make_fake_request()
         page = endpoint(request)
         content = yaml.safe_load(page.content)
-        self.assertIn("openapi", content)
-        self.assertIn("info", content)
-        self.assertIn("paths", content)
+        assert "openapi" in content
+        assert "info" in content
+        assert "paths" in content
         info = content["info"]
-        self.assertIsInstance(info, dict)
-        self.assertIn("title", info)
-        self.assertIn("version", info)
+        assert isinstance(info, dict)
+        assert "title" in info
+        assert "version" in info
 
     def test_discovered_servers(self):
         request = factory.make_fake_request()
         page = endpoint(request)
         content = yaml.safe_load(page.content)
-        self.assertIn("servers", content)
+        assert "servers" in content
         servers = content["servers"]
-        self.assertIsInstance(servers, list)
+        assert isinstance(servers, list)
         maasserver = servers[0]
         maas_name = Config.objects.get_config("maas_name")
-        self.assertEqual(
-            maasserver["url"], "http://localhost:5240/MAAS/api/2.0/"
-        )
-        self.assertEqual(maasserver["description"], f"{maas_name} API")
+        assert maasserver["url"] == "http://localhost:5240/MAAS/api/2.0/"
+        assert maasserver["description"] == f"{maas_name} API"
 
     def test_external_docs(self):
         request = factory.make_fake_request()
         page = endpoint(request)
         content = yaml.safe_load(page.content)
-        self.assertIn("externalDocs", content)
+        assert "externalDocs" in content
         external_docs = content["externalDocs"]
-        self.assertIsInstance(external_docs, dict)
-        self.assertIn("description", external_docs)
-        self.assertEqual(
-            external_docs["url"],
-            "/MAAS/docs/reference/api-reference/api-v2-generated/",
+        assert isinstance(external_docs, dict)
+        assert "description" in external_docs
+        assert external_docs["url"] == (
+            "/MAAS/docs/reference/api-reference/api-v2-generated/"
         )
 
 
-class TestOAPISpec(MAASServerTestCase):
-    def setUp(self):
-        self.oapi_types = ["boolean", "integer", "number", "object", "string"]
-        self.oapi_ops = [
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestOAPISpec:
+    def test_paths(self):
+        # TODO add actual tests
+        _render_oapi_paths()
+
+    def test_path_parameters(self):
+        oapi_types = ["boolean", "integer", "number", "object", "string"]
+        for path in _render_oapi_paths().values():
+            if "parameters" not in path:
+                continue
+            for param in path["parameters"]:
+                assert "name" in param
+                assert "in" in param
+                assert param["in"] in ["cookie", "header", "path", "query"]
+                assert param["required"]
+                if "schema" in param:
+                    assert param["schema"]["type"] in oapi_types
+
+    def test_path_operations(self):
+        oapi_ops = [
             "get",
             "put",
             "post",
@@ -85,32 +99,11 @@ class TestOAPISpec(MAASServerTestCase):
             "trace",
             "servers",
         ]
-        return super().setUp()
-
-    def test_paths(self):
-        # TODO add actual tests
-        _render_oapi_paths()
-
-    def test_path_parameters(self):
         for path in _render_oapi_paths().values():
-            if "parameters" not in path:
-                continue
-            for param in path["parameters"]:
-                self.assertIn("name", param)
-                self.assertIn("in", param)
-                self.assertIn(
-                    param["in"], ["cookie", "header", "path", "query"]
-                )
-                self.assertTrue(param["required"])
-                if "schema" in param:
-                    self.assertIn(param["schema"]["type"], self.oapi_types)
-
-    def test_path_operations(self):
-        for path in _render_oapi_paths().values():
-            isct_ops = list(set(self.oapi_ops) & set(path.keys()))
+            isct_ops = list(set(oapi_ops) & set(path.keys()))
             for op in isct_ops:
                 for response in path[op]["responses"].values():
-                    self.assertIn("description", response)
+                    assert "description" in response
 
     def test_path_object_types(self):
         def _get_all_key_values(d):
@@ -120,14 +113,13 @@ class TestOAPISpec(MAASServerTestCase):
                 else:
                     yield (k, v)
 
+        oapi_types = ["boolean", "integer", "number", "object", "string"]
         for k, v in _get_all_key_values(_render_oapi_paths()):
             if k == "type":
-                self.assertIn(v, self.oapi_types)
+                assert v in oapi_types
 
 
-class TestPrettify(MAASTestCase):
-    maxDiff = None
-
+class TestPrettify:
     def test_cleans_newlines(self):
         before = """\
 Returns system details -- for example, LLDP and
@@ -155,4 +147,4 @@ Returns system details - for example, LLDP and `lshw` XML dumps.
 Returns a `{detail_type: xml, .}` map, where `detail_type` is something like "lldp" or "lshw".
 Note that this is returned as BSON and not JSON. This is for efficiency, but mainly because JSON can't do binary content without applying additional encoding like base-64. The example output below is represented in ASCII using `bsondump example.bson` and is for demonstrative purposes."""
 
-        self.assertEqual(_prettify(before), after)
+        assert _prettify(before) == after

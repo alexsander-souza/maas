@@ -5,25 +5,24 @@
 
 import random
 
+import pytest
+
 from maasserver.enum import NODE_STATUS
 from maasserver.forms.clone import CloneForm
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 
 
-class TestCloneForm(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestCloneForm:
     def test_empty_errors(self):
         user = factory.make_admin()
         form = CloneForm(user, data={})
-        self.assertFalse(form.is_valid())
-        self.assertEqual(
-            {
-                "source": ["This field is required."],
-                "destinations": ["This field is required."],
-                "__all__": ["Either storage or interfaces must be true."],
-            },
-            form.errors,
-        )
+        assert not form.is_valid()
+        assert form.errors == {
+            "source": ["This field is required."],
+            "destinations": ["This field is required."],
+            "__all__": ["Either storage or interfaces must be true."],
+        }
 
     def test_source_destination_match_error(self):
         user = factory.make_admin()
@@ -40,15 +39,12 @@ class TestCloneForm(MAASServerTestCase):
                 "storage": True,
             },
         )
-        self.assertFalse(form.is_valid())
-        self.assertEqual(
-            {
-                "destinations": [
-                    f"Source machine {source} cannot be a destination machine.",
-                ]
-            },
-            form.errors,
-        )
+        assert not form.is_valid()
+        assert form.errors == {
+            "destinations": [
+                f"Source machine {source} cannot be a destination machine."
+            ]
+        }
 
     def test_destination_smaller_storage(self):
         user = factory.make_admin()
@@ -73,17 +69,14 @@ class TestCloneForm(MAASServerTestCase):
                 "storage": True,
             },
         )
-        self.assertFalse(form.is_valid())
-        self.assertEqual(
-            {
-                "destinations": [
-                    f"{destination} is invalid: "
-                    "destination boot disk(sda) is smaller than "
-                    "source boot disk(sda)"
-                ]
-            },
-            form.errors,
-        )
+        assert not form.is_valid()
+        assert form.errors == {
+            "destinations": [
+                f"{destination} is invalid: "
+                "destination boot disk(sda) is smaller than "
+                "source boot disk(sda)"
+            ]
+        }
 
     def test_multiple_errors(self):
         user = factory.make_admin()
@@ -107,18 +100,15 @@ class TestCloneForm(MAASServerTestCase):
                 "storage": True,
             },
         )
-        self.assertFalse(form.is_valid())
-        self.assertEqual(
-            {
-                "destinations": [
-                    f"Source machine {source} cannot be a destination machine.",
-                    f"{destination} is invalid: "
-                    "destination boot disk(sda) is smaller than "
-                    "source boot disk(sda)",
-                ]
-            },
-            form.errors,
-        )
+        assert not form.is_valid()
+        assert form.errors == {
+            "destinations": [
+                f"Source machine {source} cannot be a destination machine.",
+                f"{destination} is invalid: "
+                "destination boot disk(sda) is smaller than "
+                "source boot disk(sda)",
+            ]
+        }
 
     def test_destination_missing_nic(self):
         user = factory.make_admin()
@@ -139,17 +129,14 @@ class TestCloneForm(MAASServerTestCase):
                 "interfaces": True,
             },
         )
-        self.assertFalse(form.is_valid())
-        self.assertEqual(
-            {
-                "destinations": [
-                    f"{destination} is invalid: "
-                    "destination node physical interfaces do not match "
-                    "the source nodes physical interfaces: eth0"
-                ]
-            },
-            form.errors,
-        )
+        assert not form.is_valid()
+        assert form.errors == {
+            "destinations": [
+                f"{destination} is invalid: "
+                "destination node physical interfaces do not match "
+                "the source nodes physical interfaces: eth0"
+            ]
+        }
 
     def test_permission_errors(self):
         user = factory.make_User()
@@ -177,15 +164,12 @@ class TestCloneForm(MAASServerTestCase):
                 "interfaces": True,
             },
         )
-        self.assertFalse(form.is_valid())
-        self.assertEqual(
-            {
-                "destinations": [
-                    f"Machine 1 is invalid: Select a valid choice. {destination.system_id} is not one of the available choices."
-                ]
-            },
-            form.errors,
-        )
+        assert not form.is_valid()
+        assert form.errors == {
+            "destinations": [
+                f"Machine 1 is invalid: Select a valid choice. {destination.system_id} is not one of the available choices."
+            ]
+        }
 
     def test_performs_clone(self):
         user = factory.make_admin()
@@ -226,6 +210,6 @@ class TestCloneForm(MAASServerTestCase):
                 "interfaces": True,
             },
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         # An exception here will cause the test to fail.
         form.save()

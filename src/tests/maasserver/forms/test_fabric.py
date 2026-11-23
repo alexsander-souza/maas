@@ -3,13 +3,15 @@
 
 """Tests for Fabric forms."""
 
+import pytest
+
 from maasserver.forms.fabric import FabricForm
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from maasserver.utils.orm import reload_object
 
 
-class TestFabricForm(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestFabricForm:
     def test_creates_fabric(self):
         fabric_name = factory.make_name("fabric")
         fabric_description = factory.make_name("description")
@@ -21,16 +23,16 @@ class TestFabricForm(MAASServerTestCase):
                 "class_type": fabric_class_type,
             }
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         fabric = form.save()
-        self.assertEqual(fabric_name, fabric.name)
-        self.assertEqual(fabric_description, fabric.description)
-        self.assertEqual(fabric_class_type, fabric.class_type)
+        assert fabric_name == fabric.name
+        assert fabric_description == fabric.description
+        assert fabric_class_type == fabric.class_type
 
     def test_doest_require_name_on_update(self):
         fabric = factory.make_Fabric()
         form = FabricForm(instance=fabric, data={})
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
 
     def test_updates_fabric(self):
         new_name = factory.make_name("fabric")
@@ -45,10 +47,8 @@ class TestFabricForm(MAASServerTestCase):
                 "class_type": new_class_type,
             },
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         form.save()
-        self.assertEqual(new_name, reload_object(fabric).name)
-        self.assertEqual(
-            new_fabric_description, reload_object(fabric).description
-        )
-        self.assertEqual(new_class_type, reload_object(fabric).class_type)
+        assert new_name == reload_object(fabric).name
+        assert new_fabric_description == reload_object(fabric).description
+        assert new_class_type == reload_object(fabric).class_type

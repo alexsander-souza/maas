@@ -5,8 +5,10 @@
 import base64
 import json
 from pathlib import Path
+from unittest.mock import DEFAULT
 
 from django.db import transaction
+import pytest
 import requests as requests_module
 from twisted.application.internet import TimerService
 from twisted.internet.defer import fail
@@ -53,15 +55,9 @@ from maasserver.stats import (
 )
 from maasserver.testing.architecture import make_usable_architecture
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import (
-    MAASServerTestCase,
-    MAASTransactionServerTestCase,
-)
 from maasserver.utils.orm import post_commit_hooks
 from maastesting import get_testing_timeout
-from maastesting.fixtures import TempDirectory
-from maastesting.testcase import MAASTestCase
-from maastesting.twisted import extract_result
+from maastesting.deferred import extract_result
 from metadataserver.builtin_scripts import load_builtin_scripts
 from metadataserver.enum import RESULT_TYPE, SCRIPT_STATUS
 from provisioningserver.refresh.node_info_scripts import (
@@ -73,7 +69,18 @@ from provisioningserver.utils.twisted import asynchronous
 TIMEOUT = get_testing_timeout()
 
 
-class TestMAASStats(MAASServerTestCase):
+class _LegacyPatchAdapter:
+    """Adapt pytest-mock's mocker to the legacy `testcase.patch` API."""
+
+    def __init__(self, mocker):
+        self._mocker = mocker
+
+    def patch(self, target, attribute, new=DEFAULT, **kwargs):
+        return self._mocker.patch.object(target, attribute, new, **kwargs)
+
+
+@pytest.mark.usefixtures("maasdb", "mock_openfga", "mock_start_workflows")
+class TestMAASStats:
     def test_get_machines_by_architecture(self):
         arches = [
             "amd64/generic",
@@ -86,9 +93,9 @@ class TestMAASStats(MAASServerTestCase):
             factory.make_Machine(architecture=arch)
         stats = get_machines_by_architecture()
         compare = {"amd64": 1, "i386": 1, "arm64": 1, "ppc64el": 1, "s390x": 1}
-        self.assertEqual(stats, compare)
+        assert stats == compare
 
-    def test_get_maas_stats(self):
+    def test_get_maas_stats(self, mocker):
         # Make one component of everything
         factory.make_RegionRackController()
         factory.make_RegionController()
@@ -106,7 +113,7 @@ class TestMAASStats(MAASServerTestCase):
         OwnerData.objects.set_owner_data(deployed_machine, {"foo": "bar"})
         factory.make_Device()
         factory.make_Device()
-        arch = make_usable_architecture(self)
+        arch = make_usable_architecture(_LegacyPatchAdapter(mocker))
         osname = factory.make_name()
         factory.make_Machine(
             status=NODE_STATUS.DEPLOYED, osystem="custom", distro_series=osname
@@ -202,7 +209,7 @@ class TestMAASStats(MAASServerTestCase):
             },
         }
 
-        self.assertEqual(stats, expected)
+        assert stats == expected
 
     def test_get_machine_stats_only_physical_storage(self):
         node = factory.make_Machine(with_boot_disk=False)
@@ -210,17 +217,17 @@ class TestMAASStats(MAASServerTestCase):
             node=node, group_type=FILESYSTEM_GROUP_TYPE.RAID_0
         )
         machine_stats = get_machine_stats()
-        self.assertEqual(
-            machine_stats["total_storage"],
-            sum(disk.size for disk in node.physicalblockdevice_set.all()),
+        assert machine_stats["total_storage"] == sum(
+            disk.size for disk in node.physicalblockdevice_set.all()
         )
 
     def test_get_machine_stats_no_storage(self):
         factory.make_Machine(cpu_count=4, memory=100, with_boot_disk=False)
-        self.assertEqual(
-            get_machine_stats(),
-            {"total_cpu": 4, "total_mem": 100, "total_storage": 0},
-        )
+        assert get_machine_stats() == {
+            "total_cpu": 4,
+            "total_mem": 100,
+            "total_storage": 0,
+        }
 
     def test_get_workload_annotations_stats_machines(self):
         machine1 = factory.make_Machine(status=NODE_STATUS.DEPLOYED)
@@ -235,7 +242,7 @@ class TestMAASStats(MAASServerTestCase):
         OwnerData.objects.set_owner_data(machine3, {"key2": "value2"})
 
         workload_stats = get_workload_annotations_stats()
-        self.assertEqual(3, workload_stats["annotated_machines"])
+        assert 3 == workload_stats["annotated_machines"]
 
     def test_get_workload_annotations_stats_keys(self):
         machine1 = factory.make_Machine(status=NODE_STATUS.DEPLOYED)
@@ -250,9 +257,9 @@ class TestMAASStats(MAASServerTestCase):
         OwnerData.objects.set_owner_data(machine3, {"key2": "value2"})
 
         workload_stats = get_workload_annotations_stats()
-        self.assertEqual(4, workload_stats["total_annotations"])
-        self.assertEqual(2, workload_stats["unique_keys"])
-        self.assertEqual(3, workload_stats["unique_values"])
+        assert 4 == workload_stats["total_annotations"]
+        assert 2 == workload_stats["unique_keys"]
+        assert 3 == workload_stats["unique_values"]
 
     def test_get_maas_stats_no_machines(self):
         expected = {
@@ -324,7 +331,7 @@ class TestMAASStats(MAASServerTestCase):
                 "connected": False,
             },
         }
-        self.assertEqual(get_maas_stats(), expected)
+        assert get_maas_stats() == expected
 
     def test_get_request_params_returns_params(self):
         factory.make_RegionRackController()
@@ -333,11 +340,11 @@ class TestMAASStats(MAASServerTestCase):
                 json.dumps(json.dumps(get_maas_stats())).encode()
             ).decode()
         }
-        self.assertEqual(params, get_request_params())
+        assert params == get_request_params()
 
-    def test_make_user_agent_request(self):
+    def test_make_user_agent_request(self, mocker):
         factory.make_RegionRackController()
-        mock = self.patch(requests_module, "get")
+        mock = mocker.patch.object(requests_module, "get")
         make_maas_user_agent_request()
         mock.assert_called_once()
 
@@ -367,7 +374,7 @@ class TestMAASStats(MAASServerTestCase):
             .distinct()
             .count()
         )
-        self.assertEqual(total, expected_total)
+        assert total == expected_total
 
     def test_get_custom_static_images_deployed_stats(self):
         for _ in range(0, 2):
@@ -375,7 +382,7 @@ class TestMAASStats(MAASServerTestCase):
             machine.osystem = "custom"
             machine.distro_series = factory.make_name("name")
             machine.save()
-        self.assertEqual(get_custom_images_deployed_stats(), 2)
+        assert get_custom_images_deployed_stats() == 2
 
     def test_get_storage_layouts_stats(self):
         counts = {
@@ -390,7 +397,7 @@ class TestMAASStats(MAASServerTestCase):
         # nodes with no storage layout applied are not reported
         for _ in range(2):
             factory.make_Node()
-        self.assertEqual(get_storage_layouts_stats(), counts)
+        assert get_storage_layouts_stats() == counts
 
     def test_get_tls_configuration_stats(self):
         cert = get_sample_cert()
@@ -401,30 +408,24 @@ class TestMAASStats(MAASServerTestCase):
                 "cert": cert.certificate_pem(),
             },
         )
-        self.assertEqual(
-            {
-                "tls_cert_validity_days": 3650,
-                "tls_enabled": True,
-            },
-            get_tls_configuration_stats(),
-        )
+        assert {
+            "tls_cert_validity_days": 3650,
+            "tls_enabled": True,
+        } == get_tls_configuration_stats()
 
     def test_get_tls_configuration_stats_not_set(self):
-        self.assertEqual(
-            {
-                "tls_cert_validity_days": None,
-                "tls_enabled": False,
-            },
-            get_tls_configuration_stats(),
-        )
+        assert {
+            "tls_cert_validity_days": None,
+            "tls_enabled": False,
+        } == get_tls_configuration_stats()
 
     def test_get_vault_stats_vault_enabled(self):
         Config.objects.set_config("vault_enabled", True)
-        self.assertEqual({"enabled": True}, get_vault_stats())
+        assert {"enabled": True} == get_vault_stats()
 
     def test_get_vault_stats_vault_disabled(self):
         Config.objects.set_config("vault_enabled", False)
-        self.assertEqual({"enabled": False}, get_vault_stats())
+        assert {"enabled": False} == get_vault_stats()
 
     def test_get_tags_stats(self):
         for _ in range(2):
@@ -441,25 +442,18 @@ class TestMAASStats(MAASServerTestCase):
                 definition="//node", kernel_opts=factory.make_name()
             )
 
-        self.assertEqual(
-            {
-                "total_count": 10,
-                "automatic_tag_count": 5,
-                "with_kernel_opts_count": 6,
-            },
-            get_tags_stats(),
-        )
+        assert {
+            "total_count": 10,
+            "automatic_tag_count": 5,
+            "with_kernel_opts_count": 6,
+        } == get_tags_stats()
 
-    def test_ansible_stats(self):
-        tempdir = self.useFixture(TempDirectory())
-        stat = Path(tempdir.path + "/.ansible")
+    def test_ansible_stats(self, tmp_path):
+        stat = Path(tmp_path) / ".ansible"
         stat.write_text("")
-        self.assertEqual(
-            {
-                "ansible_installs": 1,
-            },
-            get_ansible_stats(stat),
-        )
+        assert {
+            "ansible_installs": 1,
+        } == get_ansible_stats(stat)
 
 
 class FakeRequest:
@@ -467,7 +461,8 @@ class FakeRequest:
         self.user = user
 
 
-class TestGetBrownfieldStats(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "mock_openfga", "mock_start_workflows")
+class TestGetBrownfieldStats:
     def _make_brownfield_machine(self):
         admin = factory.make_admin()
         # Use the form to create the brownfield node, so that it gets
@@ -525,11 +520,11 @@ class TestGetBrownfieldStats(MAASServerTestCase):
             current_installation_script_set__isnull=True,
             dynamic=False,
         ).all()
-        self.assertNotIn(normal, brownfield_machines)
-        self.assertNotIn(controller, brownfield_machines)
+        assert normal not in brownfield_machines
+        assert controller not in brownfield_machines
         stats = get_brownfield_stats()
-        self.assertEqual(1, stats["machines_added_deployed_with_bmc"])
-        self.assertEqual(2, stats["machines_added_deployed_without_bmc"])
+        assert 1 == stats["machines_added_deployed_with_bmc"]
+        assert 2 == stats["machines_added_deployed_without_bmc"]
 
     def test_commission_after_deploy_brownfield(self):
         load_builtin_scripts()
@@ -540,37 +535,35 @@ class TestGetBrownfieldStats(MAASServerTestCase):
         self._make_normal_deployed_machine()
         factory.make_Controller()
         stats = get_brownfield_stats()
-        self.assertEqual(1, stats["commissioned_after_deploy_brownfield"])
-        self.assertEqual(2, stats["commissioned_after_deploy_no_brownfield"])
+        assert 1 == stats["commissioned_after_deploy_brownfield"]
+        assert 2 == stats["commissioned_after_deploy_no_brownfield"]
 
 
-class TestGetSubnetsUtilisationStats(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "mock_openfga", "mock_start_workflows")
+class TestGetSubnetsUtilisationStats:
     def test_stats_totals(self):
         factory.make_Subnet(cidr="1.2.0.0/16", gateway_ip="1.2.0.254")
         factory.make_Subnet(cidr="::1/128", gateway_ip="")
-        self.assertEqual(
-            stats.get_subnets_utilisation_stats(),
-            {
-                "1.2.0.0/16": {
-                    "available": 2**16 - 3,
-                    "dynamic_available": 0,
-                    "dynamic_used": 0,
-                    "reserved_available": 0,
-                    "reserved_used": 0,
-                    "static": 0,
-                    "unavailable": 1,
-                },
-                "::1/128": {
-                    "available": 1,
-                    "dynamic_available": 0,
-                    "dynamic_used": 0,
-                    "reserved_available": 0,
-                    "reserved_used": 0,
-                    "static": 0,
-                    "unavailable": 0,
-                },
+        assert stats.get_subnets_utilisation_stats() == {
+            "1.2.0.0/16": {
+                "available": 2**16 - 3,
+                "dynamic_available": 0,
+                "dynamic_used": 0,
+                "reserved_available": 0,
+                "reserved_used": 0,
+                "static": 0,
+                "unavailable": 1,
             },
-        )
+            "::1/128": {
+                "available": 1,
+                "dynamic_available": 0,
+                "dynamic_used": 0,
+                "reserved_available": 0,
+                "reserved_used": 0,
+                "static": 0,
+                "unavailable": 0,
+            },
+        }
 
     def test_stats_dynamic(self):
         subnet = factory.make_Subnet(cidr="1.2.0.0/16", gateway_ip="1.2.0.254")
@@ -592,20 +585,17 @@ class TestGetSubnetsUtilisationStats(MAASServerTestCase):
         factory.make_StaticIPAddress(
             ip="1.2.0.52", alloc_type=IPADDRESS_TYPE.DHCP, subnet=subnet
         )
-        self.assertEqual(
-            stats.get_subnets_utilisation_stats(),
-            {
-                "1.2.0.0/16": {
-                    "available": 2**16 - 23,
-                    "dynamic_available": 18,
-                    "dynamic_used": 2,
-                    "reserved_available": 0,
-                    "reserved_used": 0,
-                    "static": 0,
-                    "unavailable": 21,
-                }
-            },
-        )
+        assert stats.get_subnets_utilisation_stats() == {
+            "1.2.0.0/16": {
+                "available": 2**16 - 23,
+                "dynamic_available": 18,
+                "dynamic_used": 2,
+                "reserved_available": 0,
+                "reserved_used": 0,
+                "static": 0,
+                "unavailable": 21,
+            }
+        }
 
     def test_stats_reserved(self):
         subnet = factory.make_Subnet(cidr="1.2.0.0/16", gateway_ip="1.2.0.254")
@@ -626,20 +616,17 @@ class TestGetSubnetsUtilisationStats(MAASServerTestCase):
             alloc_type=IPADDRESS_TYPE.USER_RESERVED,
             subnet=subnet,
         )
-        self.assertEqual(
-            stats.get_subnets_utilisation_stats(),
-            {
-                "1.2.0.0/16": {
-                    "available": 2**16 - 23,
-                    "dynamic_available": 0,
-                    "dynamic_used": 0,
-                    "reserved_available": 19,
-                    "reserved_used": 1,
-                    "static": 0,
-                    "unavailable": 21,
-                }
-            },
-        )
+        assert stats.get_subnets_utilisation_stats() == {
+            "1.2.0.0/16": {
+                "available": 2**16 - 23,
+                "dynamic_available": 0,
+                "dynamic_used": 0,
+                "reserved_available": 19,
+                "reserved_used": 1,
+                "static": 0,
+                "unavailable": 21,
+            }
+        }
 
     def test_stats_static(self):
         subnet = factory.make_Subnet(cidr="1.2.0.0/16", gateway_ip="1.2.0.254")
@@ -649,20 +636,17 @@ class TestGetSubnetsUtilisationStats(MAASServerTestCase):
                 alloc_type=IPADDRESS_TYPE.STICKY,
                 subnet=subnet,
             )
-        self.assertEqual(
-            stats.get_subnets_utilisation_stats(),
-            {
-                "1.2.0.0/16": {
-                    "available": 2**16 - 6,
-                    "dynamic_available": 0,
-                    "dynamic_used": 0,
-                    "reserved_available": 0,
-                    "reserved_used": 0,
-                    "static": 3,
-                    "unavailable": 4,
-                }
-            },
-        )
+        assert stats.get_subnets_utilisation_stats() == {
+            "1.2.0.0/16": {
+                "available": 2**16 - 6,
+                "dynamic_available": 0,
+                "dynamic_used": 0,
+                "reserved_available": 0,
+                "reserved_used": 0,
+                "static": 3,
+                "unavailable": 4,
+            }
+        }
 
     def test_stats_all(self):
         subnet = factory.make_Subnet(cidr="1.2.0.0/16", gateway_ip="1.2.0.254")
@@ -693,86 +677,80 @@ class TestGetSubnetsUtilisationStats(MAASServerTestCase):
                 alloc_type=IPADDRESS_TYPE.STICKY,
                 subnet=subnet,
             )
-        self.assertEqual(
-            stats.get_subnets_utilisation_stats(),
-            {
-                "1.2.0.0/16": {
-                    "available": 2**16 - 36,
-                    "dynamic_available": 9,
-                    "dynamic_used": 1,
-                    "reserved_available": 18,
-                    "reserved_used": 2,
-                    "static": 3,
-                    "unavailable": 34,
-                }
-            },
-        )
+        assert stats.get_subnets_utilisation_stats() == {
+            "1.2.0.0/16": {
+                "available": 2**16 - 36,
+                "dynamic_available": 9,
+                "dynamic_used": 1,
+                "reserved_available": 18,
+                "reserved_used": 2,
+                "static": 3,
+                "unavailable": 34,
+            }
+        }
 
 
-class TestGetBMCStats(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "mock_openfga", "mock_start_workflows")
+class TestGetBMCStats:
     def test_get_bmc_stats_no_bmcs(self):
-        self.assertEqual(0, BMC.objects.all().count())
-        self.assertEqual(
-            {
-                "auto_detected": {},
-                "user_created": {},
-                "unknown": {},
-            },
-            get_bmc_stats(),
-        )
+        assert 0 == BMC.objects.all().count()
+        assert {
+            "auto_detected": {},
+            "user_created": {},
+            "unknown": {},
+        } == get_bmc_stats()
 
     def test_get_bmc_stats_with_bmcs(self):
         factory.make_BMC(power_type="redfish", created_by_commissioning=True)
         factory.make_BMC(power_type="ipmi", created_by_commissioning=False)
         factory.make_BMC(power_type="lxd", created_by_commissioning=None)
-        self.assertEqual(
-            {
-                "auto_detected": {"redfish": 1},
-                "user_created": {
-                    "ipmi": 1,
-                },
-                "unknown": {
-                    "lxd": 1,
-                },
+        assert {
+            "auto_detected": {"redfish": 1},
+            "user_created": {
+                "ipmi": 1,
             },
-            get_bmc_stats(),
-        )
+            "unknown": {
+                "lxd": 1,
+            },
+        } == get_bmc_stats()
 
 
-class TestStatsService(MAASTestCase):
+class TestStatsService:
     """Tests for `ImportStatsService`."""
 
     def test_is_a_TimerService(self):
         service = stats.StatsService()
-        self.assertIsInstance(service, TimerService)
+        assert isinstance(service, TimerService)
 
     def test_runs_once_a_day(self):
         service = stats.StatsService()
-        self.assertEqual(86400, service.step)
+        assert 86400 == service.step
 
     def test_calls__maybe_make_stats_request(self):
         service = stats.StatsService()
-        self.assertEqual(
-            (service.maybe_make_stats_request, (), {}), service.call
-        )
+        assert (service.maybe_make_stats_request, (), {}) == service.call
 
-    def test_maybe_make_stats_request_does_not_error(self):
+    def test_maybe_make_stats_request_does_not_error(self, mocker):
         service = stats.StatsService()
-        deferToDatabase = self.patch(stats, "deferToDatabase")
+        deferToDatabase = mocker.patch.object(stats, "deferToDatabase")
         exception_type = factory.make_exception_type()
         deferToDatabase.return_value = fail(exception_type())
         d = service.maybe_make_stats_request()
-        self.assertIsNone(extract_result(d))
+        assert extract_result(d) is None
 
 
-class TestStatsServiceAsync(MAASTransactionServerTestCase):
+@pytest.mark.allow_transactions
+@pytest.mark.usefixtures("maasdb", "mock_openfga", "mock_start_workflows")
+class TestStatsServiceAsync:
     """Tests for the async parts of `StatsService`."""
 
-    def test_maybe_make_stats_request_makes_request(self):
-        mock_call = self.patch(stats, "make_maas_user_agent_request")
+    def test_maybe_make_stats_request_makes_request(self, mocker):
+        mock_call = mocker.patch.object(stats, "make_maas_user_agent_request")
 
-        with transaction.atomic():
-            Config.objects.set_config("enable_analytics", True)
+        # Commit for real: the request is performed from the reactor thread,
+        # on a separate connection, so a mere savepoint is not enough.
+        Config.objects.set_config("enable_analytics", True)
+        transaction.commit()
 
         service = stats.StatsService()
         maybe_make_stats_request = asynchronous(
@@ -782,11 +760,13 @@ class TestStatsServiceAsync(MAASTransactionServerTestCase):
 
         mock_call.assert_called_once()
 
-    def test_maybe_make_stats_request_doesnt_make_request(self):
-        mock_call = self.patch(stats, "make_maas_user_agent_request")
+    def test_maybe_make_stats_request_doesnt_make_request(self, mocker):
+        mock_call = mocker.patch.object(stats, "make_maas_user_agent_request")
 
-        with transaction.atomic():
-            Config.objects.set_config("enable_analytics", False)
+        # Commit for real: the request is performed from the reactor thread,
+        # on a separate connection, so a mere savepoint is not enough.
+        Config.objects.set_config("enable_analytics", False)
+        transaction.commit()
 
         service = stats.StatsService()
         maybe_make_stats_request = asynchronous(

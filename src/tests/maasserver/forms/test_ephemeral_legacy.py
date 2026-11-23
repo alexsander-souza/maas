@@ -5,35 +5,39 @@
 
 import random
 
+import pytest
+
 from maasserver.enum import NODE_STATUS, NODE_TYPE, NODE_TYPE_CHOICES
-from maasserver.forms.ephemeral import CommissionForm, TestForm
+from maasserver.forms.ephemeral import CommissionForm
+from maasserver.forms.ephemeral import TestForm as EphemeralTestForm
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from metadataserver.enum import SCRIPT_TYPE
 from provisioningserver.enum import POWER_STATE
 
 
-class TestTestForm(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestTestForm:
+    @pytest.fixture(autouse=True)
+    def _setup(self, mocker):
+        self.mocker = mocker
+
     def test_doesnt_require_anything(self):
         node = factory.make_Node(status=NODE_STATUS.DEPLOYED, interface=True)
         user = factory.make_admin()
-        form = TestForm(instance=node, user=user, data={})
-        self.assertTrue(form.is_valid(), form.errors)
+        form = EphemeralTestForm(instance=node, user=user, data={})
+        assert form.is_valid(), form.errors
 
     def test_not_allowed_in_bad_state(self):
         node = factory.make_Node(status=NODE_STATUS.DEPLOYING, interface=True)
         user = factory.make_admin()
-        form = TestForm(instance=node, user=user, data={})
-        self.assertFalse(form.is_valid(), form.errors)
-        self.assertEqual(
-            {
-                "__all__": [
-                    "Test is not available because of the current state "
-                    "of the node."
-                ]
-            },
-            form.errors,
-        )
+        form = EphemeralTestForm(instance=node, user=user, data={})
+        assert not form.is_valid(), form.errors
+        assert {
+            "__all__": [
+                "Test is not available because of the current state "
+                "of the node."
+            ]
+        } == form.errors
 
     def test_calls_start_testing_if_already_on(self):
         node = factory.make_Node(
@@ -42,9 +46,11 @@ class TestTestForm(MAASServerTestCase):
             interface=True,
         )
         user = factory.make_admin()
-        mock_start_testing = self.patch_autospec(node, "start_testing")
-        form = TestForm(instance=node, user=user, data={})
-        self.assertTrue(form.is_valid(), form.errors)
+        mock_start_testing = self.mocker.patch.object(
+            node, "start_testing", autospec=True
+        )
+        form = EphemeralTestForm(instance=node, user=user, data={})
+        assert form.is_valid(), form.errors
         node = form.save()
         mock_start_testing.assert_called_once_with(user, False, [], {})
 
@@ -56,8 +62,10 @@ class TestTestForm(MAASServerTestCase):
             factory.make_Script(script_type=SCRIPT_TYPE.TESTING).name
             for _ in range(3)
         ]
-        mock_start_testing = self.patch_autospec(node, "start_testing")
-        form = TestForm(
+        mock_start_testing = self.mocker.patch.object(
+            node, "start_testing", autospec=True
+        )
+        form = EphemeralTestForm(
             instance=node,
             user=user,
             data={
@@ -65,9 +73,9 @@ class TestTestForm(MAASServerTestCase):
                 "testing_scripts": ",".join(testing_scripts),
             },
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         node = form.save()
-        self.assertIsNotNone(node)
+        assert node is not None
         mock_start_testing.assert_called_once_with(
             user, enable_ssh, testing_scripts, {}
         )
@@ -82,7 +90,9 @@ class TestTestForm(MAASServerTestCase):
             script_type=SCRIPT_TYPE.TESTING,
             parameters={"storage": {"type": "storage"}},
         )
-        mock_start_testing = self.patch_autospec(node, "start_testing")
+        mock_start_testing = self.mocker.patch.object(
+            node, "start_testing", autospec=True
+        )
         input = random.choice(
             [
                 str(bd.id),
@@ -93,14 +103,14 @@ class TestTestForm(MAASServerTestCase):
             ]
             + bd.tags
         )
-        form = TestForm(
+        form = EphemeralTestForm(
             instance=node,
             user=user,
             data={"testing_scripts": script.name, "storage": input},
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         node = form.save()
-        self.assertIsNotNone(node)
+        assert node is not None
         mock_start_testing.assert_called_once_with(
             user, False, [script.name], {script.name: {"storage": input}}
         )
@@ -112,8 +122,8 @@ class TestTestForm(MAASServerTestCase):
             script_type=SCRIPT_TYPE.TESTING,
             parameters={"storage": {"type": "storage"}},
         )
-        self.patch_autospec(node, "start_testing")
-        form = TestForm(
+        self.mocker.patch.object(node, "start_testing", autospec=True)
+        form = EphemeralTestForm(
             instance=node,
             user=user,
             data={
@@ -121,7 +131,7 @@ class TestTestForm(MAASServerTestCase):
                 "storage": factory.make_name("bad"),
             },
         )
-        self.assertFalse(form.is_valid())
+        assert not form.is_valid()
 
     def test_class_start_testing_with_interface_param(self):
         node = factory.make_Node(status=NODE_STATUS.DEPLOYED, interface=False)
@@ -131,7 +141,9 @@ class TestTestForm(MAASServerTestCase):
             script_type=SCRIPT_TYPE.TESTING,
             parameters={"interface": {"type": "interface"}},
         )
-        mock_start_testing = self.patch_autospec(node, "start_testing")
+        mock_start_testing = self.mocker.patch.object(
+            node, "start_testing", autospec=True
+        )
         input = random.choice(
             [
                 str(interface.id),
@@ -143,14 +155,14 @@ class TestTestForm(MAASServerTestCase):
             ]
             + interface.tags
         )
-        form = TestForm(
+        form = EphemeralTestForm(
             instance=node,
             user=user,
             data={"testing_scripts": script.name, "interface": input},
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         node = form.save()
-        self.assertIsNotNone(node)
+        assert node is not None
         mock_start_testing.assert_called_once_with(
             user, False, [script.name], {script.name: {"interface": input}}
         )
@@ -162,8 +174,8 @@ class TestTestForm(MAASServerTestCase):
             script_type=SCRIPT_TYPE.TESTING,
             parameters={"interface": {"type": "interface"}},
         )
-        self.patch_autospec(node, "start_testing")
-        form = TestForm(
+        self.mocker.patch.object(node, "start_testing", autospec=True)
+        form = EphemeralTestForm(
             instance=node,
             user=user,
             data={
@@ -171,7 +183,7 @@ class TestTestForm(MAASServerTestCase):
                 "interface": factory.make_name("bad"),
             },
         )
-        self.assertFalse(form.is_valid())
+        assert not form.is_valid()
 
     def test_class_start_testing_with_runtime_param(self):
         node = factory.make_Node(status=NODE_STATUS.DEPLOYED, interface=True)
@@ -180,16 +192,18 @@ class TestTestForm(MAASServerTestCase):
             script_type=SCRIPT_TYPE.TESTING,
             parameters={"runtime": {"type": "runtime"}},
         )
-        mock_start_testing = self.patch_autospec(node, "start_testing")
+        mock_start_testing = self.mocker.patch.object(
+            node, "start_testing", autospec=True
+        )
         input = random.choice(["168:00:00", "10080:00", 604800])
-        form = TestForm(
+        form = EphemeralTestForm(
             instance=node,
             user=user,
             data={"testing_scripts": script.name, "runtime": input},
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         node = form.save()
-        self.assertIsNotNone(node)
+        assert node is not None
         mock_start_testing.assert_called_once_with(
             user, False, [script.name], {script.name: {"runtime": 604800}}
         )
@@ -201,8 +215,8 @@ class TestTestForm(MAASServerTestCase):
             script_type=SCRIPT_TYPE.TESTING,
             parameters={"runtime": {"type": "runtime"}},
         )
-        self.patch_autospec(node, "start_testing")
-        form = TestForm(
+        self.mocker.patch.object(node, "start_testing", autospec=True)
+        form = EphemeralTestForm(
             instance=node,
             user=user,
             data={
@@ -210,7 +224,7 @@ class TestTestForm(MAASServerTestCase):
                 "runtime": factory.make_name("bad"),
             },
         )
-        self.assertFalse(form.is_valid())
+        assert not form.is_valid()
 
     def test_class_start_testing_with_url_param(self):
         node = factory.make_Node(status=NODE_STATUS.DEPLOYED, interface=True)
@@ -219,16 +233,18 @@ class TestTestForm(MAASServerTestCase):
             script_type=SCRIPT_TYPE.TESTING,
             parameters={"url": {"type": "url"}},
         )
-        mock_start_testing = self.patch_autospec(node, "start_testing")
+        mock_start_testing = self.mocker.patch.object(
+            node, "start_testing", autospec=True
+        )
         input = factory.make_url(scheme="http")
-        form = TestForm(
+        form = EphemeralTestForm(
             instance=node,
             user=user,
             data={"testing_scripts": script.name, "url": input},
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         node = form.save()
-        self.assertIsNotNone(node)
+        assert node is not None
         mock_start_testing.assert_called_once_with(
             user, False, [script.name], {script.name: {"url": input}}
         )
@@ -240,16 +256,18 @@ class TestTestForm(MAASServerTestCase):
             script_type=SCRIPT_TYPE.TESTING,
             parameters={"string": {"type": "string"}},
         )
-        mock_start_testing = self.patch_autospec(node, "start_testing")
+        mock_start_testing = self.mocker.patch.object(
+            node, "start_testing", autospec=True
+        )
         input = factory.make_name("string")
-        form = TestForm(
+        form = EphemeralTestForm(
             instance=node,
             user=user,
             data={"testing_scripts": script.name, "string": input},
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         node = form.save()
-        self.assertIsNotNone(node)
+        assert node is not None
         mock_start_testing.assert_called_once_with(
             user, False, [script.name], {script.name: {"string": input}}
         )
@@ -261,16 +279,18 @@ class TestTestForm(MAASServerTestCase):
             script_type=SCRIPT_TYPE.TESTING,
             parameters={"password": {"type": "password"}},
         )
-        mock_start_testing = self.patch_autospec(node, "start_testing")
+        mock_start_testing = self.mocker.patch.object(
+            node, "start_testing", autospec=True
+        )
         input = factory.make_name("password")
-        form = TestForm(
+        form = EphemeralTestForm(
             instance=node,
             user=user,
             data={"testing_scripts": script.name, "password": input},
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         node = form.save()
-        self.assertIsNotNone(node)
+        assert node is not None
         mock_start_testing.assert_called_once_with(
             user, False, [script.name], {script.name: {"password": input}}
         )
@@ -282,16 +302,18 @@ class TestTestForm(MAASServerTestCase):
             script_type=SCRIPT_TYPE.TESTING,
             parameters={"choice": {"type": "choice", "choices": [1, 2, 3]}},
         )
-        mock_start_testing = self.patch_autospec(node, "start_testing")
+        mock_start_testing = self.mocker.patch.object(
+            node, "start_testing", autospec=True
+        )
         input = random.randint(1, 3)
-        form = TestForm(
+        form = EphemeralTestForm(
             instance=node,
             user=user,
             data={"testing_scripts": script.name, "choice": input},
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         node = form.save()
-        self.assertIsNotNone(node)
+        assert node is not None
         mock_start_testing.assert_called_once_with(
             user,
             False,
@@ -308,15 +330,17 @@ class TestTestForm(MAASServerTestCase):
                 "arg": {"type": "boolean", "argument_format": "--arg"}
             },
         )
-        mock_start_testing = self.patch_autospec(node, "start_testing")
-        form = TestForm(
+        mock_start_testing = self.mocker.patch.object(
+            node, "start_testing", autospec=True
+        )
+        form = EphemeralTestForm(
             instance=node,
             user=user,
             data={"testing_scripts": script.name, "arg": True},
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         node = form.save()
-        self.assertIsNotNone(node)
+        assert node is not None
         mock_start_testing.assert_called_once_with(
             user,
             False,
@@ -336,7 +360,9 @@ class TestTestForm(MAASServerTestCase):
             script_type=SCRIPT_TYPE.TESTING,
             parameters={"storage": {"type": "storage"}},
         )
-        mock_start_testing = self.patch_autospec(node, "start_testing")
+        mock_start_testing = self.mocker.patch.object(
+            node, "start_testing", autospec=True
+        )
         input = random.choice(
             [
                 str(bd.id),
@@ -347,7 +373,7 @@ class TestTestForm(MAASServerTestCase):
             ]
             + bd.tags
         )
-        form = TestForm(
+        form = EphemeralTestForm(
             instance=node,
             user=user,
             data={
@@ -356,9 +382,9 @@ class TestTestForm(MAASServerTestCase):
                 "%s_storage" % global_script.name: input,
             },
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         node = form.save()
-        self.assertIsNotNone(node)
+        assert node is not None
         mock_start_testing.assert_called_once_with(
             user,
             False,
@@ -372,20 +398,20 @@ class TestTestForm(MAASServerTestCase):
     def test_validates_testing_scripts(self):
         node = factory.make_Node(status=NODE_STATUS.DEPLOYED, interface=True)
         user = factory.make_admin()
-        form = TestForm(
+        form = EphemeralTestForm(
             instance=node,
             user=user,
             data={"testing_scripts": factory.make_name("script")},
         )
-        self.assertFalse(form.is_valid())
+        assert not form.is_valid()
 
     def test_testing_scripts_cannt_be_none(self):
         node = factory.make_Node(status=NODE_STATUS.DEPLOYED, interface=True)
         user = factory.make_admin()
-        form = TestForm(
+        form = EphemeralTestForm(
             instance=node, user=user, data={"testing_scripts": "none"}
         )
-        self.assertFalse(form.is_valid())
+        assert not form.is_valid()
 
     def test_cannt_run_destructive_test_on_deployed_machine(self):
         script = factory.make_Script(
@@ -395,10 +421,10 @@ class TestTestForm(MAASServerTestCase):
             status=NODE_STATUS.DEPLOYED, interface=True
         )
         user = factory.make_admin()
-        form = TestForm(
+        form = EphemeralTestForm(
             instance=node, user=user, data={"testing_scripts": script.name}
         )
-        self.assertFalse(form.is_valid())
+        assert not form.is_valid()
 
     def test_cannt_run_destructive_test_on_non_machine(self):
         script = factory.make_Script(
@@ -411,13 +437,18 @@ class TestTestForm(MAASServerTestCase):
             interface=True,
         )
         user = factory.make_admin()
-        form = TestForm(
+        form = EphemeralTestForm(
             instance=node, user=user, data={"testing_scripts": script.name}
         )
-        self.assertFalse(form.is_valid())
+        assert not form.is_valid()
 
 
-class TestCommissionForm(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestCommissionForm:
+    @pytest.fixture(autouse=True)
+    def _setup(self, mocker):
+        self.mocker = mocker
+
     def test_doesnt_require_anything(self):
         node = factory.make_Node(
             status=NODE_STATUS.READY,
@@ -426,7 +457,7 @@ class TestCommissionForm(MAASServerTestCase):
         )
         user = factory.make_admin()
         form = CommissionForm(instance=node, user=user, data={})
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
 
     def test_not_allowed_in_bad_state(self):
         node = factory.make_Node(
@@ -436,16 +467,13 @@ class TestCommissionForm(MAASServerTestCase):
         )
         user = factory.make_admin()
         form = CommissionForm(instance=node, user=user, data={})
-        self.assertFalse(form.is_valid(), form.errors)
-        self.assertEqual(
-            {
-                "__all__": [
-                    "Commission is not available because of the current state "
-                    "of the node."
-                ]
-            },
-            form.errors,
-        )
+        assert not form.is_valid(), form.errors
+        assert {
+            "__all__": [
+                "Commission is not available because of the current state "
+                "of the node."
+            ]
+        } == form.errors
 
     def test_calls_start_commissioning_if_already_on(self):
         node = factory.make_Node(
@@ -454,11 +482,11 @@ class TestCommissionForm(MAASServerTestCase):
             interface=True,
         )
         user = factory.make_admin()
-        mock_start_commissioning = self.patch_autospec(
-            node, "start_commissioning"
+        mock_start_commissioning = self.mocker.patch.object(
+            node, "start_commissioning", autospec=True
         )
         form = CommissionForm(instance=node, user=user, data={})
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         node = form.save()
         mock_start_commissioning.assert_called_once_with(
             user,
@@ -486,8 +514,8 @@ class TestCommissionForm(MAASServerTestCase):
             factory.make_Script(script_type=SCRIPT_TYPE.TESTING).name
             for _ in range(3)
         ]
-        mock_start_commissioning = self.patch_autospec(
-            node, "start_commissioning"
+        mock_start_commissioning = self.mocker.patch.object(
+            node, "start_commissioning", autospec=True
         )
         form = CommissionForm(
             instance=node,
@@ -501,9 +529,9 @@ class TestCommissionForm(MAASServerTestCase):
                 "testing_scripts": ",".join(testing_scripts),
             },
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         node = form.save()
-        self.assertIsNotNone(node)
+        assert node is not None
         mock_start_commissioning.assert_called_once_with(
             user,
             enable_ssh=True,
@@ -532,8 +560,8 @@ class TestCommissionForm(MAASServerTestCase):
             script_type=SCRIPT_TYPE.TESTING,
             parameters={"storage": {"type": "storage"}},
         )
-        mock_start_commissioning = self.patch_autospec(
-            node, "start_commissioning"
+        mock_start_commissioning = self.mocker.patch.object(
+            node, "start_commissioning", autospec=True
         )
         commissioning_input = random.choice(
             [
@@ -565,9 +593,9 @@ class TestCommissionForm(MAASServerTestCase):
                 "%s_storage" % testing_script.name: testing_input,
             },
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         node = form.save()
-        self.assertIsNotNone(node)
+        assert node is not None
         mock_start_commissioning.assert_called_once_with(
             user,
             False,
@@ -593,7 +621,7 @@ class TestCommissionForm(MAASServerTestCase):
             script_type=SCRIPT_TYPE.TESTING,
             parameters={"storage": {"type": "storage"}},
         )
-        self.patch_autospec(node, "start_commissioning")
+        self.mocker.patch.object(node, "start_commissioning", autospec=True)
         form = CommissionForm(
             instance=node,
             user=user,
@@ -606,7 +634,7 @@ class TestCommissionForm(MAASServerTestCase):
                 "%s_storage" % testing_script.name: factory.make_name("bad"),
             },
         )
-        self.assertFalse(form.is_valid())
+        assert not form.is_valid()
 
     def test_class_start_commissioning_with_interface_param(self):
         node = factory.make_Node(status=NODE_STATUS.READY, interface=False)
@@ -621,8 +649,8 @@ class TestCommissionForm(MAASServerTestCase):
             script_type=SCRIPT_TYPE.TESTING,
             parameters={"interface": {"type": "interface"}},
         )
-        mock_start_commissioning = self.patch_autospec(
-            node, "start_commissioning"
+        mock_start_commissioning = self.mocker.patch.object(
+            node, "start_commissioning", autospec=True
         )
         commissioning_input = random.choice(
             [
@@ -662,9 +690,9 @@ class TestCommissionForm(MAASServerTestCase):
                 "%s_interface" % testing_script.name: testing_input,
             },
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         node = form.save()
-        self.assertIsNotNone(node)
+        assert node is not None
         mock_start_commissioning.assert_called_once_with(
             user,
             False,
@@ -690,7 +718,7 @@ class TestCommissionForm(MAASServerTestCase):
             script_type=SCRIPT_TYPE.TESTING,
             parameters={"interface": {"type": "interface"}},
         )
-        self.patch_autospec(node, "start_commissioning")
+        self.mocker.patch.object(node, "start_commissioning", autospec=True)
         form = CommissionForm(
             instance=node,
             user=user,
@@ -703,7 +731,7 @@ class TestCommissionForm(MAASServerTestCase):
                 "%s_interface" % testing_script.name: factory.make_name("bad"),
             },
         )
-        self.assertFalse(form.is_valid())
+        assert not form.is_valid()
 
     def test_class_start_commissioning_with_runtime_param(self):
         node = factory.make_Node(status=NODE_STATUS.READY, interface=True)
@@ -716,8 +744,8 @@ class TestCommissionForm(MAASServerTestCase):
             script_type=SCRIPT_TYPE.TESTING,
             parameters={"runtime": {"type": "runtime"}},
         )
-        mock_start_commissioning = self.patch_autospec(
-            node, "start_commissioning"
+        mock_start_commissioning = self.mocker.patch.object(
+            node, "start_commissioning", autospec=True
         )
         commissioning_input = random.choice(["168:00:00", "10080:00", 604800])
         testing_input = random.choice(["168:00:00", "10080:00", 604800])
@@ -731,9 +759,9 @@ class TestCommissionForm(MAASServerTestCase):
                 "%s_runtime" % testing_script.name: testing_input,
             },
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         node = form.save()
-        self.assertIsNotNone(node)
+        assert node is not None
         mock_start_commissioning.assert_called_once_with(
             user,
             False,
@@ -759,7 +787,7 @@ class TestCommissionForm(MAASServerTestCase):
             script_type=SCRIPT_TYPE.TESTING,
             parameters={"runtime": {"type": "runtime"}},
         )
-        self.patch_autospec(node, "start_commissioning")
+        self.mocker.patch.object(node, "start_commissioning", autospec=True)
         form = CommissionForm(
             instance=node,
             user=user,
@@ -772,7 +800,7 @@ class TestCommissionForm(MAASServerTestCase):
                 "%s_runtime" % testing_script.name: factory.make_name("bad"),
             },
         )
-        self.assertFalse(form.is_valid())
+        assert not form.is_valid()
 
     def test_class_start_commissioning_with_url_param(self):
         node = factory.make_Node(status=NODE_STATUS.READY, interface=True)
@@ -785,8 +813,8 @@ class TestCommissionForm(MAASServerTestCase):
             script_type=SCRIPT_TYPE.TESTING,
             parameters={"url": {"type": "url"}},
         )
-        mock_start_commissioning = self.patch_autospec(
-            node, "start_commissioning"
+        mock_start_commissioning = self.mocker.patch.object(
+            node, "start_commissioning", autospec=True
         )
         commissioning_input = factory.make_url(scheme="http")
         testing_input = factory.make_url(scheme="http")
@@ -800,9 +828,9 @@ class TestCommissionForm(MAASServerTestCase):
                 "%s_url" % testing_script.name: testing_input,
             },
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         node = form.save()
-        self.assertIsNotNone(node)
+        assert node is not None
         mock_start_commissioning.assert_called_once_with(
             user,
             False,
@@ -838,8 +866,8 @@ class TestCommissionForm(MAASServerTestCase):
             script_type=SCRIPT_TYPE.TESTING,
             parameters={"storage": {"type": "storage"}},
         )
-        mock_start_commissioning = self.patch_autospec(
-            node, "start_commissioning"
+        mock_start_commissioning = self.mocker.patch.object(
+            node, "start_commissioning", autospec=True
         )
         commissioning_input = random.choice(
             [
@@ -877,9 +905,9 @@ class TestCommissionForm(MAASServerTestCase):
                 "%s_storage" % testing_script.name: testing_input,
             },
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         node = form.save()
-        self.assertIsNotNone(node)
+        assert node is not None
         mock_start_commissioning.assert_called_once_with(
             user,
             False,
@@ -908,7 +936,7 @@ class TestCommissionForm(MAASServerTestCase):
             user=user,
             data={"commissioning_scripts": factory.make_name("script")},
         )
-        self.assertFalse(form.is_valid())
+        assert not form.is_valid()
 
     def test_validates_testing_scripts(self):
         node = factory.make_Node(
@@ -920,7 +948,7 @@ class TestCommissionForm(MAASServerTestCase):
             user=user,
             data={"testing_scripts": factory.make_name("script")},
         )
-        self.assertFalse(form.is_valid())
+        assert not form.is_valid()
 
     def test_allows_setting_testing_scripts_to_none(self):
         node = factory.make_Node(
@@ -928,16 +956,16 @@ class TestCommissionForm(MAASServerTestCase):
             power_state=POWER_STATE.OFF,
             interface=True,
         )
-        mock_start_commissioning = self.patch_autospec(
-            node, "start_commissioning"
+        mock_start_commissioning = self.mocker.patch.object(
+            node, "start_commissioning", autospec=True
         )
         user = factory.make_admin()
         form = CommissionForm(
             instance=node, user=user, data={"testing_scripts": "none"}
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         node = form.save()
-        self.assertIsNotNone(node)
+        assert node is not None
         mock_start_commissioning.assert_called_once_with(
             user,
             enable_ssh=False,

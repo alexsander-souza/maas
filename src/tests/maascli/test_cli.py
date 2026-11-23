@@ -13,8 +13,8 @@ import sys
 from unittest.mock import sentinel
 
 from django.core import management
-from fixtures import EnvironmentVariableFixture
 import httplib2
+import pytest
 
 from apiclient.creds import convert_string_to_tuple
 from maascli import cli, snap
@@ -23,64 +23,71 @@ from maascli.cli import CERTS_DIR
 from maascli.config import ProfileConfig
 from maascli.parser import ArgumentParser
 from maastesting.factory import factory
-from maastesting.testcase import MAASTestCase
 from provisioningserver.testing.certificates import get_sample_cert
 
 from .test_auth import make_credentials, make_options
 
 
-class TestRegisterCommands(MAASTestCase):
+class TestRegisterCommands:
     """Tests for registers CLI commands."""
 
-    def test_registers_subparsers(self):
+    def test_registers_subparsers(self, mocker):
         parser = ArgumentParser()
-        self.assertIsNone(parser._subparsers)
+        assert parser._subparsers is None
         cli.register_cli_commands(parser)
-        self.assertIsNotNone(parser._subparsers)
+        assert parser._subparsers is not None
 
-    def test_subparsers_have_appropriate_execute_defaults(self):
+    def test_subparsers_have_appropriate_execute_defaults(self, mocker):
         parser = ArgumentParser()
         cli.register_cli_commands(parser)
-        self.assertIsInstance(
+        assert isinstance(
             parser.subparsers.choices["login"].get_default("execute"),
             cli.cmd_login,
         )
 
-    def test_doesnt_call_load_regiond_commands_if_no_management(self):
-        self.patch(cli, "get_django_management").return_value = None
-        self.patch(
-            cli, "is_maasserver_available"
-        ).return_value = sentinel.pkg_util
-        mock_load_regiond_commands = self.patch(cli, "load_regiond_commands")
+    def test_doesnt_call_load_regiond_commands_if_no_management(self, mocker):
+        mocker.patch.object(cli, "get_django_management", return_value=None)
+        mocker.patch.object(
+            cli, "is_maasserver_available", return_value=sentinel.pkg_util
+        )
+        mock_load_regiond_commands = mocker.patch.object(
+            cli, "load_regiond_commands"
+        )
         parser = ArgumentParser()
         cli.register_cli_commands(parser)
         mock_load_regiond_commands.assert_not_called()
 
-    def test_doesnt_call_load_regiond_commands_if_no_maasserver(self):
-        self.patch(
-            cli, "get_django_management"
-        ).return_value = sentinel.management
-        self.patch(cli, "is_maasserver_available").return_value = None
-        mock_load_regiond_commands = self.patch(cli, "load_regiond_commands")
+    def test_doesnt_call_load_regiond_commands_if_no_maasserver(self, mocker):
+        mocker.patch.object(
+            cli, "get_django_management", return_value=sentinel.management
+        )
+        mocker.patch.object(cli, "is_maasserver_available", return_value=None)
+        mock_load_regiond_commands = mocker.patch.object(
+            cli, "load_regiond_commands"
+        )
         parser = ArgumentParser()
         cli.register_cli_commands(parser)
         mock_load_regiond_commands.assert_not_called()
 
-    def test_calls_load_regiond_commands_when_management_and_maasserver(self):
-        self.patch(
-            cli, "get_django_management"
-        ).return_value = sentinel.management
-        self.patch(
-            cli, "is_maasserver_available"
-        ).return_value = sentinel.pkg_util
-        mock_load_regiond_commands = self.patch(cli, "load_regiond_commands")
+    def test_calls_load_regiond_commands_when_management_and_maasserver(
+        self, mocker
+    ):
+        mocker.patch.object(
+            cli, "get_django_management", return_value=sentinel.management
+        )
+        mocker.patch.object(
+            cli, "is_maasserver_available", return_value=sentinel.pkg_util
+        )
+        mock_load_regiond_commands = mocker.patch.object(
+            cli, "load_regiond_commands"
+        )
         parser = ArgumentParser()
         cli.register_cli_commands(parser)
         mock_load_regiond_commands.assert_called_once_with(
             sentinel.management, parser, skip=frozenset()
         )
 
-    def test_loads_all_regiond_commands(self):
+    def test_loads_all_regiond_commands(self, mocker):
         parser = ArgumentParser()
         cli.register_cli_commands(parser)
         for name, app in cli.REGIOND_COMMANDS:
@@ -89,104 +96,112 @@ class TestRegisterCommands(MAASTestCase):
             # Canonical CLI Guidelines and have two-word commands having `-` delimiter.
             # But Django Management loads commands by module name, which has `_`
             klass = management.load_command_class(app, name.replace("-", "_"))
-            self.assertIsNotNone(subparser)
-            self.assertEqual(klass.help, subparser.description)
+            assert subparser is not None
+            assert klass.help == subparser.description
 
-    def test_load_init_command_snap(self):
+    def test_load_init_command_snap(self, mocker):
         environ = {"SNAP": "snap-path"}
-        self.patch(os, "environ", environ)
+        mocker.patch.object(os, "environ", environ)
         parser = ArgumentParser()
         cli.register_cli_commands(parser)
         subparser = parser.subparsers.choices.get("init")
-        self.assertIsInstance(subparser.get_default("execute"), snap.cmd_init)
+        assert isinstance(subparser.get_default("execute"), snap.cmd_init)
 
-    def test_no_init_command_without_snap(self):
+    def test_no_init_command_without_snap(self, mocker):
         environ = {}
-        self.patch(os, "environ", environ)
+        mocker.patch.object(os, "environ", environ)
         parser = ArgumentParser()
         cli.register_cli_commands(parser)
         subparser = parser.subparsers.choices.get("init")
-        self.assertIsNone(subparser)
+        assert subparser is None
 
-    def test_hidden_commands(self):
+    def test_hidden_commands(self, mocker):
         environ = {"SNAP": "snap-path", "SNAP_COMMON": "snap-common"}
-        self.patch(os, "environ", environ)
-        stdout = self.patch(sys, "stdout", StringIO())
+        mocker.patch.object(os, "environ", environ)
+        stdout = StringIO()
+        mocker.patch.object(sys, "stdout", stdout)
         parser = ArgumentParser()
         cli.register_cli_commands(parser)
-        error = self.assertRaises(SystemExit, parser.parse_args, ["--help"])
-        self.assertEqual(error.code, 0)
-        self.assertNotIn("reconfigure-supervisord", stdout.getvalue())
+        with pytest.raises(SystemExit) as exc_info:
+            parser.parse_args(["--help"])
+        assert exc_info.value.code == 0
+        assert "reconfigure-supervisord" not in stdout.getvalue()
 
-    def test_hides_db_only_regiond_commands_in_rack_mode(self):
-        snap_common = self.make_dir()
+    def test_hides_db_only_regiond_commands_in_rack_mode(
+        self, mocker, tmp_path
+    ):
+        snap_common = tmp_path
         with open(os.path.join(snap_common, "snap_mode"), "w") as fp:
             fp.write("rack")
         environ = {
             "SNAP": "snap-path",
-            "SNAP_COMMON": snap_common,
-            "SNAP_DATA": self.make_dir(),
+            "SNAP_COMMON": str(snap_common),
+            "SNAP_DATA": str(tmp_path),
         }
-        self.patch(os, "environ", environ)
+        mocker.patch.object(os, "environ", environ)
         parser = ArgumentParser()
         cli.register_cli_commands(parser)
         for name in cli.DB_ONLY_REGIOND_COMMANDS:
-            self.assertNotIn(name, parser.subparsers.choices)
-        self.assertIn("migrate", parser.subparsers.choices)
+            assert name not in parser.subparsers.choices
+        assert "migrate" in parser.subparsers.choices
 
-    def test_replaces_config_hardening_with_rack_command_in_rack_mode(self):
-        snap_common = self.make_dir()
-        with open(os.path.join(snap_common, "snap_mode"), "w") as fp:
+    def test_replaces_config_hardening_with_rack_command_in_rack_mode(
+        self, mocker, tmp_path
+    ):
+        with open(os.path.join(tmp_path, "snap_mode"), "w") as fp:
             fp.write("rack")
         environ = {
             "SNAP": "snap-path",
-            "SNAP_COMMON": snap_common,
-            "SNAP_DATA": self.make_dir(),
+            "SNAP_COMMON": str(tmp_path),
+            "SNAP_DATA": str(tmp_path),
         }
-        self.patch(os, "environ", environ)
+        mocker.patch.object(os, "environ", environ)
         parser = ArgumentParser()
         cli.register_cli_commands(parser)
         subparser = parser.subparsers.choices.get("config-hardening")
-        self.assertIsInstance(
+        assert isinstance(
             subparser.get_default("execute"), cli.cmd_config_hardening_rack
         )
         rack_subcommands = set(subparser.subparsers.choices)
-        self.assertEqual(rack_subcommands, {"list", "get", "set", "validate"})
-        self.assertNotIn("enable", rack_subcommands)
-        self.assertNotIn("disable", rack_subcommands)
+        assert rack_subcommands == {"list", "get", "set", "validate"}
+        assert "enable" not in rack_subcommands
+        assert "disable" not in rack_subcommands
 
-    def test_keeps_db_only_regiond_commands_in_region_mode(self):
-        snap_common = self.make_dir()
-        with open(os.path.join(snap_common, "snap_mode"), "w") as fp:
+    def test_keeps_db_only_regiond_commands_in_region_mode(
+        self, mocker, tmp_path
+    ):
+        with open(os.path.join(tmp_path, "snap_mode"), "w") as fp:
             fp.write("region")
         environ = {
             "SNAP": "snap-path",
-            "SNAP_COMMON": snap_common,
-            "SNAP_DATA": self.make_dir(),
+            "SNAP_COMMON": str(tmp_path),
+            "SNAP_DATA": str(tmp_path),
         }
-        self.patch(os, "environ", environ)
+        mocker.patch.object(os, "environ", environ)
         parser = ArgumentParser()
         cli.register_cli_commands(parser)
         for name in cli.DB_ONLY_REGIOND_COMMANDS:
-            self.assertIn(name, parser.subparsers.choices)
-        self.assertIn("config-hardening", parser.subparsers.choices)
-        self.assertIn("migrate", parser.subparsers.choices)
+            assert name in parser.subparsers.choices
+        assert "config-hardening" in parser.subparsers.choices
+        assert "migrate" in parser.subparsers.choices
 
 
-class TestLogin(MAASTestCase):
-    def setUp(self):
-        new_home = self.make_dir()
-        self.useFixture(EnvironmentVariableFixture("HOME", new_home))
-        return super().setUp()
+class TestLogin:
+    @pytest.fixture(autouse=True)
+    def _setup(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
 
-    def test_cmd_login_ensures_valid_apikey(self):
+    def test_cmd_login_ensures_valid_apikey(self, mocker):
         parser = ArgumentParser()
         options = make_options()
-        check_key = self.patch(cli, "check_valid_apikey")
+        check_key = mocker.patch.object(cli, "check_valid_apikey")
         check_key.return_value = False
         login = cli.cmd_login(parser)
-        error = self.assertRaises(SystemExit, login, options)
-        self.assertEqual("The MAAS server rejected your API key.", str(error))
+        with pytest.raises(SystemExit) as exc_info:
+            login(options)
+        assert str(exc_info.value) == (
+            "The MAAS server rejected your API key."
+        )
         check_key.assert_called_once_with(
             options.url,
             convert_string_to_tuple(options.credentials),
@@ -194,41 +209,48 @@ class TestLogin(MAASTestCase):
             options.insecure,
         )
 
-    def test_cmd_login_raises_unexpected_error_when_validating_apikey(self):
+    def test_cmd_login_raises_unexpected_error_when_validating_apikey(
+        self, mocker
+    ):
         parser = ArgumentParser()
         options = make_options()
-        check_key = self.patch(cli, "check_valid_apikey")
+        check_key = mocker.patch.object(cli, "check_valid_apikey")
         check_key_error_message = factory.make_name("error")
         check_key_error = UnexpectedResponse(check_key_error_message)
         check_key.side_effect = check_key_error
         login = cli.cmd_login(parser)
-        error = self.assertRaises(SystemExit, login, options)
-        self.assertEqual(check_key_error_message, str(error))
+        with pytest.raises(SystemExit) as exc_info:
+            login(options)
+        assert check_key_error_message == str(exc_info.value)
 
-    def test_print_whats_next(self):
+    def test_print_whats_next(self, mocker):
         profile = {
             "name": factory.make_name("profile"),
             "url": factory.make_name("url"),
         }
-        stdout = self.patch(sys, "stdout", StringIO())
+        stdout = StringIO()
+        mocker.patch.object(sys, "stdout", stdout)
         cli.cmd_login.print_whats_next(profile)
         output = stdout.getvalue()
-        self.assertIn(
-            f"You are now logged in to the MAAS server at {profile['url']}",
-            output,
+        assert (
+            f"You are now logged in to the MAAS server at {profile['url']}"
+            in output
         )
-        self.assertIn(f"maas {profile['name']} --help", output)
+        assert f"maas {profile['name']} --help" in output
 
-    def test_cmd_login_raises_error_when_cacerts_and_insecure_specified(self):
+    def test_cmd_login_raises_error_when_cacerts_and_insecure_specified(
+        self, mocker
+    ):
         parser = ArgumentParser()
         options = Namespace(
             insecure=True,
             cacerts="cacerts.pem",
         )
         login = cli.cmd_login(parser)
-        self.assertRaises(SystemExit, login, options)
+        with pytest.raises(SystemExit):
+            login(options)
 
-    def test_cmd_login_stores_provided_cacerts_in_profile(self):
+    def test_cmd_login_stores_provided_cacerts_in_profile(self, mocker):
         sample_cert = get_sample_cert()
         cert_path, _ = sample_cert.tempfiles()
         parser = ArgumentParser()
@@ -244,14 +266,14 @@ class TestLogin(MAASTestCase):
             cacerts=open(cert_path),
         )
 
-        check_key = self.patch(cli, "check_valid_apikey")
+        check_key = mocker.patch.object(cli, "check_valid_apikey")
         check_key.return_value = True
 
-        fetch_description = self.patch(cli, "fetch_api_description")
+        fetch_description = mocker.patch.object(cli, "fetch_api_description")
         fetch_description.return_value = {}
 
         content = factory.make_name("content")
-        mock_request = self.patch(httplib2.Http, "request")
+        mock_request = mocker.patch.object(httplib2.Http, "request")
         response = httplib2.Response({})
         response["status"] = http.client.OK
         mock_request.return_value = response, json.dumps(content)
@@ -259,19 +281,19 @@ class TestLogin(MAASTestCase):
         login = cli.cmd_login(parser)
         login(options)
         with ProfileConfig.open() as config:
-            self.assertEqual(
-                sample_cert.certificate_pem(), config[profile_name]["cacerts"]
+            assert (
+                sample_cert.certificate_pem()
+                == config[profile_name]["cacerts"]
             )
             del config[profile_name]
 
 
-class TestLogout(MAASTestCase):
-    def setUp(self):
-        new_home = self.make_dir()
-        self.useFixture(EnvironmentVariableFixture("HOME", new_home))
-        return super().setUp()
+class TestLogout:
+    @pytest.fixture(autouse=True)
+    def _setup(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
 
-    def test_cmd_logout_cleans_profile_cacerts(self):
+    def test_cmd_logout_cleans_profile_cacerts(self, mocker):
         parser = ArgumentParser()
         profile_name = "test"
         options = Namespace(profile_name=profile_name)
@@ -284,4 +306,4 @@ class TestLogout(MAASTestCase):
         cacerts_path.touch()
         logout = cli.cmd_logout(parser)
         logout(options)
-        self.assertFalse(cacerts_path.exists())
+        assert not cacerts_path.exists()

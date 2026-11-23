@@ -5,11 +5,14 @@
 
 import os
 from subprocess import check_output
+from types import SimpleNamespace
 
-from maastesting.testcase import MAASTestCase
+import pytest
+
 from provisioningserver.testing.bindfixture import (
     BINDServer,
     BINDServerResources,
+    BINDServerRunner,
 )
 from provisioningserver.utils.shell import get_env_with_locale
 
@@ -39,39 +42,58 @@ def dig_call(port=53, server="localhost", commands=None):
     return output.decode("utf-8").strip()
 
 
-class TestBINDFixture(MAASTestCase):
+class TestBINDFixture:
     def test_start_check_shutdown(self):
         # The fixture correctly starts and stops BIND.
         config = BINDServerResources(timeout_deadline=10, timeout_interval=0.5)
         with BINDServer(config) as fixture:
             result = dig_call(fixture.config.port)
-            self.assertIn("Got answer", result)
-        self.assertFalse(fixture.runner.is_running())
+            assert "Got answer" in result
+        assert not fixture.runner.is_running()
 
     def test_config(self):
         # The configuration can be passed in.
         config = BINDServerResources(timeout_deadline=10, timeout_interval=0.5)
-        fixture = self.useFixture(BINDServer(config))
-        self.assertIs(config, fixture.config)
+        with BINDServer(config) as fixture:
+            assert config is fixture.config
+
+    def test_start_timeout_includes_server_log(self, tmp_path, mocker):
+        log_file = tmp_path / "named.log"
+        log_file.write_text("named failed to start")
+        config = SimpleNamespace(
+            timeout_deadline=1,
+            timeout_interval=0,
+            log_file=str(log_file),
+        )
+        runner = BINDServerRunner(config)
+        mocker.patch.object(runner, "_spawn")
+        mocker.patch(
+            "provisioningserver.testing.bindfixture.time.time",
+            side_effect=[0, 2],
+        )
+        mocker.patch.object(runner, "is_running", return_value=False)
+
+        with pytest.raises(RuntimeError, match="named failed to start"):
+            runner._start()
 
 
-class TestBINDServerResources(MAASTestCase):
+class TestBINDServerResources:
     def test_defaults(self):
         with BINDServerResources() as resources:
-            self.assertIsInstance(resources.port, int)
-            self.assertIsInstance(resources.rndc_port, int)
-            self.assertIsInstance(resources.homedir, str)
-            self.assertIsInstance(resources.log_file, str)
-            self.assertIsNone(resources.include_in_options)
-            self.assertIsInstance(resources.named_file, str)
-            self.assertIsInstance(resources.conf_file, str)
-            self.assertIsInstance(resources.rndcconf_file, str)
-            self.assertEqual(resources.timeout_deadline, 15)
-            self.assertEqual(resources.timeout_interval, 0.01)
+            assert isinstance(resources.port, int)
+            assert isinstance(resources.rndc_port, int)
+            assert isinstance(resources.homedir, str)
+            assert isinstance(resources.log_file, str)
+            assert resources.include_in_options is None
+            assert isinstance(resources.named_file, str)
+            assert isinstance(resources.conf_file, str)
+            assert isinstance(resources.rndcconf_file, str)
+            assert resources.timeout_deadline == 15
+            assert resources.timeout_interval == 0.01
 
     def test_setUp_copies_executable(self):
         with BINDServerResources() as resources:
-            self.assertTrue(os.path.isfile(resources.named_file))
+            assert os.path.isfile(resources.named_file)
 
     def test_setUp_creates_config_files(self):
         with BINDServerResources() as resources:
@@ -79,12 +101,12 @@ class TestBINDServerResources(MAASTestCase):
                 conf_contents = fh.read()
             with open(resources.rndcconf_file, "r") as fh:
                 rndcconf_contents = fh.read()
-        self.assertIn(f"listen-on port {resources.port}", conf_contents)
-        self.assertIn(f"default-port {resources.rndc_port}", rndcconf_contents)
+        assert f"listen-on port {resources.port}" in conf_contents
+        assert f"default-port {resources.rndc_port}" in rndcconf_contents
         # This should ideally be in its own test but it's here to cut
         # test run time. See test_setUp_honours_include_in_options()
         # as its counterpart.
-        self.assertNotIn("forwarders", conf_contents)
+        assert "forwarders" not in conf_contents
 
     def test_setUp_honours_include_in_options(self):
         forwarders = "forwarders { 1.2.3.4; };"
@@ -92,13 +114,13 @@ class TestBINDServerResources(MAASTestCase):
             with open(resources.conf_file, "r") as fh:
                 conf_contents = fh.read()
 
-        self.assertIn(resources.homedir + "/" + forwarders, conf_contents)
+        assert resources.homedir + "/" + forwarders in conf_contents
 
     def test_defaults_reallocated_after_teardown(self):
         seen_homedirs = set()
         resources = BINDServerResources()
         for _ in range(2):
             with resources:
-                self.assertTrue(os.path.exists(resources.homedir))
-                self.assertNotIn(resources.homedir, seen_homedirs)
+                assert os.path.exists(resources.homedir)
+                assert resources.homedir not in seen_homedirs
                 seen_homedirs.add(resources.homedir)

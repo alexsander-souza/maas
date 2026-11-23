@@ -1,4 +1,3 @@
-from maastesting.testcase import MAASTestCase
 from provisioningserver.enum import enum_choices
 
 
@@ -7,15 +6,15 @@ class SampleEnum:
     TWO = "two"
 
 
-class TestEnumChoices(MAASTestCase):
+class TestEnumChoices:
     def test_values(self):
-        self.assertEqual(
-            enum_choices(SampleEnum),
-            (("one", "one"), ("two", "two")),
+        assert enum_choices(SampleEnum) == (
+            ("one", "one"),
+            ("two", "two"),
         )
 
     def test_values_transform(self):
-        self.assertEqual(
-            enum_choices(SampleEnum, transform=str.upper),
-            (("one", "ONE"), ("two", "TWO")),
+        assert enum_choices(SampleEnum, transform=str.upper) == (
+            ("one", "ONE"),
+            ("two", "TWO"),
         )

@@ -3,14 +3,16 @@
 
 """Tests for `maasserver.websockets.handlers.service`"""
 
+import pytest
+
 from maasserver.models.service import Service
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from maasserver.websockets.base import dehydrate_datetime
 from maasserver.websockets.handlers.service import ServiceHandler
 
 
-class TestServiceHandler(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestServiceHandler:
     def dehydrate_service(self, service, for_list=False):
         data = {
             "id": service.id,
@@ -32,8 +34,8 @@ class TestServiceHandler(MAASServerTestCase):
         handler = ServiceHandler(user, {}, None)
         node = factory.make_RackController()
         service = factory.make_Service(node)
-        self.assertEqual(
-            self.dehydrate_service(service), handler.get({"id": service.id})
+        assert self.dehydrate_service(service) == handler.get(
+            {"id": service.id}
         )
 
     def test_list(self):
@@ -45,5 +47,7 @@ class TestServiceHandler(MAASServerTestCase):
             self.dehydrate_service(service, for_list=True)
             for service in Service.objects.all()
         ]
-        self.assertGreater(len(expected_services), 0)
-        self.assertCountEqual(expected_services, handler.list({}))
+        assert len(expected_services) > 0
+        assert sorted(expected_services, key=repr) == sorted(
+            handler.list({}), key=repr
+        )

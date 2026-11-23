@@ -1,15 +1,17 @@
 # Copyright 2015-2026 Canonical Ltd.  This software is licensed under the
 # GNU Affero General Public License version 3 (see the file LICENSE).
 
-
+from collections import Counter
 import http.client
 import json
 import random
 from urllib.parse import urlencode
 
 from django.conf import settings
+from django.contrib.auth.models import AnonymousUser
 from django.http import QueryDict
 from django.urls import reverse
+import pytest
 
 from maascommon.utils.network import inet_ntop, IPRangeStatistics
 from maasserver.enum import (
@@ -18,12 +20,13 @@ from maasserver.enum import (
     RDNS_MODE,
     RDNS_MODE_CHOICES,
 )
-from maasserver.testing.api import APITestCase, explain_unexpected_response
+from maasserver.testing.api import explain_unexpected_response
 from maasserver.testing.factory import factory
+from maasserver.testing.testclient import MAASSensibleOAuthClient
 from maasserver.utils.orm import post_commit_hooks, reload_object
-from maastesting.djangotestcase import CountQueries
+from maastesting.querycounter import CountQueries
 from provisioningserver.boot import BootMethodRegistry
-from tests.maasserver.auth.test_auth import OpenFGAMockMixin
+from tests.maasserver.auth.test_auth import PytestOpenFGAMockMixin
 
 
 def get_subnets_uri():
@@ -39,9 +42,19 @@ def get_subnet_uri(subnet):
         return reverse("subnet_handler", args=[subnet.id])
 
 
-class TestSubnetsAPI(APITestCase.ForUser):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user=user,client=oauth", id="user=user,client=oauth")],
+)
+class TestSubnetsAPI:
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maas_user, api_client):
+        self.user = maas_user
+        self.client = api_client
+
     def test_handler_path(self):
-        self.assertEqual("/MAAS/api/2.0/subnets/", get_subnets_uri())
+        assert "/MAAS/api/2.0/subnets/" == get_subnets_uri()
 
     def test_read(self):
         def make_subnet():
@@ -66,9 +79,7 @@ class TestSubnetsAPI(APITestCase.ForUser):
             response = self.client.get(uri)
         base_count = counter.count
 
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
 
         result_ids = [
             subnet["id"]
@@ -76,32 +87,29 @@ class TestSubnetsAPI(APITestCase.ForUser):
                 response.content.decode(settings.DEFAULT_CHARSET)
             )
         ]
-        self.assertCountEqual(
-            [subnet.id for subnet in subnets],
-            result_ids,
-            json.loads(response.content.decode(settings.DEFAULT_CHARSET)),
-        )
+        assert Counter(subnet.id for subnet in subnets) == Counter(
+            result_ids
+        ), json.loads(response.content.decode(settings.DEFAULT_CHARSET))
 
         subnets.append(make_subnet())
         with CountQueries() as counter:
             response = self.client.get(uri)
         # XXX: These should be the same.
-        self.assertEqual(base_count + 9, counter.count)
-        self.assertEqual((base_count, counter.count), (23, 32))
+        assert base_count + 9 == counter.count
+        assert (base_count, counter.count) == (23, 32)
 
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         result_ids = [
             subnet["id"]
             for subnet in json.loads(
                 response.content.decode(settings.DEFAULT_CHARSET)
             )
         ]
-        self.assertCountEqual([subnet.id for subnet in subnets], result_ids)
+        assert Counter(subnet.id for subnet in subnets) == Counter(result_ids)
 
     def test_create(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         subnet_name = factory.make_name("subnet")
         vlan = factory.make_VLAN()
         network = factory.make_ip4_or_6_network()
@@ -145,29 +153,27 @@ class TestSubnetsAPI(APITestCase.ForUser):
                 "disabled_boot_architectures": ",".join(disabled_arches),
             },
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         created_subnet = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertEqual(subnet_name, created_subnet["name"])
-        self.assertEqual(vlan.vid, created_subnet["vlan"]["vid"])
-        self.assertEqual(cidr, created_subnet["cidr"])
-        self.assertEqual(gateway_ip, created_subnet["gateway_ip"])
-        self.assertEqual(dns_servers, created_subnet["dns_servers"])
-        self.assertEqual(rdns_mode, created_subnet["rdns_mode"])
-        self.assertEqual(allow_proxy, created_subnet["allow_proxy"])
-        self.assertEqual(allow_dns, created_subnet["allow_dns"])
-        self.assertEqual(managed, created_subnet["managed"])
-        self.assertEqual(description, created_subnet["description"])
-        self.assertCountEqual(
-            disabled_arches,
-            created_subnet["disabled_boot_architectures"],
+        assert subnet_name == created_subnet["name"]
+        assert vlan.vid == created_subnet["vlan"]["vid"]
+        assert cidr == created_subnet["cidr"]
+        assert gateway_ip == created_subnet["gateway_ip"]
+        assert dns_servers == created_subnet["dns_servers"]
+        assert rdns_mode == created_subnet["rdns_mode"]
+        assert allow_proxy == created_subnet["allow_proxy"]
+        assert allow_dns == created_subnet["allow_dns"]
+        assert managed == created_subnet["managed"]
+        assert description == created_subnet["description"]
+        assert Counter(disabled_arches) == Counter(
+            created_subnet["disabled_boot_architectures"]
         )
 
     def test_create_defaults_to_allow_dns(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         subnet_name = factory.make_name("subnet")
         vlan = factory.make_VLAN()
         network = factory.make_ip4_or_6_network()
@@ -193,22 +199,21 @@ class TestSubnetsAPI(APITestCase.ForUser):
                 "rdns_mode": rdns_mode,
             },
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         created_subnet = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertEqual(subnet_name, created_subnet["name"])
-        self.assertEqual(vlan.vid, created_subnet["vlan"]["vid"])
-        self.assertEqual(cidr, created_subnet["cidr"])
-        self.assertEqual(gateway_ip, created_subnet["gateway_ip"])
-        self.assertEqual(dns_servers, created_subnet["dns_servers"])
-        self.assertEqual(rdns_mode, created_subnet["rdns_mode"])
-        self.assertTrue(created_subnet["allow_dns"])
+        assert subnet_name == created_subnet["name"]
+        assert vlan.vid == created_subnet["vlan"]["vid"]
+        assert cidr == created_subnet["cidr"]
+        assert gateway_ip == created_subnet["gateway_ip"]
+        assert dns_servers == created_subnet["dns_servers"]
+        assert rdns_mode == created_subnet["rdns_mode"]
+        assert created_subnet["allow_dns"]
 
     def test_create_defaults_to_allow_proxy(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         subnet_name = factory.make_name("subnet")
         vlan = factory.make_VLAN()
         network = factory.make_ip4_or_6_network()
@@ -234,22 +239,21 @@ class TestSubnetsAPI(APITestCase.ForUser):
                 "rdns_mode": rdns_mode,
             },
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         created_subnet = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertEqual(subnet_name, created_subnet["name"])
-        self.assertEqual(vlan.vid, created_subnet["vlan"]["vid"])
-        self.assertEqual(cidr, created_subnet["cidr"])
-        self.assertEqual(gateway_ip, created_subnet["gateway_ip"])
-        self.assertEqual(dns_servers, created_subnet["dns_servers"])
-        self.assertEqual(rdns_mode, created_subnet["rdns_mode"])
-        self.assertTrue(created_subnet["allow_proxy"])
+        assert subnet_name == created_subnet["name"]
+        assert vlan.vid == created_subnet["vlan"]["vid"]
+        assert cidr == created_subnet["cidr"]
+        assert gateway_ip == created_subnet["gateway_ip"]
+        assert dns_servers == created_subnet["dns_servers"]
+        assert rdns_mode == created_subnet["rdns_mode"]
+        assert created_subnet["allow_proxy"]
 
     def test_create_defaults_to_managed(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         subnet_name = factory.make_name("subnet")
         vlan = factory.make_VLAN()
         network = factory.make_ip4_or_6_network()
@@ -275,46 +279,52 @@ class TestSubnetsAPI(APITestCase.ForUser):
                 "rdns_mode": rdns_mode,
             },
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         created_subnet = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertEqual(subnet_name, created_subnet["name"])
-        self.assertEqual(vlan.vid, created_subnet["vlan"]["vid"])
-        self.assertEqual(cidr, created_subnet["cidr"])
-        self.assertEqual(gateway_ip, created_subnet["gateway_ip"])
-        self.assertEqual(dns_servers, created_subnet["dns_servers"])
-        self.assertEqual(rdns_mode, created_subnet["rdns_mode"])
-        self.assertTrue(created_subnet["managed"])
+        assert subnet_name == created_subnet["name"]
+        assert vlan.vid == created_subnet["vlan"]["vid"]
+        assert cidr == created_subnet["cidr"]
+        assert gateway_ip == created_subnet["gateway_ip"]
+        assert dns_servers == created_subnet["dns_servers"]
+        assert rdns_mode == created_subnet["rdns_mode"]
+        assert created_subnet["managed"]
 
     def test_create_admin_only(self):
         subnet_name = factory.make_name("subnet")
         uri = get_subnets_uri()
         response = self.client.post(uri, {"name": subnet_name})
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content
 
     def test_create_requires_cidr(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         uri = get_subnets_uri()
         response = self.client.post(uri, {})
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
-        self.assertEqual(
-            {"cidr": ["This field is required."]},
-            json.loads(response.content.decode(settings.DEFAULT_CHARSET)),
+        assert {"cidr": ["This field is required."]} == json.loads(
+            response.content.decode(settings.DEFAULT_CHARSET)
         )
 
 
-class TestSubnetAPI(APITestCase.ForUser):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user=user,client=oauth", id="user=user,client=oauth")],
+)
+class TestSubnetAPI:
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maas_user, api_client):
+        self.user = maas_user
+        self.client = api_client
+
     def test_handler_path(self):
         subnet = factory.make_Subnet()
-        self.assertEqual(
-            "/MAAS/api/2.0/subnets/%s/" % subnet.id, get_subnet_uri(subnet)
+        assert "/MAAS/api/2.0/subnets/%s/" % subnet.id == get_subnet_uri(
+            subnet
         )
 
     def test_read_basic(self):
@@ -329,46 +339,41 @@ class TestSubnetAPI(APITestCase.ForUser):
         uri = get_subnet_uri(subnet)
         response = self.client.get(uri)
 
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed_subnet = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertEqual(
-            parsed_subnet,
-            {
-                "id": subnet.id,
-                "name": "my-subnet",
-                "active_discovery": False,
-                "allow_dns": True,
-                "allow_proxy": True,
-                "description": "",
+        assert parsed_subnet == {
+            "id": subnet.id,
+            "name": "my-subnet",
+            "active_discovery": False,
+            "allow_dns": True,
+            "allow_proxy": True,
+            "description": "",
+            "space": "undefined",
+            "cidr": "10.10.10.0/24",
+            "gateway_ip": None,
+            "dns_servers": [],
+            "managed": True,
+            "disabled_boot_architectures": [],
+            "rdns_mode": RDNS_MODE.DEFAULT,
+            "resource_uri": f"/MAAS/api/2.0/subnets/{subnet.id}/",
+            "vlan": {
+                "id": subnet.vlan_id,
+                "dhcp_on": subnet.vlan.dhcp_on,
+                "external_dhcp": subnet.vlan.external_dhcp,
+                "fabric": subnet.vlan.fabric.get_name(),
+                "fabric_id": subnet.vlan.fabric_id,
+                "mtu": subnet.vlan.mtu,
+                "primary_rack": None,
+                "secondary_rack": None,
                 "space": "undefined",
-                "cidr": "10.10.10.0/24",
-                "gateway_ip": None,
-                "dns_servers": [],
-                "managed": True,
-                "disabled_boot_architectures": [],
-                "rdns_mode": RDNS_MODE.DEFAULT,
-                "resource_uri": f"/MAAS/api/2.0/subnets/{subnet.id}/",
-                "vlan": {
-                    "id": subnet.vlan_id,
-                    "dhcp_on": subnet.vlan.dhcp_on,
-                    "external_dhcp": subnet.vlan.external_dhcp,
-                    "fabric": subnet.vlan.fabric.get_name(),
-                    "fabric_id": subnet.vlan.fabric_id,
-                    "mtu": subnet.vlan.mtu,
-                    "primary_rack": None,
-                    "secondary_rack": None,
-                    "space": "undefined",
-                    "vid": subnet.vlan.vid,
-                    "name": subnet.vlan.get_name(),
-                    "relay_vlan": None,
-                    "resource_uri": f"/MAAS/api/2.0/vlans/{subnet.vlan_id}/",
-                },
+                "vid": subnet.vlan.vid,
+                "name": subnet.vlan.get_name(),
+                "relay_vlan": None,
+                "resource_uri": f"/MAAS/api/2.0/vlans/{subnet.vlan_id}/",
             },
-        )
+        }
 
     def test_read_full(self):
         space = factory.make_Space(name="my-space")
@@ -389,53 +394,46 @@ class TestSubnetAPI(APITestCase.ForUser):
         uri = get_subnet_uri(subnet)
         response = self.client.get(uri)
 
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed_subnet = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertEqual(
-            parsed_subnet,
-            {
-                "id": subnet.id,
-                "name": "my-subnet",
-                "active_discovery": True,
-                "allow_dns": False,
-                "allow_proxy": False,
-                "description": "My subnet",
+        assert parsed_subnet == {
+            "id": subnet.id,
+            "name": "my-subnet",
+            "active_discovery": True,
+            "allow_dns": False,
+            "allow_proxy": False,
+            "description": "My subnet",
+            "space": "my-space",
+            "cidr": "10.20.20.0/24",
+            "gateway_ip": "10.20.20.1",
+            "dns_servers": ["10.20.20.20"],
+            "managed": False,
+            "disabled_boot_architectures": ["pxe"],
+            "rdns_mode": RDNS_MODE.DISABLED,
+            "resource_uri": f"/MAAS/api/2.0/subnets/{subnet.id}/",
+            "vlan": {
+                "id": subnet.vlan_id,
+                "dhcp_on": subnet.vlan.dhcp_on,
+                "external_dhcp": subnet.vlan.external_dhcp,
+                "fabric": subnet.vlan.fabric.get_name(),
+                "fabric_id": subnet.vlan.fabric_id,
+                "mtu": subnet.vlan.mtu,
+                "primary_rack": None,
+                "secondary_rack": None,
                 "space": "my-space",
-                "cidr": "10.20.20.0/24",
-                "gateway_ip": "10.20.20.1",
-                "dns_servers": ["10.20.20.20"],
-                "managed": False,
-                "disabled_boot_architectures": ["pxe"],
-                "rdns_mode": RDNS_MODE.DISABLED,
-                "resource_uri": f"/MAAS/api/2.0/subnets/{subnet.id}/",
-                "vlan": {
-                    "id": subnet.vlan_id,
-                    "dhcp_on": subnet.vlan.dhcp_on,
-                    "external_dhcp": subnet.vlan.external_dhcp,
-                    "fabric": subnet.vlan.fabric.get_name(),
-                    "fabric_id": subnet.vlan.fabric_id,
-                    "mtu": subnet.vlan.mtu,
-                    "primary_rack": None,
-                    "secondary_rack": None,
-                    "space": "my-space",
-                    "vid": subnet.vlan.vid,
-                    "name": subnet.vlan.get_name(),
-                    "relay_vlan": None,
-                    "resource_uri": f"/MAAS/api/2.0/vlans/{subnet.vlan_id}/",
-                },
+                "vid": subnet.vlan.vid,
+                "name": subnet.vlan.get_name(),
+                "relay_vlan": None,
+                "resource_uri": f"/MAAS/api/2.0/vlans/{subnet.vlan_id}/",
             },
-        )
+        }
 
     def test_read_404_when_bad_id(self):
         uri = reverse("subnet_handler", args=[random.randint(100, 1000)])
         response = self.client.get(uri)
-        self.assertEqual(
-            http.client.NOT_FOUND, response.status_code, response.content
-        )
+        assert http.client.NOT_FOUND == response.status_code, response.content
 
     def test_read_403_when_ambiguous(self):
         fabric = factory.make_Fabric(name="foo")
@@ -443,12 +441,11 @@ class TestSubnetAPI(APITestCase.ForUser):
         factory.make_Subnet(fabric=fabric)
         uri = reverse("subnet_handler", args=["fabric:foo"])
         response = self.client.get(uri)
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content
 
     def test_update(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         subnet = factory.make_Subnet()
         new_name = factory.make_name("subnet")
         new_rdns_mode = factory.pick_choice(RDNS_MODE_CHOICES)
@@ -476,23 +473,21 @@ class TestSubnetAPI(APITestCase.ForUser):
                 "disabled_boot_architectures": ",".join(disabled_arches),
             },
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
-        self.assertEqual(
-            new_name,
-            json.loads(response.content.decode(settings.DEFAULT_CHARSET))[
+        assert http.client.OK == response.status_code, response.content
+        assert (
+            new_name
+            == json.loads(response.content.decode(settings.DEFAULT_CHARSET))[
                 "name"
-            ],
+            ]
         )
         subnet = reload_object(subnet)
-        self.assertEqual(new_name, subnet.name)
-        self.assertEqual(new_rdns_mode, subnet.rdns_mode)
-        self.assertEqual(new_allow_proxy, subnet.allow_proxy)
-        self.assertEqual(new_allow_dns, subnet.allow_dns)
-        self.assertEqual(new_managed, subnet.managed)
-        self.assertCountEqual(
-            disabled_arches, subnet.disabled_boot_architectures
+        assert new_name == subnet.name
+        assert new_rdns_mode == subnet.rdns_mode
+        assert new_allow_proxy == subnet.allow_proxy
+        assert new_allow_dns == subnet.allow_dns
+        assert new_managed == subnet.managed
+        assert Counter(disabled_arches) == Counter(
+            subnet.disabled_boot_architectures
         )
 
     def test_update_admin_only(self):
@@ -500,12 +495,11 @@ class TestSubnetAPI(APITestCase.ForUser):
         new_name = factory.make_name("subnet")
         uri = get_subnet_uri(subnet)
         response = self.client.put(uri, {"name": new_name})
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content
 
     def test_update_bool_type_using_integers(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         subnet = factory.make_Subnet()
         uri = get_subnet_uri(subnet)
 
@@ -518,162 +512,157 @@ class TestSubnetAPI(APITestCase.ForUser):
         allow_dns_str_0 = json.loads(
             self.client.put(uri, {"allow_dns": "0"}).content.decode("utf-8")
         )["allow_dns"]
-        self.assertEqual(allow_dns_str_0, False)
+        assert allow_dns_str_0 is False
 
         allow_dns_str_1 = json.loads(
             self.client.put(uri, {"allow_dns": "1"}).content.decode("utf-8")
         )["allow_dns"]
-        self.assertEqual(allow_dns_str_1, True)
+        assert allow_dns_str_1 is True
 
         allow_dns_int_0 = json.loads(
             self.client.put(uri, {"allow_dns": 0}).content.decode("utf-8")
         )["allow_dns"]
-        self.assertEqual(allow_dns_int_0, False)
+        assert allow_dns_int_0 is False
 
         allow_dns_int_1 = json.loads(
             self.client.put(uri, {"allow_dns": 1}).content.decode("utf-8")
         )["allow_dns"]
-        self.assertEqual(allow_dns_int_1, True)
+        assert allow_dns_int_1 is True
 
         allow_dns_false = json.loads(
             self.client.put(uri, QueryDict("allow_dns=false&")).content.decode(
                 "utf-8"
             )
         )["allow_dns"]
-        self.assertEqual(allow_dns_false, False)
+        assert allow_dns_false is False
 
         allow_dns_true = json.loads(
             self.client.put(uri, QueryDict("allow_dns=true&")).content.decode(
                 "utf-8"
             )
         )["allow_dns"]
-        self.assertEqual(allow_dns_true, True)
+        assert allow_dns_true is True
 
         allow_dns_false = json.loads(
             self.client.put(uri, QueryDict("allow_dns=false")).content.decode(
                 "utf-8"
             )
         )["allow_dns"]
-        self.assertEqual(allow_dns_false, False)
+        assert allow_dns_false is False
 
         allow_dns_true = json.loads(
             self.client.put(uri, QueryDict("allow_dns=true")).content.decode(
                 "utf-8"
             )
         )["allow_dns"]
-        self.assertEqual(allow_dns_true, True)
+        assert allow_dns_true is True
 
         final_state_allow_dns = json.loads(
             self.client.put(
                 uri, {"allow_dns": initial_state_allow_dns}
             ).content.decode("utf-8")
         )["allow_dns"]
-        self.assertEqual(initial_state_allow_dns, final_state_allow_dns)
+        assert initial_state_allow_dns == final_state_allow_dns
 
         allow_proxy_str_0 = json.loads(
             self.client.put(uri, {"allow_proxy": "0"}).content.decode("utf-8")
         )["allow_proxy"]
-        self.assertEqual(allow_proxy_str_0, False)
+        assert allow_proxy_str_0 is False
 
         allow_proxy_str_1 = json.loads(
             self.client.put(uri, {"allow_proxy": "1"}).content.decode("utf-8")
         )["allow_proxy"]
-        self.assertEqual(allow_proxy_str_1, True)
+        assert allow_proxy_str_1 is True
 
         allow_proxy_false = json.loads(
             self.client.put(
                 uri, QueryDict("allow_proxy=false&")
             ).content.decode("utf-8")
         )["allow_proxy"]
-        self.assertEqual(allow_proxy_false, False)
+        assert allow_proxy_false is False
 
         allow_proxy_true = json.loads(
             self.client.put(
                 uri, QueryDict("allow_proxy=true&")
             ).content.decode("utf-8")
         )["allow_proxy"]
-        self.assertEqual(allow_proxy_true, True)
+        assert allow_proxy_true is True
 
         allow_proxy_false = json.loads(
             self.client.put(
                 uri, QueryDict("allow_proxy=false")
             ).content.decode("utf-8")
         )["allow_proxy"]
-        self.assertEqual(allow_proxy_false, False)
+        assert allow_proxy_false is False
 
         allow_proxy_true = json.loads(
             self.client.put(uri, QueryDict("allow_proxy=true")).content.decode(
                 "utf-8"
             )
         )["allow_proxy"]
-        self.assertEqual(allow_proxy_true, True)
+        assert allow_proxy_true is True
 
         allow_proxy_int_0 = json.loads(
             self.client.put(uri, {"allow_proxy": 0}).content.decode("utf-8")
         )["allow_proxy"]
-        self.assertEqual(allow_proxy_int_0, False)
+        assert allow_proxy_int_0 is False
 
         allow_proxy_int_1 = json.loads(
             self.client.put(uri, {"allow_proxy": 1}).content.decode("utf-8")
         )["allow_proxy"]
-        self.assertEqual(allow_proxy_int_1, True)
+        assert allow_proxy_int_1 is True
 
         final_state_allow_proxy = json.loads(
             self.client.put(
                 uri, {"allow_proxy": initial_state_allow_proxy}
             ).content.decode("utf-8")
         )["allow_proxy"]
-        self.assertEqual(initial_state_allow_proxy, final_state_allow_proxy)
+        assert initial_state_allow_proxy == final_state_allow_proxy
 
     def test_delete_deletes_subnet(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         subnet = factory.make_Subnet()
         uri = get_subnet_uri(subnet)
         response = self.client.delete(uri)
-        self.assertEqual(
-            http.client.NO_CONTENT, response.status_code, response.content
-        )
-        self.assertIsNone(reload_object(subnet))
+        assert http.client.NO_CONTENT == response.status_code, response.content
+        assert reload_object(subnet) is None
 
     def test_delete_deletes_subnet_by_name(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         subnet = factory.make_Subnet(name=factory.make_name("subnet"))
         uri = get_subnet_uri("name:%s" % subnet.name)
         response = self.client.delete(uri)
-        self.assertEqual(
-            http.client.NO_CONTENT, response.status_code, response.content
-        )
-        self.assertIsNone(reload_object(subnet))
+        assert http.client.NO_CONTENT == response.status_code, response.content
+        assert reload_object(subnet) is None
 
     def test_delete_deletes_subnet_by_cidr(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         subnet = factory.make_Subnet(name=factory.make_name("subnet"))
         uri = get_subnet_uri("cidr:%s" % subnet.cidr)
         response = self.client.delete(uri)
-        self.assertEqual(
-            http.client.NO_CONTENT, response.status_code, response.content
-        )
-        self.assertIsNone(reload_object(subnet))
+        assert http.client.NO_CONTENT == response.status_code, response.content
+        assert reload_object(subnet) is None
 
     def test_delete_403_when_not_admin(self):
         subnet = factory.make_Subnet()
         uri = get_subnet_uri(subnet)
         response = self.client.delete(uri)
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
-        self.assertIsNotNone(reload_object(subnet))
+        assert http.client.FORBIDDEN == response.status_code, response.content
+        assert reload_object(subnet) is not None
 
     def test_delete_404_when_invalid_id(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         uri = reverse("subnet_handler", args=[random.randint(100, 1000)])
         response = self.client.delete(uri)
-        self.assertEqual(
-            http.client.NOT_FOUND, response.status_code, response.content
-        )
+        assert http.client.NOT_FOUND == response.status_code, response.content
 
     def test_delete_fails_when_ips_in_use_by_nodes(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node_with_Interface_on_Subnet()
         iface = node.current_config.interface_set.first()
         subnet = iface.vlan.subnet_set.first()
@@ -684,13 +673,14 @@ class TestSubnetAPI(APITestCase.ForUser):
         )
         uri = get_subnet_uri(subnet)
         response = self.client.delete(uri)
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
-        self.assertIsNotNone(reload_object(subnet))
+        assert reload_object(subnet) is not None
 
     def test_delete_with_force_succeeds_when_ips_in_use_by_nodes(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node_with_Interface_on_Subnet()
         iface = node.current_config.interface_set.first()
         subnet = iface.vlan.subnet_set.first()
@@ -703,24 +693,33 @@ class TestSubnetAPI(APITestCase.ForUser):
         response = self.client.delete(
             uri, QUERY_STRING=urlencode({"force": "true"}, doseq=True)
         )
-        self.assertEqual(
-            http.client.NO_CONTENT, response.status_code, response.content
+        assert http.client.NO_CONTENT == response.status_code, response.content
+        assert reload_object(subnet) is None
+
+
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+@pytest.mark.parametrize(
+    "api_identity",
+    [
+        pytest.param(
+            "user=anonymous,client=oauth", id="user=anonymous,client=oauth"
         )
-        self.assertIsNone(reload_object(subnet))
-
-
-class TestSubnetAPIAuth(APITestCase.ForAnonymous):
+    ],
+)
+class TestSubnetAPIAuth:
     """Authorization tests for subnet API."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity):
+        self.client = MAASSensibleOAuthClient(user=AnonymousUser())
 
     def test_reserved_ip_ranges_fails_if_not_logged_in(self):
         subnet = factory.make_Subnet()
         response = self.client.get(
             get_subnet_uri(subnet), {"op": "reserved_ip_ranges"}
         )
-        self.assertEqual(
-            http.client.UNAUTHORIZED,
-            response.status_code,
-            explain_unexpected_response(http.client.UNAUTHORIZED, response),
+        assert http.client.UNAUTHORIZED == response.status_code, (
+            explain_unexpected_response(http.client.UNAUTHORIZED, response)
         )
 
     def test_unreserved_ip_ranges_fails_if_not_logged_in(self):
@@ -728,26 +727,32 @@ class TestSubnetAPIAuth(APITestCase.ForAnonymous):
         response = self.client.get(
             get_subnet_uri(subnet), {"op": "unreserved_ip_ranges"}
         )
-        self.assertEqual(
-            http.client.UNAUTHORIZED,
-            response.status_code,
-            explain_unexpected_response(http.client.UNAUTHORIZED, response),
+        assert http.client.UNAUTHORIZED == response.status_code, (
+            explain_unexpected_response(http.client.UNAUTHORIZED, response)
         )
 
 
-class TestSubnetReservedIPRangesAPI(APITestCase.ForUser):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user=user,client=oauth", id="user=user,client=oauth")],
+)
+class TestSubnetReservedIPRangesAPI:
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maas_user, api_client):
+        self.user = maas_user
+        self.client = api_client
+
     def test_returns_empty_list_for_empty_ipv4_subnet(self):
         subnet = factory.make_Subnet(version=4, dns_servers=[], gateway_ip="")
         response = self.client.get(
             get_subnet_uri(subnet), {"op": "reserved_ip_ranges"}
         )
-        self.assertEqual(
-            http.client.OK,
-            response.status_code,
-            explain_unexpected_response(http.client.OK, response),
+        assert http.client.OK == response.status_code, (
+            explain_unexpected_response(http.client.OK, response)
         )
         result = json.loads(response.content.decode(settings.DEFAULT_CHARSET))
-        self.assertEqual([], result)
+        assert [] == result
 
     def test_returns_reserved_anycast_for_empty_ipv6_subnet(self):
         subnet = factory.make_Subnet(
@@ -756,16 +761,14 @@ class TestSubnetReservedIPRangesAPI(APITestCase.ForUser):
         response = self.client.get(
             get_subnet_uri(subnet), {"op": "reserved_ip_ranges"}
         )
-        self.assertEqual(
-            http.client.OK,
-            response.status_code,
-            explain_unexpected_response(http.client.OK, response),
+        assert http.client.OK == response.status_code, (
+            explain_unexpected_response(http.client.OK, response)
         )
         [result] = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertEqual(1, result["num_addresses"])
-        self.assertIn("rfc-4291-2.6.1", result["purpose"])
+        assert 1 == result["num_addresses"]
+        assert "rfc-4291-2.6.1" in result["purpose"]
 
     def test_accounts_for_reserved_ip_address(self):
         subnet = factory.make_Subnet(dns_servers=[], gateway_ip="")
@@ -776,24 +779,29 @@ class TestSubnetReservedIPRangesAPI(APITestCase.ForUser):
         response = self.client.get(
             get_subnet_uri(subnet), {"op": "reserved_ip_ranges"}
         )
-        self.assertEqual(
-            http.client.OK,
-            response.status_code,
-            explain_unexpected_response(http.client.OK, response),
+        assert http.client.OK == response.status_code, (
+            explain_unexpected_response(http.client.OK, response)
         )
         result = json.loads(response.content.decode(settings.DEFAULT_CHARSET))
-        self.assertIn(
-            {
-                "start": ip,
-                "end": ip,
-                "purpose": ["assigned-ip"],
-                "num_addresses": 1,
-            },
-            result,
-        )
+        assert {
+            "start": ip,
+            "end": ip,
+            "purpose": ["assigned-ip"],
+            "num_addresses": 1,
+        } in result
 
 
-class TestSubnetUnreservedIPRangesAPI(APITestCase.ForUser):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user=user,client=oauth", id="user=user,client=oauth")],
+)
+class TestSubnetUnreservedIPRangesAPI:
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maas_user, api_client):
+        self.user = maas_user
+        self.client = api_client
+
     def test_returns_full_list_for_empty_subnet(self):
         subnet = factory.make_Subnet(
             cidr=factory.make_ipv4_network(), dns_servers=[], gateway_ip=""
@@ -802,10 +810,8 @@ class TestSubnetUnreservedIPRangesAPI(APITestCase.ForUser):
         response = self.client.get(
             get_subnet_uri(subnet), {"op": "unreserved_ip_ranges"}
         )
-        self.assertEqual(
-            http.client.OK,
-            response.status_code,
-            explain_unexpected_response(http.client.OK, response),
+        assert http.client.OK == response.status_code, (
+            explain_unexpected_response(http.client.OK, response)
         )
         result = json.loads(response.content.decode(settings.DEFAULT_CHARSET))
         expected_addresses = network.last - network.first + 1
@@ -818,16 +824,13 @@ class TestSubnetUnreservedIPRangesAPI(APITestCase.ForUser):
             # Don't count the IPv4 broadcast/network addresses in num_addresses
             expected_addresses -= 2
             expected_last_address = inet_ntop(network.last - 1)
-        self.assertEqual(
-            [
-                {
-                    "start": expected_first_address,
-                    "end": expected_last_address,
-                    "num_addresses": expected_addresses,
-                }
-            ],
-            result,
-        )
+        assert [
+            {
+                "start": expected_first_address,
+                "end": expected_last_address,
+                "num_addresses": expected_addresses,
+            }
+        ] == result
 
     def _unreserved_ip_ranges_empty(self, subnet, first_address, last_address):
         """Used by the succeeding three tests to prevent duplicating the
@@ -839,12 +842,10 @@ class TestSubnetUnreservedIPRangesAPI(APITestCase.ForUser):
             get_subnet_uri(subnet), {"op": "unreserved_ip_ranges"}
         )
         result = json.loads(response.content.decode(settings.DEFAULT_CHARSET))
-        self.assertEqual(
-            http.client.OK,
-            response.status_code,
-            explain_unexpected_response(http.client.OK, response),
+        assert http.client.OK == response.status_code, (
+            explain_unexpected_response(http.client.OK, response)
         )
-        self.assertEqual(result, [], str(subnet.get_ipranges_in_use()))
+        assert result == [], str(subnet.get_ipranges_in_use())
 
     def test_returns_empty_list_for_full_ipv4_subnet(self):
         network = factory.make_ipv4_network()
@@ -906,31 +907,35 @@ class TestSubnetUnreservedIPRangesAPI(APITestCase.ForUser):
         response = self.client.get(
             get_subnet_uri(subnet), {"op": "unreserved_ip_ranges"}
         )
-        self.assertEqual(
-            http.client.OK,
-            response.status_code,
-            explain_unexpected_response(http.client.OK, response),
+        assert http.client.OK == response.status_code, (
+            explain_unexpected_response(http.client.OK, response)
         )
         result = json.loads(response.content.decode(settings.DEFAULT_CHARSET))
-        self.assertEqual(
-            result,
-            [
-                {
-                    "start": expected_first_address,
-                    "end": first_range_end,
-                    "num_addresses": first_range_size,
-                },
-                {
-                    "start": second_range_start,
-                    "end": expected_last_address,
-                    "num_addresses": second_range_size,
-                },
-            ],
-            "Reserved ranges: %s" % subnet.get_ipranges_in_use(),
-        )
+        assert result == [
+            {
+                "start": expected_first_address,
+                "end": first_range_end,
+                "num_addresses": first_range_size,
+            },
+            {
+                "start": second_range_start,
+                "end": expected_last_address,
+                "num_addresses": second_range_size,
+            },
+        ], "Reserved ranges: %s" % subnet.get_ipranges_in_use()
 
 
-class TestSubnetStatisticsAPI(APITestCase.ForUser):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user=user,client=oauth", id="user=user,client=oauth")],
+)
+class TestSubnetStatisticsAPI:
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maas_user, api_client):
+        self.user = maas_user
+        self.client = api_client
+
     def test_default_does_not_include_ranges(self):
         subnet = factory.make_Subnet()
         factory.make_StaticIPAddress(
@@ -939,16 +944,14 @@ class TestSubnetStatisticsAPI(APITestCase.ForUser):
         response = self.client.get(
             get_subnet_uri(subnet), {"op": "statistics"}
         )
-        self.assertEqual(
-            http.client.OK,
-            response.status_code,
-            explain_unexpected_response(http.client.OK, response),
+        assert http.client.OK == response.status_code, (
+            explain_unexpected_response(http.client.OK, response)
         )
         result = json.loads(response.content.decode(settings.DEFAULT_CHARSET))
         full_iprange = subnet.get_iprange_usage()
         statistics = IPRangeStatistics(full_iprange)
         expected_result = statistics.render_json(include_ranges=False)
-        self.assertEqual(expected_result, result)
+        assert expected_result == result
 
     def test_with_include_ranges(self):
         subnet = factory.make_Subnet()
@@ -959,16 +962,14 @@ class TestSubnetStatisticsAPI(APITestCase.ForUser):
             get_subnet_uri(subnet),
             {"op": "statistics", "include_ranges": "true"},
         )
-        self.assertEqual(
-            http.client.OK,
-            response.status_code,
-            explain_unexpected_response(http.client.OK, response),
+        assert http.client.OK == response.status_code, (
+            explain_unexpected_response(http.client.OK, response)
         )
         result = json.loads(response.content.decode(settings.DEFAULT_CHARSET))
         full_iprange = subnet.get_iprange_usage()
         statistics = IPRangeStatistics(full_iprange)
         expected_result = statistics.render_json(include_ranges=True)
-        self.assertEqual(expected_result, result)
+        assert expected_result == result
 
     def test_without_include_ranges(self):
         subnet = factory.make_Subnet()
@@ -979,19 +980,27 @@ class TestSubnetStatisticsAPI(APITestCase.ForUser):
             get_subnet_uri(subnet),
             {"op": "statistics", "include_ranges": "false"},
         )
-        self.assertEqual(
-            http.client.OK,
-            response.status_code,
-            explain_unexpected_response(http.client.OK, response),
+        assert http.client.OK == response.status_code, (
+            explain_unexpected_response(http.client.OK, response)
         )
         result = json.loads(response.content.decode(settings.DEFAULT_CHARSET))
         full_iprange = subnet.get_iprange_usage()
         statistics = IPRangeStatistics(full_iprange)
         expected_result = statistics.render_json(include_ranges=False)
-        self.assertEqual(expected_result, result)
+        assert expected_result == result
 
 
-class TestSubnetIPAddressesAPI(APITestCase.ForUser):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user=user,client=oauth", id="user=user,client=oauth")],
+)
+class TestSubnetIPAddressesAPI:
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maas_user, api_client):
+        self.user = maas_user
+        self.client = api_client
+
     def test_default_parameters(self):
         subnet = factory.make_Subnet()
         user = factory.make_User()
@@ -1010,16 +1019,14 @@ class TestSubnetIPAddressesAPI(APITestCase.ForUser):
         response = self.client.get(
             get_subnet_uri(subnet), {"op": "ip_addresses"}
         )
-        self.assertEqual(
-            http.client.OK,
-            response.status_code,
-            explain_unexpected_response(http.client.OK, response),
+        assert http.client.OK == response.status_code, (
+            explain_unexpected_response(http.client.OK, response)
         )
         result = json.loads(response.content.decode(settings.DEFAULT_CHARSET))
         expected_result = subnet.render_json_for_related_ips(
             with_username=True, with_summary=True
         )
-        self.assertEqual(expected_result, result)
+        assert expected_result == result
 
     def test_with_username_false(self):
         subnet = factory.make_Subnet()
@@ -1040,16 +1047,14 @@ class TestSubnetIPAddressesAPI(APITestCase.ForUser):
             get_subnet_uri(subnet),
             {"op": "ip_addresses", "with_username": "false"},
         )
-        self.assertEqual(
-            http.client.OK,
-            response.status_code,
-            explain_unexpected_response(http.client.OK, response),
+        assert http.client.OK == response.status_code, (
+            explain_unexpected_response(http.client.OK, response)
         )
         result = json.loads(response.content.decode(settings.DEFAULT_CHARSET))
         expected_result = subnet.render_json_for_related_ips(
             with_username=False, with_summary=True
         )
-        self.assertEqual(expected_result, result)
+        assert expected_result == result
 
     def test_with_summary_false(self):
         subnet = factory.make_Subnet()
@@ -1070,16 +1075,14 @@ class TestSubnetIPAddressesAPI(APITestCase.ForUser):
             get_subnet_uri(subnet),
             {"op": "ip_addresses", "with_summary": "false"},
         )
-        self.assertEqual(
-            http.client.OK,
-            response.status_code,
-            explain_unexpected_response(http.client.OK, response),
+        assert http.client.OK == response.status_code, (
+            explain_unexpected_response(http.client.OK, response)
         )
         result = json.loads(response.content.decode(settings.DEFAULT_CHARSET))
         expected_result = subnet.render_json_for_related_ips(
             with_username=True, with_summary=False
         )
-        self.assertEqual(expected_result, result)
+        assert expected_result == result
 
     def test_with_deprecated_node_summary_false(self):
         subnet = factory.make_Subnet()
@@ -1100,26 +1103,34 @@ class TestSubnetIPAddressesAPI(APITestCase.ForUser):
             get_subnet_uri(subnet),
             {"op": "ip_addresses", "with_node_summary": "false"},
         )
-        self.assertEqual(
-            http.client.OK,
-            response.status_code,
-            explain_unexpected_response(http.client.OK, response),
+        assert http.client.OK == response.status_code, (
+            explain_unexpected_response(http.client.OK, response)
         )
         result = json.loads(response.content.decode(settings.DEFAULT_CHARSET))
         expected_result = subnet.render_json_for_related_ips(
             with_username=True, with_summary=False
         )
-        self.assertEqual(expected_result, result)
+        assert expected_result == result
 
 
-class TestSubnetsOpenFGAIntegration(OpenFGAMockMixin, APITestCase.ForUser):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user=user,client=oauth", id="user=user,client=oauth")],
+)
+class TestSubnetsOpenFGAIntegration(PytestOpenFGAMockMixin):
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maas_user, api_client):
+        self.user = maas_user
+        self.client = api_client
+
     def test_create_requires_can_edit_global_entities(self):
         self.openfga_client.can_edit_global_entities.return_value = True
         subnet_name = factory.make_name("subnet")
         uri = get_subnets_uri()
         response = self.client.post(uri, {"name": subnet_name})
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
         self.openfga_client.can_edit_global_entities.assert_called_once_with(
             self.user

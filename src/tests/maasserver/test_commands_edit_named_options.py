@@ -9,11 +9,12 @@ import os
 import shutil
 import textwrap
 
+from django.core.management import call_command
 from django.core.management.base import CommandError
+import pytest
 
 from maasserver.models import Config
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from maasserver.utils.orm import get_one
 from provisioningserver.dns.commands import edit_named_options
 from provisioningserver.dns.config import MAAS_NAMED_CONF_OPTIONS_INSIDE_NAME
@@ -80,27 +81,44 @@ OPTIONS_FILE_WITH_EXTRA_AND_DUP_FORWARDER = textwrap.dedent(
 )
 
 
-class TestEditNamedOptionsCommand(MAASServerTestCase):
-    def setUp(self):
-        super().setUp()
+class _TestHelpers:
+    @pytest.fixture(autouse=True)
+    def _setup_helpers(self, mocker, tmp_path):
+        self._mocker = mocker
+        self._tmp_path = tmp_path
         self.stdout = StringIO()
 
+    def patch(self, obj, attribute, value=None):
+        if value is None:
+            return self._mocker.patch.object(obj, attribute)
+        return self._mocker.patch.object(obj, attribute, value)
+
+    def make_dir(self):
+        return str(self._tmp_path)
+
+    def make_file(self, contents):
+        path = self._tmp_path / factory.make_name("file")
+        path.write_text(contents)
+        return str(path)
+
+
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestEditNamedOptionsCommand(_TestHelpers):
     def assertFailsWithMessage(self, config_path, message):
-        e = self.assertRaises(
-            CommandError,
-            self.call_command,
-            "edit_named_options",
-            config_path=config_path,
-            stdout=self.stdout,
-        )
-        self.assertIn(message, str(e))
+        with pytest.raises(CommandError) as exc:
+            call_command(
+                "edit_named_options",
+                config_path=config_path,
+                stdout=self.stdout,
+            )
+        assert message in str(exc.value)
 
     def assertContentFailsWithMessage(self, content, message):
         options_file = self.make_file(contents=content)
         self.assertFailsWithMessage(options_file, message)
         # The original file must be untouched.
         with open(options_file, "r") as fh:
-            self.assertEqual(content, fh.read())
+            assert content == fh.read()
 
     def test_exits_when_no_file_to_edit(self):
         dir = self.make_dir()
@@ -126,16 +144,16 @@ class TestEditNamedOptionsCommand(MAASServerTestCase):
 
     def test_remove_existing_forwarders_config(self):
         options_file = self.make_file(contents=OPTIONS_FILE_WITH_FORWARDERS)
-        self.call_command(
+        call_command(
             "edit_named_options", config_path=options_file, stdout=self.stdout
         )
 
         options = read_isc_file(options_file)
-        self.assertNotIn("forwarders", make_isc_string(options))
+        assert "forwarders" not in make_isc_string(options)
 
     def test_removes_existing_forwarders_config_if_migrate_set(self):
         options_file = self.make_file(contents=OPTIONS_FILE_WITH_FORWARDERS)
-        self.call_command(
+        call_command(
             "edit_named_options",
             config_path=options_file,
             migrate_conflicting_options=True,
@@ -145,22 +163,22 @@ class TestEditNamedOptionsCommand(MAASServerTestCase):
         # Check that the file was re-written without forwarders (since
         # that's now in the included file).
         options = read_isc_file(options_file)
-        self.assertNotIn("forwarders", make_isc_string(options))
+        assert "forwarders" not in make_isc_string(options)
 
     def test_removes_existing_dnssec_validation_config(self):
         options_file = self.make_file(contents=OPTIONS_FILE_WITH_DNSSEC)
-        self.call_command(
+        call_command(
             "edit_named_options", config_path=options_file, stdout=self.stdout
         )
 
         # Check that the file was re-written without dnssec-validation (since
         # that's now in the included file).
         options = read_isc_file(options_file)
-        self.assertNotIn("dnssec-validation", make_isc_string(options))
+        assert "dnssec-validation" not in make_isc_string(options)
 
     def test_removes_existing_dnssec_validation_config_if_migration_set(self):
         options_file = self.make_file(contents=OPTIONS_FILE_WITH_DNSSEC)
-        self.call_command(
+        call_command(
             "edit_named_options",
             config_path=options_file,
             migrate_conflicting_options=True,
@@ -170,11 +188,11 @@ class TestEditNamedOptionsCommand(MAASServerTestCase):
         # Check that the file was re-written without dnssec-validation (since
         # that's now in the included file).
         options = read_isc_file(options_file)
-        self.assertNotIn("dnssec-validation", make_isc_string(options))
+        assert "dnssec-validation" not in make_isc_string(options)
 
     def test_normal_operation(self):
         options_file = self.make_file(contents=OPTIONS_FILE)
-        self.call_command(
+        call_command(
             "edit_named_options", config_path=options_file, stdout=self.stdout
         )
         expected_path = os.path.join(
@@ -185,25 +203,24 @@ class TestEditNamedOptionsCommand(MAASServerTestCase):
 
         # Check that the file was re-written with the include statement.
         options = read_isc_file(options_file)
-        self.assertIn(
-            'include "%s";' % expected_path, make_isc_string(options)
-        )
+        assert 'include "%s";' % expected_path in make_isc_string(options)
 
-        # Check that the backup was made.
         options_file_base = os.path.dirname(options_file)
-        files = os.listdir(options_file_base)
-        self.assertEqual(2, len(files))
-        files.remove(os.path.basename(options_file))
-        [backup_file] = files
-        backup_file = os.path.join(options_file_base, backup_file)
+        backup_files = [
+            filename
+            for filename in os.listdir(options_file_base)
+            if filename.startswith(os.path.basename(options_file) + ".")
+        ]
+        assert len(backup_files) == 1
+        backup_file = os.path.join(options_file_base, backup_files[0])
         with open(backup_file, "r") as fh:
-            self.assertEqual(fh.read(), OPTIONS_FILE)
+            assert fh.read() == OPTIONS_FILE
 
     def test_migrates_bind_config_to_database(self):
         options_file = self.make_file(
             contents=OPTIONS_FILE_WITH_FORWARDERS_AND_DNSSEC
         )
-        self.call_command(
+        call_command(
             "edit_named_options",
             config_path=options_file,
             migrate_conflicting_options=True,
@@ -211,21 +228,20 @@ class TestEditNamedOptionsCommand(MAASServerTestCase):
         )
 
         upstream_dns = get_one(Config.objects.filter(name="upstream_dns"))
-        self.assertEqual(
-            {"192.168.1.1", "192.168.1.2"},
-            set(upstream_dns.value.split()),
+        assert {"192.168.1.1", "192.168.1.2"} == set(
+            upstream_dns.value.split()
         )
 
         dnssec_validation = get_one(
             Config.objects.filter(name="dnssec_validation")
         )
-        self.assertEqual(dnssec_validation.value, "no")
+        assert dnssec_validation.value == "no"
 
     def test_migrate_combines_with_existing_forwarders(self):
         options_file = self.make_file(
             contents=OPTIONS_FILE_WITH_FORWARDERS_AND_DNSSEC
         )
-        self.call_command(
+        call_command(
             "edit_named_options",
             config_path=options_file,
             migrate_conflicting_options=True,
@@ -233,21 +249,20 @@ class TestEditNamedOptionsCommand(MAASServerTestCase):
         )
 
         upstream_dns = get_one(Config.objects.filter(name="upstream_dns"))
-        self.assertEqual(
-            OrderedDict.fromkeys(["192.168.1.1", "192.168.1.2"]),
-            OrderedDict.fromkeys(upstream_dns.value.split()),
+        assert OrderedDict.fromkeys(["192.168.1.1", "192.168.1.2"]) == (
+            OrderedDict.fromkeys(upstream_dns.value.split())
         )
 
         dnssec_validation = get_one(
             Config.objects.filter(name="dnssec_validation")
         )
-        self.assertEqual(dnssec_validation.value, "no")
+        assert dnssec_validation.value == "no"
 
         options_file = self.make_file(
             contents=OPTIONS_FILE_WITH_EXTRA_AND_DUP_FORWARDER
         )
 
-        self.call_command(
+        call_command(
             "edit_named_options",
             config_path=options_file,
             migrate_conflicting_options=True,
@@ -255,18 +270,15 @@ class TestEditNamedOptionsCommand(MAASServerTestCase):
         )
 
         upstream_dns = get_one(Config.objects.filter(name="upstream_dns"))
-        self.assertEqual(
-            OrderedDict.fromkeys(
-                ["192.168.1.1", "192.168.1.2", "192.168.1.3"]
-            ),
-            OrderedDict.fromkeys(upstream_dns.value.split()),
-        )
+        assert OrderedDict.fromkeys(
+            ["192.168.1.1", "192.168.1.2", "192.168.1.3"]
+        ) == OrderedDict.fromkeys(upstream_dns.value.split())
 
     def test_dry_run_migrates_nothing_and_prints_config(self):
         options_file = self.make_file(
             contents=OPTIONS_FILE_WITH_FORWARDERS_AND_DNSSEC
         )
-        self.call_command(
+        call_command(
             "edit_named_options",
             config_path=options_file,
             migrate_conflicting_options=True,
@@ -275,15 +287,15 @@ class TestEditNamedOptionsCommand(MAASServerTestCase):
         )
 
         upstream_dns = get_one(Config.objects.filter(name="upstream_dns"))
-        self.assertIsNone(upstream_dns)
+        assert upstream_dns is None
         dnssec_validation = get_one(
             Config.objects.filter(name="dnssec_validation")
         )
-        self.assertIsNone(dnssec_validation)
+        assert dnssec_validation is None
 
         # Check that a proper configuration was written to stdout.
         config = parse_isc_string(self.stdout.getvalue())
-        self.assertIsNotNone(config)
+        assert config is not None
 
     def test_repeat_migrations_migrate_nothing(self):
         options_file = self.make_file(
@@ -291,29 +303,29 @@ class TestEditNamedOptionsCommand(MAASServerTestCase):
         )
         backup_mock = self.patch(edit_named_options, "back_up_existing_file")
 
-        self.call_command(
+        call_command(
             "edit_named_options",
             config_path=options_file,
             migrate_conflicting_options=True,
             stdout=self.stdout,
         )
 
-        self.assertTrue(backup_mock.called)
+        assert backup_mock.called
         backup_mock.reset_mock()
 
         write_mock = self.patch(
             edit_named_options, "write_new_named_conf_options"
         )
 
-        self.call_command(
+        call_command(
             "edit_named_options",
             config_path=options_file,
             migrate_conflicting_options=True,
             stdout=self.stdout,
         )
 
-        self.assertFalse(backup_mock.called)
-        self.assertFalse(write_mock.called)
+        assert not backup_mock.called
+        assert not write_mock.called
 
     def test_repeat_forced_migrations_write_file_anyway(self):
         options_file = self.make_file(
@@ -321,21 +333,21 @@ class TestEditNamedOptionsCommand(MAASServerTestCase):
         )
         backup_mock = self.patch(edit_named_options, "back_up_existing_file")
 
-        self.call_command(
+        call_command(
             "edit_named_options",
             config_path=options_file,
             migrate_conflicting_options=True,
             stdout=self.stdout,
         )
 
-        self.assertTrue(backup_mock.called)
+        assert backup_mock.called
         backup_mock.reset_mock()
 
         write_mock = self.patch(
             edit_named_options, "write_new_named_conf_options"
         )
 
-        self.call_command(
+        call_command(
             "edit_named_options",
             config_path=options_file,
             migrate_conflicting_options=True,
@@ -343,5 +355,5 @@ class TestEditNamedOptionsCommand(MAASServerTestCase):
             stdout=self.stdout,
         )
 
-        self.assertTrue(backup_mock.called)
-        self.assertTrue(write_mock.called)
+        assert backup_mock.called
+        assert write_mock.called

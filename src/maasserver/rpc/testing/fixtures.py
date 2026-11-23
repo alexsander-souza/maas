@@ -10,12 +10,13 @@ __all__ = [
 ]
 
 from collections import defaultdict
+from contextlib import ExitStack
 from os import path, urandom
+from unittest.mock import patch
 from urllib.parse import urlparse
 
 from crochet import run_in_reactor
 import fixtures
-from testtools.monkey import MonkeyPatcher, patch
 from twisted.internet import defer, endpoints, reactor
 from twisted.internet.protocol import Factory
 from twisted.test import iosim
@@ -138,7 +139,11 @@ class MockRegionToClusterRPCFixture(fixtures.Fixture):
             connection = FakeConnection(system_id)
             fake_connections[connection.ident].add(connection)
         # Patch the fake connections into place for this fixture's lifetime.
-        self.addCleanup(patch(self.rpc, "connections", fake_connections))
+        connections_patch = patch.object(
+            self.rpc, "connections", fake_connections
+        )
+        connections_patch.start()
+        self.addCleanup(connections_patch.stop)
 
     def addCluster(self, protocol):
         """Add a new stub cluster using the given `protocol`.
@@ -228,19 +233,20 @@ class MockLiveRegionToClusterRPCFixture(fixtures.Fixture):
         # The RPC service uses a list to manage endpoints, but let's check
         # those assumptions.
         assert isinstance(self.rpc.endpoints, list)
-        # Patch a fake UNIX endpoint in to the RPC service.
         endpoint = endpoints.UNIXServerEndpoint(reactor, self.sockfile)
-        self.monkey.add_patch(self.rpc, "endpoints", [[endpoint]])
+        # Patch a fake UNIX endpoint in to the RPC service.
+        self.patcher.enter_context(
+            patch.object(self.rpc, "endpoints", [[endpoint]])
+        )
 
         # The RPC service uses a defaultdict(set) to manage connections, but
         # let's check those assumptions.
         assert isinstance(self.rpc.connections, defaultdict)
         assert self.rpc.connections.default_factory is set
         # Patch a fake connections dict into place for this fixture's lifetime.
-        self.monkey.add_patch(self.rpc, "connections", defaultdict(set))
-
-        # Modify the state of the service.
-        self.monkey.patch()
+        self.patcher.enter_context(
+            patch.object(self.rpc, "connections", defaultdict(set))
+        )
 
         # Start the service back up again.
         self.rpc.startService().wait(TIMEOUT)
@@ -249,24 +255,19 @@ class MockLiveRegionToClusterRPCFixture(fixtures.Fixture):
     def stop(self):
         # Shutdown the RPC service, switch endpoints, then start again.
         self.rpc.stopService().wait(TIMEOUT)
-        # Restore the state of the service.
-        self.monkey.restore()
-        # Start the service back up again.
+        self.patcher.close()
         self.rpc.startService().wait(TIMEOUT)
 
     def setUp(self):
         super().setUp()
-        self.monkey = MonkeyPatcher()
-        # We need the event-loop up and running.
+        self.patcher = ExitStack()
         if not eventloop.loop.running:
             raise RuntimeError(
                 "Please start the event-loop before using this fixture."
             )
         self.rpc = get_service_in_eventloop("rpc").wait(TIMEOUT)
-        # Where we're going to put the UNIX socket files.
         self.sockdir = self.useFixture(fixtures.TempDir()).path
         self.sockfile = path.join(self.sockdir, "sock")
-        # Configure the RPC service with a UNIX endpoint.
         self.addCleanup(self.stop)
         self.start()
 
@@ -287,21 +288,22 @@ class MockLiveRegionToClusterRPCFixture(fixtures.Fixture):
         # already created. We reset this once registration is complete so as
         # to not interfere with other tests.
         registered = rack_controller
-        patcher = MonkeyPatcher()
-        patcher.add_patch(
-            rackcontrollers, "register", (lambda *args, **kwargs: registered)
-        )
-        # Just for the sake of setting up the test environment easily and quickly,
-        # we bypass the authentication here.
-        patcher.add_patch(
-            regionservice.RegionServer,
-            "authenticateCluster",
-            (lambda *args, **kwargs: True),
-        )
-
-        # Register the rack controller with the region.
-        patcher.patch()
-        try:
+        with ExitStack() as patcher:
+            patcher.enter_context(
+                patch.object(
+                    rackcontrollers,
+                    "register",
+                    lambda *args, **kwargs: registered,
+                )
+            )
+            # Bypass registration authentication for this local test setup.
+            patcher.enter_context(
+                patch.object(
+                    regionservice.RegionServer,
+                    "authenticateCluster",
+                    lambda *args, **kwargs: True,
+                )
+            )
             yield protocol.callRemote(
                 region.RegisterRackController,
                 system_id=rack_controller.system_id,
@@ -309,9 +311,6 @@ class MockLiveRegionToClusterRPCFixture(fixtures.Fixture):
                 interfaces={},
                 url=urlparse(""),
             )
-        finally:
-            patcher.restore()
-
         return protocol
 
     @synchronous

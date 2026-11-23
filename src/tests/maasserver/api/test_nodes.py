@@ -10,9 +10,11 @@ import logging
 import random
 
 from django.conf import settings
+from django.contrib.auth.models import AnonymousUser
 from django.http import QueryDict
 from django.urls import reverse
 from django.utils import timezone
+import pytest
 
 from maasserver.api import nodes as nodes_module
 from maasserver.api.utils import get_overridden_query_dict
@@ -34,9 +36,7 @@ from maasserver.models import (
     RackController,
     RegionController,
 )
-from maasserver.models import node as node_module
 from maasserver.models.blockdevice import MIN_BLOCK_DEVICE_SIZE
-from maasserver.testing.api import APITestCase
 from maasserver.testing.factory import factory
 from maasserver.testing.testclient import MAASSensibleOAuthClient
 from maasserver.utils.orm import post_commit_hooks, reload_object
@@ -48,8 +48,30 @@ from metadataserver.enum import (
 )
 
 
-class TestIsRegisteredAnonAPI(APITestCase.ForAnonymousAndUserAndAdmin):
-    def make_node(self, *args, **kwargs):
+@pytest.mark.parametrize(
+    "user_kind",
+    ["anonymous", "user", "admin"],
+    ids=[
+        "user=anonymous,client=oauth",
+        "user=user,client=oauth",
+        "user=admin,client=oauth",
+    ],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestIsRegisteredAnonAPI:
+    @pytest.fixture(autouse=True)
+    def _setup(self, user_kind, request):
+        if user_kind == "anonymous":
+            self.user = AnonymousUser()
+            self.client = MAASSensibleOAuthClient(user=self.user)
+        elif user_kind == "admin":
+            self.user = request.getfixturevalue("admin")
+            self.client = request.getfixturevalue("admin_api_client")
+        else:
+            self.user = request.getfixturevalue("maas_user")
+            self.client = request.getfixturevalue("api_client")
+
+    def make_node(self):
         if self.user.is_anonymous:
             but_not = [
                 NODE_STATUS.NEW,
@@ -72,12 +94,9 @@ class TestIsRegisteredAnonAPI(APITestCase.ForAnonymousAndUserAndAdmin):
             reverse("nodes_handler"),
             {"op": "is_registered", "mac_address": mac_address},
         )
-        self.assertEqual(
-            (http.client.OK.value, "true"),
-            (
-                response.status_code,
-                response.content.decode(settings.DEFAULT_CHARSET),
-            ),
+        assert (http.client.OK.value, "true") == (
+            response.status_code,
+            response.content.decode(settings.DEFAULT_CHARSET),
         )
 
     def test_is_registered_normalizes_mac_address(self):
@@ -91,12 +110,9 @@ class TestIsRegisteredAnonAPI(APITestCase.ForAnonymousAndUserAndAdmin):
             reverse("nodes_handler"),
             {"op": "is_registered", "mac_address": "aabbccddeeff"},
         )
-        self.assertEqual(
-            (http.client.OK.value, "true"),
-            (
-                response.status_code,
-                response.content.decode(settings.DEFAULT_CHARSET),
-            ),
+        assert (http.client.OK.value, "true") == (
+            response.status_code,
+            response.content.decode(settings.DEFAULT_CHARSET),
         )
 
     def test_is_registered_returns_False_if_node_not_registered(self):
@@ -105,12 +121,9 @@ class TestIsRegisteredAnonAPI(APITestCase.ForAnonymousAndUserAndAdmin):
             reverse("nodes_handler"),
             {"op": "is_registered", "mac_address": mac_address},
         )
-        self.assertEqual(
-            (http.client.OK.value, "false"),
-            (
-                response.status_code,
-                response.content.decode(settings.DEFAULT_CHARSET),
-            ),
+        assert (http.client.OK.value, "false") == (
+            response.status_code,
+            response.content.decode(settings.DEFAULT_CHARSET),
         )
 
     def test_is_registered_returns_False_if_node_new_commis_retired(self):
@@ -133,12 +146,9 @@ class TestIsRegisteredAnonAPI(APITestCase.ForAnonymousAndUserAndAdmin):
             reverse("nodes_handler"),
             {"op": "is_registered", "mac_address": mac_address},
         )
-        self.assertEqual(
-            (http.client.OK.value, "false"),
-            (
-                response.status_code,
-                response.content.decode(settings.DEFAULT_CHARSET),
-            ),
+        assert (http.client.OK.value, "false") == (
+            response.status_code,
+            response.content.decode(settings.DEFAULT_CHARSET),
         )
 
     def test_is_registered_returns_False_if_interface_has_no_node(self):
@@ -147,30 +157,60 @@ class TestIsRegisteredAnonAPI(APITestCase.ForAnonymousAndUserAndAdmin):
             reverse("nodes_handler"),
             {"op": "is_registered", "mac_address": str(interface.mac_address)},
         )
-        self.assertEqual(
-            (http.client.OK.value, "false"),
-            (
-                response.status_code,
-                response.content.decode(settings.DEFAULT_CHARSET),
-            ),
+        assert (http.client.OK.value, "false") == (
+            response.status_code,
+            response.content.decode(settings.DEFAULT_CHARSET),
         )
 
 
-class TestIsActionInProgressAPI(APITestCase.ForAnonymous):
-    scenarios = (
-        (
-            "commissioning",
-            {"status": NODE_STATUS.COMMISSIONING, "result": "true"},
+@pytest.mark.parametrize(
+    ("api_identity", "status", "result"),
+    [
+        pytest.param(
+            "anonymous",
+            NODE_STATUS.COMMISSIONING,
+            "true",
+            id="user=anonymous,client=oauth,commissioning",
         ),
-        ("deploying", {"status": NODE_STATUS.DEPLOYING, "result": "true"}),
-        ("deployed", {"status": NODE_STATUS.DEPLOYED, "result": "false"}),
-        ("testing", {"status": NODE_STATUS.TESTING, "result": "false"}),
-        ("ready", {"status": NODE_STATUS.READY, "result": "false"}),
-    )
+        pytest.param(
+            "anonymous",
+            NODE_STATUS.DEPLOYING,
+            "true",
+            id="user=anonymous,client=oauth,deploying",
+        ),
+        pytest.param(
+            "anonymous",
+            NODE_STATUS.DEPLOYED,
+            "false",
+            id="user=anonymous,client=oauth,deployed",
+        ),
+        pytest.param(
+            "anonymous",
+            NODE_STATUS.TESTING,
+            "false",
+            id="user=anonymous,client=oauth,testing",
+        ),
+        pytest.param(
+            "anonymous",
+            NODE_STATUS.READY,
+            "false",
+            id="user=anonymous,client=oauth,ready",
+        ),
+    ],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestIsActionInProgressAPI:
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity):
+        assert api_identity == "anonymous"
+        self.client = MAASSensibleOAuthClient(user=AnonymousUser())
 
-    def test_is_action_in_progress_returns_correct_result_per_state(self):
+    def test_is_action_in_progress_returns_correct_result_per_state(
+        self, api_identity, status, result
+    ):
+        assert api_identity == "anonymous"
         mac_address = factory.make_mac_address()
-        node = factory.make_Node(status=self.status)
+        node = factory.make_Node(status=status)
         factory.make_Interface(
             INTERFACE_TYPE.PHYSICAL, mac_address=mac_address, node=node
         )
@@ -178,12 +218,9 @@ class TestIsActionInProgressAPI(APITestCase.ForAnonymous):
             reverse("nodes_handler"),
             {"op": "is_action_in_progress", "mac_address": mac_address},
         )
-        self.assertEqual(
-            (http.client.OK.value, self.result),
-            (
-                response.status_code,
-                response.content.decode(settings.DEFAULT_CHARSET),
-            ),
+        assert (http.client.OK.value, result) == (
+            response.status_code,
+            response.content.decode(settings.DEFAULT_CHARSET),
         )
 
 
@@ -206,7 +243,17 @@ class RequestFixture:
         )
 
 
-class TestFilteredNodesListFromRequest(APITestCase.ForUser):
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("maas_user", id="user=user,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestFilteredNodesListFromRequest:
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, request, api_client):
+        self.user = request.getfixturevalue(api_identity)
+        self.client = api_client
+
     def test_node_list_with_id_returns_matching_nodes(self):
         # The "list" operation takes optional "id" parameters.  Only
         # nodes with matching ids will be returned.
@@ -215,9 +262,7 @@ class TestFilteredNodesListFromRequest(APITestCase.ForUser):
         query = RequestFixture({"id": [matching_id]}, "id")
         node_list = nodes_module.filtered_nodes_list_from_request(query)
 
-        self.assertEqual(
-            [matching_id], extract_system_ids_from_nodes(node_list)
-        )
+        assert [matching_id] == extract_system_ids_from_nodes(node_list)
 
     def test_node_list_with_nonexistent_id_returns_empty_list(self):
         # Trying to list a nonexistent node id returns a list containing
@@ -227,7 +272,7 @@ class TestFilteredNodesListFromRequest(APITestCase.ForUser):
         query = RequestFixture({"id": [nonexistent_id]}, "id")
         node_list = nodes_module.filtered_nodes_list_from_request(query)
 
-        self.assertEqual([], extract_system_ids_from_nodes(node_list))
+        assert [] == extract_system_ids_from_nodes(node_list)
 
     def test_node_list_with_ids_orders_by_id(self):
         # Even when ids are passed to "list," nodes are returned in id
@@ -243,8 +288,8 @@ class TestFilteredNodesListFromRequest(APITestCase.ForUser):
             node.system_id
             for node in sorted(all_nodes, key=lambda node: node.id)
         ]
-        self.assertCountEqual(
-            sorted_system_ids, extract_system_ids_from_nodes(node_list)
+        assert sorted(sorted_system_ids) == sorted(
+            extract_system_ids_from_nodes(node_list)
         )
 
     def test_node_list_with_some_matching_ids_returns_matching_nodes(self):
@@ -256,9 +301,7 @@ class TestFilteredNodesListFromRequest(APITestCase.ForUser):
         query = RequestFixture({"id": [existing_id, nonexistent_id]}, "id")
         node_list = nodes_module.filtered_nodes_list_from_request(query)
 
-        self.assertEqual(
-            [existing_id], extract_system_ids_from_nodes(node_list)
-        )
+        assert [existing_id] == extract_system_ids_from_nodes(node_list)
 
     def test_node_list_with_hostname_returns_matching_nodes(self):
         # The list operation takes optional "hostname" parameters. Only nodes
@@ -270,9 +313,7 @@ class TestFilteredNodesListFromRequest(APITestCase.ForUser):
         query = RequestFixture({"hostname": [matching_hostname]}, "hostname")
         node_list = nodes_module.filtered_nodes_list_from_request(query)
 
-        self.assertEqual(
-            [matching_system_id], extract_system_ids_from_nodes(node_list)
-        )
+        assert [matching_system_id] == extract_system_ids_from_nodes(node_list)
 
     def test_node_list_with_macs_returns_matching_nodes(self):
         # The "list" operation takes optional "mac_address" parameters. Only
@@ -286,9 +327,7 @@ class TestFilteredNodesListFromRequest(APITestCase.ForUser):
         query = RequestFixture({"mac_address": [matching_mac]}, "mac_address")
         node_list = nodes_module.filtered_nodes_list_from_request(query)
 
-        self.assertEqual(
-            [matching_system_id], extract_system_ids_from_nodes(node_list)
-        )
+        assert [matching_system_id] == extract_system_ids_from_nodes(node_list)
 
     def test_node_list_with_invalid_macs_returns_sensible_error(self):
         # If specifying an invalid MAC, make sure the error that's
@@ -305,9 +344,9 @@ class TestFilteredNodesListFromRequest(APITestCase.ForUser):
         expected_msg = [
             "Invalid MAC address(es): 00:E0:81:DD:D1:ZZ, 00:E0:81:DD:D1:XX"
         ]
-        with self.assertRaises(MAASAPIValidationError) as cm:
+        with pytest.raises(MAASAPIValidationError) as cm:
             nodes_module.filtered_nodes_list_from_request(query)
-        self.assertEqual(expected_msg, cm.exception.messages)
+        assert expected_msg == cm.value.messages
 
     def test_node_list_with_agent_name_filters_by_agent_name(self):
         factory.make_Node(agent_name=factory.make_name("other_agent_name"))
@@ -317,9 +356,7 @@ class TestFilteredNodesListFromRequest(APITestCase.ForUser):
         query = RequestFixture({"agent_name": agent_name}, "agent_name")
         node_list = nodes_module.filtered_nodes_list_from_request(query)
 
-        self.assertSequenceEqual(
-            [node.system_id], extract_system_ids_from_nodes(node_list)
-        )
+        assert [node.system_id] == extract_system_ids_from_nodes(node_list)
 
     def test_node_list_with_agent_name_filters_with_empty_string(self):
         factory.make_Node(agent_name=factory.make_name("agent-name"))
@@ -328,9 +365,7 @@ class TestFilteredNodesListFromRequest(APITestCase.ForUser):
         query = RequestFixture({"agent_name": ""}, "agent_name")
         node_list = nodes_module.filtered_nodes_list_from_request(query)
 
-        self.assertSequenceEqual(
-            [node.system_id], extract_system_ids_from_nodes(node_list)
-        )
+        assert [node.system_id] == extract_system_ids_from_nodes(node_list)
 
     def test_node_list_without_agent_name_does_not_filter(self):
         nodes = [
@@ -341,9 +376,8 @@ class TestFilteredNodesListFromRequest(APITestCase.ForUser):
         query = RequestFixture({}, "")
         node_list = nodes_module.filtered_nodes_list_from_request(query)
 
-        self.assertSequenceEqual(
-            [node.system_id for node in nodes],
-            extract_system_ids_from_nodes(node_list),
+        assert [node.system_id for node in nodes] == (
+            extract_system_ids_from_nodes(node_list)
         )
 
     def test_node_lists_list_devices(self):
@@ -359,10 +393,8 @@ class TestFilteredNodesListFromRequest(APITestCase.ForUser):
         node_list = nodes_module.filtered_nodes_list_from_request(query)
 
         system_ids = extract_system_ids_from_nodes(node_list)
-        self.assertEqual(
-            [node.system_id for node in machines + devices],
-            system_ids,
-            "Node listing doesn't contain devices.",
+        assert [node.system_id for node in machines + devices] == system_ids, (
+            "Node listing doesn't contain devices."
         )
 
     def test_node_list_with_zone_filters_by_zone(self):
@@ -373,9 +405,7 @@ class TestFilteredNodesListFromRequest(APITestCase.ForUser):
         query = RequestFixture({"zone": zone.name}, "zone")
         node_list = nodes_module.filtered_nodes_list_from_request(query)
 
-        self.assertSequenceEqual(
-            [node.system_id], extract_system_ids_from_nodes(node_list)
-        )
+        assert [node.system_id] == extract_system_ids_from_nodes(node_list)
 
     def test_node_list_without_zone_does_not_filter(self):
         nodes = [factory.make_Node(zone=factory.make_Zone()) for _ in range(3)]
@@ -383,9 +413,8 @@ class TestFilteredNodesListFromRequest(APITestCase.ForUser):
         query = RequestFixture({}, "")
         node_list = nodes_module.filtered_nodes_list_from_request(query)
 
-        self.assertSequenceEqual(
-            [node.system_id for node in nodes],
-            extract_system_ids_from_nodes(node_list),
+        assert [node.system_id for node in nodes] == (
+            extract_system_ids_from_nodes(node_list)
         )
 
     def test_node_list_with_pool_filters_by_pool(self):
@@ -397,9 +426,7 @@ class TestFilteredNodesListFromRequest(APITestCase.ForUser):
         query = RequestFixture({"pool": pool1.name}, "pool", self.user)
         node_list = nodes_module.filtered_nodes_list_from_request(query)
 
-        self.assertSequenceEqual(
-            [node1.system_id], extract_system_ids_from_nodes(node_list)
-        )
+        assert [node1.system_id] == extract_system_ids_from_nodes(node_list)
 
     def test_node_list_without_pool_does_not_filter(self):
         nodes = [
@@ -409,18 +436,26 @@ class TestFilteredNodesListFromRequest(APITestCase.ForUser):
 
         query = RequestFixture({}, "", self.user)
         node_list = nodes_module.filtered_nodes_list_from_request(query)
-
-        self.assertSequenceEqual(
-            [node.system_id for node in nodes],
-            extract_system_ids_from_nodes(node_list),
+        assert [node.system_id for node in nodes] == (
+            extract_system_ids_from_nodes(node_list)
         )
 
 
-class TestNodesAPI(APITestCase.ForUser):
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("maas_user", id="user=user,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestNodesAPI:
     """Tests for /api/2.0/nodes/."""
 
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, request, api_client):
+        self.user = request.getfixturevalue(api_identity)
+        self.client = api_client
+
     def test_handler_path(self):
-        self.assertEqual("/MAAS/api/2.0/nodes/", reverse("nodes_handler"))
+        assert "/MAAS/api/2.0/nodes/" == reverse("nodes_handler")
 
     def test_GET_lists_nodes(self):
         # The api allows for fetching the list of Nodes.
@@ -432,15 +467,15 @@ class TestNodesAPI(APITestCase.ForUser):
         parsed_result = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertEqual(http.client.OK, response.status_code)
-        self.assertCountEqual(
-            [node1.system_id, node2.system_id],
-            extract_system_ids(parsed_result),
+        assert http.client.OK == response.status_code
+        assert sorted([node1.system_id, node2.system_id]) == sorted(
+            extract_system_ids(parsed_result)
         )
 
     def test_GET_lists_nodes_admin(self):
-        # Only admins can see controllers
-        self.become_admin()
+        # Only admins can see controllers.
+        self.user.is_superuser = True
+        self.user.save()
         system_ids = [
             factory.make_Node(
                 node_type=node_type[0], owner=self.user
@@ -451,15 +486,15 @@ class TestNodesAPI(APITestCase.ForUser):
         parsed_result = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertEqual(http.client.OK, response.status_code)
-        self.assertCountEqual(system_ids, extract_system_ids(parsed_result))
+        assert http.client.OK == response.status_code
+        assert sorted(system_ids) == sorted(extract_system_ids(parsed_result))
 
     def test_GET_without_nodes_returns_empty_list(self):
         # If there are no nodes to list, the "list" op still works but
         # returns an empty list.
         response = self.client.get(reverse("nodes_handler"))
-        self.assertEqual(
-            [], json.loads(response.content.decode(settings.DEFAULT_CHARSET))
+        assert [] == json.loads(
+            response.content.decode(settings.DEFAULT_CHARSET)
         )
 
     def test_GET_orders_by_id(self):
@@ -469,9 +504,8 @@ class TestNodesAPI(APITestCase.ForUser):
         parsed_result = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertSequenceEqual(
-            [node.system_id for node in nodes],
-            extract_system_ids(parsed_result),
+        assert [node.system_id for node in nodes] == extract_system_ids(
+            parsed_result
         )
 
     def test_GET_with_id_returns_matching_nodes(self):
@@ -485,7 +519,7 @@ class TestNodesAPI(APITestCase.ForUser):
         parsed_result = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertEqual([matching_id], extract_system_ids(parsed_result))
+        assert [matching_id] == extract_system_ids(parsed_result)
 
     def test_GET_list_with_nonexistent_id_returns_empty_list(self):
         # Trying to list a nonexistent node id returns a list containing
@@ -495,8 +529,8 @@ class TestNodesAPI(APITestCase.ForUser):
         response = self.client.get(
             reverse("nodes_handler"), {"id": [nonexistent_id]}
         )
-        self.assertEqual(
-            [], json.loads(response.content.decode(settings.DEFAULT_CHARSET))
+        assert [] == json.loads(
+            response.content.decode(settings.DEFAULT_CHARSET)
         )
 
     def test_GET_with_ids_orders_by_id(self):
@@ -509,7 +543,7 @@ class TestNodesAPI(APITestCase.ForUser):
         parsed_result = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertSequenceEqual(ids, extract_system_ids(parsed_result))
+        assert ids == extract_system_ids(parsed_result)
 
     def test_GET_with_some_matching_ids_returns_matching_nodes(self):
         # If some nodes match the requested ids and some don't, only the
@@ -522,7 +556,7 @@ class TestNodesAPI(APITestCase.ForUser):
         parsed_result = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertEqual([existing_id], extract_system_ids(parsed_result))
+        assert [existing_id] == extract_system_ids(parsed_result)
 
     def test_GET_with_hostname_returns_matching_nodes(self):
         # The list operation takes optional "hostname" parameters. Only nodes
@@ -536,9 +570,7 @@ class TestNodesAPI(APITestCase.ForUser):
         parsed_result = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertEqual(
-            [matching_system_id], extract_system_ids(parsed_result)
-        )
+        assert [matching_system_id] == extract_system_ids(parsed_result)
 
     def test_GET_with_macs_returns_matching_nodes(self):
         # The "list" operation takes optional "mac_address" parameters. Only
@@ -554,9 +586,7 @@ class TestNodesAPI(APITestCase.ForUser):
         parsed_result = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertEqual(
-            [matching_system_id], extract_system_ids(parsed_result)
-        )
+        assert [matching_system_id] == extract_system_ids(parsed_result)
 
     def test_GET_with_invalid_macs_returns_sensible_error(self):
         # If specifying an invalid MAC, make sure the error that's
@@ -571,18 +601,13 @@ class TestNodesAPI(APITestCase.ForUser):
             reverse("nodes_handler"),
             {"mac_address": [bad_mac1, bad_mac2, ok_mac]},
         )
-        self.assertEqual(http.client.BAD_REQUEST, response.status_code)
+        assert http.client.BAD_REQUEST == response.status_code
         parsed_result = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertEqual(
-            parsed_result,
-            {
-                "mac_address": [
-                    "'00:E0:81:DD:D1:ZZ' is not a valid MAC address."
-                ]
-            },
-        )
+        assert parsed_result == {
+            "mac_address": ["'00:E0:81:DD:D1:ZZ' is not a valid MAC address."]
+        }
 
     def test_GET_with_agent_name_filters_by_agent_name(self):
         factory.make_Node(agent_name=factory.make_name("other_agent_name"))
@@ -591,13 +616,11 @@ class TestNodesAPI(APITestCase.ForUser):
         response = self.client.get(
             reverse("nodes_handler"), {"agent_name": agent_name}
         )
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code
         parsed_result = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertSequenceEqual(
-            [node.system_id], extract_system_ids(parsed_result)
-        )
+        assert [node.system_id] == extract_system_ids(parsed_result)
 
     def test_GET_with_agent_name_filters_with_empty_string(self):
         factory.make_Node(agent_name=factory.make_name("agent-name"))
@@ -605,13 +628,11 @@ class TestNodesAPI(APITestCase.ForUser):
         response = self.client.get(
             reverse("nodes_handler"), {"agent_name": ""}
         )
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code
         parsed_result = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertSequenceEqual(
-            [node.system_id], extract_system_ids(parsed_result)
-        )
+        assert [node.system_id] == extract_system_ids(parsed_result)
 
     def test_GET_without_agent_name_does_not_filter(self):
         nodes = [
@@ -619,13 +640,12 @@ class TestNodesAPI(APITestCase.ForUser):
             for _ in range(3)
         ]
         response = self.client.get(reverse("nodes_handler"))
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code
         parsed_result = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertSequenceEqual(
-            [node.system_id for node in nodes],
-            extract_system_ids(parsed_result),
+        assert [node.system_id for node in nodes] == extract_system_ids(
+            parsed_result
         )
 
     def test_GET_has_disable_ipv4(self):
@@ -636,9 +656,9 @@ class TestNodesAPI(APITestCase.ForUser):
         parsed_result = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code
         disable_ipv4 = [node.get("disable_ipv4") for node in parsed_result]
-        self.assertEqual([False, False], disable_ipv4)
+        assert [False, False] == disable_ipv4
 
     def test_GET_shows_all_types(self):
         machines = [
@@ -655,14 +675,14 @@ class TestNodesAPI(APITestCase.ForUser):
             for _ in range(3)
         ]
         response = self.client.get(reverse("nodes_handler"))
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code
         parsed_result = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertCountEqual(
-            [node.system_id for node in machines + devices + rack_controllers],
-            extract_system_ids(parsed_result),
-            "Node listing doesn't contain all node types.",
+        assert sorted(
+            node.system_id for node in machines + devices + rack_controllers
+        ) == sorted(extract_system_ids(parsed_result)), (
+            "Node listing doesn't contain all node types."
         )
 
     def test_GET_with_zone_filters_by_zone(self):
@@ -672,40 +692,39 @@ class TestNodesAPI(APITestCase.ForUser):
         response = self.client.get(
             reverse("nodes_handler"), {"zone": zone.name}
         )
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code
         parsed_result = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertSequenceEqual(
-            [node.system_id], extract_system_ids(parsed_result)
-        )
+        assert [node.system_id] == extract_system_ids(parsed_result)
 
     def test_GET_without_zone_does_not_filter(self):
         nodes = [factory.make_Node(zone=factory.make_Zone()) for _ in range(3)]
         response = self.client.get(reverse("nodes_handler"))
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code
         parsed_result = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertSequenceEqual(
-            [node.system_id for node in nodes],
-            extract_system_ids(parsed_result),
+        assert [node.system_id for node in nodes] == extract_system_ids(
+            parsed_result
         )
 
     def test_POST_set_zone_sets_zone_on_nodes(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node()
         zone = factory.make_Zone()
         response = self.client.post(
             reverse("nodes_handler"),
             {"op": "set_zone", "nodes": [node.system_id], "zone": zone.name},
         )
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code
         node = reload_object(node)
-        self.assertEqual(zone, node.zone)
+        assert zone == node.zone
 
     def test_POST_set_zone_does_not_affect_other_nodes(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node()
         original_zone = node.zone
         response = self.client.post(
@@ -716,9 +735,9 @@ class TestNodesAPI(APITestCase.ForUser):
                 "zone": factory.make_Zone().name,
             },
         )
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code
         node = reload_object(node)
-        self.assertEqual(original_zone, node.zone)
+        assert original_zone == node.zone
 
     def test_POST_set_zone_requires_admin(self):
         node = factory.make_Node(owner=self.user)
@@ -731,25 +750,35 @@ class TestNodesAPI(APITestCase.ForUser):
                 "zone": factory.make_Zone().name,
             },
         )
-        self.assertEqual(http.client.BAD_REQUEST, response.status_code)
+        assert http.client.BAD_REQUEST == response.status_code
         node = reload_object(node)
-        self.assertEqual(original_zone, node.zone)
+        assert original_zone == node.zone
 
     def test_CREATE_disabled(self):
         response = self.client.post(reverse("nodes_handler"), {})
-        self.assertEqual(http.client.BAD_REQUEST, response.status_code)
+        assert http.client.BAD_REQUEST == response.status_code
 
     def test_UPDATE_disabled(self):
         response = self.client.put(reverse("nodes_handler"), {})
-        self.assertEqual(http.client.METHOD_NOT_ALLOWED, response.status_code)
+        assert http.client.METHOD_NOT_ALLOWED == response.status_code
 
     def test_DELETE_disabled(self):
         response = self.client.put(reverse("nodes_handler"), {})
-        self.assertEqual(http.client.METHOD_NOT_ALLOWED, response.status_code)
+        assert http.client.METHOD_NOT_ALLOWED == response.status_code
 
 
-class TestPowersMixin(APITestCase.ForUser):
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("maas_user", id="user=user,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestPowersMixin:
     """Test the powers mixin."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, request, api_client):
+        self.user = request.getfixturevalue(api_identity)
+        self.client = api_client
 
     def get_node_uri(self, node):
         """Get the API URI for `node`."""
@@ -761,12 +790,11 @@ class TestPowersMixin(APITestCase.ForUser):
         response = self.client.get(
             reverse("machines_handler"), {"op": "power_parameters"}
         )
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content
 
     def test_GET_power_parameters_without_ids_does_not_filter(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         machines = [
             factory.make_Node(
                 power_parameters={factory.make_string(): factory.make_string()}
@@ -776,18 +804,17 @@ class TestPowersMixin(APITestCase.ForUser):
         response = self.client.get(
             reverse("machines_handler"), {"op": "power_parameters"}
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed = json.loads(response.content.decode(settings.DEFAULT_CHARSET))
         expected = {
             machine.system_id: machine.get_power_parameters()
             for machine in machines
         }
-        self.assertEqual(expected, parsed)
+        assert expected == parsed
 
     def test_GET_power_parameters_with_ids_filters(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         machines = [
             factory.make_Node(
                 power_parameters={factory.make_string(): factory.make_string()}
@@ -802,25 +829,19 @@ class TestPowersMixin(APITestCase.ForUser):
                 "id": [machine.system_id for machine in expected_machines],
             },
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed = json.loads(response.content.decode(settings.DEFAULT_CHARSET))
         expected = {
             machine.system_id: machine.get_power_parameters()
             for machine in expected_machines
         }
-        self.assertEqual(expected, parsed)
+        assert expected == parsed
 
 
 class RenderedNodesMixin:
     """Creates nodes populating every field rendered by the node listings."""
 
-    clientfactories = {"oauth": MAASSensibleOAuthClient}
-
-    def setUp(self):
-        super().setUp()
-        self.patch(node_module, "stop_workflow")
+    def setup_rendered_nodes(self, mocker):
         fabric = factory.make_Fabric()
         self.untagged_vlan = fabric.get_default_vlan()
         self.tagged_vlan = factory.make_VLAN(
@@ -1140,13 +1161,13 @@ class RenderedNodesMixin:
 
     def get_json(self, path, params=None):
         response = self.client.get(path, params)
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         return response.json()
 
-    def assertListedLikeDetails(self, listing, detail_handler, partial=False):
-        self.assertNotEqual([], listing)
+    def check_listed_like_details(
+        self, listing, detail_handler, partial=False
+    ):
+        assert [] != listing
         for listed in listing:
             details = self.get_json(
                 reverse(detail_handler, args=[listed["system_id"]])
@@ -1156,12 +1177,20 @@ class RenderedNodesMixin:
             # Tags are rendered in database order, which isn't stable.
             for rendered in (details, listed):
                 rendered["tag_names"].sort()
-            self.assertEqual(details, listed)
+            assert details == listed
 
 
-class TestNodesListingsMatchDetails(RenderedNodesMixin, APITestCase.ForAdmin):
-    def setUp(self):
-        super().setUp()
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("admin", id="user=admin,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestNodesListingsMatchDetails(RenderedNodesMixin):
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, request, admin_api_client, mocker):
+        self.user = request.getfixturevalue(api_identity)
+        self.client = admin_api_client
+        self.setup_rendered_nodes(mocker)
         self.make_nodes()
 
     def test_GET_nodes(self):
@@ -1170,33 +1199,30 @@ class TestNodesListingsMatchDetails(RenderedNodesMixin, APITestCase.ForAdmin):
         regions_only = RegionController.objects.filter(
             node_type=NODE_TYPE.REGION_CONTROLLER
         )
-        self.assertEqual(
-            [
-                node.system_id
-                for nodes in (
-                    Device.objects.all(),
-                    Machine.objects.all(),
-                    RackController.objects.all(),
-                    regions_only,
-                )
-                for node in nodes.order_by("id")
-            ],
-            extract_system_ids(listing),
-        )
-        self.assertListedLikeDetails(listing, "node_handler")
+        assert [
+            node.system_id
+            for nodes in (
+                Device.objects.all(),
+                Machine.objects.all(),
+                RackController.objects.all(),
+                regions_only,
+            )
+            for node in nodes.order_by("id")
+        ] == extract_system_ids(listing)
+        self.check_listed_like_details(listing, "node_handler")
 
     def test_GET_machines(self):
-        self.assertListedLikeDetails(
+        self.check_listed_like_details(
             self.get_json(reverse("machines_handler")), "machine_handler"
         )
 
     def test_GET_devices(self):
-        self.assertListedLikeDetails(
+        self.check_listed_like_details(
             self.get_json(reverse("devices_handler")), "device_handler"
         )
 
     def test_GET_rackcontrollers(self):
-        self.assertListedLikeDetails(
+        self.check_listed_like_details(
             self.get_json(reverse("rackcontrollers_handler")),
             "rackcontroller_handler",
         )
@@ -1205,13 +1231,11 @@ class TestNodesListingsMatchDetails(RenderedNodesMixin, APITestCase.ForAdmin):
         listing = self.get_json(reverse("regioncontrollers_handler"))
 
         for listed in listing:
-            self.assertEqual(
-                reverse(
-                    "regioncontroller_handler", args=[listed["system_id"]]
-                ),
-                listed["resource_uri"],
+            assert (
+                reverse("regioncontroller_handler", args=[listed["system_id"]])
+                == listed["resource_uri"]
             )
-        self.assertListedLikeDetails(
+        self.check_listed_like_details(
             [
                 listed
                 for listed in listing
@@ -1227,6 +1251,6 @@ class TestNodesListingsMatchDetails(RenderedNodesMixin, APITestCase.ForAdmin):
         ]
         for listed in region_racks:
             del listed["resource_uri"]
-        self.assertListedLikeDetails(
+        self.check_listed_like_details(
             region_racks, "regioncontroller_handler", partial=True
         )

@@ -4,17 +4,18 @@
 """Test the behaviour of user signals."""
 
 from django.db import connection
+import pytest
 
 from maasserver.sqlalchemy import service_layer
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from maasserver.worker_user import get_worker_user
 from maasservicelayer.db.filters import QuerySpec
 from maasservicelayer.db.repositories.usergroups import UserGroupsClauseFactory
 from metadataserver.nodeinituser import get_node_init_user
 
 
-class TestUserUsername(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestUserUsername:
     """Test that event's `username` is set when the user is
     going to be deleted."""
 
@@ -24,17 +25,18 @@ class TestUserUsername(MAASServerTestCase):
         events = [factory.make_Event(user=user) for _ in range(3)]
         user.delete()
         for event in events:
-            self.assertEqual(event.username, username)
+            assert event.username == username
 
 
-class TestPostSaveUserSignal(MAASServerTestCase):
-    scenarios = (
-        ("user", {"user_factory": factory.make_User}),
-        ("admin", {"user_factory": factory.make_admin}),
-    )
-
-    def test_save_creates_openfga_tuple(self):
-        user = self.user_factory()
+@pytest.mark.parametrize(
+    "user_factory", [factory.make_User, factory.make_admin]
+)
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "factory"
+)
+class TestPostSaveUserSignal:
+    def test_save_creates_openfga_tuple(self, user_factory):
+        user = user_factory()
 
         group = service_layer.services.usergroups.get_one(
             QuerySpec(
@@ -51,14 +53,11 @@ class TestPostSaveUserSignal(MAASServerTestCase):
             )
             openfga_tuple = cursor.fetchone()
 
-        self.assertEqual("group", openfga_tuple[0])
-        self.assertEqual(
-            str(group.id),
-            openfga_tuple[1],
-        )
-        self.assertEqual("member", openfga_tuple[2])
+        assert "group" == openfga_tuple[0]
+        assert str(group.id) == openfga_tuple[1]
+        assert "member" == openfga_tuple[2]
 
-    def test_save_ignores_deleted_default_groups(self):
+    def test_save_ignores_deleted_default_groups(self, user_factory):
         service_layer.services.usergroups.delete_one(
             QuerySpec(
                 where=UserGroupsClauseFactory.with_name("Administrators")
@@ -68,7 +67,7 @@ class TestPostSaveUserSignal(MAASServerTestCase):
             QuerySpec(where=UserGroupsClauseFactory.with_name("Users"))
         )
 
-        user = self.user_factory()
+        user = user_factory()
 
         with connection.cursor() as cursor:
             cursor.execute(
@@ -77,17 +76,16 @@ class TestPostSaveUserSignal(MAASServerTestCase):
             )
             openfga_tuple = cursor.fetchone()
 
-        self.assertIsNone(openfga_tuple)
+        assert openfga_tuple is None
 
 
-class TestPostSaveUserSystemUsersIgnoredSignal(MAASServerTestCase):
-    scenarios = (
-        ("MAAS", {"user_factory": get_worker_user}),
-        ("maas-init-node", {"user_factory": get_node_init_user}),
-    )
-
-    def test_save_user_is_ignored(self):
-        user = self.user_factory()
+@pytest.mark.parametrize("user_factory", [get_worker_user, get_node_init_user])
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "factory"
+)
+class TestPostSaveUserSystemUsersIgnoredSignal:
+    def test_save_user_is_ignored(self, user_factory):
+        user = user_factory()
 
         with connection.cursor() as cursor:
             cursor.execute(
@@ -96,10 +94,11 @@ class TestPostSaveUserSystemUsersIgnoredSignal(MAASServerTestCase):
             )
             openfga_tuple = cursor.fetchone()
 
-        self.assertIsNone(openfga_tuple)
+        assert openfga_tuple is None
 
 
-class TestPostDeleteUserSignal(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestPostDeleteUserSignal:
     def test_delete_removes_openfga_tuple(self):
         user = factory.make_User()
         user_id = user.id
@@ -113,4 +112,4 @@ class TestPostDeleteUserSignal(MAASServerTestCase):
             )
             openfga_tuple = cursor.fetchone()
 
-        self.assertIsNone(openfga_tuple)
+        assert openfga_tuple is None

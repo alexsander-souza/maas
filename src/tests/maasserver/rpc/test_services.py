@@ -4,17 +4,26 @@
 """Tests for `rpc.services`."""
 
 from fixtures import FakeLogger
+import pytest
 
 from maasserver.enum import SERVICE_STATUS
 from maasserver.models.service import RACK_SERVICES, Service
 from maasserver.rpc import services
 from maasserver.rpc.services import update_services
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASTransactionServerTestCase
 from provisioningserver.rpc.exceptions import NoSuchCluster
 
 
-class TestUpdateServices(MAASTransactionServerTestCase):
+@pytest.mark.allow_transactions
+@pytest.mark.usefixtures(
+    "maasdb",
+    "maas_region_test",
+    "factory",
+    "mock_openfga",
+    "mock_start_workflows",
+    "transactional_maasdb",
+)
+class TestUpdateServices:
     def make_service(self, service_name, status=None, status_info=None):
         if status is None:
             status = factory.pick_enum(SERVICE_STATUS)
@@ -28,7 +37,8 @@ class TestUpdateServices(MAASTransactionServerTestCase):
 
     def test_update_services_raises_NoSuchCluster(self):
         system_id = factory.make_name("system_id")
-        self.assertRaises(NoSuchCluster, update_services, system_id, [])
+        with pytest.raises(NoSuchCluster):
+            update_services(system_id, [])
 
     def test_update_services_logs_when_service_not_recognised(self):
         service_name = factory.make_name("service")
@@ -36,10 +46,9 @@ class TestUpdateServices(MAASTransactionServerTestCase):
         rack_controller = factory.make_RackController()
         with FakeLogger(services.__name__) as logger:
             update_services(rack_controller.system_id, [service])
-        self.assertEqual(
-            logger.output,
+        assert logger.output == (
             f"Rack {rack_controller.system_id} reported status for '{service_name}' but this is not a "
-            f"recognised service (status='{service['status']}', info='{service['status_info']}').\n",
+            f"recognised service (status='{service['status']}', info='{service['status_info']}').\n"
         )
 
     def test_update_services_updates_all_services(self):
@@ -52,7 +61,5 @@ class TestUpdateServices(MAASTransactionServerTestCase):
             service = Service.objects.get(
                 node=rack_controller, name=service_name
             )
-            self.assertEqual(service.status, services[service_name]["status"])
-            self.assertEqual(
-                service.status_info, services[service_name]["status_info"]
-            )
+            assert service.status == services[service_name]["status"]
+            assert service.status_info == services[service_name]["status_info"]

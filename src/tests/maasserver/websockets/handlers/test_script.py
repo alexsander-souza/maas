@@ -5,8 +5,9 @@
 
 import random
 
+import pytest
+
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from maasserver.utils.orm import reload_object
 from maasserver.websockets.base import (
     dehydrate_datetime,
@@ -14,10 +15,11 @@ from maasserver.websockets.base import (
     HandlerPermissionError,
 )
 from maasserver.websockets.handlers.script import ScriptHandler
-from tests.maasserver.auth.test_auth import OpenFGAMockMixin
+from tests.maasserver.auth.test_auth import PytestOpenFGAMockMixin
 
 
-class TestScriptHandler(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestScriptHandler:
     def dehydrate_script(self, script):
         return {
             "id": script.id,
@@ -60,7 +62,7 @@ class TestScriptHandler(MAASServerTestCase):
         for expected, real in zip(
             expected_scripts, sorted_results, strict=True
         ):
-            self.assertDictEqual(expected, real)
+            assert expected == real
 
     def test_delete(self):
         script = factory.make_Script()
@@ -69,44 +71,42 @@ class TestScriptHandler(MAASServerTestCase):
 
         handler.delete({"id": script.id})
 
-        self.assertIsNone(reload_object(script))
+        assert reload_object(script) is None
 
     def test_delete_admin_only(self):
         script = factory.make_Script()
         user = factory.make_User()
         handler = ScriptHandler(user, {}, None)
 
-        self.assertRaises(
+        pytest.raises(
             HandlerPermissionError, handler.delete, {"id": script.id}
         )
 
-        self.assertIsNotNone(reload_object(script))
+        assert reload_object(script) is not None
 
     def test_delete_cannot_delete_default(self):
         script = factory.make_Script(default=True)
         admin = factory.make_admin()
         handler = ScriptHandler(admin, {}, None)
 
-        self.assertRaises(
+        pytest.raises(
             HandlerPermissionError, handler.delete, {"id": script.id}
         )
 
-        self.assertIsNotNone(reload_object(script))
+        assert reload_object(script) is not None
 
     def test_get_script(self):
         script = factory.make_Script()
         user = factory.make_User()
         handler = ScriptHandler(user, {}, None)
 
-        self.assertEqual(
-            script.script.data, handler.get_script({"id": script.id})
-        )
+        assert script.script.data == handler.get_script({"id": script.id})
 
     def test_get_script_not_found(self):
         user = factory.make_User()
         handler = ScriptHandler(user, {}, None)
 
-        self.assertRaises(
+        pytest.raises(
             HandlerDoesNotExistError,
             handler.get_script,
             {"id": random.randint(1000, 10000)},
@@ -120,9 +120,8 @@ class TestScriptHandler(MAASServerTestCase):
         user = factory.make_User()
         handler = ScriptHandler(user, {}, None)
 
-        self.assertEqual(
-            old_vtf.data,
-            handler.get_script({"id": script.id, "revision": old_vtf.id}),
+        assert old_vtf.data == handler.get_script(
+            {"id": script.id, "revision": old_vtf.id}
         )
 
     def test_get_script_revision_not_found(self):
@@ -130,16 +129,15 @@ class TestScriptHandler(MAASServerTestCase):
         user = factory.make_User()
         handler = ScriptHandler(user, {}, None)
 
-        self.assertRaises(
+        pytest.raises(
             HandlerDoesNotExistError,
             handler.get_script,
             {"id": script.id, "revision": random.randint(1000, 10000)},
         )
 
 
-class TestScriptHandlerOpenFGAIntegration(
-    OpenFGAMockMixin, MAASServerTestCase
-):
+@pytest.mark.usefixtures("maasdb", "factory")
+class TestScriptHandlerOpenFGAIntegration(PytestOpenFGAMockMixin):
     def test_delete_requires_can_edit_global_entities(self):
         self.openfga_client.can_edit_global_entities.return_value = True
         user = factory.make_User()
@@ -149,14 +147,14 @@ class TestScriptHandlerOpenFGAIntegration(
         self.openfga_client.can_edit_global_entities.assert_called_once_with(
             user
         )
-        self.assertIsNone(reload_object(script))
+        assert reload_object(script) is None
 
     def test_delete_denied_without_can_edit_global_entities(self):
         self.openfga_client.can_edit_global_entities.return_value = False
         user = factory.make_User()
         script = factory.make_Script()
         handler = ScriptHandler(user, {}, None)
-        self.assertRaises(
+        pytest.raises(
             HandlerPermissionError, handler.delete, {"id": script.id}
         )
-        self.assertIsNotNone(reload_object(script))
+        assert reload_object(script) is not None

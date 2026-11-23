@@ -7,11 +7,11 @@ from datetime import timedelta
 import time
 
 from django.utils import timezone
+import pytest
 
 from maasserver.models import MDNS
 from maasserver.models.discovery import Discovery
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from maasserver.websockets.base import (
     dehydrate_datetime,
     HandlerPermissionError,
@@ -19,7 +19,14 @@ from maasserver.websockets.base import (
 from maasserver.websockets.handlers.discovery import DiscoveryHandler
 
 
-class TestDiscoveryHandler(MAASServerTestCase):
+@pytest.mark.usefixtures(
+    "maasdb",
+    "maas_region_test",
+    "factory",
+    "mock_openfga",
+    "mock_start_workflows",
+)
+class TestDiscoveryHandler:
     def dehydrate_discovery(self, discovery: Discovery, for_list=False):
         data = {
             "discovery_id": discovery.discovery_id,
@@ -54,9 +61,8 @@ class TestDiscoveryHandler(MAASServerTestCase):
         user = factory.make_User()
         handler = DiscoveryHandler(user, {}, None)
         discovery = factory.make_Discovery()
-        self.assertEqual(
-            self.dehydrate_discovery(discovery),
-            handler.get({"discovery_id": discovery.discovery_id}),
+        assert self.dehydrate_discovery(discovery) == handler.get(
+            {"discovery_id": discovery.discovery_id}
         )
 
     def test_list(self):
@@ -68,7 +74,9 @@ class TestDiscoveryHandler(MAASServerTestCase):
             self.dehydrate_discovery(discovery, for_list=True)
             for discovery in Discovery.objects.all()
         ]
-        self.assertCountEqual(expected_discoveries, handler.list({}))
+        assert sorted(
+            expected_discoveries, key=lambda discovery: discovery["id"]
+        ) == sorted(handler.list({}), key=lambda discovery: discovery["id"])
 
     def test_list_orders_by_creation_date(self):
         user = factory.make_User()
@@ -85,7 +93,7 @@ class TestDiscoveryHandler(MAASServerTestCase):
             self.dehydrate_discovery(discovery, for_list=True)
             for discovery in [d0, d1, d2, d3, d4]
         ]
-        self.assertEqual(expected_discoveries, handler.list({}))
+        assert expected_discoveries == handler.list({})
 
     def test_list_starts_after_first_seen(self):
         user = factory.make_User()
@@ -106,29 +114,35 @@ class TestDiscoveryHandler(MAASServerTestCase):
             self.dehydrate_discovery(discovery, for_list=True)
             for discovery in [d3, d4]
         ]
-        self.assertEqual(
-            expected_discoveries, handler.list({"start": first_seen})
-        )
+        assert expected_discoveries == handler.list({"start": first_seen})
 
 
-class TestDiscoveryHandlerClear(MAASServerTestCase):
+@pytest.mark.usefixtures(
+    "maasdb",
+    "maas_region_test",
+    "factory",
+    "mock_openfga",
+    "mock_start_workflows",
+)
+class TestDiscoveryHandlerClear:
     def test_raises_if_not_admin(self):
         user = factory.make_User()
         handler = DiscoveryHandler(user, {}, None)
         factory.make_Discovery()
         num_discoveries = Discovery.objects.count()
-        self.assertEqual(1, num_discoveries)
-        self.assertRaises(HandlerPermissionError, handler.clear)
+        assert 1 == num_discoveries
+        with pytest.raises(HandlerPermissionError):
+            handler.clear()
 
     def test_clears_all_by_default(self):
         user = factory.make_admin()
         handler = DiscoveryHandler(user, {}, None)
         factory.make_Discovery()
         num_discoveries = Discovery.objects.count()
-        self.assertEqual(1, num_discoveries)
+        assert 1 == num_discoveries
         handler.clear()
         num_discoveries = Discovery.objects.count()
-        self.assertEqual(0, num_discoveries)
+        assert 0 == num_discoveries
 
     def test_clears_mdns_only_upon_request(self):
         user = factory.make_admin()
@@ -136,61 +150,61 @@ class TestDiscoveryHandlerClear(MAASServerTestCase):
         factory.make_Discovery(hostname="useful-towel")
         num_discoveries = Discovery.objects.count()
         num_mdns = MDNS.objects.count()
-        self.assertEqual(1, num_discoveries)
-        self.assertEqual(1, num_mdns)
+        assert 1 == num_discoveries
+        assert 1 == num_mdns
         handler.clear({"mdns": True})
         num_discoveries = Discovery.objects.count()
         num_mdns = MDNS.objects.count()
-        self.assertEqual(1, num_discoveries)
-        self.assertEqual(0, num_mdns)
+        assert 1 == num_discoveries
+        assert 0 == num_mdns
 
 
-class TestDiscoveryHandlerDeleteByMACAndIP(MAASServerTestCase):
+@pytest.mark.usefixtures(
+    "maasdb",
+    "maas_region_test",
+    "factory",
+    "mock_openfga",
+    "mock_start_workflows",
+)
+class TestDiscoveryHandlerDeleteByMACAndIP:
     def test_raises_if_not_admin(self):
         user = factory.make_User()
         handler = DiscoveryHandler(user, {}, None)
         disco = factory.make_Discovery()
         num_discoveries = Discovery.objects.count()
-        self.assertEqual(1, num_discoveries)
-        self.assertRaises(
-            HandlerPermissionError,
-            handler.delete_by_mac_and_ip,
-            dict(ip=disco.ip, mac=disco.mac_address),
-        )
+        assert 1 == num_discoveries
+        with pytest.raises(HandlerPermissionError):
+            handler.delete_by_mac_and_ip(
+                dict(ip=disco.ip, mac=disco.mac_address)
+            )
 
     def test_raises_if_missing_ip(self):
         user = factory.make_User()
         handler = DiscoveryHandler(user, {}, None)
         disco = factory.make_Discovery()
         num_discoveries = Discovery.objects.count()
-        self.assertEqual(1, num_discoveries)
-        self.assertRaises(
-            HandlerPermissionError,
-            handler.delete_by_mac_and_ip,
-            dict(mac=disco.mac_address),
-        )
+        assert 1 == num_discoveries
+        with pytest.raises(HandlerPermissionError):
+            handler.delete_by_mac_and_ip(dict(mac=disco.mac_address))
 
     def test_raises_if_missing_mac(self):
         user = factory.make_User()
         handler = DiscoveryHandler(user, {}, None)
         disco = factory.make_Discovery()
         num_discoveries = Discovery.objects.count()
-        self.assertEqual(1, num_discoveries)
-        self.assertRaises(
-            HandlerPermissionError,
-            handler.delete_by_mac_and_ip,
-            dict(ip=disco.ip),
-        )
+        assert 1 == num_discoveries
+        with pytest.raises(HandlerPermissionError):
+            handler.delete_by_mac_and_ip(dict(ip=disco.ip))
 
     def test_deletes_discovery_and_returns_number_deleted(self):
         user = factory.make_admin()
         handler = DiscoveryHandler(user, {}, None)
         disco = factory.make_Discovery()
         num_discoveries = Discovery.objects.count()
-        self.assertEqual(1, num_discoveries)
+        assert 1 == num_discoveries
         result = handler.delete_by_mac_and_ip(
             dict(ip=disco.ip, mac=disco.mac_address)
         )
         num_discoveries = Discovery.objects.count()
-        self.assertEqual(0, num_discoveries)
-        self.assertEqual(1, result)
+        assert 0 == num_discoveries
+        assert 1 == result

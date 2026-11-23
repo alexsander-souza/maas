@@ -3,13 +3,15 @@
 
 """Tests for `UbuntuForm`."""
 
+import pytest
+
 from maasserver.forms import UbuntuForm
 from maasserver.models.packagerepository import PackageRepository
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 
 
-class TestUbuntuForm(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestUbuntuForm:
     """Tests for `UbuntuForm`."""
 
     def test_form_saves_info_db(self):
@@ -17,10 +19,10 @@ class TestUbuntuForm(MAASServerTestCase):
         ports_url = factory.make_url(scheme="http")
         params = {"main_archive": main_url, "ports_archive": ports_url}
         form = UbuntuForm(data=params)
-        self.assertTrue(form.is_valid(), form._errors)
+        assert form.is_valid(), form._errors
         form.save()
-        self.assertEqual(main_url, PackageRepository.get_main_archive_url())
-        self.assertEqual(ports_url, PackageRepository.get_ports_archive_url())
+        assert main_url == PackageRepository.get_main_archive_url()
+        assert ports_url == PackageRepository.get_ports_archive_url()
 
     def test_form_loads_initial_values(self):
         initial_values = {
@@ -28,4 +30,4 @@ class TestUbuntuForm(MAASServerTestCase):
             "main_archive": "http://archive.ubuntu.com/ubuntu",
         }
         form = UbuntuForm()
-        self.assertEqual(initial_values, form.initial)
+        assert initial_values == form.initial

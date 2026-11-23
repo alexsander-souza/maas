@@ -4,10 +4,12 @@
 from argparse import ArgumentParser
 import random
 import time
+from unittest import TestCase as UnittestTestCase
 
 from django.conf import settings
 import dns.resolver
 from netaddr import IPAddress
+import pytest
 
 from maasserver.config import RegionConfiguration
 from maasserver.dns import config as dns_config_module
@@ -31,7 +33,6 @@ from maasserver.models import Config, Domain
 from maasserver.models.dnspublication import DNSPublication
 from maasserver.testing.config import RegionConfigurationFixture
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from provisioningserver.dns.commands import get_named_conf, setup_dns
 from provisioningserver.dns.config import compose_config_path, DNSConfig
 from provisioningserver.dns.testing import (
@@ -48,7 +49,40 @@ RELOAD_TIMEOUT = 60
 dns_update_all_zones = wrapped_dns_update_all_zones.__wrapped__
 
 
-class TestDNSUtilities(MAASServerTestCase):
+class _PytestDBTestCase:
+    @pytest.fixture(autouse=True)
+    def _setup_test_helpers(self, mocker, request, tmp_path):
+        self._mocker = mocker
+        self._request = request
+        self._tmp_path = tmp_path
+        self._assertions = UnittestTestCase()
+
+    def __getattr__(self, name):
+        if name.startswith("assert") or name == "fail":
+            return getattr(self._assertions, name)
+        raise AttributeError(name)
+
+    def patch(self, obj, attribute=None, value=None):
+        if attribute is None:
+            return self._mocker.patch(obj)
+        if value is None:
+            return self._mocker.patch.object(obj, attribute)
+        return self._mocker.patch.object(obj, attribute, value)
+
+    def patch_autospec(self, obj, attribute):
+        return self._mocker.patch.object(obj, attribute, autospec=True)
+
+    def useFixture(self, fixture):
+        fixture.setUp()
+        self._request.addfinalizer(fixture.cleanUp)
+        return fixture
+
+    def make_dir(self):
+        return str(self._tmp_path)
+
+
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestDNSUtilities(_PytestDBTestCase):
     def make_listener_without_delay(self):
         listener = PostgresListenerService()
         self.patch(listener, "HANDLE_NOTIFY_DELAY", 0)
@@ -97,43 +131,27 @@ class TestDNSUtilities(MAASServerTestCase):
         )
 
 
-class TestDNSServer(MAASServerTestCase):
-    """A base class to perform real-world DNS-related tests.
-
-    The class starts a BINDServer for every test and provides a set of
-    helper methods to perform DNS queries.
-
-    Because of the overhead added by starting and stopping the DNS
-    server, new tests in this class and its descendants are expensive.
-    """
-
-    def setUp(self):
-        super().setUp()
-        # Ensure there's an initial DNS publication. Outside of tests this is
-        # guaranteed by a migration.
+class _PytestDNSServer(_PytestDBTestCase):
+    @pytest.fixture(autouse=True)
+    def _setup_bind_server(
+        self, _setup_test_helpers, maasdb, maas_region_test, factory
+    ):
         DNSPublication(source="Initial").save()
-        # Allow test-local changes to configuration.
         self.useFixture(RegionConfigurationFixture())
-        # Immediately make DNS changes as they're needed.
-        self.patch(dns_config_module, "DNS_DEFER_UPDATES", False)
-        # Create a DNS server.
+        self._mocker.patch.object(
+            dns_config_module, "DNS_DEFER_UPDATES", False, create=True
+        )
         self.bind = self.useFixture(BINDServer())
-        # Use the dnspython resolver for at least some queries.
         self.resolver = dns.resolver.Resolver()
         self.resolver.nameservers = ["127.0.0.1"]
         self.resolver.port = self.bind.config.port
         patch_dns_config_path(self, self.bind.config.homedir)
-        # Use a random port for rndc.
         patch_dns_rndc_port(self, allocate_ports("localhost")[0])
         patch_zone_file_config_path(self, config_dir=self.bind.config.zonedir)
-        # This simulates what should happen when the package is
-        # installed:
-        # Create MAAS-specific DNS configuration files.
+
         parser = ArgumentParser()
         setup_dns.add_arguments(parser)
         setup_dns.run(parser.parse_args([]))
-        # Register MAAS-specific DNS configuration files with the
-        # system's BIND instance.
         parser = ArgumentParser()
         get_named_conf.add_arguments(parser)
         get_named_conf.run(
@@ -141,7 +159,6 @@ class TestDNSServer(MAASServerTestCase):
                 ["--edit", "--config-path", self.bind.config.conf_file]
             )
         )
-        # Reload BIND.
         self.bind.runner.rndc("reload")
 
     def create_node_with_static_ip(self, domain=None, subnet=None):
@@ -234,7 +251,7 @@ class TestDNSServer(MAASServerTestCase):
             else:
                 time.sleep(wait)
 
-        self.fail("Timed-out waiting for %s to update." % fqdn)
+        pytest.fail(f"Timed-out waiting for {fqdn} to update.")
 
     def dig_resolve(self, fqdn, version=4, removing=False):
         """Resolve `fqdn` using dig.  Returns a list of results."""
@@ -269,24 +286,21 @@ class TestDNSServer(MAASServerTestCase):
         # to having the expected answer, and just wait for a non-empty return,
         # or timeout (15 seconds because of slow jenkins sometimes.)
         forward_lookup_result = self.dig_resolve(fqdn, version=version)
-        self.assertIn(
-            ip,
-            forward_lookup_result,
-            f"Failed to resolve '{fqdn}' (results: '{','.join(forward_lookup_result)}').",
+        assert ip in forward_lookup_result, (
+            f"Failed to resolve '{fqdn}' "
+            f"(results: '{','.join(forward_lookup_result)}')."
         )
-        # A reverse lookup on the IP address returns the hostname.
         if reverse:
             reverse_lookup_result = self.dig_reverse_resolve(
                 ip, version=version
             )
-            self.assertIn(
-                f"{fqdn}.",
-                reverse_lookup_result,
-                f"Failed to reverse resolve '{ip}'",
+            assert f"{fqdn}." in reverse_lookup_result, (
+                f"Failed to reverse resolve '{ip}'"
             )
 
 
-class TestDNSConfigModifications(TestDNSServer):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestDNSConfigModifications(_PytestDNSServer):
     def test_dns_update_all_zones_loads_full_dns_config(self):
         self.patch(settings, "DNS_CONNECT", True)
         node, static = self.create_node_with_static_ip()
@@ -443,7 +457,8 @@ class TestDNSConfigModifications(TestDNSServer):
         self.assertEqual(2, reload_call.call_count)
 
 
-class TestDNSDynamicIPAddresses(TestDNSServer):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestDNSDynamicIPAddresses(_PytestDNSServer):
     """Allocated nodes with IP addresses in the dynamic range get a DNS
     record.
     """
@@ -466,7 +481,8 @@ class TestDNSDynamicIPAddresses(TestDNSServer):
         self.assertDNSMatches(node.hostname, node.domain.name, ip_obj.ip)
 
 
-class TestDNSResource(TestDNSServer):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestDNSResource(_PytestDNSServer):
     """Tests for DNSResource records."""
 
     def test_dnsresources_are_in_the_dns(self):
@@ -486,7 +502,8 @@ class TestDNSResource(TestDNSServer):
         self.assertDNSMatches(dnsrr.name, domain.name, ip_obj.ip)
 
 
-class TestIPv6DNS(TestDNSServer):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestIPv6DNS(_PytestDNSServer):
     def test_bind_configuration_includes_ipv6_zone(self):
         self.patch(settings, "DNS_CONNECT", True)
         network = factory.make_ipv6_network(slash=random.randint(118, 125))
@@ -498,7 +515,8 @@ class TestIPv6DNS(TestDNSServer):
         )
 
 
-class TestGetUpstreamDNS(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestGetUpstreamDNS(_PytestDBTestCase):
     """Test for maasserver/dns/config.py:get_upstream_dns()"""
 
     def test_returns_empty_list_if_not_set(self):
@@ -515,11 +533,12 @@ class TestGetUpstreamDNS(MAASServerTestCase):
         self.assertEqual(addresses, get_upstream_dns())
 
 
-class TestGetTrustedAcls(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestGetTrustedAcls(_PytestDBTestCase):
     """Test for maasserver/dns/config.py:get_trusted_acls()"""
 
-    def setUp(self):
-        super().setUp()
+    @pytest.fixture(autouse=True)
+    def _setup_config(self, _setup_test_helpers, maasdb, maas_region_test):
         self.useFixture(RegionConfigurationFixture())
 
     def test_returns_empty_string_if_no_networks(self):
@@ -544,11 +563,12 @@ class TestGetTrustedAcls(MAASServerTestCase):
         self.assertCountEqual(expected, get_trusted_acls())
 
 
-class TestGetTrustedNetworks(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestGetTrustedNetworks(_PytestDBTestCase):
     """Test for maasserver/dns/config.py:get_trusted_networks()"""
 
-    def setUp(self):
-        super().setUp()
+    @pytest.fixture(autouse=True)
+    def _setup_config(self, _setup_test_helpers, maasdb, maas_region_test):
         self.useFixture(RegionConfigurationFixture())
 
     def test_returns_empty_string_if_no_networks(self):
@@ -573,7 +593,8 @@ class TestGetTrustedNetworks(MAASServerTestCase):
         self.assertCountEqual(expected, get_trusted_networks())
 
 
-class TestGetInternalDomain(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestGetInternalDomain(_PytestDBTestCase):
     """Test for maasserver/dns/config.py:get_internal_domain()"""
 
     def test_uses_maas_internal_domain_config(self):
@@ -735,21 +756,19 @@ class TestGetInternalDomain(MAASServerTestCase):
         )
 
 
-class TestGetResourceNameForSubnet(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+@pytest.mark.parametrize(
+    ("cidr", "result"),
+    [
+        ("10.0.0.0/8", "10-0-0-0--8"),
+        ("192.168.1.0/24", "192-168-1-0--24"),
+        ("2001:db8:0::/64", "2001-db8----64"),
+    ],
+    ids=["10.0.0.0/8", "192.168.1.0/24", "2001:db8:0::/64"],
+)
+class TestGetResourceNameForSubnet(_PytestDBTestCase):
     """Test for maasserver/dns/config.py:get_resource_name_for_subnet()"""
 
-    scenarios = (
-        ("10.0.0.0/8", {"cidr": "10.0.0.0/8", "result": "10-0-0-0--8"}),
-        (
-            "192.168.1.0/24",
-            {"cidr": "192.168.1.0/24", "result": "192-168-1-0--24"},
-        ),
-        (
-            "2001:db8:0::/64",
-            {"cidr": "2001:db8:0::/64", "result": "2001-db8----64"},
-        ),
-    )
-
-    def test_returns_valid(self):
-        subnet = factory.make_Subnet(cidr=self.cidr)
-        self.assertEqual(self.result, get_resource_name_for_subnet(subnet))
+    def test_returns_valid(self, cidr, result):
+        subnet = factory.make_Subnet(cidr=cidr)
+        self.assertEqual(result, get_resource_name_for_subnet(subnet))

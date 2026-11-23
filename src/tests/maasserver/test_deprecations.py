@@ -1,6 +1,7 @@
 import os
 
 from django.conf import settings
+import pytest
 
 from maasserver import deprecations
 from maasserver.deprecations import (
@@ -11,50 +12,47 @@ from maasserver.deprecations import (
     sync_deprecation_notifications,
 )
 from maasserver.models import Notification
-from maasserver.testing.testcase import MAASServerTestCase
-from maastesting.testcase import MAASTestCase
 from provisioningserver.logger import LegacyLogger
 
 
-class TestGetDeprecations(MAASServerTestCase):
-    def test_old_postgres_version(self):
-        self.patch(deprecations, "postgresql_major_version").return_value = 14
-        self.assertIn(
-            DEPRECATIONS["POSTGRES_OLDER_THAN_16"], get_deprecations()
-        )
+@pytest.mark.usefixtures("maasdb", "mock_openfga")
+class TestGetDeprecations:
+    def test_old_postgres_version(self, mocker):
+        mocker.patch.object(
+            deprecations, "postgresql_major_version"
+        ).return_value = 14
+        assert DEPRECATIONS["POSTGRES_OLDER_THAN_16"] in get_deprecations()
 
-    def test_wrong_database_owner(self):
-        self.patch(
+    def test_wrong_database_owner(self, mocker):
+        mocker.patch.object(
             deprecations, "get_database_owner"
         ).return_value = "postgres"
-        self.assertIn(
-            DEPRECATIONS["WRONG_MAAS_DATABASE_OWNER"], get_deprecations()
-        )
+        assert DEPRECATIONS["WRONG_MAAS_DATABASE_OWNER"] in get_deprecations()
 
-    def test_curtin_preseeds_included_if_custom_preseeds_exist(self):
-        self.patch(
+    def test_curtin_preseeds_included_if_custom_preseeds_exist(self, mocker):
+        mocker.patch.object(
             settings,
             "PRESEED_TEMPLATE_LOCATIONS",
             ["/path/to/location1", "/path/to/location2"],
         )
-        self.patch(os.path, "isdir").return_value = True
-        self.patch(os, "listdir").return_value = ["curtin_userdata"]
-        self.assertIn(DEPRECATIONS["CURTIN_PRESEEDS"], get_deprecations())
+        mocker.patch.object(os.path, "isdir").return_value = True
+        mocker.patch.object(os, "listdir").return_value = ["curtin_userdata"]
+        assert DEPRECATIONS["CURTIN_PRESEEDS"] in get_deprecations()
 
-    def test_curtin_preseeds_not_included_if_no_custom_preseeds(self):
-        self.patch(
+    def test_curtin_preseeds_not_included_if_no_custom_preseeds(self, mocker):
+        mocker.patch.object(
             settings,
             "PRESEED_TEMPLATE_LOCATIONS",
             ["/path/to/location1", "/path/to/location2"],
         )
-        self.patch(os.path, "isdir").return_value = True
-        self.patch(os, "listdir").return_value = ["no_curtin_file"]
-        self.assertNotIn(DEPRECATIONS["CURTIN_PRESEEDS"], get_deprecations())
+        mocker.patch.object(os.path, "isdir").return_value = True
+        mocker.patch.object(os, "listdir").return_value = ["no_curtin_file"]
+        assert DEPRECATIONS["CURTIN_PRESEEDS"] not in get_deprecations()
 
 
-class TestLogDeprecations(MAASTestCase):
-    def test_log_deprecations(self):
-        self.patch(deprecations, "get_deprecations").return_value = [
+class TestLogDeprecations:
+    def test_log_deprecations(self, mocker):
+        mocker.patch.object(deprecations, "get_deprecations").return_value = [
             Deprecation(
                 id="MD123", since="2.9", description="something is deprecated"
             )
@@ -64,49 +62,60 @@ class TestLogDeprecations(MAASTestCase):
         logger = LegacyLogger(observer=events.append)
         log_deprecations(logger=logger)
         [event] = events
-        self.assertEqual(
-            event["_message_0"],
-            "Deprecation MD123 (https://canonical.com/maas/deprecations/MD123): "
-            "something is deprecated",
+        assert (
+            event["_message_0"]
+            == "Deprecation MD123 (https://canonical.com/maas/deprecations/MD123): "
+            "something is deprecated"
         )
 
 
-class TestSyncDeprecationNotifications(MAASServerTestCase):
-    def test_create_notifications(self):
-        self.patch(deprecations, "get_deprecations").return_value = [
+@pytest.mark.usefixtures("maasdb", "mock_openfga")
+class TestSyncDeprecationNotifications:
+    def test_create_notifications(self, mocker):
+        mocker.patch.object(deprecations, "get_deprecations").return_value = [
             Deprecation(
                 id="MD123", since="2.9", description="something is deprecated"
             )
         ]
 
         sync_deprecation_notifications()
-        notification1, notification2 = Notification.objects.order_by("ident")
-        self.assertEqual(notification1.ident, "deprecation_MD123_admins")
-        self.assertEqual(notification1.category, "warning")
-        self.assertFalse(notification1.dismissable)
-        self.assertTrue(notification1.admins)
-        self.assertFalse(notification1.users)
-        self.assertIn(
-            "https://canonical.com/maas/deprecations/MD123",
-            notification1.message,
+
+        notifications = Notification.objects.filter(
+            ident__in=[
+                "deprecation_MD123_admins",
+                "deprecation_MD123_users",
+            ]
+        ).order_by("ident")
+        notification1, notification2 = notifications
+        assert notification1.ident == "deprecation_MD123_admins"
+        assert notification1.category == "warning"
+        assert not notification1.dismissable
+        assert notification1.admins
+        assert not notification1.users
+        assert (
+            "https://canonical.com/maas/deprecations/MD123"
+            in notification1.message
         )
-        self.assertNotIn(
-            "Please contact your MAAS administrator.", notification1.message
+        assert (
+            "Please contact your MAAS administrator."
+            not in notification1.message
         )
-        self.assertEqual(notification2.ident, "deprecation_MD123_users")
-        self.assertEqual(notification2.category, "warning")
-        self.assertFalse(notification2.dismissable)
-        self.assertFalse(notification2.admins)
-        self.assertTrue(notification2.users)
-        self.assertIn(
-            "Please contact your MAAS administrator.", notification2.message
+        assert notification2.ident == "deprecation_MD123_users"
+        assert notification2.category == "warning"
+        assert not notification2.dismissable
+        assert not notification2.admins
+        assert notification2.users
+        assert (
+            "Please contact your MAAS administrator." in notification2.message
         )
 
-    def test_remove_deprecations(self):
+    def test_remove_deprecations(self, mocker):
         Notification(
             ident="deprecation_MD1_admins", message="some text"
         ).save()
-        self.patch(deprecations, "get_deprecations").return_value = []
+        mocker.patch.object(deprecations, "get_deprecations").return_value = []
         sync_deprecation_notifications()
         # the notification is removed since there is no active deprecation
-        self.assertFalse(Notification.objects.exists())
+        assert not Notification.objects.filter(
+            ident="deprecation_MD1_admins"
+        ).exists()

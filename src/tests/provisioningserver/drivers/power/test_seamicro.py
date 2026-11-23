@@ -5,34 +5,34 @@
 
 from random import choice
 
+import pytest
+
 from maastesting.factory import factory
-from maastesting.testcase import MAASTestCase
 from provisioningserver.drivers.power import PowerActionError
 from provisioningserver.drivers.power import seamicro as seamicro_module
 from provisioningserver.drivers.power.seamicro import (
     extract_seamicro_parameters,
     SeaMicroPowerDriver,
 )
-from provisioningserver.utils.shell import (
-    ExternalProcessError,
-    has_command_available,
-)
+from provisioningserver.utils.shell import ExternalProcessError
 
 
-class TestSeaMicroPowerDriver(MAASTestCase):
-    def test_missing_packages(self):
-        mock = self.patch(has_command_available)
-        mock.return_value = False
+class TestSeaMicroPowerDriver:
+    def test_missing_packages(self, mocker):
+        mocker.patch.object(
+            seamicro_module.shell, "has_command_available", return_value=False
+        )
         driver = seamicro_module.SeaMicroPowerDriver()
         missing = driver.detect_missing_packages()
-        self.assertEqual(["ipmitool"], missing)
+        assert ["ipmitool"] == missing
 
-    def test_no_missing_packages(self):
-        mock = self.patch(has_command_available)
-        mock.return_value = True
+    def test_no_missing_packages(self, mocker):
+        mocker.patch.object(
+            seamicro_module.shell, "has_command_available", return_value=True
+        )
         driver = seamicro_module.SeaMicroPowerDriver()
         missing = driver.detect_missing_packages()
-        self.assertEqual([], missing)
+        assert [] == missing
 
     def make_context(self):
         ip = factory.make_name("power_address")
@@ -52,16 +52,17 @@ class TestSeaMicroPowerDriver(MAASTestCase):
         power_control = choice(["ipmi", "restapi", "restapi2"])
         context["power_control"] = power_control
 
-        self.assertEqual(
-            (ip, username, password, server_id, power_control),
-            extract_seamicro_parameters(context),
+        assert (ip, username, password, server_id, power_control) == (
+            extract_seamicro_parameters(context)
         )
 
-    def test_power_control_seamicro15k_ipmi_calls_call_and_check(self):
+    def test_power_control_seamicro15k_ipmi_calls_call_and_check(self, mocker):
         ip, username, password, server_id, _ = self.make_context()
         power_change = choice(["on", "off"])
         seamicro_power_driver = SeaMicroPowerDriver()
-        call_and_check_mock = self.patch(seamicro_module, "call_and_check")
+        call_and_check_mock = mocker.patch.object(
+            seamicro_module, "call_and_check"
+        )
         seamicro_power_driver._power_control_seamicro15k_ipmi(
             ip, username, password, server_id, power_change
         )
@@ -92,31 +93,34 @@ class TestSeaMicroPowerDriver(MAASTestCase):
             ]
         )
 
-    def test_power_control_seamicro15k_ipmi_raises_PowerFatalError(self):
+    def test_power_control_seamicro15k_ipmi_raises_PowerFatalError(
+        self, mocker
+    ):
         ip, username, password, server_id, _ = self.make_context()
         power_change = choice(["on", "off"])
         seamicro_power_driver = SeaMicroPowerDriver()
-        call_and_check_mock = self.patch(seamicro_module, "call_and_check")
+        call_and_check_mock = mocker.patch.object(
+            seamicro_module, "call_and_check"
+        )
         call_and_check_mock.side_effect = ExternalProcessError(
             1, "ipmitool something"
         )
 
-        self.assertRaises(
-            PowerActionError,
-            seamicro_power_driver._power_control_seamicro15k_ipmi,
-            ip,
-            username,
-            password,
-            server_id,
-            power_change,
-        )
+        with pytest.raises(PowerActionError):
+            seamicro_power_driver._power_control_seamicro15k_ipmi(
+                ip,
+                username,
+                password,
+                server_id,
+                power_change,
+            )
 
-    def test_power_calls__power_control_seamicro15k_ipmi(self):
+    def test_power_calls__power_control_seamicro15k_ipmi(self, mocker):
         ip, username, password, server_id, context = self.make_context()
         context["power_control"] = "ipmi"
         power_change = choice(["on", "off"])
         seamicro_power_driver = SeaMicroPowerDriver()
-        _power_control_seamicro15k_ipmi_mock = self.patch(
+        _power_control_seamicro15k_ipmi_mock = mocker.patch.object(
             seamicro_power_driver, "_power_control_seamicro15k_ipmi"
         )
         seamicro_power_driver._power(power_change, context)
@@ -125,12 +129,12 @@ class TestSeaMicroPowerDriver(MAASTestCase):
             ip, username, password, server_id, power_change=power_change
         )
 
-    def test_power_calls_power_control_seamicro15k_v09(self):
+    def test_power_calls_power_control_seamicro15k_v09(self, mocker):
         ip, username, password, server_id, context = self.make_context()
         context["power_control"] = "restapi"
         power_change = choice(["on", "off"])
         seamicro_power_driver = SeaMicroPowerDriver()
-        power_control_seamicro15k_v09_mock = self.patch(
+        power_control_seamicro15k_v09_mock = mocker.patch.object(
             seamicro_module, "power_control_seamicro15k_v09"
         )
         seamicro_power_driver._power(power_change, context)
@@ -139,12 +143,12 @@ class TestSeaMicroPowerDriver(MAASTestCase):
             ip, username, password, server_id, power_change=power_change
         )
 
-    def test_power_calls_power_control_seamicro15k_v2(self):
+    def test_power_calls_power_control_seamicro15k_v2(self, mocker):
         ip, username, password, server_id, context = self.make_context()
         context["power_control"] = "restapi2"
         power_change = choice(["on", "off"])
         seamicro_power_driver = SeaMicroPowerDriver()
-        power_control_seamicro15k_v2_mock = self.patch(
+        power_control_seamicro15k_v2_mock = mocker.patch.object(
             seamicro_module, "power_control_seamicro15k_v2"
         )
         seamicro_power_driver._power(power_change, context)
@@ -153,29 +157,29 @@ class TestSeaMicroPowerDriver(MAASTestCase):
             ip, username, password, server_id, power_change=power_change
         )
 
-    def test_power_on_calls_power(self):
+    def test_power_on_calls_power(self, mocker):
         _, _, _, _, context = self.make_context()
         context["power_control"] = factory.make_name("power_control")
         seamicro_power_driver = SeaMicroPowerDriver()
-        power_mock = self.patch(seamicro_power_driver, "_power")
+        power_mock = mocker.patch.object(seamicro_power_driver, "_power")
         seamicro_power_driver.power_on(context["system_id"], context)
 
         power_mock.assert_called_once_with("on", context)
 
-    def test_power_off_calls_power(self):
+    def test_power_off_calls_power(self, mocker):
         _, _, _, _, context = self.make_context()
         context["power_control"] = factory.make_name("power_control")
         seamicro_power_driver = SeaMicroPowerDriver()
-        power_mock = self.patch(seamicro_power_driver, "_power")
+        power_mock = mocker.patch.object(seamicro_power_driver, "_power")
         seamicro_power_driver.power_off(context["system_id"], context)
 
         power_mock.assert_called_once_with("off", context)
 
-    def test_power_query_calls_power_query_seamicro15k_v2(self):
+    def test_power_query_calls_power_query_seamicro15k_v2(self, mocker):
         ip, username, password, server_id, context = self.make_context()
         context["power_control"] = "restapi2"
         seamicro_power_driver = SeaMicroPowerDriver()
-        power_query_seamicro15k_v2_mock = self.patch(
+        power_query_seamicro15k_v2_mock = mocker.patch.object(
             seamicro_module, "power_query_seamicro15k_v2"
         )
         power_query_seamicro15k_v2_mock.return_value = "on"
@@ -189,7 +193,7 @@ class TestSeaMicroPowerDriver(MAASTestCase):
             password,
             server_id,
         )
-        self.assertEqual(power_state, "on")
+        assert power_state == "on"
 
     def test_power_query_returns_unknown_if_not_restapi2(self):
         ip, username, password, server_id, context = self.make_context()
@@ -199,4 +203,4 @@ class TestSeaMicroPowerDriver(MAASTestCase):
             context["system_id"], context
         )
 
-        self.assertEqual("unknown", power_state)
+        assert "unknown" == power_state

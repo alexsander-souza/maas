@@ -6,6 +6,7 @@
 import random
 
 from django.core.exceptions import ValidationError
+import pytest
 
 from maasserver.models.regioncontrollerprocess import RegionControllerProcess
 from maasserver.models.regioncontrollerprocessendpoint import (
@@ -13,10 +14,10 @@ from maasserver.models.regioncontrollerprocessendpoint import (
 )
 from maasserver.models.regionrackrpcconnection import RegionRackRPCConnection
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 
 
-class TestRegionRackRPCConnection(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb")
+class TestRegionRackRPCConnection:
     """Tests for the `RegionRackRPCConnection` model."""
 
     def test_endpoint_rack_controller_are_unique(self):
@@ -34,9 +35,8 @@ class TestRegionRackRPCConnection(MAASServerTestCase):
         RegionRackRPCConnection.objects.create(
             endpoint=endpoint, rack_controller=rack_controller
         )
-        self.assertRaises(
-            ValidationError,
-            RegionRackRPCConnection.objects.create,
-            endpoint=endpoint,
-            rack_controller=rack_controller,
-        )
+        with pytest.raises(ValidationError):
+            RegionRackRPCConnection.objects.create(
+                endpoint=endpoint,
+                rack_controller=rack_controller,
+            )

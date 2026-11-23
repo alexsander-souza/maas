@@ -6,7 +6,6 @@
 import random
 
 from maastesting.factory import factory
-from maastesting.testcase import MAASTestCase
 from provisioningserver.utils.ethernet import Ethernet, ETHERTYPE
 from provisioningserver.utils.network import hex_str_to_bytes
 
@@ -43,7 +42,7 @@ def make_ethernet_packet(
     return ethernet_packet
 
 
-class TestEthernet(MAASTestCase):
+class TestEthernet:
     def test_is_valid_returns_false_for_truncated_non_vlan(self):
         src_mac = factory.make_mac_address()
         dst_mac = factory.make_mac_address()
@@ -57,7 +56,7 @@ class TestEthernet(MAASTestCase):
         )
         packet = packet[0:13]
         eth = Ethernet(packet)
-        self.assertFalse(eth.is_valid())
+        assert not eth.is_valid()
 
     def test_is_valid_returns_false_for_truncated_vlan(self):
         src_mac = factory.make_mac_address()
@@ -74,7 +73,7 @@ class TestEthernet(MAASTestCase):
         )
         packet = packet[0:15]
         eth = Ethernet(packet)
-        self.assertFalse(eth.is_valid())
+        assert not eth.is_valid()
 
     def test_parses_non_vlan(self):
         src_mac = factory.make_mac_address()
@@ -89,11 +88,11 @@ class TestEthernet(MAASTestCase):
                 payload=payload,
             )
         )
-        self.assertEqual(hex_str_to_bytes(dst_mac), eth.dst_mac)
-        self.assertEqual(hex_str_to_bytes(src_mac), eth.src_mac)
-        self.assertEqual(ethertype, eth.ethertype)
-        self.assertEqual(payload, eth.payload)
-        self.assertTrue(eth.is_valid())
+        assert hex_str_to_bytes(dst_mac) == eth.dst_mac
+        assert hex_str_to_bytes(src_mac) == eth.src_mac
+        assert ethertype == eth.ethertype
+        assert payload == eth.payload
+        assert eth.is_valid()
 
     def test_parses_vlan(self):
         src_mac = factory.make_mac_address()
@@ -110,9 +109,9 @@ class TestEthernet(MAASTestCase):
                 vid=vid,
             )
         )
-        self.assertEqual(hex_str_to_bytes(dst_mac), eth.dst_mac)
-        self.assertEqual(hex_str_to_bytes(src_mac), eth.src_mac)
-        self.assertEqual(ethertype, eth.ethertype)
-        self.assertEqual(payload, eth.payload)
-        self.assertEqual(vid, eth.vid)
-        self.assertTrue(eth.is_valid())
+        assert hex_str_to_bytes(dst_mac) == eth.dst_mac
+        assert hex_str_to_bytes(src_mac) == eth.src_mac
+        assert ethertype == eth.ethertype
+        assert payload == eth.payload
+        assert vid == eth.vid
+        assert eth.is_valid()

@@ -3,19 +3,20 @@
 
 """Tests for Fabric API."""
 
+from collections import Counter
 import http.client
 import random
 
 from django.urls import reverse
+import pytest
 
 from maasserver.models.fabric import Fabric
 from maasserver.models.signals import vlan as vlan_signals_module
-from maasserver.testing.api import APITestCase
 from maasserver.testing.factory import factory
 from maasserver.utils.converters import json_load_bytes
 from maasserver.utils.orm import post_commit_hooks, reload_object
-from maastesting.djangotestcase import count_queries
-from tests.maasserver.auth.test_auth import OpenFGAMockMixin
+from maastesting.querycounter import count_queries
+from tests.maasserver.auth.test_auth import PytestOpenFGAMockMixin
 
 
 def get_fabrics_uri():
@@ -46,13 +47,20 @@ def make_complex_fabric():
     return fabric
 
 
-class TestFabricsAPI(APITestCase.ForUser):
-    def setUp(self):
-        super().setUp()
-        self.patch(vlan_signals_module, "post_commit_do")
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user=user,client=oauth", id="user=user,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestFabricsAPI:
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maas_user, api_client, mocker):
+        self.user = maas_user
+        self.client = api_client
+        mocker.patch.object(vlan_signals_module, "post_commit_do")
 
     def test_handler_path(self):
-        self.assertEqual("/MAAS/api/2.0/fabrics/", get_fabrics_uri())
+        assert "/MAAS/api/2.0/fabrics/" == get_fabrics_uri()
 
     def test_read(self):
         for _ in range(3):
@@ -60,14 +68,12 @@ class TestFabricsAPI(APITestCase.ForUser):
         uri = get_fabrics_uri()
         response = self.client.get(uri)
 
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         expected_ids = [fabric.id for fabric in Fabric.objects.all()]
         result_ids = [
             fabric["id"] for fabric in json_load_bytes(response.content)
         ]
-        self.assertCountEqual(expected_ids, result_ids)
+        assert Counter(expected_ids) == Counter(result_ids)
 
     def test_read_has_constant_number_of_queries(self):
         for _ in range(3):
@@ -85,43 +91,45 @@ class TestFabricsAPI(APITestCase.ForUser):
         # number of queries if they are not.
         parsed_result_1 = json_load_bytes(response1.content)
         parsed_result_2 = json_load_bytes(response2.content)
-        self.assertEqual(
-            [http.client.OK, http.client.OK, 3, 6],
-            [
-                response1.status_code,
-                response2.status_code,
-                len(parsed_result_1),
-                len(parsed_result_2),
-            ],
-        )
-        self.assertEqual(num_queries1, num_queries2)
+        assert [http.client.OK, http.client.OK, 3, 6] == [
+            response1.status_code,
+            response2.status_code,
+            len(parsed_result_1),
+            len(parsed_result_2),
+        ]
+        assert num_queries1 == num_queries2
 
     def test_create(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         fabric_name = factory.make_name("fabric")
         uri = get_fabrics_uri()
         response = self.client.post(uri, {"name": fabric_name})
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
-        self.assertEqual(
-            fabric_name, json_load_bytes(response.content)["name"]
-        )
+        assert http.client.OK == response.status_code, response.content
+        assert fabric_name == json_load_bytes(response.content)["name"]
 
     def test_create_admin_only(self):
         fabric_name = factory.make_name("fabric")
         uri = get_fabrics_uri()
         response = self.client.post(uri, {"name": fabric_name})
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content
 
 
-class TestFabricAPI(APITestCase.ForUser):
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user=user,client=oauth", id="user=user,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestFabricAPI:
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maas_user, api_client):
+        self.user = maas_user
+        self.client = api_client
+
     def test_handler_path(self):
         fabric = factory.make_Fabric()
-        self.assertEqual(
-            "/MAAS/api/2.0/fabrics/%s/" % fabric.id, get_fabric_uri(fabric)
+        assert "/MAAS/api/2.0/fabrics/%s/" % fabric.id == get_fabric_uri(
+            fabric
         )
 
     def test_read(self):
@@ -132,83 +140,79 @@ class TestFabricAPI(APITestCase.ForUser):
         uri = get_fabric_uri(fabric)
         response = self.client.get(uri)
 
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed_fabric = json_load_bytes(response.content)
-        self.assertEqual(parsed_fabric.get("id"), fabric.id)
-        self.assertEqual(parsed_fabric.get("name"), fabric.get_name())
-        self.assertEqual(parsed_fabric.get("class_type"), class_type)
-        self.assertCountEqual(
-            [vlan.id for vlan in fabric.vlan_set.all()],
-            [vlan["id"] for vlan in parsed_fabric["vlans"]],
+        assert parsed_fabric.get("id") == fabric.id
+        assert parsed_fabric.get("name") == fabric.get_name()
+        assert parsed_fabric.get("class_type") == class_type
+        assert Counter([vlan.id for vlan in fabric.vlan_set.all()]) == Counter(
+            [vlan["id"] for vlan in parsed_fabric["vlans"]]
         )
 
     def test_read_404_when_bad_id(self):
         uri = reverse("fabric_handler", args=[random.randint(100, 1000)])
         response = self.client.get(uri)
-        self.assertEqual(
-            http.client.NOT_FOUND, response.status_code, response.content
-        )
+        assert http.client.NOT_FOUND == response.status_code, response.content
 
     def test_update(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         fabric = factory.make_Fabric()
         new_name = factory.make_name("fabric")
         uri = get_fabric_uri(fabric)
         response = self.client.put(uri, {"name": new_name})
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
-        self.assertEqual(new_name, json_load_bytes(response.content)["name"])
-        self.assertEqual(new_name, reload_object(fabric).name)
+        assert http.client.OK == response.status_code, response.content
+        assert new_name == json_load_bytes(response.content)["name"]
+        assert new_name == reload_object(fabric).name
 
     def test_update_admin_only(self):
         fabric = factory.make_Fabric()
         new_name = factory.make_name("fabric")
         uri = get_fabric_uri(fabric)
         response = self.client.put(uri, {"name": new_name})
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content
 
     def test_delete_deletes_fabric(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         fabric = factory.make_Fabric()
         uri = get_fabric_uri(fabric)
         response = self.client.delete(uri)
-        self.assertEqual(
-            http.client.NO_CONTENT, response.status_code, response.content
-        )
-        self.assertIsNone(reload_object(fabric))
+        assert http.client.NO_CONTENT == response.status_code, response.content
+        assert reload_object(fabric) is None
 
     def test_delete_403_when_not_admin(self):
         fabric = factory.make_Fabric()
         uri = get_fabric_uri(fabric)
         response = self.client.delete(uri)
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
-        self.assertIsNotNone(reload_object(fabric))
+        assert http.client.FORBIDDEN == response.status_code, response.content
+        assert reload_object(fabric) is not None
 
     def test_delete_404_when_invalid_id(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         uri = reverse("fabric_handler", args=[random.randint(100, 1000)])
         response = self.client.delete(uri)
-        self.assertEqual(
-            http.client.NOT_FOUND, response.status_code, response.content
-        )
+        assert http.client.NOT_FOUND == response.status_code, response.content
 
 
-class TestFabricsAPIOpenFGAIntegration(OpenFGAMockMixin, APITestCase.ForUser):
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user=user,client=oauth", id="user=user,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestFabricsAPIOpenFGAIntegration(PytestOpenFGAMockMixin):
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maas_user, api_client):
+        self.user = maas_user
+        self.client = api_client
+
     def test_create_requires_can_edit_global_entities(self):
         self.openfga_client.can_edit_global_entities.return_value = True
         fabric_name = factory.make_name("fabric")
         uri = get_fabrics_uri()
         response = self.client.post(uri, {"name": fabric_name})
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         self.openfga_client.can_edit_global_entities.assert_called_once_with(
             self.user
         )

@@ -3,18 +3,16 @@
 
 """Tests for the proxyconfig."""
 
-from pathlib import Path
 import random
 from socket import AF_INET, AF_INET6
 
 from django.conf import settings
-from fixtures import EnvironmentVariableFixture
+import pytest
 from twisted.internet.defer import inlineCallbacks
 
 from maasserver import proxyconfig
 from maasserver.models import Config
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASTransactionServerTestCase
 from maasserver.utils.orm import transactional
 from maasserver.utils.threads import deferToDatabase
 from maastesting.crochet import wait_for
@@ -32,17 +30,26 @@ def _fake_dual_stack_source_address(v4="10.0.0.9", v6="fd00::9"):
     return fake_source_address
 
 
-class TestProxyUpdateConfig(MAASTransactionServerTestCase):
+@pytest.mark.allow_transactions
+@pytest.mark.usefixtures(
+    "maasdb", "maas_region_test", "factory", "transactional_maasdb"
+)
+class TestProxyUpdateConfig:
     """Tests for `maasserver.proxyconfig`."""
 
-    def setUp(self):
-        super().setUp()
-        self.tmpdir = self.make_dir()
-        self.proxy_path = Path(self.tmpdir) / config.MAAS_PROXY_CONF_NAME
-        self.service_monitor = self.patch(proxyconfig, "service_monitor")
-        self.useFixture(
-            EnvironmentVariableFixture("MAAS_PROXY_CONFIG_DIR", self.tmpdir)
+    @pytest.fixture(autouse=True)
+    def _setup(self, tmp_path, mocker, monkeypatch):
+        self.proxy_path = tmp_path / config.MAAS_PROXY_CONF_NAME
+        self.service_monitor = mocker.patch.object(
+            proxyconfig, "service_monitor"
         )
+        self._mocker = mocker
+        monkeypatch.setenv("MAAS_PROXY_CONFIG_DIR", str(tmp_path))
+
+    def patch(self, obj, attribute, value=None):
+        if value is None:
+            return self._mocker.patch.object(obj, attribute)
+        return self._mocker.patch.object(obj, attribute, value)
 
     @transactional
     def make_subnet(self, allow_proxy=True):
@@ -60,10 +67,10 @@ class TestProxyUpdateConfig(MAASTransactionServerTestCase):
 
         with self.proxy_path.open("r") as fh:
             contents = fh.read()
-        self.assertIn(needle, contents)
+        assert needle in contents
         # disabled's cidr must not be present
         disabled_line = f"acl localnet src {disabled.cidr}"
-        self.assertNotIn(disabled_line, contents)
+        assert disabled_line not in contents
 
     @wait_for_reactor
     @inlineCallbacks
@@ -88,8 +95,8 @@ class TestProxyUpdateConfig(MAASTransactionServerTestCase):
         )
         with self.proxy_path.open() as proxy_file:
             lines = [line.strip() for line in proxy_file.readlines()]
-        self.assertIn("never_direct allow all", lines)
-        self.assertIn(cache_peer_line, lines)
+        assert "never_direct allow all" in lines
+        assert cache_peer_line in lines
 
     @wait_for_reactor
     @inlineCallbacks
@@ -109,8 +116,8 @@ class TestProxyUpdateConfig(MAASTransactionServerTestCase):
         yield proxyconfig.proxy_update_config(reload_proxy=False)
         with self.proxy_path.open() as proxy_file:
             lines = [line.strip() for line in proxy_file.readlines()]
-        self.assertNotIn("never_direct allow all", lines)
-        self.assertNotIn("cache_peer", lines)
+        assert "never_direct allow all" not in lines
+        assert "cache_peer" not in lines
 
     @wait_for_reactor
     @inlineCallbacks
@@ -132,8 +139,8 @@ class TestProxyUpdateConfig(MAASTransactionServerTestCase):
         yield proxyconfig.proxy_update_config(reload_proxy=False)
         with self.proxy_path.open() as proxy_file:
             lines = [line.strip() for line in proxy_file.readlines()]
-        self.assertNotIn("never_direct allow all", lines)
-        self.assertNotIn("cache_peer", lines)
+        assert "never_direct allow all" not in lines
+        assert "cache_peer" not in lines
 
     @wait_for_reactor
     @inlineCallbacks
@@ -145,7 +152,7 @@ class TestProxyUpdateConfig(MAASTransactionServerTestCase):
         yield proxyconfig.proxy_update_config(reload_proxy=False)
         with self.proxy_path.open() as proxy_file:
             lines = [line.strip() for line in proxy_file.readlines()]
-        self.assertNotIn("dns_v4_first on", lines)
+        assert "dns_v4_first on" not in lines
 
     @wait_for_reactor
     @inlineCallbacks
@@ -157,7 +164,7 @@ class TestProxyUpdateConfig(MAASTransactionServerTestCase):
         yield proxyconfig.proxy_update_config(reload_proxy=False)
         with self.proxy_path.open() as proxy_file:
             lines = [line.strip() for line in proxy_file.readlines()]
-        self.assertIn("dns_v4_first on", lines)
+        assert "dns_v4_first on" in lines
 
     @wait_for_reactor
     @inlineCallbacks
@@ -170,7 +177,7 @@ class TestProxyUpdateConfig(MAASTransactionServerTestCase):
         yield proxyconfig.proxy_update_config(reload_proxy=False)
         with self.proxy_path.open() as proxy_file:
             lines = [line.strip() for line in proxy_file.readlines()]
-        self.assertIn(f"http_port {port}", lines)
+        assert f"http_port {port}" in lines
 
     @wait_for_reactor
     @inlineCallbacks
@@ -211,7 +218,7 @@ class TestProxyUpdateConfig(MAASTransactionServerTestCase):
         yield proxyconfig.proxy_update_config(reload_proxy=False)
         with self.proxy_path.open() as proxy_file:
             lines = [line.strip() for line in proxy_file.readlines()]
-        self.assertIn("http_port 3128 transparent", lines)
+        assert "http_port 3128 transparent" in lines
 
     @wait_for_reactor
     @inlineCallbacks
@@ -240,8 +247,8 @@ class TestProxyUpdateConfig(MAASTransactionServerTestCase):
 
         with self.proxy_path.open() as proxy_file:
             lines = [line.strip() for line in proxy_file.readlines()]
-        self.assertIn("http_port 10.0.0.9:3128 transparent", lines)
-        self.assertIn("http_port [fd00::9]:3128 transparent", lines)
+        assert "http_port 10.0.0.9:3128 transparent" in lines
+        assert "http_port [fd00::9]:3128 transparent" in lines
 
     @wait_for_reactor
     @inlineCallbacks
@@ -264,7 +271,7 @@ class TestProxyUpdateConfig(MAASTransactionServerTestCase):
 
         with self.proxy_path.open() as proxy_file:
             lines = [line.strip() for line in proxy_file.readlines()]
-        self.assertIn("http_port 10.0.0.5:3128 transparent", lines)
+        assert "http_port 10.0.0.5:3128 transparent" in lines
 
     @wait_for_reactor
     @inlineCallbacks
@@ -293,5 +300,5 @@ class TestProxyUpdateConfig(MAASTransactionServerTestCase):
 
         with self.proxy_path.open() as proxy_file:
             lines = [line.strip() for line in proxy_file.readlines()]
-        self.assertIn("http_port 10.0.0.5:3128 transparent", lines)
-        self.assertIn("http_port [fd00::9]:3128 transparent", lines)
+        assert "http_port 10.0.0.5:3128 transparent" in lines
+        assert "http_port [fd00::9]:3128 transparent" in lines

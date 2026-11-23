@@ -6,26 +6,28 @@
 import json
 import random
 
+import pytest
+
 from maasserver.forms.notification import NotificationForm
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 
 categories = "info", "success", "warning", "error"
 
 
-class TestNotificationForm(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestNotificationForm:
     def test_notification_can_be_created_with_just_message(self):
         notification_message = factory.make_name("message")
         form = NotificationForm({"message": notification_message})
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         notification = form.save()
-        self.assertIsNone(notification.ident)
-        self.assertEqual(notification.message, notification_message)
-        self.assertIsNone(notification.user)
-        self.assertFalse(notification.users)
-        self.assertFalse(notification.admins)
-        self.assertEqual(notification.category, "info")
-        self.assertEqual(notification.context, {})
+        assert notification.ident is None
+        assert notification.message == notification_message
+        assert notification.user is None
+        assert not notification.users
+        assert not notification.admins
+        assert notification.category == "info"
+        assert notification.context == {}
 
     def test_notification_can_be_created_with_empty_fields(self):
         notification_message = factory.make_name("message")
@@ -40,16 +42,16 @@ class TestNotificationForm(MAASServerTestCase):
                 "category": "",
             }
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         notification = form.save()
-        self.assertIsNone(notification.ident)
-        self.assertEqual(notification.message, notification_message)
-        self.assertIsNone(notification.user)
-        self.assertFalse(notification.users)
-        self.assertFalse(notification.admins)
-        self.assertEqual(notification.category, "info")
-        self.assertEqual(notification.context, {})
-        self.assertTrue(notification.dismissable)
+        assert notification.ident is None
+        assert notification.message == notification_message
+        assert notification.user is None
+        assert not notification.users
+        assert not notification.admins
+        assert notification.category == "info"
+        assert notification.context == {}
+        assert notification.dismissable
 
     def test_notification_can_be_created_with_all_fields(self):
         user = factory.make_User()
@@ -66,25 +68,25 @@ class TestNotificationForm(MAASServerTestCase):
             "dismissable": random.choice(["true", "false"]),
         }
         form = NotificationForm(data)
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         notification = form.save()
-        self.assertEqual(notification.ident, data["ident"])
-        self.assertEqual(notification.message, data["message"])
-        self.assertEqual(notification.user, user)
+        assert notification.ident == data["ident"]
+        assert notification.message == data["message"]
+        assert notification.user == user
         if data["users"] == "true":
-            self.assertTrue(notification.users)
+            assert notification.users
         else:
-            self.assertFalse(notification.users)
+            assert not notification.users
         if data["admins"] == "true":
-            self.assertTrue(notification.admins)
+            assert notification.admins
         else:
-            self.assertFalse(notification.admins)
-        self.assertEqual(notification.context, json.loads(data["context"]))
+            assert not notification.admins
+        assert notification.context == json.loads(data["context"])
         if data["dismissable"] == "true":
-            self.assertTrue(notification.dismissable)
+            assert notification.dismissable
         else:
-            self.assertFalse(notification.dismissable)
-        self.assertEqual(notification.category, data["category"])
+            assert not notification.dismissable
+        assert notification.category == data["category"]
 
     def test_notification_can_be_created_with_username(self):
         user = factory.make_User()
@@ -93,18 +95,16 @@ class TestNotificationForm(MAASServerTestCase):
             "user": user.username,
         }
         form = NotificationForm(data)
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         notification = form.save()
-        self.assertEqual(notification.user, user)
+        assert notification.user == user
 
     def test_notification_rejects_unknown_username(self):
         form = NotificationForm(
             {"message": factory.make_name("message"), "user": "no-such-user"}
         )
-        self.assertFalse(form.is_valid())
-        self.assertEqual(
-            ["Enter a valid user id or username."], form.errors["user"]
-        )
+        assert not form.is_valid()
+        assert ["Enter a valid user id or username."] == form.errors["user"]
 
     def test_notification_can_be_updated(self):
         notification = factory.make_Notification()
@@ -123,21 +123,19 @@ class TestNotificationForm(MAASServerTestCase):
             ),
         }
         form = NotificationForm(instance=notification, data=data)
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         notification_saved = form.save()
-        self.assertEqual(notification, notification_saved)
-        self.assertEqual(notification_saved.ident, data["ident"])
-        self.assertEqual(notification_saved.message, data["message"])
-        self.assertEqual(notification_saved.user, user)
+        assert notification == notification_saved
+        assert notification_saved.ident == data["ident"]
+        assert notification_saved.message == data["message"]
+        assert notification_saved.user == user
         if data["users"] == "true":
-            self.assertTrue(notification_saved.users)
+            assert notification_saved.users
         else:
-            self.assertFalse(notification_saved.users)
+            assert not notification_saved.users
         if data["admins"] == "true":
-            self.assertTrue(notification_saved.admins)
+            assert notification_saved.admins
         else:
-            self.assertFalse(notification_saved.admins)
-        self.assertEqual(
-            notification_saved.context, json.loads(data["context"])
-        )
-        self.assertEqual(notification_saved.category, data["category"])
+            assert not notification_saved.admins
+        assert notification_saved.context == json.loads(data["context"])
+        assert notification_saved.category == data["category"]

@@ -4,8 +4,10 @@
 """Test the config-tls command."""
 
 from contextlib import contextmanager
-from pathlib import Path
 import tempfile
+
+from django.core.management import call_command
+import pytest
 
 from maascommon.events import AUDIT
 from maasserver.enum import ENDPOINT
@@ -16,9 +18,7 @@ from maasserver.regiondservices.certificate_expiration_check import (
     REGIOND_CERT_EXPIRED_NOTIFICATION_IDENT,
 )
 from maasserver.secrets import SecretManager
-from maasserver.sqlalchemy import service_layer
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from provisioningserver.certificates import CertificateError
 from provisioningserver.events import EVENT_TYPES
 from provisioningserver.testing.certificates import (
@@ -27,11 +27,27 @@ from provisioningserver.testing.certificates import (
 )
 
 
-class TestConfigTLSCommand(MAASServerTestCase):
-    def setUp(self):
-        super().setUp()
-        self.read_input = self.patch(config_tls, "prompt_yes_no")
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestConfigTLSCommand:
+    @pytest.fixture(autouse=True)
+    def _setup(self, mocker, request):
+        self.read_input = mocker.patch.object(config_tls, "prompt_yes_no")
         self.read_input.return_value = False
+        from maasserver.sqlalchemy import service_layer
+
+        original_call_command = call_command
+
+        def call_command_with_service_layer(*args, **kwargs):
+            try:
+                return original_call_command(*args, **kwargs)
+            finally:
+                service_layer.init()
+
+        mocker.patch.object(
+            request.module,
+            "call_command",
+            side_effect=call_command_with_service_layer,
+        )
 
     @contextmanager
     def wrong_file(self):
@@ -40,11 +56,6 @@ class TestConfigTLSCommand(MAASServerTestCase):
             yield key_file.name
 
     def _get_config(self):
-        import threading
-
-        print("TEST THREAD")
-        print(threading.current_thread().ident)
-        print(service_layer.initialized)
         return (
             SecretManager().get_composite_secret("tls", default=None),
             Config.objects.get_config("tls_port"),
@@ -60,28 +71,25 @@ class TestConfigTLSCommand(MAASServerTestCase):
         return list(notifications)
 
     def test_config_tls_disable(self):
-        self.call_command("config_tls", "disable")
-        self.assertEqual(self._get_config(), (None, None))
+        call_command("config_tls", "disable")
+        assert self._get_config() == (None, None)
 
     def test_config_tls_enable_skip_confirm(self):
         sample_cert = get_sample_cert()
         cert_path, key_path = sample_cert.tempfiles()
 
-        self.call_command(
+        call_command(
             "config_tls", "enable", key_path, cert_path, "-p=5234", "--yes"
         )
         # the command is not interactive
         self.read_input.assert_not_called()
-        self.assertEqual(
-            self._get_config(),
-            (
-                {
-                    "key": sample_cert.private_key_pem(),
-                    "cert": sample_cert.certificate_pem(),
-                    "cacert": "",
-                },
-                5234,
-            ),
+        assert self._get_config() == (
+            {
+                "key": sample_cert.private_key_pem(),
+                "cert": sample_cert.certificate_pem(),
+                "cacert": "",
+            },
+            5234,
         )
 
     def test_config_tls_enable(self):
@@ -89,28 +97,24 @@ class TestConfigTLSCommand(MAASServerTestCase):
         cert_path, key_path = sample_cert.tempfiles()
 
         self.read_input.return_value = "y"
-        self.call_command(
-            "config_tls", "enable", key_path, cert_path, "-p=5234"
-        )
-        self.assertEqual(
-            self._get_config(),
-            (
-                {
-                    "key": sample_cert.private_key_pem(),
-                    "cert": sample_cert.certificate_pem(),
-                    "cacert": "",
-                },
-                5234,
-            ),
+        call_command("config_tls", "enable", key_path, cert_path, "-p=5234")
+        assert self._get_config() == (
+            {
+                "key": sample_cert.private_key_pem(),
+                "cert": sample_cert.certificate_pem(),
+                "cacert": "",
+            },
+            5234,
         )
 
-    def test_config_tls_enable_with_cacert(self):
+    def test_config_tls_enable_with_cacert(self, tmp_path):
         sample_cert = get_sample_cert_with_cacerts()
         cert_path, key_path = sample_cert.tempfiles()
-        cacert_path = Path(self.make_dir()) / "cacerts.pem"
+        cacert_path = tmp_path / "cacerts.pem"
+
         cacert_path.write_text(sample_cert.ca_certificates_pem())
 
-        self.call_command(
+        call_command(
             "config_tls",
             "enable",
             key_path,
@@ -121,16 +125,13 @@ class TestConfigTLSCommand(MAASServerTestCase):
             "5234",
             "--yes",
         )
-        self.assertEqual(
-            self._get_config(),
-            (
-                {
-                    "key": sample_cert.private_key_pem(),
-                    "cert": sample_cert.certificate_pem(),
-                    "cacert": sample_cert.ca_certificates_pem(),
-                },
-                5234,
-            ),
+        assert self._get_config() == (
+            {
+                "key": sample_cert.private_key_pem(),
+                "cert": sample_cert.certificate_pem(),
+                "cacert": sample_cert.ca_certificates_pem(),
+            },
+            5234,
         )
 
     def test_config_tls_enable_break(self):
@@ -139,87 +140,65 @@ class TestConfigTLSCommand(MAASServerTestCase):
 
         last_config = self._get_config()
 
-        self.call_command("config_tls", "enable", key_path, cert_path)
+        call_command("config_tls", "enable", key_path, cert_path)
         self.read_input.return_value = "n"
 
         current_config = self._get_config()
-        self.assertEqual(last_config, current_config)
+        assert last_config == current_config
 
     def test_config_tls_enable_with_default_port(self):
         sample_cert = get_sample_cert()
         cert_path, key_path = sample_cert.tempfiles()
 
         self.read_input.return_value = "y"
-        self.call_command("config_tls", "enable", key_path, cert_path)
+        call_command("config_tls", "enable", key_path, cert_path)
 
-        self.assertEqual(
-            self._get_config(),
-            (
-                {
-                    "key": sample_cert.private_key_pem(),
-                    "cert": sample_cert.certificate_pem(),
-                    "cacert": "",
-                },
-                5443,
-            ),
+        assert self._get_config() == (
+            {
+                "key": sample_cert.private_key_pem(),
+                "cert": sample_cert.certificate_pem(),
+                "cacert": "",
+            },
+            5443,
         )
 
     def test_config_tls_enable_with_incorrect_key(self):
+        self.read_input.return_value = "y"
         with self.wrong_file() as key_path:
             sample_cert = get_sample_cert()
             cert_path, _ = sample_cert.tempfiles()
 
-            self.read_input.return_value = "y"
-            error = self.assertRaises(
-                CertificateError,
-                self.call_command,
-                "config_tls",
-                "enable",
-                key_path,
-                cert_path,
-            )
-            self.assertEqual("Invalid PEM material", str(error))
+            with pytest.raises(CertificateError, match="Invalid PEM material"):
+                call_command("config_tls", "enable", key_path, cert_path)
 
     def test_config_tls_enable_with_incorrect_cert(self):
+        self.read_input.return_value = "y"
         with self.wrong_file() as cert_path:
             sample_cert = get_sample_cert()
             _, key_path = sample_cert.tempfiles()
 
-            self.read_input.return_value = "y"
-            error = self.assertRaises(
-                CertificateError,
-                self.call_command,
-                "config_tls",
-                "enable",
-                key_path,
-                cert_path,
-            )
-            self.assertEqual("Invalid PEM material", str(error))
+            with pytest.raises(CertificateError, match="Invalid PEM material"):
+                call_command("config_tls", "enable", key_path, cert_path)
 
     def test_config_tls_is_audited(self):
         sample_cert = get_sample_cert()
         cert_path, key_path = sample_cert.tempfiles()
 
         self.read_input.return_value = "y"
-        self.call_command("config_tls", "enable", key_path, cert_path)
+        call_command("config_tls", "enable", key_path, cert_path)
 
-        self.assertEqual(
-            self._get_config(),
-            (
-                {
-                    "key": sample_cert.private_key_pem(),
-                    "cert": sample_cert.certificate_pem(),
-                    "cacert": "",
-                },
-                5443,
-            ),
+        assert self._get_config() == (
+            {
+                "key": sample_cert.private_key_pem(),
+                "cert": sample_cert.certificate_pem(),
+                "cacert": "",
+            },
+            5443,
         )
         [event] = Event.objects.filter(type__level=AUDIT)
-        self.assertEqual(EVENT_TYPES.SETTINGS, event.type.name)
-        self.assertEqual(ENDPOINT.CLI, event.endpoint)
-        self.assertEqual(
-            event.description, "Updated TLS configuration settings"
-        )
+        assert EVENT_TYPES.SETTINGS == event.type.name
+        assert ENDPOINT.CLI == event.endpoint
+        assert event.description == "Updated TLS configuration settings"
 
     def test_config_tls_disable_removes_tls_notifications(self):
         factory.make_Notification(
@@ -233,10 +212,10 @@ class TestConfigTLSCommand(MAASServerTestCase):
             dismissable=True,
         )
 
-        self.call_command("config_tls", "disable")
+        call_command("config_tls", "disable")
 
         notifications = self.get_notifications()
-        self.assertEqual(0, len(notifications))
+        assert 0 == len(notifications)
 
     def test_config_tls_enable_removes_tls_notifications(self):
         factory.make_Notification(
@@ -254,6 +233,6 @@ class TestConfigTLSCommand(MAASServerTestCase):
         cert_path, key_path = sample_cert.tempfiles()
 
         self.read_input.return_value = "y"
-        self.call_command("config_tls", "enable", key_path, cert_path)
+        call_command("config_tls", "enable", key_path, cert_path)
         notifications = self.get_notifications()
-        self.assertEqual(0, len(notifications))
+        assert 0 == len(notifications)

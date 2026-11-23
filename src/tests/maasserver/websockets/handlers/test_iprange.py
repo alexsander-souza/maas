@@ -3,19 +3,27 @@
 
 """Tests for `maasserver.websockets.handlers.iprange`"""
 
+import pytest
+
 from maasserver.models.iprange import IPRange
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from maasserver.utils.orm import get_one
 from maasserver.websockets.base import (
     dehydrate_datetime,
     HandlerPermissionError,
 )
 from maasserver.websockets.handlers.iprange import IPRangeHandler
-from tests.maasserver.auth.test_auth import OpenFGAMockMixin
+from tests.maasserver.auth.test_auth import PytestOpenFGAMockMixin
 
 
-class TestIPRangeHandler(MAASServerTestCase):
+@pytest.mark.usefixtures(
+    "maasdb",
+    "factory",
+    "maas_region_test",
+    "mock_openfga",
+    "mock_start_workflows",
+)
+class TestIPRangeHandler:
     def dehydrate_iprange(self, iprange, for_list=False):
         data = {
             "id": iprange.id,
@@ -36,8 +44,8 @@ class TestIPRangeHandler(MAASServerTestCase):
         handler = IPRangeHandler(user, {}, None)
         subnet = factory.make_ipv4_Subnet_with_IPRanges()
         iprange = subnet.iprange_set.first()
-        self.assertEqual(
-            self.dehydrate_iprange(iprange), handler.get({"id": iprange.id})
+        assert self.dehydrate_iprange(iprange) == handler.get(
+            {"id": iprange.id}
         )
 
     def test_list(self):
@@ -48,7 +56,9 @@ class TestIPRangeHandler(MAASServerTestCase):
             self.dehydrate_iprange(iprange, for_list=True)
             for iprange in IPRange.objects.all()
         ]
-        self.assertCountEqual(expected_ipranges, handler.list({}))
+        assert sorted(
+            expected_ipranges, key=lambda item: item["id"]
+        ) == sorted(handler.list({}), key=lambda item: item["id"])
 
     def test_create(self):
         user = factory.make_admin()
@@ -62,9 +72,9 @@ class TestIPRangeHandler(MAASServerTestCase):
             }
         )
         created = IPRange.objects.get(id=ip_range["id"])
-        self.assertEqual(created.type, "reserved")
-        self.assertEqual(created.start_ip, "192.168.0.10")
-        self.assertEqual(created.end_ip, "192.168.0.20")
+        assert created.type == "reserved"
+        assert created.start_ip == "192.168.0.10"
+        assert created.end_ip == "192.168.0.20"
 
     def test_update(self):
         user = factory.make_admin()
@@ -80,9 +90,9 @@ class TestIPRangeHandler(MAASServerTestCase):
         ip_range["end_ip"] = "192.168.0.30"
         handler.update(ip_range)
         created = IPRange.objects.get(id=ip_range["id"])
-        self.assertEqual(created.type, "reserved")
-        self.assertEqual(created.start_ip, "192.168.0.10")
-        self.assertEqual(created.end_ip, "192.168.0.30")
+        assert created.type == "reserved"
+        assert created.start_ip == "192.168.0.10"
+        assert created.end_ip == "192.168.0.30"
 
     def test_delete(self):
         user = factory.make_admin()
@@ -96,48 +106,46 @@ class TestIPRangeHandler(MAASServerTestCase):
             }
         )
         handler.delete(ip_range)
-        self.assertIsNone(get_one(IPRange.objects.filter(id=ip_range["id"])))
+        assert get_one(IPRange.objects.filter(id=ip_range["id"])) is None
 
 
-class TestIPRangeHandlerOpenFGAIntegration(
-    OpenFGAMockMixin, MAASServerTestCase
-):
+@pytest.mark.usefixtures("maasdb", "factory")
+class TestIPRangeHandlerOpenFGAIntegration(PytestOpenFGAMockMixin):
     def test_list_requires_can_view_global_entities(self):
         self.openfga_client.can_view_global_entities.return_value = False
         user = factory.make_User()
         factory.make_IPRange()
         handler = IPRangeHandler(user, {}, None)
-        self.assertRaises(HandlerPermissionError, handler.list, {})
+        with pytest.raises(HandlerPermissionError):
+            handler.list({})
 
     def test_get_requires_can_view_global_entities(self):
         self.openfga_client.can_view_global_entities.return_value = False
         user = factory.make_User()
         ip_range = factory.make_IPRange()
         handler = IPRangeHandler(user, {}, None)
-        self.assertRaises(
-            HandlerPermissionError, handler.get, {"id": ip_range.id}
-        )
+        with pytest.raises(HandlerPermissionError):
+            handler.get({"id": ip_range.id})
 
     def test_create_requires_can_edit_global_entities(self):
         self.openfga_client.can_edit_global_entities.return_value = False
         user = factory.make_User()
         handler = IPRangeHandler(user, {}, None)
-        self.assertRaises(HandlerPermissionError, handler.create, {})
+        with pytest.raises(HandlerPermissionError):
+            handler.create({})
 
     def test_update_requires_can_edit_global_entities(self):
         self.openfga_client.can_edit_global_entities.return_value = False
         user = factory.make_User()
         ip_range = factory.make_IPRange()
         handler = IPRangeHandler(user, {}, None)
-        self.assertRaises(
-            HandlerPermissionError, handler.update, {"id": ip_range.id}
-        )
+        with pytest.raises(HandlerPermissionError):
+            handler.update({"id": ip_range.id})
 
     def test_delete_requires_can_edit_global_entities(self):
         self.openfga_client.can_edit_global_entities.return_value = False
         user = factory.make_User()
         ip_range = factory.make_IPRange()
         handler = IPRangeHandler(user, {}, None)
-        self.assertRaises(
-            HandlerPermissionError, handler.delete, {"id": ip_range.id}
-        )
+        with pytest.raises(HandlerPermissionError):
+            handler.delete({"id": ip_range.id})

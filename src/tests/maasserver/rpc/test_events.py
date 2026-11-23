@@ -5,39 +5,39 @@
 import logging
 
 from django.utils import timezone
+import pytest
 
 from maasserver.enum import INTERFACE_TYPE
 from maasserver.models.event import Event
 from maasserver.models.eventtype import EventType
 from maasserver.rpc import events
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from provisioningserver.rpc.exceptions import NoSuchEventType
 
 
-class TestRegisterEventType(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestRegisterEventType:
     def test_registers_type(self):
         name = factory.make_name("name")
         description = factory.make_name("description")
         level = logging.DEBUG
         events.register_event_type(name, description, level)
         # Doesn't raise a DoesNotExist error.
-        EventType.objects.get(name=name, description=description, level=level)
+        assert EventType.objects.filter(
+            name=name, description=description, level=level
+        ).exists()
 
 
-class TestSendEvent(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestSendEvent:
     def test_errors_when_no_event_type(self):
         name = factory.make_name("name")
         description = factory.make_name("description")
         node = factory.make_Node()
-        self.assertRaises(
-            NoSuchEventType,
-            events.send_event,
-            node.system_id,
-            name,
-            description,
-            timezone.now(),
-        )
+        with pytest.raises(NoSuchEventType):
+            events.send_event(
+                node.system_id, name, description, timezone.now()
+            )
 
     def test_silent_when_no_node(self):
         event_type = factory.make_EventType()
@@ -67,19 +67,16 @@ class TestSendEvent(MAASServerTestCase):
         )
 
 
-class TestSendEventMACAddress(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestSendEventMACAddress:
     def test_errors_when_no_event_type(self):
         name = factory.make_name("name")
         description = factory.make_name("description")
         node = factory.make_Node()
-        self.assertRaises(
-            NoSuchEventType,
-            events.send_event_mac_address,
-            node.system_id,
-            name,
-            description,
-            timezone.now(),
-        )
+        with pytest.raises(NoSuchEventType):
+            events.send_event_mac_address(
+                node.system_id, name, description, timezone.now()
+            )
 
     def test_silent_when_no_node(self):
         event_type = factory.make_EventType()
@@ -110,18 +107,15 @@ class TestSendEventMACAddress(MAASServerTestCase):
         )
 
 
-class TestSendEventIPAddress(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestSendEventIPAddress:
     def test_errors_when_no_event_type(self):
         name = factory.make_name("name")
         description = factory.make_name("description")
-        self.assertRaises(
-            NoSuchEventType,
-            events.send_event_ip_address,
-            factory.make_ip_address(),
-            name,
-            description,
-            timezone.now(),
-        )
+        with pytest.raises(NoSuchEventType):
+            events.send_event_ip_address(
+                factory.make_ip_address(), name, description, timezone.now()
+            )
 
     def test_silent_when_no_node(self):
         event_type = factory.make_EventType()

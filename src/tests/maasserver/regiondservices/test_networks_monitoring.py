@@ -3,6 +3,9 @@
 
 """Tests for networks monitor."""
 
+from unittest import TestCase as UnittestTestCase
+
+import pytest
 from twisted.internet import reactor
 from twisted.internet.defer import Deferred, inlineCallbacks
 
@@ -11,7 +14,6 @@ from maasserver.regiondservices.networks_monitoring import (
 )
 from maasserver.testing.config import RegionConfigurationFixture
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASTransactionServerTestCase
 from maasserver.utils.threads import deferToDatabase
 from maastesting.crochet import wait_for
 from maastesting.twisted import TwistedLoggerFixture
@@ -19,12 +21,36 @@ from provisioningserver.utils import services
 from provisioningserver.utils.testing import MAASIDFixture
 
 
-class TestRegionNetworksMonitoringService(MAASTransactionServerTestCase):
+@pytest.mark.allow_transactions
+@pytest.mark.usefixtures(
+    "maasdb", "transactional_maasdb", "maas_region_test", "factory"
+)
+class TestRegionNetworksMonitoringService:
     """Tests for `RegionNetworksMonitoringService`."""
 
-    def setUp(self):
-        super().setUp()
-        self.mock_refresh = self.patch(services, "refresh")
+    @pytest.fixture(autouse=True)
+    def _setup_test_helpers(self, mocker, request):
+        self._mocker = mocker
+        self._request = request
+        self._assertions = UnittestTestCase()
+        self.mock_refresh = mocker.patch.object(services, "refresh")
+
+    def __getattr__(self, name):
+        if name.startswith("assert") or name == "fail":
+            return getattr(self._assertions, name)
+        raise AttributeError(name)
+
+    def patch(self, obj, attribute=None, value=None):
+        if attribute is None:
+            return self._mocker.patch(obj)
+        if value is None:
+            return self._mocker.patch.object(obj, attribute)
+        return self._mocker.patch.object(obj, attribute, value)
+
+    def useFixture(self, fixture):
+        fixture.setUp()
+        self._request.addfinalizer(fixture.cleanUp)
+        return fixture
 
     def wrap_deferred(self, obj, call_name):
         deferred = Deferred()

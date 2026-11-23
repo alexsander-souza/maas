@@ -4,7 +4,6 @@ import os
 from pathlib import Path
 import pstats
 
-from maastesting.testcase import MAASTestCase
 from provisioningserver.utils import debug
 from provisioningserver.utils.debug import (
     register_sigusr1_toggle_cprofile,
@@ -12,27 +11,28 @@ from provisioningserver.utils.debug import (
 )
 
 
-class TestToggleCprofile(MAASTestCase):
-    def setUp(self):
-        super().setUp()
-        self.now = datetime(2019, 1, 31, 1, 2, 3, 4)
-        self.datetime_mock = self.patch(debug, "datetime")
-        self.datetime_mock.now.return_value = self.now
-        self.maas_data = os.getenv("MAAS_DATA")
-
+class TestToggleCprofile:
     def _get_prof_path(self, process_name):
+        maas_data = os.getenv("MAAS_DATA")
         return (
-            Path(self.maas_data)
+            Path(maas_data)
             / "profiling"
             / f"{process_name}-{os.getpid()}-2019-01-31T01:02:03.000004.pyprof"
         )
 
-    def test_toggle_cprofile_writes_file(self):
+    def test_toggle_cprofile_writes_file(self, mocker):
+        now = datetime(2019, 1, 31, 1, 2, 3, 4)
+        datetime_mock = mocker.patch.object(debug, "datetime")
+        datetime_mock.now.return_value = now
         toggle_cprofile("my-process")
         toggle_cprofile("my-process")
-        self.assertTrue(self._get_prof_path("my-process").exists())
+        assert self._get_prof_path("my-process").exists()
 
-    def test_toggle_cprofile_profiles(self):
+    def test_toggle_cprofile_profiles(self, mocker):
+        now = datetime(2019, 1, 31, 1, 2, 3, 4)
+        datetime_mock = mocker.patch.object(debug, "datetime")
+        datetime_mock.now.return_value = now
+
         def my_method():
             return 1
 
@@ -43,15 +43,18 @@ class TestToggleCprofile(MAASTestCase):
         output = io.StringIO()
         stats = pstats.Stats(str(prof_path), stream=output)
         stats.print_callers()
-        self.assertIn("my_method", output.getvalue())
+        assert "my_method" in output.getvalue()
 
-    def test_register_sigusr1(self):
-        mock_signal = self.patch(debug.signal, "signal")
+    def test_register_sigusr1(self, mocker):
+        now = datetime(2019, 1, 31, 1, 2, 3, 4)
+        datetime_mock = mocker.patch.object(debug, "datetime")
+        datetime_mock.now.return_value = now
+        mock_signal = mocker.patch.object(debug.signal, "signal")
         register_sigusr1_toggle_cprofile("my-process")
         [(_, args, kwargs)] = mock_signal.mock_calls
-        self.assertEqual({}, kwargs)
+        assert {} == kwargs
         signal, func = args
-        self.assertEqual(signal.SIGUSR1, signal)
+        assert signal.SIGUSR1 == signal
         func()
         func()
-        self.assertTrue(self._get_prof_path("my-process").exists())
+        assert self._get_prof_path("my-process").exists()

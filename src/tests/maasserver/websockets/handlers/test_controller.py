@@ -2,6 +2,8 @@
 # GNU Affero General Public License version 3 (see the file LICENSE).
 
 
+import pytest
+
 from maasserver import bootresources
 from maasserver.config import RegionConfiguration
 from maasserver.enum import NODE_TYPE
@@ -9,20 +11,20 @@ from maasserver.forms import ControllerForm
 from maasserver.models import Controller, ControllerInfo, VLAN
 from maasserver.secrets import SecretManager
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from maasserver.utils.orm import post_commit_hooks
 from maasserver.websockets.base import (
     dehydrate_datetime,
     HandlerPermissionError,
 )
 from maasserver.websockets.handlers.controller import ControllerHandler
-from maastesting.djangotestcase import count_queries
+from maastesting.querycounter import count_queries
 from metadataserver.enum import RESULT_TYPE, SCRIPT_STATUS
 from provisioningserver.utils.snap import SnapVersionsInfo
-from tests.maasserver.auth.test_auth import OpenFGAMockMixin
+from tests.maasserver.auth.test_auth import PytestOpenFGAMockMixin
 
 
-class TestControllerHandler(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestControllerHandler:
     def test_vlan_counts_list(self):
         owner = factory.make_admin()
         rack1 = factory.make_RackController(owner=owner)
@@ -41,31 +43,24 @@ class TestControllerHandler(MAASServerTestCase):
         handler = ControllerHandler(owner, {}, None)
         list_results = handler.list({})
         result = {entry["id"]: entry["vlans_ha"] for entry in list_results}
-        self.assertEqual(
-            result,
-            {
-                rack1.id: {"true": 1, "false": 1},
-                rack2.id: {"true": 1, "false": 0},
-            },
-        )
+        assert result == {
+            rack1.id: {"true": 1, "false": 1},
+            rack2.id: {"true": 1, "false": 0},
+        }
 
     def test_last_image_sync(self):
         owner = factory.make_admin()
         handler = ControllerHandler(owner, {}, None)
         node = factory.make_RackController(owner=owner)
         list_results = handler.list({})
-        self.assertEqual(1, len(list_results))
-        self.assertEqual(
-            NODE_TYPE.RACK_CONTROLLER, list_results[0].get("node_type")
-        )
-        self.assertEqual(
-            list_results[0].get("last_image_sync"),
-            dehydrate_datetime(node.last_image_sync),
+        assert 1 == len(list_results)
+        assert NODE_TYPE.RACK_CONTROLLER == list_results[0].get("node_type")
+        assert list_results[0].get("last_image_sync") == dehydrate_datetime(
+            node.last_image_sync
         )
         data = handler.get({"system_id": node.system_id})
-        self.assertEqual(
-            data.get("last_image_sync"),
-            dehydrate_datetime(node.last_image_sync),
+        assert data.get("last_image_sync") == dehydrate_datetime(
+            node.last_image_sync
         )
 
     def test_last_image_sync_returns_none_for_none(self):
@@ -73,13 +68,11 @@ class TestControllerHandler(MAASServerTestCase):
         handler = ControllerHandler(owner, {}, None)
         node = factory.make_RackController(owner=owner, last_image_sync=None)
         list_results = handler.list({})
-        self.assertEqual(1, len(list_results))
-        self.assertEqual(
-            NODE_TYPE.RACK_CONTROLLER, list_results[0].get("node_type")
-        )
-        self.assertIsNone(list_results[0].get("last_image_sync"))
+        assert 1 == len(list_results)
+        assert NODE_TYPE.RACK_CONTROLLER == list_results[0].get("node_type")
+        assert list_results[0].get("last_image_sync") is None
         data = handler.get({"system_id": node.system_id})
-        self.assertIsNone(data.get("last_image_sync"))
+        assert data.get("last_image_sync") is None
 
     def test_list_ignores_devices_and_nodes(self):
         owner = factory.make_admin()
@@ -93,10 +86,8 @@ class TestControllerHandler(MAASServerTestCase):
         device_with_parent.save()
         node = factory.make_RackController(owner=owner)
         list_results = handler.list({})
-        self.assertEqual(1, len(list_results))
-        self.assertEqual(
-            NODE_TYPE.RACK_CONTROLLER, list_results[0].get("node_type")
-        )
+        assert 1 == len(list_results)
+        assert NODE_TYPE.RACK_CONTROLLER == list_results[0].get("node_type")
 
     def test_list_num_queries_is_the_expected_number(self):
         owner = factory.make_admin()
@@ -131,10 +122,8 @@ class TestControllerHandler(MAASServerTestCase):
         # and slowing down the client waiting for the response.
         # The test uses different handler instances as some query results are
         # cached between calls.
-        self.assertEqual(
-            queries_one,
-            queries_all,
-            "Number of queries has changed; make sure this is expected.",
+        assert queries_one == queries_all, (
+            "Number of queries has changed; make sure this is expected."
         )
 
     def test_get_num_queries_is_the_expected_number(self):
@@ -166,21 +155,19 @@ class TestControllerHandler(MAASServerTestCase):
         # It is important to keep this number as low as possible. A larger
         # number means regiond has to do more work slowing down its process
         # and slowing down the client waiting for the response.
-        self.assertEqual(
-            queries,
-            33,
-            "Number of queries has changed; make sure this is expected.",
+        assert queries == 33, (
+            "Number of queries has changed; make sure this is expected."
         )
 
     def test_get_form_class_for_create(self):
         user = factory.make_admin()
         handler = ControllerHandler(user, {}, None)
-        self.assertEqual(ControllerForm, handler.get_form_class("create"))
+        assert ControllerForm == handler.get_form_class("create")
 
     def test_get_form_class_for_update(self):
         user = factory.make_admin()
         handler = ControllerHandler(user, {}, None)
-        self.assertEqual(ControllerForm, handler.get_form_class("update"))
+        assert ControllerForm == handler.get_form_class("update")
 
     def test_update_uses_handler_queryset(self):
         # test for lp:1927292
@@ -189,7 +176,7 @@ class TestControllerHandler(MAASServerTestCase):
         controller = factory.make_RackController()
         data = handler.get({"system_id": controller.system_id})
         updated = handler.update(data)
-        self.assertIn("vlans_ha", updated)
+        assert "vlans_ha" in updated
 
     def test_update_updates_controller(self):
         user = factory.make_admin()
@@ -206,9 +193,9 @@ class TestControllerHandler(MAASServerTestCase):
         )
         updated = handler.update(data)
 
-        self.assertEqual(new_zone.id, updated["zone"]["id"])
-        self.assertEqual(new_domain.id, updated["domain"]["id"])
-        self.assertEqual(new_description, updated["description"])
+        assert new_zone.id == updated["zone"]["id"]
+        assert new_domain.id == updated["domain"]["id"]
+        assert new_description == updated["description"]
 
     def test_update_update_controller_tags(self):
         user = factory.make_admin()
@@ -221,12 +208,12 @@ class TestControllerHandler(MAASServerTestCase):
         new_tag_ids = [tag.id for tag in tags[1:]]
         data["tags"] = new_tag_ids
         updated_data = handler.update(data)
-        self.assertCountEqual(updated_data["tags"], new_tag_ids)
+        assert set(updated_data["tags"]) == set(new_tag_ids)
 
-    def test_check_images(self):
-        self.patch(
-            bootresources, "is_import_resources_running"
-        ).return_value = False
+    def test_check_images(self, mocker):
+        mocker.patch.object(
+            bootresources, "is_import_resources_running", return_value=False
+        )
         owner = factory.make_admin()
         handler = ControllerHandler(owner, {}, None)
         node1 = factory.make_RackController(owner=owner)
@@ -234,22 +221,20 @@ class TestControllerHandler(MAASServerTestCase):
         data = handler.check_images(
             [{"system_id": node1.system_id}, {"system_id": node2.system_id}]
         )
-        self.assertEqual(
-            {node1.system_id: "Synced", node2.system_id: "Synced"}, data
-        )
+        assert {node1.system_id: "Synced", node2.system_id: "Synced"} == data
 
     def test_dehydrate_show_os_info_returns_true(self):
         owner = factory.make_admin()
         rack = factory.make_RackController()
         handler = ControllerHandler(owner, {}, None)
-        self.assertTrue(handler.dehydrate_show_os_info(rack))
+        assert handler.dehydrate_show_os_info(rack)
 
     def test_dehydrate_empty_versions(self):
         owner = factory.make_admin()
         handler = ControllerHandler(owner, {}, None)
         factory.make_RackController()
         list_results = handler.list({})
-        self.assertEqual(list_results[0]["versions"], {})
+        assert list_results[0]["versions"] == {}
 
     def test_dehydrate_with_versions_snap(self):
         owner = factory.make_admin()
@@ -269,23 +254,20 @@ class TestControllerHandler(MAASServerTestCase):
         )
         ControllerInfo.objects.set_versions_info(rack, versions)
         list_results = handler.list({})
-        self.assertEqual(
-            list_results[0]["versions"],
-            {
-                "current": {
-                    "version": "3.0.0~alpha1-111-g.deadbeef",
-                    "snap_revision": "1234",
-                },
-                "update": {
-                    "version": "3.0.0~alpha2-222-g.cafecafe",
-                    "snap_revision": "5678",
-                },
-                "origin": "3.0/stable",
-                "snap_cohort": "abc123",
-                "up_to_date": False,
-                "issues": [],
+        assert list_results[0]["versions"] == {
+            "current": {
+                "version": "3.0.0~alpha1-111-g.deadbeef",
+                "snap_revision": "1234",
             },
-        )
+            "update": {
+                "version": "3.0.0~alpha2-222-g.cafecafe",
+                "snap_revision": "5678",
+            },
+            "origin": "3.0/stable",
+            "snap_cohort": "abc123",
+            "up_to_date": False,
+            "issues": [],
+        }
 
     def test_dehydrate_with_versions_only_current(self):
         owner = factory.make_admin()
@@ -300,18 +282,15 @@ class TestControllerHandler(MAASServerTestCase):
         )
         ControllerInfo.objects.set_versions_info(rack, versions)
         list_results = handler.list({})
-        self.assertEqual(
-            list_results[0]["versions"],
-            {
-                "current": {
-                    "version": "3.0.0~alpha1-111-g.deadbeef",
-                    "snap_revision": "1234",
-                },
-                "origin": "3.0/stable",
-                "up_to_date": True,
-                "issues": [],
+        assert list_results[0]["versions"] == {
+            "current": {
+                "version": "3.0.0~alpha1-111-g.deadbeef",
+                "snap_revision": "1234",
             },
-        )
+            "origin": "3.0/stable",
+            "up_to_date": True,
+            "issues": [],
+        }
 
     def test_dehydrate_not_up_to_date_no_update(self):
         owner = factory.make_admin()
@@ -337,18 +316,15 @@ class TestControllerHandler(MAASServerTestCase):
             ),
         )
         list_results = handler.list({})
-        self.assertEqual(
-            list_results[0]["versions"],
-            {
-                "current": {
-                    "version": "3.0.0~alpha1-111-g.deadbeef",
-                    "snap_revision": "1234",
-                },
-                "origin": "3.0/stable",
-                "up_to_date": False,
-                "issues": [],
+        assert list_results[0]["versions"] == {
+            "current": {
+                "version": "3.0.0~alpha1-111-g.deadbeef",
+                "snap_revision": "1234",
             },
-        )
+            "origin": "3.0/stable",
+            "up_to_date": False,
+            "issues": [],
+        }
 
     def test_dehydrate_with_versions_issues(self):
         owner = factory.make_admin()
@@ -376,7 +352,7 @@ class TestControllerHandler(MAASServerTestCase):
         )
         list_results = handler.list({})
         versions = list_results[0]["versions"]
-        self.assertEqual(versions["issues"], ["different-cohort"])
+        assert versions["issues"] == ["different-cohort"]
 
     def test_dehydrate_with_versions_empty_origin(self):
         owner = factory.make_admin()
@@ -390,7 +366,7 @@ class TestControllerHandler(MAASServerTestCase):
         )
         ControllerInfo.objects.set_versions_info(rack, versions)
         list_results = handler.list({})
-        self.assertEqual(list_results[0]["versions"]["origin"], "")
+        assert list_results[0]["versions"]["origin"] == ""
 
     def test_dehydrate_includes_tags(self):
         owner = factory.make_admin()
@@ -399,25 +375,24 @@ class TestControllerHandler(MAASServerTestCase):
         tags = [factory.make_Tag(definition="") for _ in range(3)]
         region.tags.set(tags)
         list_results = handler.list({})
-        self.assertCountEqual(
-            list_results[0]["tags"], [tag.id for tag in tags]
-        )
+        assert set(list_results[0]["tags"]) == {tag.id for tag in tags}
 
     def test_dehydrate_includes_node_display_type(self):
         owner = factory.make_admin()
         handler = ControllerHandler(owner, {}, None)
         region = factory.make_RegionRackController()
         list_results = handler.list({})
-        self.assertIn("node_type_display", list_results[0])
-        self.assertEqual(
-            list_results[0]["node_type_display"],
-            region.get_node_type_display(),
+        assert "node_type_display" in list_results[0]
+        assert (
+            list_results[0]["node_type_display"]
+            == region.get_node_type_display()
         )
 
     def test_register_info_non_admin(self):
         user = factory.make_User()
         handler = ControllerHandler(user, {}, None)
-        self.assertRaises(HandlerPermissionError, handler.register_info, {})
+        with pytest.raises(HandlerPermissionError):
+            handler.register_info({})
 
     def test_register_info(self):
         SecretManager().set_simple_secret("rpc-shared", "abc")
@@ -426,23 +401,22 @@ class TestControllerHandler(MAASServerTestCase):
         observed = handler.register_info({})
         with RegionConfiguration.open() as config:
             maas_url = config.maas_url
-        self.assertEqual({"url": maas_url, "secret": "abc"}, observed)
+        assert {"url": maas_url, "secret": "abc"} == observed
 
     def test_permissions_view_admin(self):
         admin = factory.make_admin()
         handler = ControllerHandler(admin, {}, None)
         controller = factory.make_RegionRackController()
         result = handler.get({"system_id": controller.system_id})
-        self.assertCountEqual(["edit", "delete"], result["permissions"])
+        assert set(result["permissions"]) == {"edit", "delete"}
 
     def test_permissions_delete_admin(self):
         admin = factory.make_admin()
         handler = ControllerHandler(admin, {}, None)
         controller = factory.make_RegionRackController()
         handler.delete({"system_id": controller.system_id})
-        self.assertRaises(
-            Controller.DoesNotExist, Controller.objects.get, id=controller.id
-        )
+        with pytest.raises(Controller.DoesNotExist):
+            Controller.objects.get(id=controller.id)
 
     def test_action(self):
         admin = factory.make_admin()
@@ -456,7 +430,7 @@ class TestControllerHandler(MAASServerTestCase):
         handler.action(request)
         controller.refresh_from_db()
         # deleting a region+rack controller changes it to just a region controller
-        self.assertEqual(controller.node_type, NODE_TYPE.REGION_CONTROLLER)
+        assert controller.node_type == NODE_TYPE.REGION_CONTROLLER
 
     def test_update_interface(self):
         admin = factory.make_admin()
@@ -486,7 +460,7 @@ class TestControllerHandler(MAASServerTestCase):
             handler.update_interface(request)
 
         controller.refresh_from_db()
-        self.assertEqual(controller.boot_interface.vlan, vlan)
+        assert controller.boot_interface.vlan == vlan
 
     def test_count_HA_vlans_with_unlinked_interfaces(self):
         admin = factory.make_admin()
@@ -499,9 +473,9 @@ class TestControllerHandler(MAASServerTestCase):
         factory.make_VLAN(primary_rack=primary, secondary_rack=secondary)
         factory.make_VLAN(primary_rack=primary)
         output = handler.get({"system_id": primary.system_id})
-        self.assertEqual(output["vlans_ha"]["true"], 1)
-        self.assertEqual(
-            output["vlans_ha"]["false"], 2
+        assert output["vlans_ha"]["true"] == 1
+        assert (
+            output["vlans_ha"]["false"] == 2
         )  # default interface and the one linked to vlan2
 
     def test_vault_flag_returned_true(self):
@@ -526,7 +500,7 @@ class TestControllerHandler(MAASServerTestCase):
         )
 
         list_results = handler.list({})
-        self.assertTrue(list_results[0]["vault_configured"])
+        assert list_results[0]["vault_configured"]
 
     def test_vault_flag_returned_false(self):
         owner = factory.make_admin()
@@ -550,12 +524,11 @@ class TestControllerHandler(MAASServerTestCase):
         )
 
         list_results = handler.list({})
-        self.assertFalse(list_results[0]["vault_configured"])
+        assert not list_results[0]["vault_configured"]
 
 
-class TestControllerHandlerOpenFGAIntegration(
-    OpenFGAMockMixin, MAASServerTestCase
-):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestControllerHandlerOpenFGAIntegration(PytestOpenFGAMockMixin):
     def test_register_info_requires_can_edit_controllers(self):
         self.openfga_client.can_edit_controllers.return_value = True
         SecretManager().set_simple_secret("rpc-shared", "abc")

@@ -1,9 +1,11 @@
 # Copyright 2015-2019 Canonical Ltd.  This software is licensed under the
 # GNU Affero General Public License version 3 (see the file LICENSE).
 
+from collections import Counter
 import random
 
 from django.core.exceptions import ValidationError
+import pytest
 
 from maasserver.enum import BRIDGE_TYPE_CHOICES, INTERFACE_TYPE, IPADDRESS_TYPE
 from maasserver.forms.interface import (
@@ -20,45 +22,46 @@ from maasserver.forms.interface import (
     VLANInterfaceForm,
 )
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from maasserver.utils.forms import compose_invalid_choice_text
 from maasserver.utils.orm import post_commit_hooks
 
 
-class TestGetInterfaceForm(MAASServerTestCase):
-    scenarios = [
-        (
-            "physical",
-            {"type": INTERFACE_TYPE.PHYSICAL, "form": PhysicalInterfaceForm},
-        ),
-        ("bond", {"type": INTERFACE_TYPE.BOND, "form": BondInterfaceForm}),
-        ("vlan", {"type": INTERFACE_TYPE.VLAN, "form": VLANInterfaceForm}),
-    ]
+@pytest.mark.parametrize(
+    "iface_type,form",
+    [
+        (INTERFACE_TYPE.PHYSICAL, PhysicalInterfaceForm),
+        (INTERFACE_TYPE.BOND, BondInterfaceForm),
+        (INTERFACE_TYPE.VLAN, VLANInterfaceForm),
+    ],
+    ids=["physical", "bond", "vlan"],
+)
+class TestGetInterfaceForm:
+    def test_get_interface_form_returns_form(self, iface_type, form):
+        assert form is InterfaceForm.get_interface_form(iface_type)
 
+
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestGetInterfaceFormError:
     def test_get_interface_form_returns_form(self):
-        self.assertEqual(
-            self.form, InterfaceForm.get_interface_form(self.type)
-        )
+        with pytest.raises(ValidationError):
+            InterfaceForm.get_interface_form(factory.make_name())
 
 
-class TestGetInterfaceFormError(MAASServerTestCase):
-    def test_get_interface_form_returns_form(self):
-        self.assertRaises(
-            ValidationError,
-            InterfaceForm.get_interface_form,
-            factory.make_name(),
-        )
-
-
-class TestControllerInterfaceForm(MAASServerTestCase):
-    scenarios = (
-        ("region", {"maker": factory.make_RegionController}),
-        ("rack", {"maker": factory.make_RackController}),
-        ("region_rack", {"maker": factory.make_RegionRackController}),
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "factory"
+)
+class TestControllerInterfaceForm:
+    @pytest.mark.parametrize(
+        "maker",
+        [
+            factory.make_RegionController,
+            factory.make_RackController,
+            factory.make_RegionRackController,
+        ],
+        ids=["region", "rack", "region_rack"],
     )
-
-    def test_edits_interface(self):
-        node = self.maker()
+    def test_edits_interface(self, maker):
+        node = maker()
         original_interface = factory.make_Interface(
             INTERFACE_TYPE.PHYSICAL, node=node
         )
@@ -66,27 +69,45 @@ class TestControllerInterfaceForm(MAASServerTestCase):
         form = ControllerInterfaceForm(
             instance=original_interface, data={"vlan": new_vlan.id}
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
         interface = form.save()
-        self.assertEqual(interface.name, original_interface.name)
-        self.assertEqual(interface.vlan, new_vlan)
-        self.assertEqual(interface.enabled, original_interface.enabled)
+        assert interface.name == original_interface.name
+        assert interface.vlan == new_vlan
+        assert interface.enabled == original_interface.enabled
 
-    def test_allows_no_vlan(self):
-        node = self.maker()
+    @pytest.mark.parametrize(
+        "maker",
+        [
+            factory.make_RegionController,
+            factory.make_RackController,
+            factory.make_RegionRackController,
+        ],
+        ids=["region", "rack", "region_rack"],
+    )
+    def test_allows_no_vlan(self, maker):
+        node = maker()
         original_interface = factory.make_Interface(
             INTERFACE_TYPE.PHYSICAL, node=node
         )
         form = ControllerInterfaceForm(
             instance=original_interface, data={"vlan": None}
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
         interface = form.save()
-        self.assertEqual(interface.name, original_interface.name)
-        self.assertIsNone(interface.vlan)
-        self.assertEqual(interface.enabled, original_interface.enabled)
+        assert interface.name == original_interface.name
+        assert interface.vlan is None
+        assert interface.enabled == original_interface.enabled
 
-    def test_updates_interface_links(self):
+    @pytest.mark.parametrize(
+        "maker",
+        [
+            factory.make_RegionController,
+            factory.make_RackController,
+            factory.make_RegionRackController,
+        ],
+        ids=["region", "rack", "region_rack"],
+    )
+    def test_updates_interface_links(self, maker):
         interface = factory.make_Interface(
             INTERFACE_TYPE.PHYSICAL, name="eth0", link_connected=False
         )
@@ -101,11 +122,11 @@ class TestControllerInterfaceForm(MAASServerTestCase):
                 "interface_speed": new_interface_speed,
             },
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
         interface = form.save()
-        self.assertEqual(interface.interface_speed, new_interface_speed)
-        self.assertEqual(interface.link_connected, new_link_connected)
-        self.assertEqual(interface.link_speed, new_link_speed)
+        assert interface.interface_speed == new_interface_speed
+        assert interface.link_connected == new_link_connected
+        assert interface.link_speed == new_link_speed
 
     def test_updates_interface_errors_for_not_link_connected_and_speed(self):
         interface = factory.make_Interface(
@@ -117,14 +138,15 @@ class TestControllerInterfaceForm(MAASServerTestCase):
             instance=interface,
             data={"mac_address": new_mac, "link_speed": new_link_speed},
         )
-        self.assertFalse(form.is_valid(), dict(form.errors))
-        self.assertEqual(
-            "link_speed cannot be set when link_connected is false.",
-            form.errors["__all__"][0],
+        assert not form.is_valid(), dict(form.errors)
+        assert (
+            "link_speed cannot be set when link_connected is false."
+            == form.errors["__all__"][0]
         )
 
 
-class TestDeployedInterfaceForm(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestDeployedInterfaceForm:
     def test_updates_interface(self):
         interface = factory.make_Interface(
             INTERFACE_TYPE.PHYSICAL, name="eth0", link_connected=False
@@ -144,13 +166,13 @@ class TestDeployedInterfaceForm(MAASServerTestCase):
                 "interface_speed": new_interface_speed,
             },
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
         interface = form.save()
-        self.assertEqual(interface.name, new_name)
-        self.assertEqual(interface.mac_address, new_mac)
-        self.assertEqual(interface.link_connected, new_link_connected)
-        self.assertEqual(interface.link_speed, new_link_speed)
-        self.assertEqual(interface.interface_speed, new_interface_speed)
+        assert interface.name == new_name
+        assert interface.mac_address == new_mac
+        assert interface.link_connected == new_link_connected
+        assert interface.link_speed == new_link_speed
+        assert interface.interface_speed == new_interface_speed
 
     def test_updates_interface_errors_for_not_link_connected_and_speed(self):
         interface = factory.make_Interface(
@@ -167,14 +189,15 @@ class TestDeployedInterfaceForm(MAASServerTestCase):
                 "link_speed": new_link_speed,
             },
         )
-        self.assertFalse(form.is_valid(), dict(form.errors))
-        self.assertEqual(
-            "link_speed cannot be set when link_connected is false.",
-            form.errors["__all__"][0],
+        assert not form.is_valid(), dict(form.errors)
+        assert (
+            "link_speed cannot be set when link_connected is false."
+            == form.errors["__all__"][0]
         )
 
 
-class TestPhysicalInterfaceForm(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestPhysicalInterfaceForm:
     def test_updates_interface(self):
         interface = factory.make_Interface(
             INTERFACE_TYPE.PHYSICAL, name="eth0", link_connected=False
@@ -197,14 +220,14 @@ class TestPhysicalInterfaceForm(MAASServerTestCase):
                 "numa_node": new_numa_node.index,
             },
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
         interface = form.save()
-        self.assertEqual(interface.name, new_name)
-        self.assertEqual(interface.mac_address, new_mac)
-        self.assertEqual(interface.link_connected, new_link_connected)
-        self.assertEqual(interface.link_speed, new_link_speed)
-        self.assertEqual(interface.interface_speed, new_interface_speed)
-        self.assertEqual(interface.numa_node, new_numa_node)
+        assert interface.name == new_name
+        assert interface.mac_address == new_mac
+        assert interface.link_connected == new_link_connected
+        assert interface.link_speed == new_link_speed
+        assert interface.interface_speed == new_interface_speed
+        assert interface.numa_node == new_numa_node
 
     def test_updates_interface_errors_for_not_link_connected_and_speed(self):
         interface = factory.make_Interface(
@@ -221,10 +244,10 @@ class TestPhysicalInterfaceForm(MAASServerTestCase):
                 "link_speed": new_link_speed,
             },
         )
-        self.assertFalse(form.is_valid(), dict(form.errors))
-        self.assertEqual(
-            "link_speed cannot be set when link_connected is false.",
-            form.errors["__all__"][0],
+        assert not form.is_valid(), dict(form.errors)
+        assert (
+            "link_speed cannot be set when link_connected is false."
+            == form.errors["__all__"][0]
         )
 
     def test_creates_physical_interface(self):
@@ -242,19 +265,19 @@ class TestPhysicalInterfaceForm(MAASServerTestCase):
                 "tags": ",".join(tags),
             },
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
 
         with post_commit_hooks:
             interface = form.save()
 
-        self.assertEqual(interface.node_config, node.current_config)
-        self.assertEqual(interface.mac_address, mac_address)
-        self.assertEqual(interface.name, interface_name)
-        self.assertEqual(interface.type, INTERFACE_TYPE.PHYSICAL)
-        self.assertEqual(interface.tags, tags)
-        self.assertEqual(interface.numa_node, node.default_numanode)
+        assert interface.node_config == node.current_config
+        assert interface.mac_address == mac_address
+        assert interface.name == interface_name
+        assert interface.type == INTERFACE_TYPE.PHYSICAL
+        assert interface.tags == tags
+        assert interface.numa_node == node.default_numanode
 
-        self.assertCountEqual([], interface.parents.all())
+        assert Counter([]) == Counter(interface.parents.all())
 
     def test_creates_physical_interface_with_numa_node(self):
         node = factory.make_Node()
@@ -273,18 +296,20 @@ class TestPhysicalInterfaceForm(MAASServerTestCase):
                 "numa_node": numa_node.index,
             },
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
 
         with post_commit_hooks:
             interface = form.save()
 
-        self.assertEqual(interface.node_config.node, node)
-        self.assertEqual(interface.numa_node, numa_node)
+        assert interface.node_config.node == node
+        assert interface.numa_node == numa_node
 
-    def test_creates_physical_interface_generates_name(self):
+    def test_creates_physical_interface_generates_name(self, mocker):
         node = factory.make_Node()
         interface_name = factory.make_name("eth")
-        self.patch(node, "get_next_ifname").return_value = interface_name
+        mocker.patch.object(
+            node, "get_next_ifname"
+        ).return_value = interface_name
         mac_address = factory.make_mac_address()
         fabric = factory.make_Fabric()
         vlan = fabric.get_default_vlan()
@@ -297,18 +322,18 @@ class TestPhysicalInterfaceForm(MAASServerTestCase):
                 "tags": ",".join(tags),
             },
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
 
         with post_commit_hooks:
             interface = form.save()
 
-        self.assertEqual(interface.node_config, node.current_config)
-        self.assertEqual(interface.mac_address, mac_address)
-        self.assertEqual(interface.name, interface_name)
-        self.assertEqual(interface.type, INTERFACE_TYPE.PHYSICAL)
-        self.assertEqual(interface.tags, tags)
-        self.assertEqual(interface.numa_node, node.default_numanode)
-        self.assertCountEqual([], interface.parents.all())
+        assert interface.node_config == node.current_config
+        assert interface.mac_address == mac_address
+        assert interface.name == interface_name
+        assert interface.type == INTERFACE_TYPE.PHYSICAL
+        assert interface.tags == tags
+        assert interface.numa_node == node.default_numanode
+        assert Counter([]) == Counter(interface.parents.all())
 
     def test_creates_physical_interface_disconnected(self):
         node = factory.make_Node()
@@ -323,16 +348,16 @@ class TestPhysicalInterfaceForm(MAASServerTestCase):
                 "tags": ",".join(tags),
             },
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
         interface = form.save()
-        self.assertEqual(interface.node_config, node.current_config)
-        self.assertEqual(interface.mac_address, mac_address)
-        self.assertEqual(interface.name, interface_name)
-        self.assertEqual(interface.type, INTERFACE_TYPE.PHYSICAL)
-        self.assertEqual(interface.tags, tags)
-        self.assertIsNone(interface.vlan)
-        self.assertEqual(interface.numa_node, node.default_numanode)
-        self.assertCountEqual([], interface.parents.all())
+        assert interface.node_config == node.current_config
+        assert interface.mac_address == mac_address
+        assert interface.name == interface_name
+        assert interface.type == INTERFACE_TYPE.PHYSICAL
+        assert interface.tags == tags
+        assert interface.vlan is None
+        assert interface.numa_node == node.default_numanode
+        assert Counter([]) == Counter(interface.parents.all())
 
     def test_creates_physical_interface_normalises_mac_address(self):
         node = factory.make_Node()
@@ -343,10 +368,10 @@ class TestPhysicalInterfaceForm(MAASServerTestCase):
                 "mac_address": "AA:BB:CC:DD:EE:FF",
             },
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
         with post_commit_hooks:
             interface = form.save()
-        self.assertEqual(interface.mac_address, "aa:bb:cc:dd:ee:ff")
+        assert interface.mac_address == "aa:bb:cc:dd:ee:ff"
 
     def test_rejects_duplicate_mac_address_with_different_case(self):
         node = factory.make_Node()
@@ -363,11 +388,11 @@ class TestPhysicalInterfaceForm(MAASServerTestCase):
                 "mac_address": "AA:BB:CC:DD:EE:FF",
             },
         )
-        self.assertFalse(form.is_valid(), dict(form.errors))
-        self.assertIn("mac_address", form.errors)
-        self.assertIn(
-            "This MAC address is already in use",
-            form.errors["mac_address"][0],
+        assert not form.is_valid(), dict(form.errors)
+        assert "mac_address" in form.errors
+        assert (
+            "This MAC address is already in use"
+            in form.errors["mac_address"][0]
         )
 
     def test_create_ensures_link_up(self):
@@ -385,12 +410,13 @@ class TestPhysicalInterfaceForm(MAASServerTestCase):
                 "tags": ",".join(tags),
             },
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
 
         with post_commit_hooks:
             interface = form.save()
-        self.assertIsNotNone(
+        assert (
             interface.ip_addresses.filter(alloc_type=IPADDRESS_TYPE.STICKY)
+            is not None
         )
 
     def test_requires_mac_address(self):
@@ -400,9 +426,9 @@ class TestPhysicalInterfaceForm(MAASServerTestCase):
             node=factory.make_Node(),
             data={"name": interface_name, "vlan": vlan.id},
         )
-        self.assertFalse(form.is_valid(), dict(form.errors))
-        self.assertEqual({"mac_address"}, form.errors.keys(), form.errors)
-        self.assertIn("This field is required.", form.errors["mac_address"][0])
+        assert not form.is_valid(), dict(form.errors)
+        assert {"mac_address"} == form.errors.keys(), form.errors
+        assert "This field is required." in form.errors["mac_address"][0]
 
     def test_rejects_interface_with_duplicate_name(self):
         interface = factory.make_Interface(INTERFACE_TYPE.PHYSICAL)
@@ -415,11 +441,11 @@ class TestPhysicalInterfaceForm(MAASServerTestCase):
                 "vlan": interface.vlan.id,
             },
         )
-        self.assertFalse(form.is_valid(), dict(form.errors))
-        self.assertEqual({"name"}, form.errors.keys(), form.errors)
-        self.assertIn(
-            "already has an interface named '%s'." % interface.name,
-            form.errors["name"][0],
+        assert not form.is_valid(), dict(form.errors)
+        assert {"name"} == form.errors.keys(), form.errors
+        assert (
+            "already has an interface named '%s'." % interface.name
+            in form.errors["name"][0]
         )
 
     def test_rejects_interface_with_numa_node_for_device(self):
@@ -428,15 +454,12 @@ class TestPhysicalInterfaceForm(MAASServerTestCase):
             node=node,
             data={"mac_address": factory.make_mac_address(), "numa_node": 2},
         )
-        self.assertFalse(form.is_valid())
-        self.assertEqual(
-            form.errors,
-            {
-                "numa_node": [
-                    "Only interfaces for machines are linked to a NUMA node"
-                ]
-            },
-        )
+        assert not form.is_valid()
+        assert form.errors == {
+            "numa_node": [
+                "Only interfaces for machines are linked to a NUMA node"
+            ]
+        }
 
     def test_allows_interface_on_tagged_vlan_for_device(self):
         device = factory.make_Device()
@@ -456,10 +479,10 @@ class TestPhysicalInterfaceForm(MAASServerTestCase):
                 "vlan": vlan.id,
             },
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
         with post_commit_hooks:
             interface = form.save()
-        self.assertEqual(vlan, interface.vlan)
+        assert vlan == interface.vlan
 
     def test_rejects_parents(self):
         parent = factory.make_Interface(INTERFACE_TYPE.PHYSICAL)
@@ -473,11 +496,11 @@ class TestPhysicalInterfaceForm(MAASServerTestCase):
                 "parents": [parent.id],
             },
         )
-        self.assertFalse(form.is_valid(), dict(form.errors))
-        self.assertEqual({"parents"}, form.errors.keys(), form.errors)
-        self.assertIn(
-            "A physical interface cannot have parents.",
-            form.errors["parents"][0],
+        assert not form.is_valid(), dict(form.errors)
+        assert {"parents"} == form.errors.keys(), form.errors
+        assert (
+            "A physical interface cannot have parents."
+            in form.errors["parents"][0]
         )
 
     def test_edits_interface(self):
@@ -495,15 +518,15 @@ class TestPhysicalInterfaceForm(MAASServerTestCase):
                 "tags": "",
             },
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
 
         with post_commit_hooks:
             interface = form.save()
-        self.assertEqual(interface.name, new_name)
-        self.assertEqual(interface.vlan, new_vlan)
-        self.assertFalse(interface.enabled)
-        self.assertEqual(interface.tags, [])
-        self.assertCountEqual([], interface.parents.all())
+        assert interface.name == new_name
+        assert interface.vlan == new_vlan
+        assert not interface.enabled
+        assert interface.tags == []
+        assert Counter([]) == Counter(interface.parents.all())
 
     def test_edits_doesnt_overwrite_name(self):
         original_interface = factory.make_Interface(
@@ -515,13 +538,13 @@ class TestPhysicalInterfaceForm(MAASServerTestCase):
             instance=original_interface,
             data={"vlan": new_vlan.id, "enabled": False, "tags": ""},
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
         interface = form.save()
-        self.assertEqual(interface.name, original_interface.name)
-        self.assertEqual(interface.vlan, new_vlan)
-        self.assertFalse(interface.enabled)
-        self.assertEqual(interface.tags, [])
-        self.assertCountEqual([], interface.parents.all())
+        assert interface.name == original_interface.name
+        assert interface.vlan == new_vlan
+        assert not interface.enabled
+        assert interface.tags == []
+        assert Counter([]) == Counter(interface.parents.all())
 
     def test_edits_interface_disconnected(self):
         interface = factory.make_Interface(
@@ -537,16 +560,16 @@ class TestPhysicalInterfaceForm(MAASServerTestCase):
                 "tags": "",
             },
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
 
         with post_commit_hooks:
             interface = form.save()
 
-        self.assertEqual(interface.name, new_name)
-        self.assertIsNone(interface.vlan)
-        self.assertFalse(interface.enabled)
-        self.assertEqual(interface.tags, [])
-        self.assertCountEqual([], interface.parents.all())
+        assert interface.name == new_name
+        assert interface.vlan is None
+        assert not interface.enabled
+        assert interface.tags == []
+        assert Counter([]) == Counter(interface.parents.all())
 
     def test_create_sets_interface_parameters(self):
         node = factory.make_Node()
@@ -567,14 +590,11 @@ class TestPhysicalInterfaceForm(MAASServerTestCase):
                 "accept_ra": accept_ra,
             },
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
 
         with post_commit_hooks:
             interface = form.save()
-        self.assertEqual(
-            {"mtu": mtu, "accept-ra": accept_ra},
-            interface.params,
-        )
+        assert {"mtu": mtu, "accept-ra": accept_ra} == interface.params
 
     def test_update_doesnt_change_interface_parameters(self):
         interface = factory.make_Interface(
@@ -597,13 +617,10 @@ class TestPhysicalInterfaceForm(MAASServerTestCase):
                 "tags": "",
             },
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
         with post_commit_hooks:
             interface = form.save()
-        self.assertEqual(
-            {"mtu": mtu, "accept-ra": accept_ra},
-            interface.params,
-        )
+        assert {"mtu": mtu, "accept-ra": accept_ra} == interface.params
 
     def test_update_does_change_interface_parameters(self):
         interface = factory.make_Interface(
@@ -624,15 +641,12 @@ class TestPhysicalInterfaceForm(MAASServerTestCase):
                 "accept_ra": new_accept_ra,
             },
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
         interface = form.save()
-        self.assertEqual(
-            {
-                "mtu": new_mtu,
-                "accept-ra": new_accept_ra,
-            },
-            interface.params,
-        )
+        assert {
+            "mtu": new_mtu,
+            "accept-ra": new_accept_ra,
+        } == interface.params
 
     def test_update_allows_clearing_interface_parameters(self):
         interface = factory.make_Interface(
@@ -648,9 +662,9 @@ class TestPhysicalInterfaceForm(MAASServerTestCase):
             instance=interface,
             data={"mtu": "", "accept_ra": ""},
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
         interface = form.save()
-        self.assertEqual({}, interface.params)
+        assert {} == interface.params
 
     def test_update_allows_rack_controller_with_numa_node(self):
         rack_controller = factory.make_RackController()
@@ -664,10 +678,11 @@ class TestPhysicalInterfaceForm(MAASServerTestCase):
                 "numa_node": numa.index,
             },
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
 
 
-class TestVLANInterfaceForm(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestVLANInterfaceForm:
     def test_creates_vlan_interface(self):
         vlan = factory.make_VLAN(vid=10)
         parent = factory.make_Interface(INTERFACE_TYPE.PHYSICAL, vlan=vlan)
@@ -675,15 +690,15 @@ class TestVLANInterfaceForm(MAASServerTestCase):
             node=parent.node_config.node,
             data={"name": "myvlan", "vlan": vlan.id, "parents": [parent.id]},
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
 
         with post_commit_hooks:
             interface = form.save()
 
-        self.assertEqual("myvlan", interface.name)
-        self.assertEqual(INTERFACE_TYPE.VLAN, interface.type)
-        self.assertEqual(vlan, interface.vlan)
-        self.assertCountEqual([parent], interface.parents.all())
+        assert "myvlan" == interface.name
+        assert INTERFACE_TYPE.VLAN == interface.type
+        assert vlan == interface.vlan
+        assert Counter([parent]) == Counter(interface.parents.all())
 
     def test_creates_vlan_interface_generates_name(self):
         fabric = factory.make_Fabric()
@@ -697,11 +712,11 @@ class TestVLANInterfaceForm(MAASServerTestCase):
             node=parent.node_config.node,
             data={"vlan": vlan.id, "parents": [parent.id]},
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
 
         with post_commit_hooks:
             interface = form.save()
-        self.assertEqual("eth42.10", interface.name)
+        assert "eth42.10" == interface.name
 
     def test_create_ensures_link_up(self):
         vlan = factory.make_VLAN(vid=10)
@@ -710,11 +725,12 @@ class TestVLANInterfaceForm(MAASServerTestCase):
             node=parent.node_config.node,
             data={"vlan": vlan.id, "parents": [parent.id]},
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
         with post_commit_hooks:
             interface = form.save()
-        self.assertIsNotNone(
+        assert (
             interface.ip_addresses.filter(alloc_type=IPADDRESS_TYPE.STICKY)
+            is not None
         )
 
     def test_create_rejects_interface_without_vlan(self):
@@ -722,11 +738,11 @@ class TestVLANInterfaceForm(MAASServerTestCase):
         form = VLANInterfaceForm(
             node=parent.node_config.node, data={"parents": [parent.id]}
         )
-        self.assertFalse(form.is_valid(), dict(form.errors))
-        self.assertEqual({"vlan"}, form.errors.keys(), form.errors)
-        self.assertIn(
-            "A VLAN interface must be connected to a tagged VLAN.",
-            form.errors["vlan"][0],
+        assert not form.is_valid(), dict(form.errors)
+        assert {"vlan"} == form.errors.keys(), form.errors
+        assert (
+            "A VLAN interface must be connected to a tagged VLAN."
+            in form.errors["vlan"][0]
         )
 
     def test_rejects_interface_with_duplicate_name(self):
@@ -739,11 +755,11 @@ class TestVLANInterfaceForm(MAASServerTestCase):
             node=parent.node_config.node,
             data={"vlan": vlan.id, "parents": [parent.id]},
         )
-        self.assertFalse(form.is_valid(), dict(form.errors))
-        self.assertEqual({"name"}, form.errors.keys(), form.errors)
-        self.assertIn(
-            "already has an interface named '%s'." % interface.name,
-            form.errors["name"][0],
+        assert not form.is_valid(), dict(form.errors)
+        assert {"name"} == form.errors.keys(), form.errors
+        assert (
+            "already has an interface named '%s'." % interface.name
+            in form.errors["name"][0]
         )
 
     def test_rejects_interface_on_default_fabric(self):
@@ -753,11 +769,11 @@ class TestVLANInterfaceForm(MAASServerTestCase):
             node=parent.node_config.node,
             data={"vlan": vlan.id, "parents": [parent.id]},
         )
-        self.assertFalse(form.is_valid(), dict(form.errors))
-        self.assertEqual({"vlan"}, form.errors.keys(), form.errors)
-        self.assertIn(
-            "A VLAN interface can only belong to a tagged VLAN.",
-            form.errors["vlan"][0],
+        assert not form.is_valid(), dict(form.errors)
+        assert {"vlan"} == form.errors.keys(), form.errors
+        assert (
+            "A VLAN interface can only belong to a tagged VLAN."
+            in form.errors["vlan"][0]
         )
 
     def test_rejects_no_parents(self):
@@ -765,11 +781,11 @@ class TestVLANInterfaceForm(MAASServerTestCase):
         form = VLANInterfaceForm(
             node=factory.make_Node(), data={"vlan": vlan.id}
         )
-        self.assertFalse(form.is_valid(), dict(form.errors))
-        self.assertEqual({"parents"}, form.errors.keys())
-        self.assertIn(
-            "A VLAN interface must have exactly one parent.",
-            form.errors["parents"][0],
+        assert not form.is_valid(), dict(form.errors)
+        assert {"parents"} == form.errors.keys()
+        assert (
+            "A VLAN interface must have exactly one parent."
+            in form.errors["parents"][0]
         )
 
     def test_rejects_vlan_parent(self):
@@ -782,11 +798,11 @@ class TestVLANInterfaceForm(MAASServerTestCase):
             node=parent.node_config.node,
             data={"vlan": vlan.id, "parents": [vlan_parent.id]},
         )
-        self.assertFalse(form.is_valid(), dict(form.errors))
-        self.assertEqual({"parents"}, form.errors.keys())
-        self.assertIn(
-            "VLAN interface can't have another VLAN interface as parent.",
-            form.errors["parents"][0],
+        assert not form.is_valid(), dict(form.errors)
+        assert {"parents"} == form.errors.keys()
+        assert (
+            "VLAN interface can't have another VLAN interface as parent."
+            in form.errors["parents"][0]
         )
 
     def test_rejects_no_vlan(self):
@@ -795,11 +811,11 @@ class TestVLANInterfaceForm(MAASServerTestCase):
             node=parent.node_config.node,
             data={"vlan": None, "parents": [parent.id]},
         )
-        self.assertFalse(form.is_valid(), dict(form.errors))
-        self.assertEqual({"vlan"}, form.errors.keys())
-        self.assertIn(
-            "A VLAN interface must be connected to a tagged VLAN.",
-            form.errors["vlan"][0],
+        assert not form.is_valid(), dict(form.errors)
+        assert {"vlan"} == form.errors.keys()
+        assert (
+            "A VLAN interface must be connected to a tagged VLAN."
+            in form.errors["vlan"][0]
         )
 
     def test_rejects_vlan_not_on_same_fabric(self):
@@ -810,12 +826,12 @@ class TestVLANInterfaceForm(MAASServerTestCase):
             node=parent.node_config.node,
             data={"vlan": other_vlan.id, "parents": [parent.id]},
         )
-        self.assertFalse(form.is_valid(), dict(form.errors))
-        self.assertEqual({"vlan"}, form.errors.keys())
-        self.assertIn(
+        assert not form.is_valid(), dict(form.errors)
+        assert {"vlan"} == form.errors.keys()
+        assert (
             "A VLAN interface can only belong to a tagged VLAN on "
-            "the same fabric as its parent interface.",
-            form.errors["vlan"][0],
+            "the same fabric as its parent interface."
+            in form.errors["vlan"][0]
         )
 
     def test_rejects_parent_on_bond(self):
@@ -826,11 +842,11 @@ class TestVLANInterfaceForm(MAASServerTestCase):
             node=parent.node_config.node,
             data={"vlan": vlan.id, "parents": [parent.id]},
         )
-        self.assertFalse(form.is_valid(), dict(form.errors))
-        self.assertEqual({"parents"}, form.errors.keys())
-        self.assertIn(
-            "A VLAN interface can't have a parent that is already in a bond.",
-            form.errors["parents"][0],
+        assert not form.is_valid(), dict(form.errors)
+        assert {"parents"} == form.errors.keys()
+        assert (
+            "A VLAN interface can't have a parent that is already in a bond."
+            in form.errors["parents"][0]
         )
 
     def test_rejects_more_than_one_parent(self):
@@ -844,11 +860,11 @@ class TestVLANInterfaceForm(MAASServerTestCase):
             node=parent1.node_config.node,
             data={"vlan": vlan.id, "parents": [parent1.id, parent2.id]},
         )
-        self.assertFalse(form.is_valid(), dict(form.errors))
-        self.assertEqual({"parents"}, form.errors.keys())
-        self.assertIn(
-            "A VLAN interface must have exactly one parent.",
-            form.errors["parents"][0],
+        assert not form.is_valid(), dict(form.errors)
+        assert {"parents"} == form.errors.keys()
+        assert (
+            "A VLAN interface must have exactly one parent."
+            in form.errors["parents"][0]
         )
 
     def test_edits_interface(self):
@@ -860,14 +876,15 @@ class TestVLANInterfaceForm(MAASServerTestCase):
         form = VLANInterfaceForm(
             instance=interface, data={"vlan": new_vlan.id}
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
         interface = form.save()
-        self.assertEqual(interface.vlan, new_vlan)
-        self.assertEqual(interface.type, INTERFACE_TYPE.VLAN)
-        self.assertCountEqual([parent], interface.parents.all())
+        assert interface.vlan == new_vlan
+        assert interface.type == INTERFACE_TYPE.VLAN
+        assert Counter([parent]) == Counter(interface.parents.all())
 
 
-class TestBondInterfaceForm(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestBondInterfaceForm:
     def test_error_with_invalid_bond_mode(self):
         vlan = factory.make_VLAN(vid=10)
         parent1 = factory.make_Interface(INTERFACE_TYPE.PHYSICAL, vlan=vlan)
@@ -885,16 +902,13 @@ class TestBondInterfaceForm(MAASServerTestCase):
                 "bond_mode": bond_mode,
             },
         )
-        self.assertFalse(form.is_valid(), dict(form.errors))
-        self.assertEqual(
-            {
-                "bond_mode": [
-                    compose_invalid_choice_text("bond_mode", BOND_MODE_CHOICES)
-                    % {"value": bond_mode}
-                ]
-            },
-            form.errors,
-        )
+        assert not form.is_valid(), dict(form.errors)
+        assert {
+            "bond_mode": [
+                compose_invalid_choice_text("bond_mode", BOND_MODE_CHOICES)
+                % {"value": bond_mode}
+            ]
+        } == form.errors
 
     def test_creates_bond_interface(self):
         vlan = factory.make_VLAN(vid=10)
@@ -911,18 +925,19 @@ class TestBondInterfaceForm(MAASServerTestCase):
                 "parents": [parent1.id, parent2.id],
             },
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
 
         with post_commit_hooks:
             interface = form.save()
 
-        self.assertEqual(interface.name, interface_name)
-        self.assertEqual(interface.type, INTERFACE_TYPE.BOND)
-        self.assertEqual(interface.vlan, parent1.vlan)
-        self.assertIn(
-            interface.mac_address, [parent1.mac_address, parent2.mac_address]
-        )
-        self.assertCountEqual([parent1, parent2], interface.parents.all())
+        assert interface.name == interface_name
+        assert interface.type == INTERFACE_TYPE.BOND
+        assert interface.vlan == parent1.vlan
+        assert interface.mac_address in [
+            parent1.mac_address,
+            parent2.mac_address,
+        ]
+        assert Counter([parent1, parent2]) == Counter(interface.parents.all())
 
     def test_create_removes_parent_links_and_sets_link_up_on_bond(self):
         vlan = factory.make_VLAN(vid=10)
@@ -947,25 +962,26 @@ class TestBondInterfaceForm(MAASServerTestCase):
                 "parents": [parent1.id, parent2.id],
             },
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
 
         with post_commit_hooks:
             interface = form.save()
 
-        self.assertEqual(
-            0,
-            parent1.ip_addresses.exclude(
+        assert (
+            0
+            == parent1.ip_addresses.exclude(
                 alloc_type=IPADDRESS_TYPE.DISCOVERED
-            ).count(),
+            ).count()
         )
-        self.assertEqual(
-            0,
-            parent2.ip_addresses.exclude(
+        assert (
+            0
+            == parent2.ip_addresses.exclude(
                 alloc_type=IPADDRESS_TYPE.DISCOVERED
-            ).count(),
+            ).count()
         )
-        self.assertIsNotNone(
+        assert (
             interface.ip_addresses.filter(alloc_type=IPADDRESS_TYPE.STICKY)
+            is not None
         )
 
     def test_creates_bond_interface_with_parent_mac_address(self):
@@ -984,19 +1000,20 @@ class TestBondInterfaceForm(MAASServerTestCase):
                 "mac_address": parent1.mac_address,
             },
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
 
         with post_commit_hooks:
             interface = form.save()
 
-        self.assertEqual(interface.name, interface_name)
-        self.assertEqual(interface.mac_address, parent1.mac_address)
-        self.assertEqual(interface.type, INTERFACE_TYPE.BOND)
-        self.assertIn(
-            interface.mac_address, [parent1.mac_address, parent2.mac_address]
-        )
+        assert interface.name == interface_name
+        assert interface.mac_address == parent1.mac_address
+        assert interface.type == INTERFACE_TYPE.BOND
+        assert interface.mac_address in [
+            parent1.mac_address,
+            parent2.mac_address,
+        ]
 
-        self.assertCountEqual([parent1, parent2], interface.parents.all())
+        assert Counter([parent1, parent2]) == Counter(interface.parents.all())
 
     def test_creates_bond_interface_with_default_bond_params(self):
         vlan = factory.make_VLAN(vid=10)
@@ -1013,22 +1030,19 @@ class TestBondInterfaceForm(MAASServerTestCase):
                 "parents": [parent1.id, parent2.id],
             },
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
 
         with post_commit_hooks:
             interface = form.save()
-        self.assertEqual(
-            {
-                "bond_mode": "balance-rr",
-                "bond_miimon": 100,
-                "bond_downdelay": 0,
-                "bond_updelay": 0,
-                "bond_num_grat_arp": 1,
-                "bond_lacp_rate": "fast",
-                "bond_xmit_hash_policy": "layer2",
-            },
-            interface.params,
-        )
+        assert {
+            "bond_mode": "balance-rr",
+            "bond_miimon": 100,
+            "bond_downdelay": 0,
+            "bond_updelay": 0,
+            "bond_num_grat_arp": 1,
+            "bond_lacp_rate": "fast",
+            "bond_xmit_hash_policy": "layer2",
+        } == interface.params
 
     def test_creates_bond_interface_with_bond_params(self):
         vlan = factory.make_VLAN(vid=10)
@@ -1061,23 +1075,20 @@ class TestBondInterfaceForm(MAASServerTestCase):
                 "bond_num_grat_arp": bond_num_grat_arp,
             },
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
 
         with post_commit_hooks:
             interface = form.save()
 
-        self.assertEqual(
-            {
-                "bond_mode": bond_mode,
-                "bond_miimon": bond_miimon,
-                "bond_downdelay": bond_downdelay,
-                "bond_updelay": bond_updelay,
-                "bond_lacp_rate": bond_lacp_rate,
-                "bond_xmit_hash_policy": bond_xmit_hash_policy,
-                "bond_num_grat_arp": bond_num_grat_arp,
-            },
-            interface.params,
-        )
+        assert {
+            "bond_mode": bond_mode,
+            "bond_miimon": bond_miimon,
+            "bond_downdelay": bond_downdelay,
+            "bond_updelay": bond_updelay,
+            "bond_lacp_rate": bond_lacp_rate,
+            "bond_xmit_hash_policy": bond_xmit_hash_policy,
+            "bond_num_grat_arp": bond_num_grat_arp,
+        } == interface.params
 
     def test_rejects_no_parents(self):
         vlan = factory.make_VLAN(vid=10)
@@ -1086,11 +1097,11 @@ class TestBondInterfaceForm(MAASServerTestCase):
             node=factory.make_Node(),
             data={"name": interface_name, "vlan": vlan.id},
         )
-        self.assertFalse(form.is_valid(), dict(form.errors))
-        self.assertEqual({"parents", "mac_address"}, form.errors.keys())
-        self.assertIn(
-            "A bond interface must have one or more parents.",
-            form.errors["parents"][0],
+        assert not form.is_valid(), dict(form.errors)
+        assert {"parents", "mac_address"} == form.errors.keys()
+        assert (
+            "A bond interface must have one or more parents."
+            in form.errors["parents"][0]
         )
 
     def test_rejects_when_parents_already_have_children(self):
@@ -1113,9 +1124,10 @@ class TestBondInterfaceForm(MAASServerTestCase):
                 "parents": [parent1.id, parent2.id],
             },
         )
-        self.assertFalse(form.is_valid(), dict(form.errors))
-        self.assertIn(
-            "Interfaces already in-use: eth0, eth1.", form.errors["parents"][0]
+        assert not form.is_valid(), dict(form.errors)
+        assert (
+            "Interfaces already in-use: eth0, eth1."
+            in form.errors["parents"][0]
         )
 
     def test_rejects_when_parents_not_in_same_vlan(self):
@@ -1131,10 +1143,10 @@ class TestBondInterfaceForm(MAASServerTestCase):
             node=node,
             data={"name": interface_name, "parents": [parent1.id, parent2.id]},
         )
-        self.assertFalse(form.is_valid(), dict(form.errors))
-        self.assertEqual(
-            "All parents must belong to the same VLAN.",
-            form.errors["parents"][0],
+        assert not form.is_valid(), dict(form.errors)
+        assert (
+            "All parents must belong to the same VLAN."
+            == form.errors["parents"][0]
         )
 
     def test_edits_interface(self):
@@ -1160,17 +1172,17 @@ class TestBondInterfaceForm(MAASServerTestCase):
                 "parents": [parent1.id, parent2.id, new_parent.id],
             },
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
 
         with post_commit_hooks:
             interface = form.save()
 
-        self.assertEqual(interface.mac_address, original_interface.mac_address)
-        self.assertEqual(interface.name, new_name)
-        self.assertEqual(interface.vlan, new_vlan)
-        self.assertEqual(interface.type, INTERFACE_TYPE.BOND)
-        self.assertCountEqual(
-            [parent1, parent2, new_parent], interface.parents.all()
+        assert interface.mac_address == original_interface.mac_address
+        assert interface.name == new_name
+        assert interface.vlan == new_vlan
+        assert interface.type == INTERFACE_TYPE.BOND
+        assert Counter([parent1, parent2, new_parent]) == Counter(
+            interface.parents.all()
         )
 
     def test_edits_interface_allows_disconnected(self):
@@ -1185,14 +1197,14 @@ class TestBondInterfaceForm(MAASServerTestCase):
         form = BondInterfaceForm(
             instance=original_interface, data={"vlan": None}
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
 
         with post_commit_hooks:
             interface = form.save()
 
-        self.assertEqual(interface.mac_address, original_interface.mac_address)
-        self.assertIsNone(interface.vlan)
-        self.assertEqual(interface.type, INTERFACE_TYPE.BOND)
+        assert interface.mac_address == original_interface.mac_address
+        assert interface.vlan is None
+        assert interface.type == INTERFACE_TYPE.BOND
 
     def test_edits_interface_removes_parents(self):
         parent1 = factory.make_Interface(INTERFACE_TYPE.PHYSICAL)
@@ -1212,16 +1224,16 @@ class TestBondInterfaceForm(MAASServerTestCase):
             instance=original_interface,
             data={"name": new_name, "parents": [parent1.id, parent2.id]},
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
 
         with post_commit_hooks:
             interface = form.save()
 
-        self.assertEqual(interface.mac_address, original_interface.mac_address)
-        self.assertEqual(interface.name, new_name)
-        self.assertEqual(interface.type, INTERFACE_TYPE.BOND)
+        assert interface.mac_address == original_interface.mac_address
+        assert interface.name == new_name
+        assert interface.type == INTERFACE_TYPE.BOND
 
-        self.assertCountEqual([parent1, parent2], interface.parents.all())
+        assert Counter([parent1, parent2]) == Counter(interface.parents.all())
 
     def test_edits_interface_updates_mac_address_when_parent_removed(self):
         parent1 = factory.make_Interface(INTERFACE_TYPE.PHYSICAL)
@@ -1243,17 +1255,18 @@ class TestBondInterfaceForm(MAASServerTestCase):
             instance=interface,
             data={"name": new_name, "parents": [parent1.id, parent2.id]},
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
 
         with post_commit_hooks:
             interface = form.save()
 
-        self.assertEqual(interface.name, new_name)
-        self.assertEqual(interface.type, INTERFACE_TYPE.BOND)
-        self.assertCountEqual([parent1, parent2], interface.parents.all())
-        self.assertIn(
-            interface.mac_address, [parent1.mac_address, parent2.mac_address]
-        )
+        assert interface.name == new_name
+        assert interface.type == INTERFACE_TYPE.BOND
+        assert Counter([parent1, parent2]) == Counter(interface.parents.all())
+        assert interface.mac_address in [
+            parent1.mac_address,
+            parent2.mac_address,
+        ]
 
     def test_edit_doesnt_overwrite_params(self):
         parent1 = factory.make_Interface(INTERFACE_TYPE.PHYSICAL)
@@ -1289,21 +1302,18 @@ class TestBondInterfaceForm(MAASServerTestCase):
         form = BondInterfaceForm(
             instance=interface, data={"vlan": new_vlan.id, "name": new_name}
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
 
         with post_commit_hooks:
             interface = form.save()
-        self.assertEqual(
-            {
-                "bond_mode": bond_mode,
-                "bond_miimon": bond_miimon,
-                "bond_downdelay": bond_downdelay,
-                "bond_updelay": bond_updelay,
-                "bond_lacp_rate": bond_lacp_rate,
-                "bond_xmit_hash_policy": bond_xmit_hash_policy,
-            },
-            interface.params,
-        )
+        assert {
+            "bond_mode": bond_mode,
+            "bond_miimon": bond_miimon,
+            "bond_downdelay": bond_downdelay,
+            "bond_updelay": bond_updelay,
+            "bond_lacp_rate": bond_lacp_rate,
+            "bond_xmit_hash_policy": bond_xmit_hash_policy,
+        } == interface.params
 
     def test_edit_does_overwrite_params(self):
         parent1 = factory.make_Interface(INTERFACE_TYPE.PHYSICAL)
@@ -1357,22 +1367,19 @@ class TestBondInterfaceForm(MAASServerTestCase):
                 "bond_xmit_hash_policy": new_bond_xmit_hash_policy,
             },
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
 
         with post_commit_hooks:
             interface = form.save()
 
-        self.assertEqual(
-            {
-                "bond_mode": new_bond_mode,
-                "bond_miimon": new_bond_miimon,
-                "bond_downdelay": new_bond_downdelay,
-                "bond_updelay": new_bond_updelay,
-                "bond_lacp_rate": new_bond_lacp_rate,
-                "bond_xmit_hash_policy": new_bond_xmit_hash_policy,
-            },
-            interface.params,
-        )
+        assert {
+            "bond_mode": new_bond_mode,
+            "bond_miimon": new_bond_miimon,
+            "bond_downdelay": new_bond_downdelay,
+            "bond_updelay": new_bond_updelay,
+            "bond_lacp_rate": new_bond_lacp_rate,
+            "bond_xmit_hash_policy": new_bond_xmit_hash_policy,
+        } == interface.params
 
     def test_edit_allows_zero_params(self):
         parent1 = factory.make_Interface(INTERFACE_TYPE.PHYSICAL)
@@ -1426,25 +1433,23 @@ class TestBondInterfaceForm(MAASServerTestCase):
                 "bond_xmit_hash_policy": new_bond_xmit_hash_policy,
             },
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
 
         with post_commit_hooks:
             interface = form.save()
 
-        self.assertEqual(
-            {
-                "bond_mode": new_bond_mode,
-                "bond_miimon": new_bond_miimon,
-                "bond_downdelay": new_bond_downdelay,
-                "bond_updelay": new_bond_updelay,
-                "bond_lacp_rate": new_bond_lacp_rate,
-                "bond_xmit_hash_policy": new_bond_xmit_hash_policy,
-            },
-            interface.params,
-        )
+        assert {
+            "bond_mode": new_bond_mode,
+            "bond_miimon": new_bond_miimon,
+            "bond_downdelay": new_bond_downdelay,
+            "bond_updelay": new_bond_updelay,
+            "bond_lacp_rate": new_bond_lacp_rate,
+            "bond_xmit_hash_policy": new_bond_xmit_hash_policy,
+        } == interface.params
 
 
-class TestBridgeInterfaceForm(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestBridgeInterfaceForm:
     def test_creates_bridge_interface(self):
         parent = factory.make_Interface(INTERFACE_TYPE.PHYSICAL)
         interface_name = factory.make_name()
@@ -1452,14 +1457,14 @@ class TestBridgeInterfaceForm(MAASServerTestCase):
             node=parent.node_config.node,
             data={"name": interface_name, "parents": [parent.id]},
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
 
         with post_commit_hooks:
             interface = form.save()
-        self.assertEqual(interface.name, interface_name)
-        self.assertEqual(interface.type, INTERFACE_TYPE.BRIDGE)
-        self.assertEqual(interface.mac_address, parent.mac_address)
-        self.assertCountEqual([parent], interface.parents.all())
+        assert interface.name == interface_name
+        assert interface.type == INTERFACE_TYPE.BRIDGE
+        assert interface.mac_address == parent.mac_address
+        assert Counter([parent]) == Counter(interface.parents.all())
 
     def test_allows_bridge_on_parent_with_vlan_bridges(self):
         parent = factory.make_Interface(INTERFACE_TYPE.PHYSICAL)
@@ -1472,14 +1477,14 @@ class TestBridgeInterfaceForm(MAASServerTestCase):
             node=parent.node_config.node,
             data={"name": interface_name, "parents": [parent.id]},
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
 
         with post_commit_hooks:
             interface = form.save()
-        self.assertEqual(interface.name, interface_name)
-        self.assertEqual(interface.type, INTERFACE_TYPE.BRIDGE)
-        self.assertEqual(interface.mac_address, parent.mac_address)
-        self.assertCountEqual([parent], interface.parents.all())
+        assert interface.name == interface_name
+        assert interface.type == INTERFACE_TYPE.BRIDGE
+        assert interface.mac_address == parent.mac_address
+        assert Counter([parent]) == Counter(interface.parents.all())
 
     def test_allows_bridge_on_bond_with_vlan_bridges(self):
         node = factory.make_Node()
@@ -1496,15 +1501,15 @@ class TestBridgeInterfaceForm(MAASServerTestCase):
         form = BridgeInterfaceForm(
             node=node, data={"name": interface_name, "parents": [bond0.id]}
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
 
         with post_commit_hooks:
             interface = form.save()
 
-        self.assertEqual(interface.name, interface_name)
-        self.assertEqual(interface.type, INTERFACE_TYPE.BRIDGE)
-        self.assertEqual(interface.mac_address, bond0.mac_address)
-        self.assertCountEqual([bond0], interface.parents.all())
+        assert interface.name == interface_name
+        assert interface.type == INTERFACE_TYPE.BRIDGE
+        assert interface.mac_address == bond0.mac_address
+        assert Counter([bond0]) == Counter(interface.parents.all())
 
     def test_create_removes_parent_links_and_sets_link_up_on_bridge(self):
         parent = factory.make_Interface(INTERFACE_TYPE.PHYSICAL)
@@ -1517,19 +1522,20 @@ class TestBridgeInterfaceForm(MAASServerTestCase):
             node=parent.node_config.node,
             data={"name": interface_name, "parents": [parent.id]},
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
 
         with post_commit_hooks:
             interface = form.save()
 
-        self.assertEqual(
-            0,
-            parent.ip_addresses.exclude(
+        assert (
+            0
+            == parent.ip_addresses.exclude(
                 alloc_type=IPADDRESS_TYPE.DISCOVERED
-            ).count(),
+            ).count()
         )
-        self.assertIsNotNone(
+        assert (
             interface.ip_addresses.filter(alloc_type=IPADDRESS_TYPE.STICKY)
+            is not None
         )
 
     def test_creates_bridge_interface_with_parent_mac_address(self):
@@ -1543,26 +1549,26 @@ class TestBridgeInterfaceForm(MAASServerTestCase):
                 "mac_address": parent.mac_address,
             },
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
 
         with post_commit_hooks:
             interface = form.save()
 
-        self.assertEqual(interface.name, interface_name)
-        self.assertEqual(interface.mac_address, parent.mac_address)
-        self.assertEqual(interface.type, INTERFACE_TYPE.BRIDGE)
-        self.assertCountEqual([parent], interface.parents.all())
+        assert interface.name == interface_name
+        assert interface.mac_address == parent.mac_address
+        assert interface.type == INTERFACE_TYPE.BRIDGE
+        assert Counter([parent]) == Counter(interface.parents.all())
 
     def test_rejects_no_parent(self):
         interface_name = factory.make_name()
         form = BridgeInterfaceForm(
             node=factory.make_Node(), data={"name": interface_name}
         )
-        self.assertFalse(form.is_valid(), dict(form.errors))
-        self.assertEqual({"parents", "mac_address"}, form.errors.keys())
-        self.assertIn(
-            "A bridge interface must have at least one parent.",
-            form.errors["parents"][0],
+        assert not form.is_valid(), dict(form.errors)
+        assert {"parents", "mac_address"} == form.errors.keys()
+        assert (
+            "A bridge interface must have at least one parent."
+            in form.errors["parents"][0]
         )
 
     def test_rejects_when_parent_already_have_children(self):
@@ -1587,10 +1593,8 @@ class TestBridgeInterfaceForm(MAASServerTestCase):
         form = BridgeInterfaceForm(
             node=node, data={"name": interface_name, "parents": [eth0.id]}
         )
-        self.assertFalse(form.is_valid(), dict(form.errors))
-        self.assertIn(
-            "Interfaces already in-use: eth0.", form.errors["parents"][0]
-        )
+        assert not form.is_valid(), dict(form.errors)
+        assert "Interfaces already in-use: eth0." in form.errors["parents"][0]
 
     def test_rejects_when_parent_is_bridge(self):
         node = factory.make_Node()
@@ -1599,11 +1603,10 @@ class TestBridgeInterfaceForm(MAASServerTestCase):
         form = BridgeInterfaceForm(
             node=node, data={"name": interface_name, "parents": [bridge.id]}
         )
-        self.assertFalse(form.is_valid(), dict(form.errors))
-        self.assertIn(
+        assert not form.is_valid(), dict(form.errors)
+        assert (
             "A bridge interface can't have another bridge interface as "
-            "parent.",
-            form.errors["parents"][0],
+            "parent." in form.errors["parents"][0]
         )
 
     def test_rejects_when_parent_is_already_in_a_bridge(self):
@@ -1616,11 +1619,10 @@ class TestBridgeInterfaceForm(MAASServerTestCase):
         form = BridgeInterfaceForm(
             node=node, data={"name": interface_name, "parents": [parent.id]}
         )
-        self.assertFalse(form.is_valid(), dict(form.errors))
-        self.assertIn(
+        assert not form.is_valid(), dict(form.errors)
+        assert (
             "A bridge interface can't have a parent that is already "
-            "in a bond or a bridge.",
-            form.errors["parents"][0],
+            "in a bond or a bridge." in form.errors["parents"][0]
         )
 
     def test_rejects_when_parent_is_already_in_a_bond(self):
@@ -1634,11 +1636,10 @@ class TestBridgeInterfaceForm(MAASServerTestCase):
         form = BridgeInterfaceForm(
             node=node, data={"name": interface_name, "parents": [parent1.id]}
         )
-        self.assertFalse(form.is_valid(), dict(form.errors))
-        self.assertIn(
+        assert not form.is_valid(), dict(form.errors)
+        assert (
             "A bridge interface can't have a parent that is already "
-            "in a bond or a bridge.",
-            form.errors["parents"][0],
+            "in a bond or a bridge." in form.errors["parents"][0]
         )
 
     def test_edits_interface(self):
@@ -1662,16 +1663,16 @@ class TestBridgeInterfaceForm(MAASServerTestCase):
                 "parents": [new_parent.id],
             },
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
 
         with post_commit_hooks:
             interface = form.save()
 
-        self.assertEqual(interface.mac_address, original_interface.mac_address)
-        self.assertEqual(interface.name, new_name)
-        self.assertEqual(interface.vlan, new_vlan)
-        self.assertEqual(interface.type, INTERFACE_TYPE.BRIDGE)
-        self.assertCountEqual([new_parent], interface.parents.all())
+        assert interface.mac_address == original_interface.mac_address
+        assert interface.name == new_name
+        assert interface.vlan == new_vlan
+        assert interface.type == INTERFACE_TYPE.BRIDGE
+        assert Counter([new_parent]) == Counter(interface.parents.all())
 
     def test_edits_interface_allows_disconnected(self):
         parent = factory.make_Interface(INTERFACE_TYPE.PHYSICAL)
@@ -1681,14 +1682,14 @@ class TestBridgeInterfaceForm(MAASServerTestCase):
         form = BridgeInterfaceForm(
             instance=original_interface, data={"vlan": None}
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
 
         with post_commit_hooks:
             interface = form.save()
 
-        self.assertEqual(interface.mac_address, original_interface.mac_address)
-        self.assertIsNone(interface.vlan)
-        self.assertEqual(interface.type, INTERFACE_TYPE.BRIDGE)
+        assert interface.mac_address == original_interface.mac_address
+        assert interface.vlan is None
+        assert interface.type == INTERFACE_TYPE.BRIDGE
 
     def test_edit_doesnt_overwrite_params(self):
         """Check that updating parameters that are not bridge specific do not
@@ -1711,19 +1712,16 @@ class TestBridgeInterfaceForm(MAASServerTestCase):
 
         new_name = factory.make_name()
         form = BridgeInterfaceForm(instance=interface, data={"name": new_name})
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
 
         with post_commit_hooks:
             interface = form.save()
 
-        self.assertEqual(
-            {
-                "bridge_type": bridge_type,
-                "bridge_stp": bridge_stp,
-                "bridge_fd": bridge_fd,
-            },
-            interface.params,
-        )
+        assert {
+            "bridge_type": bridge_type,
+            "bridge_stp": bridge_stp,
+            "bridge_fd": bridge_fd,
+        } == interface.params
 
     def test_edit_does_overwrite_params(self):
         """Check that updating specific bridge parameters actually
@@ -1757,19 +1755,16 @@ class TestBridgeInterfaceForm(MAASServerTestCase):
                 "bridge_fd": new_bridge_fd,
             },
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
 
         with post_commit_hooks:
             interface = form.save()
 
-        self.assertEqual(
-            {
-                "bridge_type": new_bridge_type,
-                "bridge_stp": new_bridge_stp,
-                "bridge_fd": new_bridge_fd,
-            },
-            interface.params,
-        )
+        assert {
+            "bridge_type": new_bridge_type,
+            "bridge_stp": new_bridge_stp,
+            "bridge_fd": new_bridge_fd,
+        } == interface.params
 
     def test_edit_allows_zero_params(self):
         parent = factory.make_Interface(INTERFACE_TYPE.PHYSICAL)
@@ -1801,16 +1796,13 @@ class TestBridgeInterfaceForm(MAASServerTestCase):
                 "bridge_fd": new_bridge_fd,
             },
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
         interface = form.save()
-        self.assertEqual(
-            {
-                "bridge_type": new_bridge_type,
-                "bridge_stp": new_bridge_stp,
-                "bridge_fd": new_bridge_fd,
-            },
-            interface.params,
-        )
+        assert {
+            "bridge_type": new_bridge_type,
+            "bridge_stp": new_bridge_stp,
+            "bridge_fd": new_bridge_fd,
+        } == interface.params
 
     def test_creates_bridge_interface_multiple_parents(self):
         node = factory.make_Node()
@@ -1821,19 +1813,20 @@ class TestBridgeInterfaceForm(MAASServerTestCase):
             node=node,
             data={"name": interface_name, "parents": [parent1.id, parent2.id]},
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
 
         with post_commit_hooks:
             interface = form.save()
-        self.assertEqual(interface.name, interface_name)
-        self.assertEqual(interface.type, INTERFACE_TYPE.BRIDGE)
-        self.assertEqual(
-            interface.mac_address, parent1.mac_address
+        assert interface.name == interface_name
+        assert interface.type == INTERFACE_TYPE.BRIDGE
+        assert (
+            interface.mac_address == parent1.mac_address
         )  # mac from the first parent
-        self.assertCountEqual([parent1, parent2], interface.parents.all())
+        assert Counter([parent1, parent2]) == Counter(interface.parents.all())
 
 
-class TestAcquiredBridgeInterfaceForm(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestAcquiredBridgeInterfaceForm:
     def test_creates_acquired_bridge_interface(self):
         interface_name = factory.make_name("br")
         node = factory.make_Node()
@@ -1858,30 +1851,30 @@ class TestAcquiredBridgeInterfaceForm(MAASServerTestCase):
                 "tags": tags,
             },
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
 
         with post_commit_hooks:
             interface = form.save()
 
-        self.assertEqual(interface.name, interface_name)
-        self.assertEqual(interface.type, INTERFACE_TYPE.BRIDGE)
-        self.assertTrue(interface.acquired)
-        self.assertEqual(interface.vlan, parent_vlan)
-        self.assertEqual(interface.mac_address, parent.mac_address)
-        self.assertCountEqual([parent], interface.parents.all())
-        self.assertCountEqual([parent_sip], interface.ip_addresses.all())
-        self.assertCountEqual([], parent.ip_addresses.all())
+        assert interface.name == interface_name
+        assert interface.type == INTERFACE_TYPE.BRIDGE
+        assert interface.acquired
+        assert interface.vlan == parent_vlan
+        assert interface.mac_address == parent.mac_address
+        assert Counter([parent]) == Counter(interface.parents.all())
+        assert Counter([parent_sip]) == Counter(interface.ip_addresses.all())
+        assert Counter([]) == Counter(parent.ip_addresses.all())
 
     def test_rejects_no_parent(self):
         interface_name = factory.make_name()
         form = AcquiredBridgeInterfaceForm(
             node=factory.make_Node(), data={"name": interface_name}
         )
-        self.assertFalse(form.is_valid(), dict(form.errors))
-        self.assertEqual({"parents", "mac_address"}, form.errors.keys())
-        self.assertIn(
-            "A bridge interface must have at least one parent.",
-            form.errors["parents"][0],
+        assert not form.is_valid(), dict(form.errors)
+        assert {"parents", "mac_address"} == form.errors.keys()
+        assert (
+            "A bridge interface must have at least one parent."
+            in form.errors["parents"][0]
         )
 
     def test_rejects_when_parent_already_have_non_vlan_children(self):
@@ -1904,10 +1897,8 @@ class TestAcquiredBridgeInterfaceForm(MAASServerTestCase):
         form = AcquiredBridgeInterfaceForm(
             node=node, data={"name": interface_name, "parents": [eth0.id]}
         )
-        self.assertFalse(form.is_valid(), dict(form.errors))
-        self.assertIn(
-            "Interfaces already in-use: eth0.", form.errors["parents"][0]
-        )
+        assert not form.is_valid(), dict(form.errors)
+        assert "Interfaces already in-use: eth0." in form.errors["parents"][0]
 
     def test_rejects_when_parent_is_bridge(self):
         node = factory.make_Node()
@@ -1916,11 +1907,10 @@ class TestAcquiredBridgeInterfaceForm(MAASServerTestCase):
         form = AcquiredBridgeInterfaceForm(
             node=node, data={"name": interface_name, "parents": [bridge.id]}
         )
-        self.assertFalse(form.is_valid(), dict(form.errors))
-        self.assertIn(
+        assert not form.is_valid(), dict(form.errors)
+        assert (
             "A bridge interface can't have another bridge interface as "
-            "parent.",
-            form.errors["parents"][0],
+            "parent." in form.errors["parents"][0]
         )
 
     def test_rejects_when_parent_is_already_in_a_bridge(self):
@@ -1933,11 +1923,10 @@ class TestAcquiredBridgeInterfaceForm(MAASServerTestCase):
         form = AcquiredBridgeInterfaceForm(
             node=node, data={"name": interface_name, "parents": [parent.id]}
         )
-        self.assertFalse(form.is_valid(), dict(form.errors))
-        self.assertIn(
+        assert not form.is_valid(), dict(form.errors)
+        assert (
             "A bridge interface can't have a parent that is already "
-            "in a bond or a bridge.",
-            form.errors["parents"][0],
+            "in a bond or a bridge." in form.errors["parents"][0]
         )
 
     def test_rejects_when_parent_is_already_in_a_bond(self):
@@ -1951,9 +1940,8 @@ class TestAcquiredBridgeInterfaceForm(MAASServerTestCase):
         form = AcquiredBridgeInterfaceForm(
             node=node, data={"name": interface_name, "parents": [parent1.id]}
         )
-        self.assertFalse(form.is_valid(), dict(form.errors))
-        self.assertIn(
+        assert not form.is_valid(), dict(form.errors)
+        assert (
             "A bridge interface can't have a parent that is already "
-            "in a bond or a bridge.",
-            form.errors["parents"][0],
+            "in a bond or a bridge." in form.errors["parents"][0]
         )

@@ -3,21 +3,21 @@
 
 """Tests for `maasserver.websockets.handlers.fabric`"""
 
-from unittest.mock import MagicMock
+import pytest
 
 from maasserver import openfga
 from maasserver.models.fabric import Fabric
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from maasserver.websockets.base import (
     dehydrate_datetime,
     HandlerPermissionError,
 )
 from maasserver.websockets.handlers.fabric import FabricHandler
-from maastesting.djangotestcase import count_queries
+from maastesting.querycounter import count_queries
 
 
-class TestFabricHandler(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestFabricHandler:
     def dehydrate_fabric(self, fabric):
         data = {
             "id": fabric.id,
@@ -41,9 +41,7 @@ class TestFabricHandler(MAASServerTestCase):
             interface = node.get_boot_interface()
             interface.vlan = vlan
             interface.save()
-        self.assertEqual(
-            self.dehydrate_fabric(fabric), handler.get({"id": fabric.id})
-        )
+        assert self.dehydrate_fabric(fabric) == handler.get({"id": fabric.id})
 
     def test_get_default_vlan_is_first(self):
         user = factory.make_User()
@@ -54,9 +52,7 @@ class TestFabricHandler(MAASServerTestCase):
             factory.make_VLAN(fabric=fabric).id for _ in range(3)
         ]
         observed = handler.get({"id": fabric.id})
-        self.assertEqual(
-            [default_vlan.id] + tagged_vlan_ids, observed["vlan_ids"]
-        )
+        assert [default_vlan.id] + tagged_vlan_ids == observed["vlan_ids"]
 
     def test_list(self):
         user = factory.make_User()
@@ -65,7 +61,9 @@ class TestFabricHandler(MAASServerTestCase):
         expected_fabrics = [
             self.dehydrate_fabric(fabric) for fabric in Fabric.objects.all()
         ]
-        self.assertCountEqual(expected_fabrics, handler.list({}))
+        assert sorted(
+            expected_fabrics, key=lambda fabric: fabric["id"]
+        ) == sorted(handler.list({}), key=lambda fabric: fabric["id"])
 
     def test_list_constant_queries(self):
         user = factory.make_User()
@@ -82,43 +80,51 @@ class TestFabricHandler(MAASServerTestCase):
         queries_one, _ = count_queries(handler.list, {"limit": 1})
         queries_multiple, _ = count_queries(handler.list, {})
 
-        self.assertEqual(queries_one, queries_multiple)
+        assert queries_one == queries_multiple
 
 
-class TestFabricHandlerViewPermission(MAASServerTestCase):
-    def deny_global_view(self):
-        client = openfga.get_openfga_client()
-        client.can_view_global_entities = MagicMock(return_value=False)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestFabricHandlerViewPermission:
+    def deny_global_view(self, mocker):
+        mocker.patch.object(
+            openfga.get_openfga_client(),
+            "can_view_global_entities",
+            return_value=False,
+        )
 
-    def test_list_requires_view_permission(self):
-        self.deny_global_view()
+    def test_list_requires_view_permission(self, mocker):
+        self.deny_global_view(mocker)
         handler = FabricHandler(factory.make_User(), {}, None)
         factory.make_Fabric()
-        self.assertRaises(HandlerPermissionError, handler.list, {})
+        with pytest.raises(HandlerPermissionError):
+            handler.list({})
 
-    def test_get_requires_view_permission(self):
-        self.deny_global_view()
+    def test_get_requires_view_permission(self, mocker):
+        self.deny_global_view(mocker)
         fabric = factory.make_Fabric()
         handler = FabricHandler(factory.make_User(), {}, None)
-        self.assertRaises(
-            HandlerPermissionError, handler.get, {"id": fabric.id}
+        with pytest.raises(HandlerPermissionError):
+            handler.get({"id": fabric.id})
+
+
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestFabricHandlerEditPermission:
+    def deny_global_edit(self, mocker):
+        mocker.patch.object(
+            openfga.get_openfga_client(),
+            "can_edit_global_entities",
+            return_value=False,
         )
 
-
-class TestFabricHandlerEditPermission(MAASServerTestCase):
-    def deny_global_edit(self):
-        client = openfga.get_openfga_client()
-        client.can_edit_global_entities = MagicMock(return_value=False)
-
-    def test_create_requires_edit_permission(self):
-        self.deny_global_edit()
+    def test_create_requires_edit_permission(self, mocker):
+        self.deny_global_edit(mocker)
         handler = FabricHandler(factory.make_User(), {}, None)
-        self.assertRaises(HandlerPermissionError, handler.create, {})
+        with pytest.raises(HandlerPermissionError):
+            handler.create({})
 
-    def test_update_requires_edit_permission(self):
-        self.deny_global_edit()
+    def test_update_requires_edit_permission(self, mocker):
+        self.deny_global_edit(mocker)
         fabric = factory.make_Fabric()
         handler = FabricHandler(factory.make_User(), {}, None)
-        self.assertRaises(
-            HandlerPermissionError, handler.update, {"id": fabric.id}
-        )
+        with pytest.raises(HandlerPermissionError):
+            handler.update({"id": fabric.id})

@@ -1,10 +1,12 @@
 # Copyright 2013-2026 Canonical Ltd.  This software is licensed under the
 # GNU Affero General Public License version 3 (see the file LICENSE).
 
+from collections import Counter
 from functools import partial
 import random
 
 from django import forms
+import pytest
 
 from maasserver.enum import (
     DEPLOYMENT_TARGET,
@@ -38,13 +40,15 @@ from maasserver.node_constraint_filter_forms import (
 from maasserver.testing.architecture import patch_usable_architectures
 from maasserver.testing.factory import factory, RANDOM
 from maasserver.testing.osystems import make_usable_osystem
-from maasserver.testing.testcase import MAASServerTestCase
 from maasserver.utils.orm import post_commit_hooks
 from provisioningserver.enum import POWER_STATE
 from provisioningserver.utils.constraints import LabeledConstraintMap
 
 
-class TestUtils(MAASServerTestCase):
+@pytest.mark.usefixtures(
+    "maasdb", "factory", "mock_openfga", "mock_start_workflows"
+)
+class TestUtils:
     def test_generate_architecture_wildcards(self):
         # Create a test architecture choice list of one architecture that only
         # has one available subarch (single_subarch) and two architectures that
@@ -61,130 +65,124 @@ class TestUtils(MAASServerTestCase):
         # single_subarch should end up in the dict essentially unchanged, and
         # the double_subarchs should have been flattened into a single dict
         # element with a list of them.
-        self.assertEqual(
-            {
-                single_subarch[0]: frozenset([arches[0]]),
-                double_subarch_1[0]: frozenset([arches[1], arches[2]]),
-            },
-            generate_architecture_wildcards(arches),
-        )
+        assert {
+            single_subarch[0]: frozenset([arches[0]]),
+            double_subarch_1[0]: frozenset([arches[1], arches[2]]),
+        } == generate_architecture_wildcards(arches)
 
     def test_get_architecture_wildcards_aliases_armhf_as_arm(self):
         subarch = factory.make_name("sub")
         arches = ["armhf/%s" % subarch]
-        self.assertEqual(
-            {"arm": frozenset(arches), "armhf": frozenset(arches)},
-            get_architecture_wildcards(arches),
+        assert {"arm": frozenset(arches), "armhf": frozenset(arches)} == (
+            get_architecture_wildcards(arches)
         )
 
     def test_get_architecture_wildcards_does_not_overwrite_existing_arm(self):
         arm = "arm/%s" % factory.make_name("armsub")
         armhf = "armhf/%s" % factory.make_name("armhfsub")
-        self.assertEqual(
-            {"arm": frozenset([arm]), "armhf": frozenset([armhf])},
-            get_architecture_wildcards([arm, armhf]),
+        assert {"arm": frozenset([arm]), "armhf": frozenset([armhf])} == (
+            get_architecture_wildcards([arm, armhf])
         )
 
     def test_parse_legacy_tags(self):
-        self.assertEqual([], parse_legacy_tags([]))
-        self.assertEqual(["a", "b"], parse_legacy_tags(["a", "b"]))
-        self.assertEqual(["a", "b"], parse_legacy_tags(["a b"]))
-        self.assertEqual(["a", "b"], parse_legacy_tags(["a, b"]))
-        self.assertEqual(["a", "b", "c"], parse_legacy_tags(["a, b c"]))
-        self.assertEqual(["a", "b"], parse_legacy_tags(["a,b"]))
-        self.assertEqual(
-            ["a", "b", "c", "d"], parse_legacy_tags(["a,b", "c d"])
-        )
+        assert [] == parse_legacy_tags([])
+        assert ["a", "b"] == parse_legacy_tags(["a", "b"])
+        assert ["a", "b"] == parse_legacy_tags(["a b"])
+        assert ["a", "b"] == parse_legacy_tags(["a, b"])
+        assert ["a", "b", "c"] == parse_legacy_tags(["a, b c"])
+        assert ["a", "b"] == parse_legacy_tags(["a,b"])
+        assert ["a", "b", "c", "d"] == parse_legacy_tags(["a,b", "c d"])
 
     def test_JUJU_ACQUIRE_FORM_FIELDS_MAPPING_fields(self):
-        self.assertGreaterEqual(
-            set(AcquireNodeForm().fields),
-            set(JUJU_ACQUIRE_FORM_FIELDS_MAPPING),
+        assert set(AcquireNodeForm().fields) >= set(
+            JUJU_ACQUIRE_FORM_FIELDS_MAPPING
         )
 
     def test_detect_nonexistent_names_returns_empty_if_no_names(self):
-        self.assertEqual([], detect_nonexistent_names(Zone, []))
+        assert [] == detect_nonexistent_names(Zone, [])
 
     def test_detect_nonexistent_names_returns_empty_if_all_OK(self):
         zones = [factory.make_Zone() for _ in range(3)]
-        self.assertEqual(
-            [], detect_nonexistent_names(Zone, [zone.name for zone in zones])
+        assert [] == detect_nonexistent_names(
+            Zone, [zone.name for zone in zones]
         )
 
     def test_detect_nonexistent_names_reports_unknown_names(self):
         non_zone = factory.make_name("nonzone")
-        self.assertEqual(
-            [non_zone], detect_nonexistent_names(Zone, [non_zone])
-        )
+        assert [non_zone] == detect_nonexistent_names(Zone, [non_zone])
 
     def test_detect_nonexistent_names_is_consistent(self):
         names = [factory.make_name("nonzone") for _ in range(3)]
-        self.assertEqual(
-            detect_nonexistent_names(Zone, names),
-            detect_nonexistent_names(Zone, names),
-        )
+        assert detect_nonexistent_names(
+            Zone, names
+        ) == detect_nonexistent_names(Zone, names)
 
     def test_detect_nonexistent_names_combines_good_and_bad_names(self):
         zone = factory.make_Zone().name
         non_zone = factory.make_name("nonzone")
-        self.assertEqual(
-            [non_zone], detect_nonexistent_names(Zone, [zone, non_zone])
-        )
+        assert [non_zone] == detect_nonexistent_names(Zone, [zone, non_zone])
 
     def test_detect_nonexistent_names_asserts_parameter_type(self):
-        self.assertRaises(
-            AssertionError, detect_nonexistent_names, Zone, "text"
-        )
+        with pytest.raises(AssertionError):
+            detect_nonexistent_names(Zone, "text")
 
     def test_get_storage_constraints_from_string_returns_None_for_empty(self):
-        self.assertIsNone(get_storage_constraints_from_string(""))
+        assert get_storage_constraints_from_string("") is None
 
     def test_get_storage_constraints_from_string_None_for_empty_tags(self):
-        self.assertEqual(
-            [None, None, None],
-            [
-                tags
-                for _, _, tags in get_storage_constraints_from_string("0,0,0")
-            ],
-        )
+        assert [None, None, None] == [
+            tags for _, _, tags in get_storage_constraints_from_string("0,0,0")
+        ]
 
     def test_get_storage_constraints_from_string_returns_size_in_bytes(self):
-        self.assertEqual(
-            [int(1.5 * (1000**3)), 3 * (1000**3), int(6.75 * (1000**3))],
-            [
-                size
-                for _, size, _ in get_storage_constraints_from_string(
-                    "1.5,3,6.75"
-                )
-            ],
-        )
+        assert [
+            int(1.5 * (1000**3)),
+            3 * (1000**3),
+            int(6.75 * (1000**3)),
+        ] == [
+            size
+            for _, size, _ in get_storage_constraints_from_string("1.5,3,6.75")
+        ]
 
     def test_get_storage_constraints_from_string_sorts_more_tags_first(self):
         """Ensure first tag set remains first, all others are sorted"""
-        self.assertEqual(
-            [["ssd"], ["ssd", "sata", "removable"], ["ssd", "sata"], ["ssd"]],
-            [
-                tags
-                for _, _, tags in get_storage_constraints_from_string(
-                    "0(ssd),0(ssd,sata),0(ssd),0(ssd,sata,removable)"
-                )
-            ],
-        )
+        assert [
+            ["ssd"],
+            ["ssd", "sata", "removable"],
+            ["ssd", "sata"],
+            ["ssd"],
+        ] == [
+            tags
+            for _, _, tags in get_storage_constraints_from_string(
+                "0(ssd),0(ssd,sata),0(ssd),0(ssd,sata,removable)"
+            )
+        ]
 
     def test_nodes_by_storage_returns_None_when_storage_string_is_empty(self):
-        self.assertIsNone(nodes_by_storage(""))
+        assert nodes_by_storage("") is None
 
 
 class FilterConstraintsMixin:
     form_class = None  # set in subclasses
 
+    @pytest.fixture(autouse=True)
+    def _setup_helpers(self, mocker, request):
+        self._mocker = mocker
+        self._request = request
+
+    def patch(self, obj, attribute):
+        return self._mocker.patch.object(obj, attribute)
+
+    def addCleanup(self, function, *args, **kwargs):
+        self._request.addfinalizer(lambda: function(*args, **kwargs))
+
     def assertConstrainedNodes(self, nodes, data):
         form = self.form_class(data=data)
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
         filtered_nodes, storage, interfaces = form.filter_nodes(
             Machine.objects.all()
         )
-        self.assertCountEqual(nodes, filtered_nodes)
+        assert Counter(nodes) == Counter(filtered_nodes)
         return (filtered_nodes, storage, interfaces)
 
 
@@ -196,7 +194,10 @@ def create_unique_node_device_needle(needle_name, needle_factory):
     return unique_needle
 
 
-class TestFilterNodeForm(MAASServerTestCase, FilterConstraintsMixin):
+@pytest.mark.usefixtures(
+    "maasdb", "factory", "mock_openfga", "mock_start_workflows"
+)
+class TestFilterNodeForm(FilterConstraintsMixin):
     form_class = FilterNodeForm
 
     def set_usable_arch(self):
@@ -222,21 +223,21 @@ class TestFilterNodeForm(MAASServerTestCase, FilterConstraintsMixin):
     def test_strict_form_checks_unknown_constraints(self):
         data = {"unknown_constraint": "boo"}
         form = FilterNodeForm.Strict(data=data)
-        self.assertEqual(
-            (False, {"unknown_constraint": ["No such constraint."]}),
-            (form.is_valid(), form.errors),
+        assert (False, {"unknown_constraint": ["No such constraint."]}) == (
+            form.is_valid(),
+            form.errors,
         )
 
     def test_not_strict_check_unknown_constraints(self):
         data = {"unknown_constraint": "boo"}
         form = FilterNodeForm(data=data)
-        self.assertFalse(form.is_valid())
+        assert not form.is_valid()
 
     def test_no_constraints(self):
         nodes = [factory.make_Node() for _ in range(3)]
         form = FilterNodeForm(data={})
-        self.assertTrue(form.is_valid(), form.errors)
-        self.assertCountEqual(nodes, Machine.objects.all())
+        assert form.is_valid(), form.errors
+        assert Counter(nodes) == Counter(Machine.objects.all())
 
     def test_subnets_filters_by_name(self):
         subnets = [factory.make_Subnet() for _ in range(3)]
@@ -258,7 +259,7 @@ class TestFilterNodeForm(MAASServerTestCase, FilterConstraintsMixin):
         s1 = factory.make_Subnet(vlan=v1, space=None)
         factory.make_Node_with_Interface_on_Subnet(subnet=s1)
         form = FilterNodeForm(data={"subnets": "space:bar"})
-        self.assertFalse(form.is_valid(), dict(form.errors))
+        assert not form.is_valid(), dict(form.errors)
 
     def test_subnets_filters_by_space(self):
         subnets = [factory.make_Subnet(space=RANDOM) for _ in range(3)]
@@ -328,34 +329,25 @@ class TestFilterNodeForm(MAASServerTestCase, FilterConstraintsMixin):
 
     def test_fails_validation_for_no_matching_vlans(self):
         form = FilterNodeForm(data={"vlans": ["space:foo"]})
-        self.assertFalse(form.is_valid())
-        self.assertEqual(
-            ["No matching VLANs found."], dict(form.errors)["vlans"]
-        )
+        assert not form.is_valid()
+        assert ["No matching VLANs found."] == dict(form.errors)["vlans"]
 
     def test_fails_validation_for_no_matching_not_vlans(self):
         form = FilterNodeForm(data={"not_vlans": ["space:foo"]})
-        self.assertFalse(form.is_valid())
-        self.assertEqual(
-            ["No matching VLANs found."],
-            dict(form.errors)["not_vlans"],
-        )
+        assert not form.is_valid()
+        assert ["No matching VLANs found."] == dict(form.errors)["not_vlans"]
 
     def test_fails_validation_for_no_matching_subnets(self):
         form = FilterNodeForm(data={"subnets": ["foo"]})
-        self.assertFalse(form.is_valid())
-        self.assertEqual(
-            ["No matching subnets found."],
-            dict(form.errors)["subnets"],
-        )
+        assert not form.is_valid()
+        assert ["No matching subnets found."] == dict(form.errors)["subnets"]
 
     def test_fails_validation_for_no_matching_not_subnets(self):
         form = FilterNodeForm(data={"not_subnets": ["foo"]})
-        self.assertFalse(form.is_valid())
-        self.assertEqual(
-            ["No matching subnets found."],
-            dict(form.errors)["not_subnets"],
-        )
+        assert not form.is_valid()
+        assert ["No matching subnets found."] == dict(form.errors)[
+            "not_subnets"
+        ]
 
     def test_subnets_filters_by_ip(self):
         subnets = [factory.make_Subnet() for _ in range(3)]
@@ -416,33 +408,26 @@ class TestFilterNodeForm(MAASServerTestCase, FilterConstraintsMixin):
 
     def test_invalid_subnets(self):
         form = FilterNodeForm(data={"subnets": "ip:10.0.0.0"})
-        self.assertEqual(
-            (
-                False,
-                {
-                    "subnets": [
-                        "Invalid parameter: "
-                        "list of subnet specifiers required."
-                    ]
-                },
-            ),
-            (form.is_valid(), form.errors),
-        )
+        assert (
+            False,
+            {
+                "subnets": [
+                    "Invalid parameter: list of subnet specifiers required."
+                ]
+            },
+        ) == (form.is_valid(), form.errors)
 
         # The validator is unit-tested separately.  This just verifies that it
         # is being consulted.
         form = FilterNodeForm(data={"subnets": ["vlan:-1"]})
-        self.assertEqual(
-            (
-                False,
-                {
-                    "subnets": [
-                        "VLAN tag (VID) out of range (0-4094; 0 for untagged.)"
-                    ]
-                },
-            ),
-            (form.is_valid(), form.errors),
-        )
+        assert (
+            False,
+            {
+                "subnets": [
+                    "VLAN tag (VID) out of range (0-4094; 0 for untagged.)"
+                ]
+            },
+        ) == (form.is_valid(), form.errors)
 
     def test_subnets_combines_filters(self):
         subnets = [factory.make_Subnet() for _ in range(3)]
@@ -535,33 +520,26 @@ class TestFilterNodeForm(MAASServerTestCase, FilterConstraintsMixin):
 
     def test_invalid_not_subnets(self):
         form = FilterNodeForm(data={"not_subnets": "ip:10.0.0.0"})
-        self.assertEqual(
-            (
-                False,
-                {
-                    "not_subnets": [
-                        "Invalid parameter: "
-                        "list of subnet specifiers required."
-                    ]
-                },
-            ),
-            (form.is_valid(), form.errors),
-        )
+        assert (
+            False,
+            {
+                "not_subnets": [
+                    "Invalid parameter: list of subnet specifiers required."
+                ]
+            },
+        ) == (form.is_valid(), form.errors)
 
         # The validator is unit-tested separately.  This just verifies that it
         # is being consulted.
         form = FilterNodeForm(data={"not_subnets": ["vlan:-1"]})
-        self.assertEqual(
-            (
-                False,
-                {
-                    "not_subnets": [
-                        "VLAN tag (VID) out of range (0-4094; 0 for untagged.)"
-                    ]
-                },
-            ),
-            (form.is_valid(), form.errors),
-        )
+        assert (
+            False,
+            {
+                "not_subnets": [
+                    "VLAN tag (VID) out of range (0-4094; 0 for untagged.)"
+                ]
+            },
+        ) == (form.is_valid(), form.errors)
 
     def test_not_subnets_combines_filters(self):
         subnets = [factory.make_Subnet() for _ in range(5)]
@@ -607,10 +585,10 @@ class TestFilterNodeForm(MAASServerTestCase, FilterConstraintsMixin):
 
     def test_invalid_link_speed(self):
         form = FilterNodeForm(data={"link_speed": "invalid"})
-        self.assertEqual(
-            (False, {"link_speed": ["Invalid link speed: number required."]}),
-            (form.is_valid(), form.errors),
-        )
+        assert (
+            False,
+            {"link_speed": ["Invalid link speed: number required."]},
+        ) == (form.is_valid(), form.errors)
 
     def test_zone(self):
         node1 = factory.make_Node()
@@ -626,9 +604,9 @@ class TestFilterNodeForm(MAASServerTestCase, FilterConstraintsMixin):
 
     def test_invalid_zone(self):
         form = FilterNodeForm(data={"zone": "unknown"})
-        self.assertEqual(
-            (False, {"zone": ["No such zone(s): unknown."]}),
-            (form.is_valid(), form.errors),
+        assert (False, {"zone": ["No such zone(s): unknown."]}) == (
+            form.is_valid(),
+            form.errors,
         )
 
     def test_not_in_zone_excludes_given_zones(self):
@@ -649,16 +627,16 @@ class TestFilterNodeForm(MAASServerTestCase, FilterConstraintsMixin):
     def test_validates_not_in_zone(self):
         bad_zone_name = "#$&*!"
         form = FilterNodeForm(data={"not_in_zone": [bad_zone_name]})
-        self.assertFalse(form.is_valid())
-        self.assertEqual(["not_in_zone"], list(form.errors.keys()))
+        assert not form.is_valid()
+        assert ["not_in_zone"] == list(form.errors.keys())
 
     def test_not_in_zone_must_be_zone_name(self):
         non_zone = factory.make_name("nonzone")
         form = FilterNodeForm(data={"not_in_zone": [non_zone]})
-        self.assertFalse(form.is_valid())
-        self.assertEqual(
-            {"not_in_zone": ["No such zone(s): %s." % non_zone]}, form.errors
-        )
+        assert not form.is_valid()
+        assert {
+            "not_in_zone": ["No such zone(s): %s." % non_zone]
+        } == form.errors
 
     def test_not_in_zone_can_exclude_multiple_zones(self):
         # Three nodes, all in different physical zones.  If we say we don't
@@ -685,9 +663,9 @@ class TestFilterNodeForm(MAASServerTestCase, FilterConstraintsMixin):
 
     def test_invalid_pool(self):
         form = FilterNodeForm(data={"pool": "unknown"})
-        self.assertEqual(
-            (False, {"pool": ["No such pool(s): unknown."]}),
-            (form.is_valid(), form.errors),
+        assert (False, {"pool": ["No such pool(s): unknown."]}) == (
+            form.is_valid(),
+            form.errors,
         )
 
     def test_not_in_pool_excludes_given_pools(self):
@@ -712,16 +690,16 @@ class TestFilterNodeForm(MAASServerTestCase, FilterConstraintsMixin):
     def test_validates_not_in_pool(self):
         bad_pool_name = "#$&*!"
         form = FilterNodeForm(data={"not_in_pool": [bad_pool_name]})
-        self.assertFalse(form.is_valid())
-        self.assertEqual(["not_in_pool"], list(form.errors.keys()))
+        assert not form.is_valid()
+        assert ["not_in_pool"] == list(form.errors.keys())
 
     def test_not_in_pool_must_be_pool_name(self):
         non_pool = factory.make_name("nonpool")
         form = FilterNodeForm(data={"not_in_pool": [non_pool]})
-        self.assertFalse(form.is_valid())
-        self.assertEqual(
-            {"not_in_pool": ["No such pool(s): %s." % non_pool]}, form.errors
-        )
+        assert not form.is_valid()
+        assert {
+            "not_in_pool": ["No such pool(s): %s." % non_pool]
+        } == form.errors
 
     def test_not_in_pool_can_exclude_multiple_pool(self):
         # Three nodes, all in different pools.  If we say we don't
@@ -783,32 +761,26 @@ class TestFilterNodeForm(MAASServerTestCase, FilterConstraintsMixin):
 
     def test_invalid_tags(self):
         form = FilterNodeForm(data={"tags": ["big", "unknown"]})
-        self.assertFalse(form.is_valid())
+        assert not form.is_valid()
         tags_error = form.errors.get("tags")
-        self.assertIn(
-            tags_error,
-            (
-                [("No such tag(s): 'big', 'unknown'.")],
-                [("No such tag(s): 'unknown', 'big'.")],
-            ),
+        assert tags_error in (
+            [("No such tag(s): 'big', 'unknown'.")],
+            [("No such tag(s): 'unknown', 'big'.")],
         )
 
     def test_storage_invalid_constraint(self):
         form = FilterNodeForm(data={"storage": "10(ssd,20"})
-        self.assertEqual(
-            (
-                False,
-                {"storage": ['Malformed storage constraint, "10(ssd,20".']},
-            ),
-            (form.is_valid(), form.errors),
-        )
+        assert (
+            False,
+            {"storage": ['Malformed storage constraint, "10(ssd,20".']},
+        ) == (form.is_valid(), form.errors)
 
     def test_storage_invalid_size_constraint(self):
         form = FilterNodeForm(data={"storage": "abc"})
-        self.assertEqual(
-            (False, {"storage": ['Malformed storage constraint, "abc".']}),
-            (form.is_valid(), form.errors),
-        )
+        assert (
+            False,
+            {"storage": ['Malformed storage constraint, "abc".']},
+        ) == (form.is_valid(), form.errors)
 
     def test_storage_matches_disk_with_root_mount_on_disk(self):
         node1 = factory.make_Node(with_boot_disk=False)
@@ -857,9 +829,7 @@ class TestFilterNodeForm(MAASServerTestCase, FilterConstraintsMixin):
         _, storage, _ = self.assertConstrainedNodes(
             [node1], {"storage": "part:0(partition)"}
         )
-        self.assertEqual(
-            {node1.id: {"partition:%d" % partition.id: "part"}}, storage
-        )
+        assert {node1.id: {"partition:%d" % partition.id: "part"}} == storage
 
     def test_storage_single_contraint_matches_all_sizes_larger(self):
         node1 = factory.make_Node(with_boot_disk=False)
@@ -917,9 +887,7 @@ class TestFilterNodeForm(MAASServerTestCase, FilterConstraintsMixin):
         _, storage, _ = self.assertConstrainedNodes(
             [node1], {"storage": "part:0(partition,ssd-part)"}
         )
-        self.assertEqual(
-            {node1.id: {"partition:%d" % partition.id: "part"}}, storage
-        )
+        assert {node1.id: {"partition:%d" % partition.id: "part"}} == storage
 
     def test_storage_single_contraint_matches_decimal_size(self):
         node1 = factory.make_Node(with_boot_disk=False)
@@ -1073,9 +1041,7 @@ class TestFilterNodeForm(MAASServerTestCase, FilterConstraintsMixin):
         _, storage, _ = self.assertConstrainedNodes(
             [node3], {"storage": "0,4,4,4,part:0(partition)"}
         )
-        self.assertEqual(
-            {node3.id: {"partition:%d" % partition.id: "part"}}, storage
-        )
+        assert {node3.id: {"partition:%d" % partition.id: "part"}} == storage
 
     def test_storage_multi_contraint_matches_on_tags(self):
         node1 = factory.make_Node(with_boot_disk=False)
@@ -1181,7 +1147,7 @@ class TestFilterNodeForm(MAASServerTestCase, FilterConstraintsMixin):
         form = FilterNodeForm(
             {"storage": "root:8(lvm),physical:5(rotary,5400rpm),other:20"}
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid()
         filtered_nodes, constraint_map, _ = form.filter_nodes(
             Machine.objects.all()
         )
@@ -1190,15 +1156,15 @@ class TestFilterNodeForm(MAASServerTestCase, FilterConstraintsMixin):
             value: key for key, value in constraint_map[node.id].items()
         }
         disk0 = node.current_config.blockdevice_set.get(id=constraints["root"])
-        self.assertEqual(virtual.id, disk0.id)
+        assert virtual.id == disk0.id
         disk1 = node.current_config.blockdevice_set.get(
             id=constraints["physical"]
         )
-        self.assertEqual(physical.id, disk1.id)
+        assert physical.id == disk1.id
         disk2 = node.current_config.blockdevice_set.get(
             id=constraints["other"]
         )
-        self.assertEqual(other.id, disk2.id)
+        assert other.id == disk2.id
 
     def test_fabrics_constraint(self):
         fabric1 = factory.make_Fabric(name="fabric1")
@@ -1206,9 +1172,9 @@ class TestFilterNodeForm(MAASServerTestCase, FilterConstraintsMixin):
         factory.make_Node_with_Interface_on_Subnet(fabric=fabric1)
         node2 = factory.make_Node_with_Interface_on_Subnet(fabric=fabric2)
         form = FilterNodeForm({"fabrics": ["fabric2"]})
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid()
         filtered_nodes, _, _ = form.filter_nodes(Machine.objects)
-        self.assertCountEqual([node2], filtered_nodes)
+        assert Counter([node2]) == Counter(filtered_nodes)
 
     def test_not_fabrics_constraint(self):
         fabric1 = factory.make_Fabric(name="fabric1")
@@ -1216,9 +1182,9 @@ class TestFilterNodeForm(MAASServerTestCase, FilterConstraintsMixin):
         factory.make_Node_with_Interface_on_Subnet(fabric=fabric1)
         node2 = factory.make_Node_with_Interface_on_Subnet(fabric=fabric2)
         form = FilterNodeForm({"not_fabrics": ["fabric1"]})
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid()
         filtered_nodes, _, _ = form.filter_nodes(Machine.objects)
-        self.assertCountEqual([node2], filtered_nodes)
+        assert Counter([node2]) == Counter(filtered_nodes)
 
     def test_fabric_classes_constraint(self):
         fabric1 = factory.make_Fabric(class_type="10g")
@@ -1226,9 +1192,9 @@ class TestFilterNodeForm(MAASServerTestCase, FilterConstraintsMixin):
         factory.make_Node_with_Interface_on_Subnet(fabric=fabric1)
         node2 = factory.make_Node_with_Interface_on_Subnet(fabric=fabric2)
         form = FilterNodeForm({"fabric_classes": ["1g"]})
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid()
         filtered_nodes, _, _ = form.filter_nodes(Machine.objects)
-        self.assertCountEqual([node2], filtered_nodes)
+        assert Counter([node2]) == Counter(filtered_nodes)
 
     def test_not_fabric_classes_constraint(self):
         fabric1 = factory.make_Fabric(class_type="10g")
@@ -1236,35 +1202,35 @@ class TestFilterNodeForm(MAASServerTestCase, FilterConstraintsMixin):
         factory.make_Node_with_Interface_on_Subnet(fabric=fabric1)
         node2 = factory.make_Node_with_Interface_on_Subnet(fabric=fabric2)
         form = FilterNodeForm({"not_fabric_classes": ["10g"]})
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid()
         filtered_nodes, _, _ = form.filter_nodes(Machine.objects)
-        self.assertCountEqual([node2], filtered_nodes)
+        assert Counter([node2]) == Counter(filtered_nodes)
 
     def test_interfaces_constraint_rejected_if_syntax_is_invalid(self):
         factory.make_Node_with_Interface_on_Subnet()
         form = FilterNodeForm({"interfaces": "label:x"})
-        self.assertFalse(form.is_valid(), dict(form.errors))
-        self.assertIn("interfaces", form.errors)
+        assert not form.is_valid()
+        assert "interfaces" in form.errors
 
     def test_interfaces_constraint_rejected_if_key_is_invalid(self):
         factory.make_Node_with_Interface_on_Subnet()
         form = FilterNodeForm(
             {"interfaces": "label:chirp_chirp_thing=silenced"}
         )
-        self.assertFalse(form.is_valid(), dict(form.errors))
-        self.assertIn("interfaces", form.errors)
+        assert not form.is_valid()
+        assert "interfaces" in form.errors
 
     def test_interfaces_constraint_validated(self):
         factory.make_Node_with_Interface_on_Subnet()
         form = FilterNodeForm({"interfaces": "label:fabric=fabric-0"})
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid()
 
     def test_interfaces_constraint_works_with_object_form(self):
         factory.make_Node_with_Interface_on_Subnet()
         form = FilterNodeForm(
             {"interfaces": LabeledConstraintMap("label:fabric=fabric-0")}
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid()
 
     def test_interfaces_constraint_works_for_subnet(self):
         subnet = factory.make_Subnet()
@@ -1276,7 +1242,7 @@ class TestFilterNodeForm(MAASServerTestCase, FilterConstraintsMixin):
                 )
             }
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid()
 
     def test_interfaces_constraint_works_for_ip_address(self):
         subnet = factory.make_Subnet()
@@ -1285,7 +1251,7 @@ class TestFilterNodeForm(MAASServerTestCase, FilterConstraintsMixin):
         form = FilterNodeForm(
             {"interfaces": LabeledConstraintMap("eth0:ip=%s" % str(ip.ip))}
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid()
 
     def test_not_preconfig_interfaces_constraint_works_for_unconfigured(self):
         subnet = factory.make_Subnet()
@@ -1294,9 +1260,9 @@ class TestFilterNodeForm(MAASServerTestCase, FilterConstraintsMixin):
         ip = factory.make_StaticIPAddress(interface=iface)
         lcm = LabeledConstraintMap("eth0:ip=%s,mode=unconfigured" % str(ip.ip))
         result = nodes_by_interface(lcm, preconfigured=False)
-        self.assertEqual("unconfigured", result.ip_modes["eth0"])
+        assert "unconfigured" == result.ip_modes["eth0"]
         # The mode should have been removed after being placed in the result.
-        self.assertNotIn("mode", lcm)
+        assert "mode" not in lcm
 
     def test_interfaces_constraint_with_multiple_labels_and_values_validated(
         self,
@@ -1308,7 +1274,7 @@ class TestFilterNodeForm(MAASServerTestCase, FilterConstraintsMixin):
                 "label2:fabric=fabric-3,fabric=fabric-4,space=foo"
             }
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid()
 
     def test_interfaces_filters_by_fabric_class(self):
         fabric1 = factory.make_Fabric(class_type="1g")
@@ -1317,14 +1283,14 @@ class TestFilterNodeForm(MAASServerTestCase, FilterConstraintsMixin):
         node2 = factory.make_Node_with_Interface_on_Subnet(fabric=fabric2)
 
         form = FilterNodeForm({"interfaces": "label:fabric_class=10g"})
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid()
         filtered_nodes, _, _ = form.filter_nodes(Machine.objects)
-        self.assertCountEqual([node2], filtered_nodes)
+        assert Counter([node2]) == Counter(filtered_nodes)
 
         form = FilterNodeForm({"interfaces": "label:fabric_class=1g"})
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid()
         filtered_nodes, _, _ = form.filter_nodes(Machine.objects)
-        self.assertCountEqual([node1], filtered_nodes)
+        assert Counter([node1]) == Counter(filtered_nodes)
 
     def test_interfaces_filters_work_with_multiple_labels(self):
         fabric1 = factory.make_Fabric(class_type="1g")
@@ -1341,16 +1307,16 @@ class TestFilterNodeForm(MAASServerTestCase, FilterConstraintsMixin):
         form = FilterNodeForm(
             {"interfaces": "fabric:fabric_class=1g;vlan:vid=1"}
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid()
         filtered_nodes, _, _ = form.filter_nodes(Machine.objects)
-        self.assertCountEqual([node1], filtered_nodes)
+        assert Counter([node1]) == Counter(filtered_nodes)
 
         form = FilterNodeForm(
             {"interfaces": "label:fabric_class=10g;vlan:vid=2"}
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid()
         filtered_nodes, _, _ = form.filter_nodes(Machine.objects)
-        self.assertCountEqual([node2], filtered_nodes)
+        assert Counter([node2]) == Counter(filtered_nodes)
 
     def test_interfaces_filters_same_key_treated_as_OR_operation(self):
         fabric1 = factory.make_Fabric(class_type="1g")
@@ -1369,16 +1335,16 @@ class TestFilterNodeForm(MAASServerTestCase, FilterConstraintsMixin):
                 "interfaces": "fabric:fabric_class=1g,fabric_class=10g;vlan:vid=1"
             }
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid()
         filtered_nodes, _, _ = form.filter_nodes(Machine.objects)
-        self.assertCountEqual([node1], filtered_nodes)
+        assert Counter([node1]) == Counter(filtered_nodes)
 
         form = FilterNodeForm(
             {"interfaces": "label:fabric_class=10g,fabric_class=1g;vlan:vid=2"}
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid()
         filtered_nodes, _, _ = form.filter_nodes(Machine.objects)
-        self.assertCountEqual([node2], filtered_nodes)
+        assert Counter([node2]) == Counter(filtered_nodes)
 
     def test_interfaces_filters_different_key_treated_as_AND_operation(self):
         fabric1 = factory.make_Fabric(class_type="1g")
@@ -1393,16 +1359,16 @@ class TestFilterNodeForm(MAASServerTestCase, FilterConstraintsMixin):
         )
 
         form = FilterNodeForm({"interfaces": "none:fabric_class=1g,vid=2"})
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid()
         filtered_nodes, _, _ = form.filter_nodes(Machine.objects)
-        self.assertCountEqual([], filtered_nodes)
+        assert Counter([]) == Counter(filtered_nodes)
 
         form = FilterNodeForm(
             {"interfaces": "any:fabric_class=10g,fabric_class=1g,vid=1,vid=2"}
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid()
         filtered_nodes, _, _ = form.filter_nodes(Machine.objects)
-        self.assertCountEqual([node1, node2], filtered_nodes)
+        assert Counter([node1, node2]) == Counter(filtered_nodes)
 
     def test_owner(self):
         user1 = factory.make_User()
@@ -1410,17 +1376,17 @@ class TestFilterNodeForm(MAASServerTestCase, FilterConstraintsMixin):
         factory.make_Node(owner=user1)
         node2 = factory.make_Node(owner=user2)
         form = FilterNodeForm({"owner": user2.username})
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid()
         filtered_nodes, _, _ = form.filter_nodes(Machine.objects)
-        self.assertCountEqual([node2], filtered_nodes)
+        assert Counter([node2]) == Counter(filtered_nodes)
 
     def test_power_state(self):
         factory.make_Node(power_state=POWER_STATE.OFF)
         node2 = factory.make_Node(power_state=POWER_STATE.ON)
         form = FilterNodeForm({"power_state": POWER_STATE.ON})
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid()
         filtered_nodes, _, _ = form.filter_nodes(Machine.objects)
-        self.assertCountEqual([node2], filtered_nodes)
+        assert Counter([node2]) == Counter(filtered_nodes)
 
     def test_combined_constraints(self):
         tag_big = factory.make_Tag(name="big")
@@ -1442,20 +1408,17 @@ class TestFilterNodeForm(MAASServerTestCase, FilterConstraintsMixin):
     def test_wildcard_arch_constraint(self):
         patch_usable_architectures(self, ["foo/bar", "foo/baz"])
         form = FilterNodeForm(data={"arch": "foo"})
-        self.assertTrue(form.is_valid())
+        assert form.is_valid()
 
     def test_invalid_combined_constraints(self):
         form = FilterNodeForm(data={"tags": ["unknown"], "arch": "invalid"})
-        self.assertEqual(
-            (
-                False,
-                {
-                    "arch": ["Architecture not recognised."],
-                    "tags": ["No such tag(s): 'unknown'."],
-                },
-            ),
-            (form.is_valid(), form.errors),
-        )
+        assert (
+            False,
+            {
+                "arch": ["Architecture not recognised."],
+                "tags": ["No such tag(s): 'unknown'."],
+            },
+        ) == (form.is_valid(), form.errors)
 
     def test_returns_distinct_nodes(self):
         node = factory.make_Node()
@@ -1478,40 +1441,38 @@ class TestFilterNodeForm(MAASServerTestCase, FilterConstraintsMixin):
 
     def test_describe_constraints_returns_empty_if_no_constraints(self):
         form = FilterNodeForm(data={})
-        self.assertTrue(form.is_valid(), form.errors)
-        self.assertEqual("", form.describe_constraints())
+        assert form.is_valid()
+        assert "" == form.describe_constraints()
 
     def test_describe_constraints_shows_arch_as_special_case(self):
         # The "arch" field is technically a single-valued string field
         # on the form, but its "cleaning" produces a list of strings.
         arch = self.set_usable_arch()
         form = FilterNodeForm(data={"arch": arch})
-        self.assertTrue(form.is_valid(), form.errors)
-        self.assertEqual("arch=%s" % arch, form.describe_constraints())
+        assert form.is_valid()
+        assert "arch=%s" % arch == form.describe_constraints()
 
     def test_describe_constraints_shows_multi_constraint(self):
         tag = factory.make_Tag()
         form = FilterNodeForm(data={"tags": [tag.name]})
-        self.assertTrue(form.is_valid(), form.errors)
-        self.assertEqual("tags=%s" % tag.name, form.describe_constraints())
+        assert form.is_valid()
+        assert "tags=%s" % tag.name == form.describe_constraints()
 
     def test_describe_constraints_sorts_constraints(self):
         zone = factory.make_Zone()
         pool = factory.make_ResourcePool()
         form = FilterNodeForm(data={"pool": pool, "zone": zone})
-        self.assertTrue(form.is_valid(), form.errors)
-        self.assertEqual(
-            f"pool={pool} zone={zone}", form.describe_constraints()
-        )
+        assert form.is_valid()
+        assert f"pool={pool} zone={zone}" == form.describe_constraints()
 
     def test_describe_constraints_combines_constraint_values(self):
         tag1 = factory.make_Tag()
         tag2 = factory.make_Tag()
         form = FilterNodeForm(data={"tags": [tag1.name, tag2.name]})
-        self.assertTrue(form.is_valid(), form.errors)
-        self.assertEqual(
-            "tags=%s,%s" % tuple(sorted([tag1.name, tag2.name])),
-            form.describe_constraints(),
+        assert form.is_valid()
+        assert (
+            "tags=%s,%s" % tuple(sorted([tag1.name, tag2.name]))
+            == form.describe_constraints()
         )
 
     def test_describe_constraints_shows_all_constraints(self):
@@ -1553,26 +1514,29 @@ class TestFilterNodeForm(MAASServerTestCase, FilterConstraintsMixin):
             "not_deployment_target": DEPLOYMENT_TARGET.DISK,
         }
         form = FilterNodeForm(data=constraints)
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid()
         # Check first: we didn't forget to test any attributes.  When we add
         # a constraint to the form, we'll have to add it here as well.
-        self.assertEqual(form.fields.keys(), constraints.keys())
+        assert form.fields.keys() == constraints.keys()
 
         described_constraints = {
             constraint.split("=", 1)[0]
             for constraint in form.describe_constraints().split()
         }
 
-        self.assertEqual(constraints.keys(), described_constraints)
+        assert constraints.keys() == described_constraints
 
 
-class TestFreeTextFilterNodeForm(MAASServerTestCase):
+@pytest.mark.usefixtures(
+    "maasdb", "factory", "mock_openfga", "mock_start_workflows"
+)
+class TestFreeTextFilterNodeForm(FilterConstraintsMixin):
     form_class = FreeTextFilterNodeForm
 
-    def setUp(self):
+    @pytest.fixture(autouse=True)
+    def _setup(self, factory):
         from maasserver.websockets.handlers.machine import MachineHandler
 
-        super().setUp()
         self._owner = factory.make_User()
         self._handler = MachineHandler(self._owner, {}, None)
 
@@ -1581,11 +1545,11 @@ class TestFreeTextFilterNodeForm(MAASServerTestCase):
 
     def assertConstrainedNodes(self, nodes, data):
         form = self.form_class(data=data)
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
         filtered_nodes, storage, interfaces = form.filter_nodes(
             self.get_queryset()
         )
-        self.assertCountEqual(nodes, filtered_nodes)
+        assert Counter(nodes) == Counter(filtered_nodes)
         return (filtered_nodes, storage, interfaces)
 
     def test_simple_status(self):
@@ -2002,7 +1966,10 @@ class TestFreeTextFilterNodeForm(MAASServerTestCase):
             self.assertConstrainedNodes([node1], {"free_text": expr})
 
 
-class TestAcquireNodeForm(MAASServerTestCase, FilterConstraintsMixin):
+@pytest.mark.usefixtures(
+    "maasdb", "factory", "mock_openfga", "mock_start_workflows"
+)
+class TestAcquireNodeForm(FilterConstraintsMixin):
     form_class = AcquireNodeForm
 
     def set_usable_arch(self):
@@ -2053,10 +2020,10 @@ class TestAcquireNodeForm(MAASServerTestCase, FilterConstraintsMixin):
 
     def test_invalid_cpu_count(self):
         form = AcquireNodeForm(data={"cpu_count": "invalid"})
-        self.assertEqual(
-            (False, {"cpu_count": ["Invalid CPU count: number required."]}),
-            (form.is_valid(), form.errors),
-        )
+        assert (
+            False,
+            {"cpu_count": ["Invalid CPU count: number required."]},
+        ) == (form.is_valid(), form.errors)
 
     def test_memory(self):
         node1 = factory.make_Node(memory=1024)
@@ -2070,15 +2037,15 @@ class TestAcquireNodeForm(MAASServerTestCase, FilterConstraintsMixin):
 
     def test_invalid_memory(self):
         form = AcquireNodeForm(data={"mem": "invalid"})
-        self.assertEqual(
-            (False, {"mem": ["Invalid memory: number of MiB required."]}),
-            (form.is_valid(), form.errors),
-        )
+        assert (
+            False,
+            {"mem": ["Invalid memory: number of MiB required."]},
+        ) == (form.is_valid(), form.errors)
 
     def test_describe_constraints_shows_simple_constraint(self):
         form = AcquireNodeForm(data={"cpu_count": "10"})
-        self.assertTrue(form.is_valid(), form.errors)
-        self.assertEqual("cpu_count=10.0", form.describe_constraints())
+        assert form.is_valid()
+        assert "cpu_count=10.0" == form.describe_constraints()
 
     def test_describe_constraints_shows_all_constraints(self):
         arch = self.set_usable_arch()
@@ -2120,16 +2087,16 @@ class TestAcquireNodeForm(MAASServerTestCase, FilterConstraintsMixin):
             "not_deployment_target": DEPLOYMENT_TARGET.DISK,
         }
         form = AcquireNodeForm(data=constraints)
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid()
         # Check first: we didn't forget to test any attributes.  When we add
         # a constraint to the form, we'll have to add it here as well.
-        self.assertCountEqual(form.fields.keys(), constraints.keys())
+        assert Counter(form.fields.keys()) == Counter(constraints.keys())
 
         described_constraints = {
             constraint.split("=", 1)[0]
             for constraint in form.describe_constraints().split()
         }
-        self.assertCountEqual(constraints.keys(), described_constraints)
+        assert Counter(constraints.keys()) == Counter(described_constraints)
 
     def test_device_filter_by_vendor_id(self):
         node = random.choice([factory.make_Node() for _ in range(3)])
@@ -2221,7 +2188,10 @@ class TestAcquireNodeForm(MAASServerTestCase, FilterConstraintsMixin):
         )
 
 
-class TestAcquireNodeFormOrdersResults(MAASServerTestCase):
+@pytest.mark.usefixtures(
+    "maasdb", "factory", "mock_openfga", "mock_start_workflows"
+)
+class TestAcquireNodeFormOrdersResults:
     def test_describe_constraints_orders_based_on_cost(self):
         nodes = [
             factory.make_Node(
@@ -2236,12 +2206,15 @@ class TestAcquireNodeFormOrdersResults(MAASServerTestCase):
         # The form should select all the nodes.  All we're interested
         # in here is the ordering.
         form = AcquireNodeForm(data={"cpu_count": 4})
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid()
         filtered_nodes, _, _ = form.filter_nodes(Machine.objects.all())
-        self.assertEqual(sorted_nodes, list(filtered_nodes))
+        assert sorted_nodes == list(filtered_nodes)
 
 
-class TestReadNodesForm(MAASServerTestCase, FilterConstraintsMixin):
+@pytest.mark.usefixtures(
+    "maasdb", "factory", "mock_openfga", "mock_start_workflows"
+)
+class TestReadNodesForm(FilterConstraintsMixin):
     form_class = ReadNodesForm
 
     def test_system_ids(self):
@@ -2281,15 +2254,10 @@ class TestReadNodesForm(MAASServerTestCase, FilterConstraintsMixin):
 
     def test_mac_addresses_invalid(self):
         form = ReadNodesForm(data={"mac_address": ["AA:BB:CC:DD:EE:XX"]})
-        self.assertFalse(form.is_valid())
-        self.assertEqual(
-            form.errors,
-            {
-                "mac_address": [
-                    "'AA:BB:CC:DD:EE:XX' is not a valid MAC address."
-                ]
-            },
-        )
+        assert not form.is_valid()
+        assert form.errors == {
+            "mac_address": ["'AA:BB:CC:DD:EE:XX' is not a valid MAC address."]
+        }
 
     def test_agent_name(self):
         agent_name = factory.make_name("agent-name")
@@ -2312,35 +2280,35 @@ class TestReadNodesForm(MAASServerTestCase, FilterConstraintsMixin):
         self.assertConstrainedNodes([node2], {"status": "=deploying"})
 
 
-class TestGetFieldArgumentType(MAASServerTestCase):
+class TestGetFieldArgumentType:
     def test_get_IntegerField_type(self):
         field = forms.IntegerField()
-        self.assertEqual(get_field_argument_type(field), "int")
+        assert get_field_argument_type(field) == "int"
 
     def test_get_ChoiceField_type(self):
         field = forms.ChoiceField()
-        self.assertEqual(get_field_argument_type(field), "str")
+        assert get_field_argument_type(field) == "str"
 
     def test_get_FloatField_type(self):
         field = forms.FloatField()
-        self.assertEqual(get_field_argument_type(field), "float")
+        assert get_field_argument_type(field) == "float"
 
     def test_get_CharField_type(self):
         field = forms.CharField()
-        self.assertEqual(get_field_argument_type(field), "str")
+        assert get_field_argument_type(field) == "str"
 
     def test_get_ValidatorMultipleChoiceField_type(self):
         field = ValidatorMultipleChoiceField(validator=lambda x: True)
-        self.assertEqual(get_field_argument_type(field), "list[str]")
+        assert get_field_argument_type(field) == "list[str]"
 
     def test_get_UnconstrainedTypedMultipleChoiceField_type(self):
         field = UnconstrainedTypedMultipleChoiceField(coerce=float)
-        self.assertEqual(get_field_argument_type(field), "list[float]")
+        assert get_field_argument_type(field) == "list[float]"
 
     def test_get_UnconstrainedMultipleChoiceField_type(self):
         field = UnconstrainedMultipleChoiceField()
-        self.assertEqual(get_field_argument_type(field), "list[str]")
+        assert get_field_argument_type(field) == "list[str]"
 
     def test_get_unknown_type(self):
         field = forms.Field()
-        self.assertEqual(get_field_argument_type(field), "str")
+        assert get_field_argument_type(field) == "str"

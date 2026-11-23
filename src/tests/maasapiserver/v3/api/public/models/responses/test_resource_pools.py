@@ -32,7 +32,9 @@ class TestResourcePoolsResponse:
         assert response.hal_links.self.href == f"{V3_API_PREFIX}/1"
 
     def test_etag(self) -> None:
-        now = datetime.datetime.fromtimestamp(1705671128)
+        now = datetime.datetime.fromtimestamp(
+            1705671128, tz=datetime.timezone.utc
+        ).replace(tzinfo=None)
         resource_pool = ResourcePool(
             id=1,
             name="my resource pools",

@@ -2,6 +2,7 @@ import os
 import pathlib
 import tempfile
 
+from django.conf import settings
 from django.db import reset_queries, transaction
 import pytest
 
@@ -16,7 +17,6 @@ import pytest
 if os.environ.get("MAAS_ROOT") is None:
     os.environ["MAAS_ROOT"] = tempfile.mkdtemp(prefix="maas-root-")
 
-from maasserver.djangosettings import development
 from maasserver.sqlalchemy import service_layer
 from maasserver.testing.resources import close_all_connections
 from maasserver.utils.orm import enable_all_database_connections
@@ -40,15 +40,18 @@ def pytest_configure(config):
         "markers",
         "recreate_db: re-create database before each test run",
     )
+    config.addinivalue_line(
+        "markers",
+        "real_post_commit_hooks: allow real post-commit callbacks in test",
+    )
 
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_load_initial_conftests(early_config, parser, args):
     if os.environ.get("DJANGO_SETTINGS_MODULE") is None:
         os.environ["DJANGO_SETTINGS_MODULE"] = (
-            "maasserver.djangosettings.development"
+            "maasserver.djangosettings.pytest"
         )
-
     # MAAS_ROOT must be set before the settings module is imported:
     # maasserver.djangosettings.settings reads regiond.conf at import
     # time inside a try/except that, on failure (e.g. RegionConfiguration
@@ -70,63 +73,9 @@ def pytest_load_initial_conftests(early_config, parser, args):
     django.setup()
 
 
-@pytest.fixture(scope="session", autouse=True)
-def _legacy_django_db(pytestconfig, worker_id):
-    """Build the region-legacy leg's Django-migrate DB, once per worker.
-
-    The legacy classes (those based on `MAASLegacyServerTestCase` and
-    friends) cannot use the main suite's `dbupgrade`-built pristine
-    template: that seeds `PackageRepository` rows these tests recreate
-    via `factory.make_default_PackageRepositories`, causing
-    `validate_unique` failures. They instead need a Django-native
-    `migrate`-built DB, mirroring `manage.py test`. This fixture
-    activates only for the region-legacy leg
-    (`MAAS_PREVENT_MIGRATIONS=1`, set before `django.setup()`).
-
-    A per-worker DB is required under xdist: a single shared DB makes
-    `TransactionTestCase`'s per-test flush truncate another worker's
-    live tables. The `cluster.lock.exclusive` guard serializes the
-    drop+create+migrate across workers.
-    """
-    if not os.environ.get("MAAS_PREVENT_MIGRATIONS"):
-        yield
-        return
-
-    from django.conf import settings
-    from django.core.management import call_command
-    import psycopg2
-
-    cluster = pytestconfig.stash[cluster_stash]
-    dbname = f"maas_legacy_{worker_id}"
-    with cluster.lock.exclusive:
-        admin = psycopg2.connect(
-            "postgresql:///postgres", host=cluster.datadir
-        )
-        admin.autocommit = True
-        with admin.cursor() as cur:
-            cur.execute(f"DROP DATABASE IF EXISTS {dbname}")
-            cur.execute(f"CREATE DATABASE {dbname}")
-        admin.close()
-        settings.DATABASES["default"]["NAME"] = dbname
-        call_command("migrate", run_syncdb=True, verbosity=0)
-    yield
-    # Drop the per-worker DB so repeated runs don't accumulate them.
-    close_all_connections()
-    with cluster.lock.exclusive:
-        admin = psycopg2.connect(
-            "postgresql:///postgres", host=cluster.datadir
-        )
-        admin.autocommit = True
-        with admin.cursor() as cur:
-            cur.execute(f"DROP DATABASE IF EXISTS {dbname}")
-        admin.close()
-
-
 @pytest.fixture
 def ensuremaasdjangodb(request, ensuremaasdb, pytestconfig, worker_id):
-    from maasserver.djangosettings import development
-
-    database = development.DATABASES["default"]
+    database = settings.DATABASES["default"]
     database["NAME"] = ensuremaasdb
     yield
     database["NAME"] = "no_such_db"
@@ -146,10 +95,12 @@ def maasdb(ensuremaasdjangodb, request, pytestconfig):
 
     if allow_transactions:
         yield
+        service_layer.close()
+        dbname = settings.DATABASES["default"]["NAME"]
+        settings.DATABASES["default"]["NAME"] = "no_such_db"
         close_all_connections()
         # Since transactions are allowed, we assume a commit has been
         # made, so we can't simply do rollback to clean up the DB.
-        dbname = development.DATABASES["default"]["NAME"]
         cluster = pytestconfig.stash[cluster_stash]
         with cluster.lock.exclusive:
             cluster.dropdb(dbname)
@@ -161,14 +112,18 @@ def maasdb(ensuremaasdjangodb, request, pytestconfig):
         # have to recreate the DB.
         transaction.rollback()
         close_all_connections()
-
-    service_layer.close()
+        service_layer.close()
 
 
 @pytest.fixture
-def factory(maasdb, mocker):
-    mocker.patch("maasserver.utils.orm.post_commit_hooks")
-    mocker.patch("maasserver.utils.orm.post_commit_do")
+def factory(maasdb, mocker, request):
+    from maasserver.utils.orm import post_commit_hooks
+
+    if request.node.get_closest_marker("real_post_commit_hooks") is None:
+        mocker.patch.object(
+            type(post_commit_hooks), "fire", lambda hooks: hooks.hooks.clear()
+        )
+        mocker.patch("maasserver.utils.orm.post_commit_do")
 
     # Local imports from maasserver so that pytest --help works
     from maasserver.testing.factory import factory as maasserver_factory

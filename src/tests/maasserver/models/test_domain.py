@@ -3,11 +3,13 @@
 
 """Tests for the Domain model."""
 
+from collections import Counter
 import random
 
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db.models import ProtectedError
 from netaddr import IPAddress
+import pytest
 
 from maascommon.dns import HostnameRRsetMapping
 from maasserver.dns.zonegenerator import get_hostname_dnsdata_mapping, lazydict
@@ -18,110 +20,87 @@ from maasserver.models.domain import DEFAULT_DOMAIN_NAME, Domain
 from maasserver.permissions import NodePermission
 from maasserver.sqlalchemy import service_layer
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 
 
-class TestDomainManagerGetDomainOr404(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestDomainManagerGetDomainOr404:
     def test_user_view_returns_domain(self):
         user = factory.make_User()
         domain = factory.make_Domain()
-        self.assertEqual(
-            domain,
-            Domain.objects.get_domain_or_404(
-                domain.id, user, NodePermission.view
-            ),
+        assert domain == Domain.objects.get_domain_or_404(
+            domain.id, user, NodePermission.view
         )
 
     def test_user_view_returns_domain_by_name(self):
         user = factory.make_User()
         domain = factory.make_Domain()
-        self.assertEqual(
-            domain,
-            Domain.objects.get_domain_or_404(
-                "name:%s" % domain.name, user, NodePermission.view
-            ),
+        assert domain == Domain.objects.get_domain_or_404(
+            "name:%s" % domain.name, user, NodePermission.view
         )
 
     def test_user_edit_raises_PermissionError(self):
         user = factory.make_User()
         domain = factory.make_Domain()
-        self.assertRaises(
-            PermissionDenied,
-            Domain.objects.get_domain_or_404,
-            domain.id,
-            user,
-            NodePermission.edit,
-        )
+        with pytest.raises(PermissionDenied):
+            Domain.objects.get_domain_or_404(
+                domain.id, user, NodePermission.edit
+            )
 
     def test_user_admin_raises_PermissionError(self):
         user = factory.make_User()
         domain = factory.make_Domain()
-        self.assertRaises(
-            PermissionDenied,
-            Domain.objects.get_domain_or_404,
-            domain.id,
-            user,
-            NodePermission.admin,
-        )
+        with pytest.raises(PermissionDenied):
+            Domain.objects.get_domain_or_404(
+                domain.id, user, NodePermission.admin
+            )
 
     def test_admin_view_returns_domain(self):
         admin = factory.make_admin()
         domain = factory.make_Domain()
-        self.assertEqual(
-            domain,
-            Domain.objects.get_domain_or_404(
-                domain.id, admin, NodePermission.view
-            ),
+        assert domain == Domain.objects.get_domain_or_404(
+            domain.id, admin, NodePermission.view
         )
 
     def test_admin_view_returns_domain_by_name(self):
         admin = factory.make_admin()
         domain = factory.make_Domain()
-        self.assertEqual(
-            domain,
-            Domain.objects.get_domain_or_404(
-                "name:%s" % domain.name, admin, NodePermission.view
-            ),
+        assert domain == Domain.objects.get_domain_or_404(
+            "name:%s" % domain.name, admin, NodePermission.view
         )
 
     def test_admin_edit_returns_domain(self):
         admin = factory.make_admin()
         domain = factory.make_Domain()
-        self.assertEqual(
-            domain,
-            Domain.objects.get_domain_or_404(
-                domain.id, admin, NodePermission.edit
-            ),
+        assert domain == Domain.objects.get_domain_or_404(
+            domain.id, admin, NodePermission.edit
         )
 
     def test_admin_admin_returns_domain(self):
         admin = factory.make_admin()
         domain = factory.make_Domain()
-        self.assertEqual(
-            domain,
-            Domain.objects.get_domain_or_404(
-                domain.id, admin, NodePermission.admin
-            ),
+        assert domain == Domain.objects.get_domain_or_404(
+            domain.id, admin, NodePermission.admin
         )
 
 
-class TestDomainManager(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestDomainManager:
     def test_default_specifier_matches_id(self):
         factory.make_Domain()
         domain = factory.make_Domain()
         factory.make_Domain()
         id = domain.id
-        self.assertCountEqual(
-            Domain.objects.filter_by_specifiers("%s" % id), [domain]
-        )
+        assert Counter(
+            Domain.objects.filter_by_specifiers("%s" % id)
+        ) == Counter([domain])
 
     def test_default_specifier_matches_name(self):
         factory.make_Domain()
         name = factory.make_name("domain-")
         domain = factory.make_Domain(name=name)
         factory.make_Domain()
-        self.assertCountEqual(
-            Domain.objects.filter_by_specifiers(name), [domain]
+        assert Counter(Domain.objects.filter_by_specifiers(name)) == Counter(
+            [domain]
         )
 
     def test_name_specifier_matches_name(self):
@@ -129,9 +108,9 @@ class TestDomainManager(MAASServerTestCase):
         name = factory.make_name("domain-")
         domain = factory.make_Domain(name=name)
         factory.make_Domain()
-        self.assertCountEqual(
-            Domain.objects.filter_by_specifiers("name:%s" % name), [domain]
-        )
+        assert Counter(
+            Domain.objects.filter_by_specifiers("name:%s" % name)
+        ) == Counter([domain])
 
     def test_get_forward_domains(self):
         name1 = factory.make_name("domain")
@@ -140,7 +119,9 @@ class TestDomainManager(MAASServerTestCase):
         factory.make_Domain(name=name2, authoritative=True)
         fwd_ip = factory.make_ip_address()
         factory.make_ForwardDNSServer(ip_address=fwd_ip, domains=[domain1])
-        self.assertCountEqual(Domain.objects.get_forward_domains(), [domain1])
+        assert Counter(Domain.objects.get_forward_domains()) == Counter(
+            [domain1]
+        )
 
     def test_get_all_with_resource_record_count(self):
         default_domain = Domain.objects.get_default_domain()
@@ -149,73 +130,72 @@ class TestDomainManager(MAASServerTestCase):
 
         domains = Domain.objects.get_all_with_resource_record_count()
 
-        self.assertEqual(len(domains), 2)
+        assert len(domains) == 2
         for d in domains:
             if d.id == default_domain.id:
-                self.assertEqual(d.resource_record_count, 1)
+                assert d.resource_record_count == 1
             elif d.id == domain.id:
-                self.assertEqual(d.resource_record_count, 0)
+                assert d.resource_record_count == 0
             else:
-                self.fail(f"Unexpected domain id: {d.id}")
+                pytest.fail(f"Unexpected domain id: {d.id}")
 
 
-class TestDomain(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestDomain:
     def test_creates_domain(self):
         name = factory.make_name("name")
         domain = Domain(name=name)
         domain.save()
         domain_from_db = Domain.objects.get(name=name)
-        self.assertEqual(domain_from_db.name, name)
+        assert domain_from_db.name == name
 
     def test_create_strips_trailing_dot(self):
         name = factory.make_name("name")
         domain = Domain(name=name + ".")
         domain.save()
         domain_from_db = Domain.objects.get(name=name)
-        self.assertEqual(domain_from_db.name, name)
+        assert domain_from_db.name == name
 
     def test_get_default_domain_creates_default_domain(self):
         default_domain = Domain.objects.get_default_domain()
-        self.assertEqual(0, default_domain.id)
-        self.assertEqual(DEFAULT_DOMAIN_NAME, default_domain.get_name())
+        assert 0 == default_domain.id
+        assert DEFAULT_DOMAIN_NAME == default_domain.get_name()
 
     def test_invalid_name_raises_exception(self):
-        self.assertRaises(
-            ValidationError, factory.make_Domain, name="invalid*name"
-        )
+        with pytest.raises(ValidationError):
+            factory.make_Domain(name="invalid*name")
 
     def test_duplicating_internal_name_raises_exception(self):
         internal_domain = Config.objects.get_config("maas_internal_domain")
-        self.assertRaises(
-            ValidationError, factory.make_Domain, name=internal_domain
-        )
+        with pytest.raises(ValidationError):
+            factory.make_Domain(name=internal_domain)
 
     def test_setting_internal_name_allows_old_internal_domain_name(self):
         internal_domain_old = Config.objects.get_config("maas_internal_domain")
         internal_domain_new = factory.make_name("internal")
         Config.objects.set_config("maas_internal_domain", internal_domain_new)
         domain = factory.make_Domain(name=internal_domain_old)
-        self.assertEqual(internal_domain_old, domain.name)
+        assert internal_domain_old == domain.name
 
     def test_get_default_domain_is_idempotent(self):
         default_domain = Domain.objects.get_default_domain()
         default_domain2 = Domain.objects.get_default_domain()
-        self.assertEqual(default_domain.id, default_domain2.id)
+        assert default_domain.id == default_domain2.id
 
     def test_is_default_detects_default_domain(self):
         default_domain = Domain.objects.get_default_domain()
-        self.assertTrue(default_domain.is_default())
+        assert default_domain.is_default()
 
     def test_is_default_detects_non_default_domain(self):
         name = factory.make_name("name")
         domain = factory.make_Domain(name=name)
-        self.assertFalse(domain.is_default())
+        assert not domain.is_default()
 
     def test_can_be_deleted_if_does_not_contain_resources(self):
         name = factory.make_name("name")
         domain = factory.make_Domain(name=name)
         domain.delete()
-        self.assertCountEqual([], Domain.objects.filter(name=name))
+        assert Counter([]) == Counter(Domain.objects.filter(name=name))
 
     def test_validate_authority_raises_exception_when_both_authoritative_and_has_forward_dns_servers(
         self,
@@ -226,12 +206,14 @@ class TestDomain(MAASServerTestCase):
         factory.make_ForwardDNSServer(
             ip_address=forward_server, domains=[domain]
         )
-        self.assertRaises(ValidationError, domain.validate_authority)
+        with pytest.raises(ValidationError):
+            domain.validate_authority()
 
     def test_cant_be_deleted_if_contains_resources(self):
         domain = factory.make_Domain()
         factory.make_DNSResource(domain=domain)
-        self.assertRaises(ProtectedError, domain.delete)
+        with pytest.raises(ProtectedError):
+            domain.delete()
 
     def test_add_delegations_may_do_nothing(self):
         domain = factory.make_Domain()
@@ -242,7 +224,7 @@ class TestDomain(MAASServerTestCase):
             [IPAddress("::1")],
             30,
         )
-        self.assertEqual({}, mapping)
+        assert {} == mapping
 
     def test_add_delegations_adds_delegation(self):
         parent = factory.make_Domain()
@@ -253,7 +235,7 @@ class TestDomain(MAASServerTestCase):
         mapping = mappings[parent.id]
         parent.add_delegations(mapping, default_name, [IPAddress("::1")], 30)
         expected_map = HostnameRRsetMapping(rrset={(30, "NS", default_name)})
-        self.assertEqual(expected_map, mapping[name])
+        assert expected_map == mapping[name]
 
     def test_add_delegations_adds_nsrrset_and_glue(self):
         parent = factory.make_Domain()
@@ -296,7 +278,7 @@ class TestDomain(MAASServerTestCase):
                 expected_map[nsname] = HostnameRRsetMapping(
                     rrset={(30, "A", sip.ip)}
                 )
-        self.assertEqual(expected_map, mapping)
+        assert expected_map == mapping
 
     def test_add_delegations_adds_nsrrset_and_glue_in_depth(self):
         parent = factory.make_Domain()
@@ -342,7 +324,7 @@ class TestDomain(MAASServerTestCase):
                     rrset={(30, "A", sip.ip)}
                 )
         parent.add_delegations(mapping, default_name, [IPAddress("::1")], 30)
-        self.assertEqual(expected_map, mapping)
+        assert expected_map == mapping
 
     def test_add_delegations_allows_dots(self):
         parent = factory.make_Domain()
@@ -353,7 +335,7 @@ class TestDomain(MAASServerTestCase):
         mapping = mappings[parent.id]
         parent.add_delegations(mapping, default_name, [IPAddress("::1")], 30)
         expected_map = HostnameRRsetMapping(rrset={(30, "NS", default_name)})
-        self.assertEqual(expected_map, mapping[name])
+        assert expected_map == mapping[name]
 
     def test_add_delegations_stops_at_one_deep(self):
         parent = factory.make_Domain()
@@ -365,7 +347,7 @@ class TestDomain(MAASServerTestCase):
         mapping = mappings[parent.id]
         parent.add_delegations(mapping, default_name, [IPAddress("::1")], 30)
         expected_map = HostnameRRsetMapping(rrset={(30, "NS", default_name)})
-        self.assertEqual(expected_map, mapping[name])
+        assert expected_map == mapping[name]
 
     def test_add_delegations_does_not_list_region_for_non_auth(self):
         parent = factory.make_Domain()
@@ -384,7 +366,7 @@ class TestDomain(MAASServerTestCase):
         mapping = mappings[parent.id]
         parent.add_delegations(mapping, default_name, [IPAddress("::1")], 30)
         expected_map = HostnameRRsetMapping(rrset={(30, "NS", ns_name)})
-        self.assertEqual(expected_map, mapping[name])
+        assert expected_map == mapping[name]
 
     def test_save_migrates_dnsresource(self):
         p_name = f"{factory.make_name()}.{factory.make_name()}"
@@ -393,10 +375,10 @@ class TestDomain(MAASServerTestCase):
         dnsrr = factory.make_DNSResource(name=c_name, domain=parent)
         child = factory.make_Domain(name=f"{c_name}.{p_name}")
         dnsrr_from_db = DNSResource.objects.get(id=dnsrr.id)
-        self.assertEqual("@", dnsrr_from_db.name)
-        self.assertEqual(child, dnsrr_from_db.domain)
-        self.assertCountEqual(
-            [], DNSResource.objects.filter(name=c_name, domain=parent)
+        assert "@" == dnsrr_from_db.name
+        assert child == dnsrr_from_db.domain
+        assert Counter([]) == Counter(
+            DNSResource.objects.filter(name=c_name, domain=parent)
         )
 
     def test_update_kms_srv_deletes_srv_records(self):
@@ -411,7 +393,7 @@ class TestDomain(MAASServerTestCase):
         domain.update_kms_srv("")
         # We would restrict it more, but we just deleted it...
         rrset = DNSData.objects.filter(rrtype="SRV")
-        self.assertEqual(0, rrset.count())
+        assert 0 == rrset.count()
 
     def test_update_kms_srv_creates_srv_records(self):
         domain = factory.make_Domain()
@@ -422,7 +404,7 @@ class TestDomain(MAASServerTestCase):
             dnsresource__name="_vlmcs._tcp",
             dnsresource__domain_id=domain.id,
         )
-        self.assertEqual("0 0 1688 %s." % target, srvrr.rrdata)
+        assert "0 0 1688 %s." % target == srvrr.rrdata
 
     def test_update_kms_srv_creates_srv_records_on_all_domains(self):
         domains = [factory.make_Domain() for _ in range(random.randint(1, 10))]
@@ -434,10 +416,11 @@ class TestDomain(MAASServerTestCase):
                 dnsresource__name="_vlmcs._tcp",
                 dnsresource__domain_id=domain.id,
             )
-            self.assertEqual("0 0 1688 %s." % target, srvrr.rrdata)
+            assert "0 0 1688 %s." % target == srvrr.rrdata
 
 
-class TestRenderRRData(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestRenderRRData:
     def render_rrdata(self, domain, for_list=False):
         rr_map = service_layer.services.domains.get_hostname_dnsdata_mapping(
             domain.id, raw_ttl=True
@@ -486,12 +469,16 @@ class TestRenderRRData(MAASServerTestCase):
         actual = service_layer.services.domains.render_json_for_related_rrdata(
             domain_id=domain.id
         )
-        self.assertCountEqual(expected, actual)
+        assert Counter(
+            tuple(sorted(record.items())) for record in expected
+        ) == Counter(tuple(sorted(record.items())) for record in actual)
         expected = self.render_rrdata(domain, for_list=False)
         actual = service_layer.services.domains.render_json_for_related_rrdata(
             domain_id=domain.id
         )
-        self.assertCountEqual(expected, actual)
+        assert Counter(
+            tuple(sorted(record.items())) for record in expected
+        ) == Counter(tuple(sorted(record.items())) for record in actual)
 
     def test_render_json_for_related_rrdata_includes_user_id(self):
         domain = factory.make_Domain()
@@ -506,9 +493,9 @@ class TestRenderRRData(MAASServerTestCase):
         actual = service_layer.services.domains.render_json_for_related_rrdata(
             domain_id=domain.id
         )
-        self.assertEqual(actual, expected)
+        assert actual == expected
         for record in actual:
-            self.assertEqual(record["user_id"], user.id)
+            assert record["user_id"] == user.id
 
     def test_renders_as_dictionary(self):
         domain = factory.make_Domain()
@@ -525,8 +512,8 @@ class TestRenderRRData(MAASServerTestCase):
                 domain_id=domain.id, as_dict=True
             )
         )
-        self.assertEqual([rrdata_list[0]], rrdata_dict[name1])
-        self.assertEqual(len(rrdata_dict[name1]), 1)
+        assert [rrdata_list[0]] == rrdata_dict[name1]
+        assert len(rrdata_dict[name1]) == 1
         factory.make_DNSData(name=name1, domain=domain, rrtype="MX")
         factory.make_DNSData(name=name2, domain=domain, rrtype="NS")
         rrdata_dict = (
@@ -534,5 +521,5 @@ class TestRenderRRData(MAASServerTestCase):
                 domain_id=domain.id, as_dict=True
             )
         )
-        self.assertEqual(len(rrdata_dict[name1]), 2)
-        self.assertEqual(len(rrdata_dict[name2]), 1)
+        assert len(rrdata_dict[name1]) == 2
+        assert len(rrdata_dict[name2]) == 1

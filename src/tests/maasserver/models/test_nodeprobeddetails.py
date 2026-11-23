@@ -3,13 +3,14 @@
 
 """Tests for `maasserver.models.nodeprobeddetails`."""
 
+import pytest
+
 from maasserver.models.nodeprobeddetails import (
     get_probed_details,
     get_single_probed_details,
     script_output_nsmap,
 )
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from metadataserver.enum import RESULT_TYPE, SCRIPT_STATUS
 from provisioningserver.refresh.node_info_scripts import (
     LLDP_OUTPUT_NAME,
@@ -17,7 +18,8 @@ from provisioningserver.refresh.node_info_scripts import (
 )
 
 
-class TestNodeDetail(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestNodeDetail:
     def make_script_set_and_results(self, node, suffix="data"):
         script_set = factory.make_ScriptSet(
             node=node, result_type=RESULT_TYPE.COMMISSIONING
@@ -53,16 +55,14 @@ class TestNodeDetail(MAASServerTestCase):
                 script_name=script_name
             )
             script_result.store_result(exit_status=0, stdout=stdout)
-        self.assertDictEqual(
-            {"lshw": b"<lshw-data/>", "lldp": b"<lldp-data/>"},
-            get_single_probed_details(node),
-        )
+        assert {
+            "lshw": b"<lshw-data/>",
+            "lldp": b"<lldp-data/>",
+        } == get_single_probed_details(node)
 
     def test_returns_null_details_when_there_are_none(self):
         node = factory.make_Node()
-        self.assertDictEqual(
-            {"lshw": None, "lldp": None}, get_single_probed_details(node)
-        )
+        assert {"lshw": None, "lldp": None} == get_single_probed_details(node)
 
     def test_returns_only_details_from_okay_commissioning_results(self):
         node = factory.make_Node(with_empty_script_sets=True)
@@ -75,10 +75,10 @@ class TestNodeDetail(MAASServerTestCase):
                 script_name=script_name
             )
             script_result.store_result(exit_status=exit_status, stdout=stdout)
-        self.assertDictEqual(
-            {"lshw": b"<lshw-data/>", "lldp": None},
-            get_single_probed_details(node),
-        )
+        assert {
+            "lshw": b"<lshw-data/>",
+            "lldp": None,
+        } == get_single_probed_details(node)
 
     def test_get_probed_details(self):
         expected = {}
@@ -99,4 +99,4 @@ class TestNodeDetail(MAASServerTestCase):
             # Create some new but not current results. These will _not_ be
             # returned by get_probed_details.
             self.make_script_set_and_results(node, "new")
-        self.assertDictEqual(expected, get_probed_details(nodes))
+        assert expected == get_probed_details(nodes)

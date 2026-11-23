@@ -3,24 +3,25 @@
 
 """Test the behaviour of dnsresource signals."""
 
+import pytest
+
 from maasserver.models import DNSPublication
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 
 
-class TestPostSaveDNSResourceSignal(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestPostSaveDNSResourceSignal:
     def test_save_dnsresource_creates_dnspublication(self):
         domain = factory.make_Domain("example.com", authoritative=True)
         factory.make_DNSResource(
             domain=domain, name="maas", address_ttl=300, ip_addresses=[]
         )
         dnspublication = DNSPublication.objects.get_most_recent()
-        self.assertEqual(
-            "zone example.com added resource maas", dnspublication.source
-        )
+        assert "zone example.com added resource maas" == dnspublication.source
 
 
-class TestPostDeleteDNSResourceSignal(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestPostDeleteDNSResourceSignal:
     def test_delete_dnsresource(self):
         domain = factory.make_Domain("example.com", authoritative=True)
         dnsresource = factory.make_DNSResource(
@@ -28,12 +29,13 @@ class TestPostDeleteDNSResourceSignal(MAASServerTestCase):
         )
         dnsresource.delete()
         dnspublication = DNSPublication.objects.get_most_recent()
-        self.assertEqual(
-            "zone example.com removed resource maas", dnspublication.source
+        assert (
+            "zone example.com removed resource maas" == dnspublication.source
         )
 
 
-class TestUpdateDNSResourceSignal(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestUpdateDNSResourceSignal:
     def test_update_dnsresource_creates_dnspublication(self):
         domain = factory.make_Domain("example.com", authoritative=True)
         new_domain = factory.make_Domain("newexample.com", authoritative=True)
@@ -46,14 +48,15 @@ class TestUpdateDNSResourceSignal(MAASServerTestCase):
         dnsresource.save()
 
         dnspublication = DNSPublication.objects.get_most_recent()
-        self.assertIn(
-            "resource maas-updated moved to newexample.com",
-            dnspublication.source,
+        assert (
+            "resource maas-updated moved to newexample.com"
+            in dnspublication.source
         )
-        self.assertIn("updated resource maas-updated", dnspublication.source)
+        assert "updated resource maas-updated" in dnspublication.source
 
 
-class TestLinkDNSResourceSignal(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestLinkDNSResourceSignal:
     def test_link_dnsresource_creates_dnspublication(self):
         domain = factory.make_Domain("example.com", authoritative=True)
         dnsresource = factory.make_DNSResource(
@@ -66,9 +69,9 @@ class TestLinkDNSResourceSignal(MAASServerTestCase):
         dnsresource.ip_addresses.add(staticip)
 
         dnspublication = DNSPublication.objects.get_most_recent()
-        self.assertEqual(
-            f"ip {staticip.ip} linked to resource maas on zone example.com",
-            dnspublication.source,
+        assert (
+            f"ip {staticip.ip} linked to resource maas on zone example.com"
+            == dnspublication.source
         )
 
     def test_unlink_dnsresource_creates_dnspublication(self):
@@ -84,7 +87,7 @@ class TestLinkDNSResourceSignal(MAASServerTestCase):
         dnsresource.ip_addresses.remove(staticip)
 
         dnspublication = DNSPublication.objects.get_most_recent()
-        self.assertEqual(
-            f"ip {staticip.ip} unlinked from resource maas on zone example.com",
-            dnspublication.source,
+        assert (
+            f"ip {staticip.ip} unlinked from resource maas on zone example.com"
+            == dnspublication.source
         )

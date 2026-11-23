@@ -15,20 +15,20 @@ import urllib.parse
 from urllib.parse import parse_qs, urljoin, urlparse
 import urllib.request
 
+import pytest
+
 from apiclient.maas_client import MAASClient, MAASDispatcher, MAASOAuth
 from apiclient.testing.django import APIClientTestCase
 from maastesting.factory import factory
-from maastesting.fixtures import TempWDFixture
 from maastesting.httpd import HTTPServerFixture
-from maastesting.testcase import MAASTestCase
 
 
-class TestMAASOAuth(MAASTestCase):
+class TestMAASOAuth:
     def test_sign_request_adds_header(self):
         headers = {}
         auth = MAASOAuth("consumer_key", "resource_token", "resource_secret")
         auth.sign_request("http://example.com/", headers)
-        self.assertIn("Authorization", headers)
+        assert "Authorization" in headers
 
 
 def no_proxy(fn):
@@ -43,12 +43,13 @@ def no_proxy(fn):
     return with_no_proxy
 
 
-class TestMAASDispatcher(MAASTestCase):
-    def setUp(self):
-        super().setUp()
-        self.patch_urllib()
+class TestMAASDispatcher:
+    @pytest.fixture(autouse=True)
+    def _setup(self, mocker):
+        self.mocker = mocker
+        self._patch_urllib()
 
-    def patch_urllib(self):
+    def _patch_urllib(self):
         def patch_build_opener(*args, **kwargs):
             self.opener = real_build_opener(*args, **kwargs)
             self.orig_open_func = self.opener.open
@@ -57,161 +58,182 @@ class TestMAASDispatcher(MAASTestCase):
             return self.opener
 
         real_build_opener = urllib.request.build_opener
-        build_opener_mock = self.patch(urllib.request, "build_opener")
+        build_opener_mock = self.mocker.patch.object(
+            urllib.request, "build_opener"
+        )
         build_opener_mock.side_effect = patch_build_opener
         self.open_func = None
 
     @no_proxy
-    def test_dispatch_query_makes_direct_call(self):
+    def test_dispatch_query_makes_direct_call(self, tmp_path):
         contents = factory.make_string().encode("ascii")
-        url = "file://%s" % self.make_file(contents=contents)
-        self.assertEqual(
-            contents, MAASDispatcher().dispatch_query(url, {}).read()
-        )
+        url = "file://%s" % factory.make_file(tmp_path, contents=contents)
+        assert contents == MAASDispatcher().dispatch_query(url, {}).read()
 
     @no_proxy
     def test_dispatch_query_encodes_string_data(self):
         # urllib, used by MAASDispatcher, requires data encoded into bytes. We
         # encode into utf-8 in dispatch_query if necessary.
-        request = self.patch(urllib.request.Request, "__init__")
-        self.patch_urllib()
+        request_mock = self.mocker.patch.object(
+            urllib.request.Request, "__init__"
+        )
+        self._patch_urllib()
         self.open_func = lambda *args: MagicMock()
         url = factory.make_url()
         data = factory.make_string(300, spaces=True)
         MAASDispatcher().dispatch_query(url, {}, method="POST", data=data)
-        request.assert_called_once_with(ANY, url, bytes(data, "utf-8"), ANY)
+        request_mock.assert_called_once_with(
+            ANY, url, bytes(data, "utf-8"), ANY
+        )
 
     @no_proxy
-    def test_request_from_http(self):
-        # We can't just call self.make_file because HTTPServerFixture will only
+    def test_request_from_http(self, tmp_path):
+        # We can't just call make_file because HTTPServerFixture will only
         # serve content from the current WD. And we don't want to create random
         # content in the original WD.
-        self.useFixture(TempWDFixture())
-        name = factory.make_string()
-        content = factory.make_string().encode("ascii")
-        factory.make_file(location=".", name=name, contents=content)
-        with HTTPServerFixture() as httpd:
-            url = urljoin(httpd.url, name)
-            response = MAASDispatcher().dispatch_query(url, {})
-            self.assertEqual(200, response.code)
-            self.assertEqual(content, response.read())
+        old_cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            name = factory.make_string()
+            content = factory.make_string().encode("ascii")
+            factory.make_file(tmp_path, name=name, contents=content)
+            with HTTPServerFixture() as httpd:
+                url = urljoin(httpd.url, name)
+                response = MAASDispatcher().dispatch_query(url, {})
+                assert 200 == response.code
+                assert content == response.read()
+        finally:
+            os.chdir(old_cwd)
 
     @no_proxy
-    def test_supports_any_method(self):
+    def test_supports_any_method(self, tmp_path):
         # urllib2, which MAASDispatcher uses, only supports POST and
         # GET. There is some extra code that makes sure the passed
         # method is honoured which is tested here.
-        self.useFixture(TempWDFixture())
-        name = factory.make_string()
-        content = factory.make_string(300).encode("ascii")
-        factory.make_file(location=".", name=name, contents=content)
+        old_cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            name = factory.make_string()
+            content = factory.make_string(300).encode("ascii")
+            factory.make_file(tmp_path, name=name, contents=content)
 
-        method = "PUT"
-        # The test httpd doesn't like PUT, so we'll look for it bitching
-        # about that for the purposes of this test.
-        with HTTPServerFixture() as httpd:
-            url = urljoin(httpd.url, name)
-            e = self.assertRaises(
-                urllib.error.HTTPError,
-                MAASDispatcher().dispatch_query,
-                url,
-                {},
-                method=method,
-            )
-            self.assertIn("Unsupported method ('PUT')", e.reason)
+            method = "PUT"
+            # The test httpd doesn't like PUT, so we'll look for it bitching
+            # about that for the purposes of this test.
+            with HTTPServerFixture() as httpd:
+                url = urljoin(httpd.url, name)
+                with pytest.raises(urllib.error.HTTPError) as exc_info:
+                    MAASDispatcher().dispatch_query(url, {}, method=method)
+                assert "Unsupported method ('PUT')" in exc_info.value.reason
+        finally:
+            os.chdir(old_cwd)
 
     @no_proxy
-    def test_supports_content_encoding_gzip(self):
+    def test_supports_content_encoding_gzip(self, tmp_path):
         # The client will set the Accept-Encoding: gzip header, and it will
         # also decompress the response if it comes back with Content-Encoding:
         # gzip.
-        self.useFixture(TempWDFixture())
-        name = factory.make_string()
-        content = factory.make_string(300).encode("ascii")
-        factory.make_file(location=".", name=name, contents=content)
-        called = []
+        old_cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            name = factory.make_string()
+            content = factory.make_string(300).encode("ascii")
+            factory.make_file(tmp_path, name=name, contents=content)
+            called = []
 
-        def logging_open(*args, **kwargs):
-            called.append((args, kwargs))
-            return self.orig_open_func(*args, **kwargs)
+            def logging_open(*args, **kwargs):
+                called.append((args, kwargs))
+                return self.orig_open_func(*args, **kwargs)
 
-        self.open_func = logging_open
-        with HTTPServerFixture() as httpd:
-            url = urljoin(httpd.url, name)
-            res = MAASDispatcher().dispatch_query(url, {})
-            self.assertEqual(200, res.code)
-            self.assertEqual(content, res.read())
-        request = called[0][0][0]
-        self.assertEqual([((request,), {})], called)
-        self.assertEqual("gzip", request.headers.get("Accept-encoding"))
+            self.open_func = logging_open
+            with HTTPServerFixture() as httpd:
+                url = urljoin(httpd.url, name)
+                res = MAASDispatcher().dispatch_query(url, {})
+                assert 200 == res.code
+                assert content == res.read()
+            request = called[0][0][0]
+            assert [((request,), {})] == called
+            assert "gzip" == request.headers.get("Accept-encoding")
+        finally:
+            os.chdir(old_cwd)
 
     @no_proxy
-    def test_doesnt_override_accept_encoding_headers(self):
+    def test_doesnt_override_accept_encoding_headers(self, tmp_path):
         # If someone passes their own Accept-Encoding header, then dispatch
         # just passes it through.
-        self.useFixture(TempWDFixture())
-        name = factory.make_string()
-        content = factory.make_string(300).encode("ascii")
-        factory.make_file(location=".", name=name, contents=content)
-        with HTTPServerFixture() as httpd:
-            url = urljoin(httpd.url, name)
-            headers = {"Accept-encoding": "gzip"}
-            res = MAASDispatcher().dispatch_query(url, headers)
-            self.assertEqual(200, res.code)
-            self.assertEqual("gzip", res.info().get("Content-Encoding"))
-            raw_content = res.read()
-        read_content = gzip.GzipFile(
-            mode="rb", fileobj=BytesIO(raw_content)
-        ).read()
-        self.assertEqual(content, read_content)
+        old_cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            name = factory.make_string()
+            content = factory.make_string(300).encode("ascii")
+            factory.make_file(tmp_path, name=name, contents=content)
+            with HTTPServerFixture() as httpd:
+                url = urljoin(httpd.url, name)
+                headers = {"Accept-encoding": "gzip"}
+                res = MAASDispatcher().dispatch_query(url, headers)
+                assert 200 == res.code
+                assert "gzip" == res.info().get("Content-Encoding")
+                raw_content = res.read()
+            read_content = gzip.GzipFile(
+                mode="rb", fileobj=BytesIO(raw_content)
+            ).read()
+            assert content == read_content
+        finally:
+            os.chdir(old_cwd)
 
     @no_proxy
-    def test_retries_three_times_on_503_service_unavailable(self):
-        self.useFixture(TempWDFixture())
-        name = factory.make_string()
-        content = factory.make_string().encode("ascii")
-        factory.make_file(location=".", name=name, contents=content)
-        with HTTPServerFixture() as httpd:
-            url = urljoin(httpd.url, name)
+    def test_retries_three_times_on_503_service_unavailable(self, tmp_path):
+        old_cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            name = factory.make_string()
+            content = factory.make_string().encode("ascii")
+            factory.make_file(tmp_path, name=name, contents=content)
+            with HTTPServerFixture() as httpd:
+                url = urljoin(httpd.url, name)
 
-            counter = {"count": 0}
+                counter = {"count": 0}
 
-            def _wrap_open(*args, **kwargs):
-                if counter["count"] < 2:
-                    counter["count"] += 1
+                def _wrap_open(*args, **kwargs):
+                    if counter["count"] < 2:
+                        counter["count"] += 1
+                        raise urllib.error.HTTPError(
+                            url, 503, "service unavailable", {}, None
+                        )
+                    else:
+                        return self.orig_open_func(*args, **kwargs)
+
+                self.open_func = _wrap_open
+                response = MAASDispatcher().dispatch_query(url, {})
+                assert 200 == response.code
+                assert content == response.read()
+        finally:
+            os.chdir(old_cwd)
+
+    @no_proxy
+    def test_retries_three_times_raises_503_service_unavailable(
+        self, tmp_path
+    ):
+        old_cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            name = factory.make_string()
+            content = factory.make_string().encode("ascii")
+            factory.make_file(tmp_path, name=name, contents=content)
+            with HTTPServerFixture() as httpd:
+                url = urljoin(httpd.url, name)
+
+                def _wrap_open(*args, **kwargs):
                     raise urllib.error.HTTPError(
                         url, 503, "service unavailable", {}, None
                     )
-                else:
-                    return self.orig_open_func(*args, **kwargs)
 
-            self.open_func = _wrap_open
-            response = MAASDispatcher().dispatch_query(url, {})
-            self.assertEqual(200, response.code)
-            self.assertEqual(content, response.read())
-
-    @no_proxy
-    def test_retries_three_times_raises_503_service_unavailable(self):
-        self.useFixture(TempWDFixture())
-        name = factory.make_string()
-        content = factory.make_string().encode("ascii")
-        factory.make_file(location=".", name=name, contents=content)
-        with HTTPServerFixture() as httpd:
-            url = urljoin(httpd.url, name)
-
-            def _wrap_open(*args, **kwargs):
-                raise urllib.error.HTTPError(
-                    url, 503, "service unavailable", {}, None
-                )
-
-            self.open_func = _wrap_open
-            err = self.assertRaises(
-                urllib.error.HTTPError,
-                MAASDispatcher().dispatch_query,
-                url,
-                {},
-            )
-            self.assertEqual(503, err.code)
+                self.open_func = _wrap_open
+                with pytest.raises(urllib.error.HTTPError) as exc_info:
+                    MAASDispatcher().dispatch_query(url, {})
+                assert 503 == exc_info.value.code
+        finally:
+            os.chdir(old_cwd)
 
     def test_autodetects_proxies(self):
         self.open_func = lambda *args: MagicMock()
@@ -234,7 +256,7 @@ class TestMAASDispatcher(MAASTestCase):
             "no": proxy_variables["no_proxy"],
         }
         for key, value in expected.items():
-            self.assertEqual(value, handler.proxies[key])
+            assert value == handler.proxies[key]
 
     def test_no_autodetects_proxies(self):
         self.open_func = lambda *args: MagicMock()
@@ -273,7 +295,6 @@ class FakeDispatcher:
             "headers": headers,
             "method": method,
             "data": data,
-            "insecure": insecure,
         }
         return self.result
 
@@ -295,44 +316,40 @@ class TestMAASClient(APIClientTestCase):
         path = make_path()
         client = make_client()
         expected = client.url.rstrip("/") + "/" + path.lstrip("/")
-        self.assertEqual(expected, client._make_url(path))
+        assert expected == client._make_url(path)
 
     def test_make_url_removes_duplicate_MAAS(self):
         path = "/MAAS/api/2.0/machines/"
         client = make_client(root="http://example.com/MAAS/")
-        self.assertEqual(
-            "http://example.com/MAAS/api/2.0/machines/", client._make_url(path)
+        assert "http://example.com/MAAS/api/2.0/machines/" == client._make_url(
+            path
         )
 
     def test_make_url_converts_sequence_to_path(self):
         path = ["top", "sub", "leaf"]
         client = make_client(root="http://example.com/")
-        self.assertEqual(
-            "http://example.com/top/sub/leaf", client._make_url(path)
-        )
+        assert "http://example.com/top/sub/leaf" == client._make_url(path)
 
     def test_make_url_represents_path_components_as_text(self):
         number = randint(0, 100)
         client = make_client()
-        self.assertEqual(
-            urljoin(client.url, str(number)), client._make_url([number])
-        )
+        assert urljoin(client.url, str(number)) == client._make_url([number])
 
     def test_formulate_get_makes_url(self):
         path = make_path()
         client = make_client()
-        url, headers = client._formulate_get(path)
+        url, _headers = client._formulate_get(path)
         expected = client.url.rstrip("/") + "/" + path.lstrip("/")
-        self.assertEqual(expected, url)
+        assert expected == url
 
     def test_formulate_get_adds_parameters_to_url(self):
         params = {
             factory.make_string(): factory.make_string()
             for counter in range(3)
         }
-        url, headers = make_client()._formulate_get(make_path(), params)
+        url, _headers = make_client()._formulate_get(make_path(), params)
         expectation = {key: [value] for key, value in params.items()}
-        self.assertEqual(expectation, parse_qs(urlparse(url).query))
+        assert expectation == parse_qs(urlparse(url).query)
 
     def test_formulate_get_adds_list_parameters_to_url(self):
         params = {
@@ -341,12 +358,12 @@ class TestMAASClient(APIClientTestCase):
         }
         k = list(params.keys())
         v = [value for values in params.values() for value in values]
-        url, headers = make_client()._formulate_get(make_path(), params)
+        url, _headers = make_client()._formulate_get(make_path(), params)
         url_args = url.split("?")[1]
-        self.assertEqual(
+        assert (
             "%s=%s&%s=%s&%s=%s&%s=%s"
-            % (k[0], v[0], k[0], v[1], k[1], v[2], k[1], v[3]),
-            url_args,
+            % (k[0], v[0], k[0], v[1], k[1], v[2], k[1], v[3])
+            == url_args
         )
 
     def test_flatten_flattens_out_list(self):
@@ -356,59 +373,57 @@ class TestMAASClient(APIClientTestCase):
         params = {key: param_list}
         flattend_list = list(make_client()._flatten(params))
         expectation = [(key, value) for value in param_list]
-        self.assertEqual(expectation, flattend_list)
+        assert expectation == flattend_list
 
     def test_formulate_get_signs_request(self):
-        url, headers = make_client()._formulate_get(make_path())
-        self.assertIn("Authorization", headers)
+        _url, headers = make_client()._formulate_get(make_path())
+        assert "Authorization" in headers
 
     def test_formulate_change_makes_url(self):
         path = make_path()
         client = make_client()
-        url, headers, body = client._formulate_change(path, {})
+        url, _headers, _body = client._formulate_change(path, {})
         expected = client.url.rstrip("/") + "/" + path.lstrip("/")
-        self.assertEqual(expected, url)
+        assert expected == url
 
     def test_formulate_change_signs_request(self):
-        url, headers, body = make_client()._formulate_change(make_path(), {})
-        self.assertIn("Authorization", headers)
+        _url, headers, _body = make_client()._formulate_change(make_path(), {})
+        assert "Authorization" in headers
 
     def test_formulate_change_passes_parameters_in_body(self):
         params = {factory.make_string(): factory.make_string()}
-        url, headers, body = make_client()._formulate_change(
+        _url, headers, body = make_client()._formulate_change(
             make_path(), params
         )
         post, _ = self.parse_headers_and_body_with_django(headers, body)
-        self.assertEqual(
-            {name: [value] for name, value in params.items()}, post
-        )
+        assert {name: [value] for name, value in params.items()} == post
 
     def test_formulate_change_as_json(self):
         params = {factory.make_string(): factory.make_string()}
-        url, headers, body = make_client()._formulate_change(
+        _url, headers, body = make_client()._formulate_change(
             make_path(), params, as_json=True
         )
-        self.assertEqual(headers.get("Content-Type"), "application/json")
-        self.assertEqual(headers.get("Content-Length"), str(len(body)))
-        self.assertEqual(json.loads(body), params)
+        assert "application/json" == headers.get("Content-Type")
+        assert str(len(body)) == headers.get("Content-Length")
+        assert json.loads(body) == params
         data = self.parse_headers_and_body_with_mimer(headers, body)
-        self.assertEqual(params, data)
+        assert params == data
 
     def test_get_dispatches_to_resource(self):
         path = make_path()
         client = make_client()
         client.get(path)
         request = client.dispatcher.last_call
-        self.assertEqual(client._make_url(path), request["request_url"])
-        self.assertIn("Authorization", request["headers"])
-        self.assertEqual("GET", request["method"])
-        self.assertIsNone(request["data"])
+        assert client._make_url(path) == request["request_url"]
+        assert "Authorization" in request["headers"]
+        assert "GET" == request["method"]
+        assert request["data"] is None
 
     def test_get_without_op_gets_simple_resource(self):
         expected_result = factory.make_string()
         client = make_client(result=expected_result)
         result = client.get(make_path())
-        self.assertEqual(expected_result, result)
+        assert expected_result == result
 
     def test_get_with_op_queries_resource(self):
         path = make_path()
@@ -416,8 +431,9 @@ class TestMAASClient(APIClientTestCase):
         client = make_client()
         client.get(path, method)
         dispatch = client.dispatcher.last_call
-        self.assertEqual(
-            client._make_url(path) + "?op=%s" % method, dispatch["request_url"]
+        assert (
+            client._make_url(path) + "?op=%s" % method
+            == dispatch["request_url"]
         )
 
     def test_get_passes_parameters(self):
@@ -427,9 +443,9 @@ class TestMAASClient(APIClientTestCase):
         client = make_client()
         client.get(path, method, parameter=param)
         request = client.dispatcher.last_call
-        self.assertIsNone(request["data"])
+        assert request["data"] is None
         query = parse_qs(urlparse(request["request_url"]).query)
-        self.assertCountEqual([param], query["parameter"])
+        assert [param] == query["parameter"]
 
     def test_post_dispatches_to_resource(self):
         path = make_path()
@@ -437,12 +453,11 @@ class TestMAASClient(APIClientTestCase):
         method = factory.make_string()
         client.post(path, method)
         request = client.dispatcher.last_call
-        self.assertEqual(
-            client._make_url(path) + f"?op={method}",
-            request["request_url"],
+        assert (
+            client._make_url(path) + f"?op={method}" == request["request_url"]
         )
-        self.assertIn("Authorization", request["headers"])
-        self.assertEqual("POST", request["method"])
+        assert "Authorization" in request["headers"]
+        assert "POST" == request["method"]
 
     def test_post_passes_parameters(self):
         param = factory.make_string()
@@ -453,8 +468,8 @@ class TestMAASClient(APIClientTestCase):
         post, _ = self.parse_headers_and_body_with_django(
             request["headers"], request["data"]
         )
-        self.assertTrue(request["request_url"].endswith(f"?op={method}"))
-        self.assertEqual({"parameter": [param]}, post)
+        assert request["request_url"].endswith(f"?op={method}")
+        assert {"parameter": [param]} == post
 
     def test_post_as_json(self):
         param = factory.make_string()
@@ -469,14 +484,12 @@ class TestMAASClient(APIClientTestCase):
             list_param=list_param,
         )
         request = client.dispatcher.last_call
-        self.assertEqual(
-            "application/json", request["headers"].get("Content-Type")
-        )
+        assert "application/json" == request["headers"].get("Content-Type")
         content = self.parse_headers_and_body_with_mimer(
             request["headers"], request["data"]
         )
-        self.assertTrue(request["request_url"].endswith(f"?op={method}"))
-        self.assertEqual({"param": param, "list_param": list_param}, content)
+        assert request["request_url"].endswith(f"?op={method}")
+        assert {"param": param, "list_param": list_param} == content
 
     def test_post_without_op(self):
         path = make_path()
@@ -489,30 +502,30 @@ class TestMAASClient(APIClientTestCase):
         post, _ = self.parse_headers_and_body_with_django(
             request["headers"], request["data"]
         )
-        self.assertTrue(request["request_url"].endswith(path))
-        self.assertEqual({"parameter": [param]}, post)
+        assert request["request_url"].endswith(path)
+        assert {"parameter": [param]} == post
 
     def test_put_dispatches_to_resource(self):
         path = make_path()
         client = make_client()
         client.put(path, parameter=factory.make_string())
         request = client.dispatcher.last_call
-        self.assertEqual(client._make_url(path), request["request_url"])
-        self.assertIn("Authorization", request["headers"])
-        self.assertEqual("PUT", request["method"])
+        assert client._make_url(path) == request["request_url"]
+        assert "Authorization" in request["headers"]
+        assert "PUT" == request["method"]
 
     def test_delete_dispatches_to_resource(self):
         path = make_path()
         client = make_client()
         client.delete(path)
         request = client.dispatcher.last_call
-        self.assertEqual(client._make_url(path), request["request_url"])
-        self.assertIn("Authorization", request["headers"])
-        self.assertEqual("DELETE", request["method"])
+        assert client._make_url(path) == request["request_url"]
+        assert "Authorization" in request["headers"]
+        assert "DELETE" == request["method"]
 
     def test_delete_passes_body(self):
         # A DELETE request should have an empty body.  But we can't just leave
         # the body out altogether, or the request will hang (bug 1313556).
         client = make_client()
         client.delete(make_path())
-        self.assertIsNotNone(client.dispatcher.last_call["data"])
+        assert client.dispatcher.last_call["data"] is not None

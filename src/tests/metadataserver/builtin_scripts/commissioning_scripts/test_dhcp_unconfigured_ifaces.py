@@ -3,7 +3,6 @@
 
 from unittest.mock import call
 
-from maastesting.testcase import MAASTestCase
 from metadataserver.builtin_scripts.commissioning_scripts import (
     dhcp_unconfigured_ifaces,
 )
@@ -135,17 +134,18 @@ DHCPCD6_TEMPLATE = (
 )
 
 
-class TestDHCPExplore(MAASTestCase):
-    def setUp(self):
-        super().setUp()
-        self.patch(dhcp_unconfigured_ifaces, "print")
-        self.patch(dhcp_unconfigured_ifaces, "sleep")
+class TestDHCPExplore:
+    """Tests for dhcp_explore."""
 
-    def test_calls_dhclient_on_unconfigured_interfaces(self):
-        self.patch(
+    def test_calls_dhclient_on_unconfigured_interfaces(self, mocker):
+        mocker.patch.object(dhcp_unconfigured_ifaces, "print")
+        mocker.patch.object(dhcp_unconfigured_ifaces, "sleep")
+        mocker.patch.object(
             dhcp_unconfigured_ifaces, "which"
         ).return_value = "/usr/sbin/dhclient"
-        check_output = self.patch(dhcp_unconfigured_ifaces, "check_output")
+        check_output = mocker.patch.object(
+            dhcp_unconfigured_ifaces, "check_output"
+        )
         check_output.side_effect = [
             ip_link_show_all,
             ip_link_show,
@@ -173,8 +173,8 @@ class TestDHCPExplore(MAASTestCase):
             ip_eth0,
             ip_eth0,
         ]
-        mock_call = self.patch(dhcp_unconfigured_ifaces, "call")
-        mock_popen = self.patch(dhcp_unconfigured_ifaces, "Popen")
+        mock_call = mocker.patch.object(dhcp_unconfigured_ifaces, "call")
+        mock_popen = mocker.patch.object(dhcp_unconfigured_ifaces, "Popen")
         dhcp_unconfigured_ifaces.dhcp_explore()
         mock_call.assert_has_calls(
             [
@@ -192,9 +192,15 @@ class TestDHCPExplore(MAASTestCase):
             ],
         )
 
-    def test_calls_dhcpcd_on_unconfigured_interfaces(self):
-        self.patch(dhcp_unconfigured_ifaces, "which").return_value = None
-        check_output = self.patch(dhcp_unconfigured_ifaces, "check_output")
+    def test_calls_dhcpcd_on_unconfigured_interfaces(self, mocker):
+        mocker.patch.object(dhcp_unconfigured_ifaces, "print")
+        mocker.patch.object(dhcp_unconfigured_ifaces, "sleep")
+        mocker.patch.object(
+            dhcp_unconfigured_ifaces, "which"
+        ).return_value = None
+        check_output = mocker.patch.object(
+            dhcp_unconfigured_ifaces, "check_output"
+        )
         check_output.side_effect = [
             ip_link_show_all,
             ip_link_show,
@@ -222,8 +228,8 @@ class TestDHCPExplore(MAASTestCase):
             ip_eth0,
             ip_eth0,
         ]
-        mock_call = self.patch(dhcp_unconfigured_ifaces, "call")
-        mock_popen = self.patch(dhcp_unconfigured_ifaces, "Popen")
+        mock_call = mocker.patch.object(dhcp_unconfigured_ifaces, "call")
+        mock_popen = mocker.patch.object(dhcp_unconfigured_ifaces, "Popen")
         dhcp_unconfigured_ifaces.dhcp_explore()
         mock_call.assert_has_calls(
             [

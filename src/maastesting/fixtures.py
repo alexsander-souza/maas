@@ -5,6 +5,7 @@
 
 import builtins
 import codecs
+from contextlib import ExitStack
 from errno import ENOENT
 from io import BytesIO, TextIOWrapper
 import logging
@@ -12,10 +13,10 @@ import os
 from pathlib import Path
 from shutil import copytree
 import sys
+from unittest.mock import patch
 
 import fixtures
 from fixtures import EnvironmentVariable
-from testtools.monkey import MonkeyPatcher
 
 from maastesting import dev_root
 
@@ -148,17 +149,17 @@ class CaptureStandardIO(fixtures.Fixture):
         self._buf_in = BytesIO()
         self._buf_out = BytesIO()
         self._buf_err = BytesIO()
+        self._streams = []
 
     def setUp(self):
         super().setUp()
-        self.patcher = MonkeyPatcher()
-        self.addCleanup(self.patcher.restore)
+        self.patcher = ExitStack()
+        self.addCleanup(self.patcher.close)
         # Patch sys.std* and self.std*. Use TextIOWrapper to provide an
         # identical API to the "real" stdin, stdout, and stderr objects.
         self._addStream("stdin", self._wrapStream(self._buf_in))
         self._addStream("stdout", self._wrapStream(self._buf_out))
         self._addStream("stderr", self._wrapStream(self._buf_err))
-        self.patcher.patch()
 
     def _wrapStream(self, stream):
         return TextIOWrapper(
@@ -166,8 +167,9 @@ class CaptureStandardIO(fixtures.Fixture):
         )
 
     def _addStream(self, name, stream):
-        self.patcher.add_patch(self, name, stream)
-        self.patcher.add_patch(sys, name, stream)
+        self._streams.append(stream)
+        self.patcher.enter_context(patch.object(self, name, stream))
+        self.patcher.enter_context(patch.object(sys, name, stream))
 
     def addInput(self, data):
         """Add input to be read later, as a unicode string."""

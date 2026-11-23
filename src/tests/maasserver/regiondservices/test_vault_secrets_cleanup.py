@@ -1,9 +1,11 @@
 # Copyright 2022 Canonical Ltd.  This software is licensed under the
 # GNU Affero General Public License version 3 (see the file LICENSE).
 
+from unittest import TestCase as UnittestTestCase
 from unittest.mock import call
 
 from django.db import transaction
+import pytest
 from twisted.internet import reactor
 from twisted.internet.defer import inlineCallbacks
 
@@ -13,7 +15,6 @@ from maasserver.regiondservices.vault_secrets_cleanup import (
     VaultSecretsCleanupService,
 )
 from maasserver.secrets import SecretManager
-from maasserver.testing.testcase import MAASTransactionServerTestCase
 from maasserver.testing.vault import FakeVaultClient
 from maasserver.utils.threads import deferToDatabase
 from maasserver.vault import VaultError
@@ -22,10 +23,28 @@ from maastesting.crochet import wait_for
 wait_for_reactor = wait_for()
 
 
-class TestVaultSecretsCleanupService(MAASTransactionServerTestCase):
-    def setUp(self):
-        super().setUp()
+@pytest.mark.allow_transactions
+@pytest.mark.usefixtures(
+    "maasdb", "transactional_maasdb", "maas_region_test", "factory"
+)
+class TestVaultSecretsCleanupService:
+    @pytest.fixture(autouse=True)
+    def _setup_test_helpers(self, mocker):
+        self._mocker = mocker
+        self._assertions = UnittestTestCase()
         self.service = VaultSecretsCleanupService(reactor)
+
+    def __getattr__(self, name):
+        if name.startswith("assert") or name == "fail":
+            return getattr(self._assertions, name)
+        raise AttributeError(name)
+
+    def patch(self, obj, attribute=None, value=None):
+        if attribute is None:
+            return self._mocker.patch(obj)
+        if value is None:
+            return self._mocker.patch.object(obj, attribute)
+        return self._mocker.patch.object(obj, attribute, value)
 
     def mock_vault_client(self):
         mock_client = FakeVaultClient()

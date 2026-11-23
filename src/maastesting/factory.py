@@ -561,9 +561,7 @@ class Factory:
     def make_file(self, location, name=None, contents=None):
         """Create a file, and write data to it.
 
-        Prefer the eponymous convenience wrapper in
-        :class:`maastesting.testcase.MAASTestCase`.  It creates a temporary
-        directory and arranges for its eventual cleanup.
+        The caller owns the destination directory and its cleanup.
 
         :param location: Directory.  Use a temporary directory for this, and
             make sure it gets cleaned up after the test!

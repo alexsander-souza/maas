@@ -3,12 +3,14 @@
 
 """Tests for the mDNS model."""
 
+import pytest
+
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 
 
-class TestMDNSModel(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestMDNSModel:
     def test_accepts_invalid_hostname(self):
         mdns = factory.make_MDNS(hostname="Living room")
         # Expect no exception.
-        self.assertEqual("Living room", mdns.hostname)
+        assert "Living room" == mdns.hostname

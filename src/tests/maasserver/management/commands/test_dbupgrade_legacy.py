@@ -8,12 +8,10 @@ import os
 from subprocess import PIPE, Popen, STDOUT
 
 from postgresfixture import ClusterFixture
-from testtools.content import Content, UTF8_TEXT
+import pytest
 
 from maasserver.testing.config import RegionConfigurationFixture
 from maastesting import dev_root
-from maastesting.fixtures import TempDirectory
-from maastesting.testcase import MAASTestCase
 
 
 def get_plpgsql_function_names(conn):
@@ -27,30 +25,28 @@ def get_plpgsql_function_names(conn):
         return cursor.fetchall()
 
 
-class TestDBUpgrade(MAASTestCase):
+class TestDBUpgrade:
     dbname = "test_maas_dbupgrade"
 
-    def setUp(self):
-        """Setup a special database cluster to perform the tests."""
-        super().setUp()
-        self.datadir = self.useFixture(TempDirectory()).path
-        self.cluster = self.useFixture(ClusterFixture(self.datadir))
-        self.useFixture(
-            RegionConfigurationFixture(
-                database_name=self.dbname,
-                database_user=None,
-                database_pass=None,
-                database_host=self.datadir,
-            )
-        )
+    @pytest.fixture(autouse=True)
+    def _setup(self, tmp_path):
+        self.datadir = str(tmp_path / "pgdata")
+        self.cluster = ClusterFixture(self.datadir)
+        self.cluster.setUp()
+        RegionConfigurationFixture(
+            database_name=self.dbname,
+            database_user=None,
+            database_pass=None,
+            database_host=self.datadir,
+        ).setUp()
 
     def execute(self, command, env):
         process = Popen(command, stdout=PIPE, stderr=STDOUT, env=env)
         output, _ = process.communicate()
         if output:
             name = f"stdout/err from `{command!r}`"
-            self.addDetail(name, Content(UTF8_TEXT, lambda: [output]))
-        self.assertEqual(0, process.wait(), "(return code is not zero)")
+            print(f"\n=== {name} ===\n{output.decode('utf-8')}\n===")
+        assert process.wait() == 0, "(return code is not zero)"
 
     def execute_dbupgrade(self):
         env = os.environ.copy()
@@ -80,10 +76,8 @@ class TestDBUpgrade(MAASTestCase):
                 # Check that alembic_version is not empty
                 cursor.execute("SELECT COUNT(*) FROM alembic_version;")
                 alembic_version_count = cursor.fetchone()[0]
-                self.assertGreater(
-                    alembic_version_count,
-                    0,
-                    "alembic_version table should not be empty",
+                assert alembic_version_count > 0, (
+                    "alembic_version table should not be empty"
                 )
 
     def test_dbupgrade_creates_openfga_schema(self):
@@ -97,7 +91,7 @@ class TestDBUpgrade(MAASTestCase):
                     FROM information_schema.schemata
                     WHERE schema_name = 'openfga';
                 """)
-                self.assertIsNotNone(cursor.fetchone())
+                assert cursor.fetchone() is not None
 
     def test_dbupgrade_executes_openfga_migrations(self):
         """Test ensures that the openfga migrations have been applied and the initial model has been created."""
@@ -110,14 +104,14 @@ class TestDBUpgrade(MAASTestCase):
                     FROM openfga.authorization_model
                     WHERE authorization_model_id = '00000000000000000000000000';
                 """)
-                self.assertIsNotNone(cursor.fetchone())
+                assert cursor.fetchone() is not None
 
     def test_dbupgrade_installs_plpgsql(self):
         self.cluster.createdb(self.dbname)
         with closing(self.cluster.connect(self.dbname)) as conn:
             function_names = get_plpgsql_function_names(conn)
-            self.assertEqual(function_names, [])
+            assert function_names == []
         self.execute_dbupgrade()
         with closing(self.cluster.connect(self.dbname)) as conn:
             function_names = get_plpgsql_function_names(conn)
-            self.assertNotEqual(function_names, [])
+            assert function_names != []

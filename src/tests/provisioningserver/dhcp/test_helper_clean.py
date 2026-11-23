@@ -8,7 +8,6 @@ import subprocess
 import tempfile
 
 from maastesting import dev_root
-from maastesting.testcase import MAASTestCase
 from provisioningserver.utils.fs import read_text_file
 from provisioningserver.utils.shell import call_and_check
 
@@ -92,9 +91,11 @@ lease 192.168.10.69 {
 """
 
 
-class TestDHCPClean(MAASTestCase):
-    def test_removes_hosts_from_leases_file(self):
-        path = self.make_file(contents=LEASES_FILE_WITH_HOSTS)
+class TestDHCPClean:
+    def test_removes_hosts_from_leases_file(self, tmp_path):
+        path = str(tmp_path / "leases")
+        with open(path, "w") as f:
+            f.write(LEASES_FILE_WITH_HOSTS)
         call_and_check(
             [
                 f"{dev_root}/package-files/usr/sbin/maas-dhcp-helper",
@@ -102,10 +103,10 @@ class TestDHCPClean(MAASTestCase):
                 path,
             ]
         )
-        self.assertEqual(LEASES_FILE_WITHOUT_HOSTS, read_text_file(path))
+        assert LEASES_FILE_WITHOUT_HOSTS == read_text_file(path)
 
 
-class TestDHCPHelperNotify(MAASTestCase):
+class TestDHCPHelperNotify:
     """Tests for maas-dhcp-helper notify graceful degradation."""
 
     def test_notify_exits_cleanly_when_socket_missing(self):
@@ -131,12 +132,10 @@ class TestDHCPHelperNotify(MAASTestCase):
             capture_output=True,
             text=True,
         )
-        self.assertEqual(
-            0,
-            result.returncode,
-            f"Helper crashed with exit code {result.returncode}:\n{result.stderr}",
+        assert 0 == result.returncode, (
+            f"Helper crashed with exit code {result.returncode}:\n{result.stderr}"
         )
-        self.assertIn("not found", result.stderr)
+        assert "not found" in result.stderr
 
     def test_notify_exits_cleanly_when_socket_dir_missing(self):
         helper = f"{dev_root}/package-files/usr/sbin/maas-dhcp-helper"
@@ -161,9 +160,7 @@ class TestDHCPHelperNotify(MAASTestCase):
             capture_output=True,
             text=True,
         )
-        self.assertEqual(
-            0,
-            result.returncode,
-            f"Helper crashed with exit code {result.returncode}:\n{result.stderr}",
+        assert 0 == result.returncode, (
+            f"Helper crashed with exit code {result.returncode}:\n{result.stderr}"
         )
-        self.assertIn("not found", result.stderr)
+        assert "not found" in result.stderr

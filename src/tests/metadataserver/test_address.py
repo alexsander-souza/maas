@@ -3,7 +3,6 @@
 
 """Test server-address-guessing logic."""
 
-from maastesting.testcase import MAASTestCase
 from metadataserver import address
 
 
@@ -15,22 +14,18 @@ def parse_locale_lines(output):
     }
 
 
-class TestAddress(MAASTestCase):
+class TestAddress:
     def test_get_command_output_executes_command(self):
-        self.assertEqual(
-            ["Hello"], address.get_command_output("echo", "Hello")
-        )
+        assert address.get_command_output("echo", "Hello") == ["Hello"]
 
     def test_get_command_output_does_not_expand_arguments(self):
-        self.assertEqual(["$*"], address.get_command_output("echo", "$*"))
+        assert address.get_command_output("echo", "$*") == ["$*"]
 
     def test_get_command_output_returns_sequence_of_lines(self):
-        self.assertEqual(
-            ["1", "2"], address.get_command_output("echo", "1\n2")
-        )
+        assert address.get_command_output("echo", "1\n2") == ["1", "2"]
 
     def test_get_command_output_uses_C_locale(self):
         locale = parse_locale_lines(address.get_command_output("locale"))
-        self.assertEqual("C.UTF-8", locale["LC_CTYPE"])
-        self.assertEqual("C.UTF-8", locale["LC_MESSAGES"])
-        self.assertEqual("C.UTF-8", locale["LANG"])
+        assert locale["LC_CTYPE"] == "C.UTF-8"
+        assert locale["LC_MESSAGES"] == "C.UTF-8"
+        assert locale["LANG"] == "C.UTF-8"

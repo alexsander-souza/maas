@@ -4,17 +4,15 @@
 """Test builtin_script fio."""
 
 import os
-from pathlib import Path
 import random
 from subprocess import CalledProcessError
 from textwrap import dedent
 from unittest.mock import call
 
+import pytest
 import yaml
 
 from maastesting.factory import factory
-from maastesting.fixtures import TempDirectory
-from maastesting.testcase import MAASTestCase
 from metadataserver.builtin_scripts.testing_scripts import fio
 
 FIO_OLD_READ_OUTPUT = dedent(
@@ -96,58 +94,41 @@ fio_test: (groupid=0, jobs=1): err= 0: pid=2235: Tue Jul 17 17:10:30 2018
 )
 
 
-class TestFioTestRunCmd(MAASTestCase):
-    scenarios = [
-        (
-            "old_read",
-            {
-                "output_template": FIO_OLD_READ_OUTPUT,
-                "readwrite": random.choice(["read", "randread"]),
-            },
-        ),
-        (
-            "old_write",
-            {
-                "output_template": FIO_OLD_WRITE_OUTPUT,
-                "readwrite": random.choice(["write", "randwrite"]),
-            },
-        ),
-        (
-            "new_read",
-            {
-                "output_template": FIO_NEW_READ_OUTPUT,
-                "readwrite": random.choice(["read", "randread"]),
-            },
-        ),
-        (
-            "new_write",
-            {
-                "output_template": FIO_NEW_WRITE_OUTPUT,
-                "readwrite": random.choice(["write", "randwrite"]),
-            },
-        ),
-    ]
-
-    def setUp(self):
-        super().setUp()
-        self.mock_print = self.patch(fio, "print")
-        self.mock_stdout_write = self.patch(fio.sys.stdout, "write")
-        self.mock_stderr_write = self.patch(fio.sys.stderr, "write")
-        self.mock_check_output = self.patch(fio, "check_output")
+@pytest.mark.parametrize(
+    "output_template,readwrite",
+    [
+        (FIO_OLD_READ_OUTPUT, "read"),
+        (FIO_OLD_WRITE_OUTPUT, "write"),
+        (FIO_NEW_READ_OUTPUT, "read"),
+        (FIO_NEW_WRITE_OUTPUT, "write"),
+    ],
+    ids=["old_read", "old_write", "new_read", "new_write"],
+)
+class TestFioTestRunCmd:
+    @pytest.fixture(autouse=True)
+    def _setup(self, mocker):
+        self.mock_print = mocker.patch.object(fio, "print")
+        self.mock_stdout_write = mocker.patch.object(fio.sys.stdout, "write")
+        self.mock_stderr_write = mocker.patch.object(fio.sys.stderr, "write")
+        self.mock_check_output = mocker.patch.object(fio, "check_output")
         self.bw = random.randint(1000, 1000000000)
         self.iops = random.randint(1000, 1000000000)
 
-    def test_runs_command_outputs_and_returns_results(self):
-        output = self.output_template.format(bw=self.bw, iops=self.iops)
+    def test_runs_command_outputs_and_returns_results(
+        self, output_template, readwrite
+    ):
+        output = output_template.format(bw=self.bw, iops=self.iops)
         self.mock_check_output.return_value = output.encode()
 
-        results = fio.run_cmd(self.readwrite)
+        results = fio.run_cmd(readwrite)
 
-        self.assertEqual(self.mock_print.call_count, 3)
+        assert self.mock_print.call_count == 3
         self.mock_print.assert_called_with(f"\n{'-' * 80}\n")
-        self.assertEqual({"bw": self.bw, "iops": self.iops}, results)
+        assert {"bw": self.bw, "iops": self.iops} == results
 
-    def test_run_cmd_runs_cmd_and_exits_on_error(self):
+    def test_run_cmd_runs_cmd_and_exits_on_error(
+        self, output_template, readwrite
+    ):
         stdout = factory.make_string()
         stderr = factory.make_string()
         self.mock_check_output.side_effect = CalledProcessError(
@@ -157,62 +138,55 @@ class TestFioTestRunCmd(MAASTestCase):
             returncode=1,
         )
 
-        self.assertRaises(SystemExit, fio.run_cmd, self.readwrite)
+        with pytest.raises(SystemExit):
+            fio.run_cmd(readwrite)
         self.mock_stderr_write.assert_has_calls(
             [call("fio failed to run!\n"), call(stderr)]
         )
         self.mock_stdout_write.assert_called_once_with(stdout)
 
 
-class TestFioTestRunFio(MAASTestCase):
-    scenarios = [
-        (
-            "old",
-            {
-                "read_output_template": FIO_OLD_READ_OUTPUT,
-                "write_output_template": FIO_OLD_WRITE_OUTPUT,
-            },
-        ),
-        (
-            "new",
-            {
-                "read_output_template": FIO_NEW_READ_OUTPUT,
-                "write_output_template": FIO_NEW_WRITE_OUTPUT,
-            },
-        ),
-    ]
-
-    def setUp(self):
-        super().setUp()
-        self.mock_print = self.patch(fio, "print")
-        self.mock_stdout_write = self.patch(fio.sys.stdout, "write")
-        self.mock_stderr_write = self.patch(fio.sys.stderr, "write")
-        self.mock_check_output = self.patch(fio, "check_output")
-        self.mock_get_blocksize = self.patch(fio, "get_blocksize")
+@pytest.mark.parametrize(
+    "read_output_template,write_output_template",
+    [
+        (FIO_OLD_READ_OUTPUT, FIO_OLD_WRITE_OUTPUT),
+        (FIO_NEW_READ_OUTPUT, FIO_NEW_WRITE_OUTPUT),
+    ],
+    ids=["old", "new"],
+)
+class TestFioTestRunFio:
+    @pytest.fixture(autouse=True)
+    def _setup(self, mocker):
+        self.mock_print = mocker.patch.object(fio, "print")
+        self.mock_stdout_write = mocker.patch.object(fio.sys.stdout, "write")
+        self.mock_stderr_write = mocker.patch.object(fio.sys.stderr, "write")
+        self.mock_check_output = mocker.patch.object(fio, "check_output")
+        self.mock_get_blocksize = mocker.patch.object(fio, "get_blocksize")
         self.mock_get_blocksize.return_value = 512
 
-    def test_run_fio_writes_yaml_file(self):
-        tmp_path = Path(self.useFixture(TempDirectory()).path)
-        result_path = tmp_path.joinpath("results.yaml")
-        self.patch(os, "environ", {"RESULT_PATH": result_path})
+    def test_run_fio_writes_yaml_file(
+        self, tmp_path, mocker, read_output_template, write_output_template
+    ):
+        result_path = tmp_path / "results.yaml"
+        mocker.patch.object(os, "environ", {"RESULT_PATH": str(result_path)})
         rand_read_bw = random.randint(1000, 1000000000)
         rand_read_iops = random.randint(1000, 1000000000)
-        rand_read_output = self.read_output_template.format(
+        rand_read_output = read_output_template.format(
             bw=rand_read_bw, iops=rand_read_iops
         ).encode()
         seq_read_bw = random.randint(1000, 1000000000)
         seq_read_iops = random.randint(1000, 1000000000)
-        seq_read_output = self.read_output_template.format(
+        seq_read_output = read_output_template.format(
             bw=seq_read_bw, iops=seq_read_iops
         ).encode()
         rand_write_bw = random.randint(1000, 1000000000)
         rand_write_iops = random.randint(1000, 1000000000)
-        rand_write_output = self.write_output_template.format(
+        rand_write_output = write_output_template.format(
             bw=rand_write_bw, iops=rand_write_iops
         ).encode()
         seq_write_bw = random.randint(1000, 1000000000)
         seq_write_iops = random.randint(1000, 1000000000)
-        seq_write_output = self.write_output_template.format(
+        seq_write_output = write_output_template.format(
             bw=seq_write_bw, iops=seq_write_iops
         ).encode()
         self.mock_check_output.side_effect = [
@@ -227,42 +201,41 @@ class TestFioTestRunFio(MAASTestCase):
         with open(result_path) as results_file:
             results = yaml.safe_load(results_file)
 
-        self.assertEqual(
-            {
-                "results": {
-                    "random_read": f"{rand_read_bw} KB/s",
-                    "random_read_iops": rand_read_iops,
-                    "sequential_read": f"{seq_read_bw} KB/s",
-                    "sequential_read_iops": seq_read_iops,
-                    "random_write": f"{rand_write_bw} KB/s",
-                    "random_write_iops": rand_write_iops,
-                    "sequential_write": f"{seq_write_bw} KB/s",
-                    "sequential_write_iops": seq_write_iops,
-                }
-            },
-            results,
-        )
+        assert results == {
+            "results": {
+                "random_read": f"{rand_read_bw} KB/s",
+                "random_read_iops": rand_read_iops,
+                "sequential_read": f"{seq_read_bw} KB/s",
+                "sequential_read_iops": seq_read_iops,
+                "random_write": f"{rand_write_bw} KB/s",
+                "random_write_iops": rand_write_iops,
+                "sequential_write": f"{seq_write_bw} KB/s",
+                "sequential_write_iops": seq_write_iops,
+            }
+        }
 
-    def test_run_fio_doenst_write_yaml_file(self):
-        mock_open = self.patch(fio, "open")
+    def test_run_fio_doenst_write_yaml_file(
+        self, mocker, read_output_template, write_output_template
+    ):
+        mock_open = mocker.patch.object(fio, "open")
         rand_read_bw = random.randint(1000, 1000000000)
         rand_read_iops = random.randint(1000, 1000000000)
-        rand_read_output = self.read_output_template.format(
+        rand_read_output = read_output_template.format(
             bw=rand_read_bw, iops=rand_read_iops
         ).encode()
         seq_read_bw = random.randint(1000, 1000000000)
         seq_read_iops = random.randint(1000, 1000000000)
-        seq_read_output = self.read_output_template.format(
+        seq_read_output = read_output_template.format(
             bw=seq_read_bw, iops=seq_read_iops
         ).encode()
         rand_write_bw = random.randint(1000, 1000000000)
         rand_write_iops = random.randint(1000, 1000000000)
-        rand_write_output = self.write_output_template.format(
+        rand_write_output = write_output_template.format(
             bw=rand_write_bw, iops=rand_write_iops
         ).encode()
         seq_write_bw = random.randint(1000, 1000000000)
         seq_write_iops = random.randint(1000, 1000000000)
-        seq_write_output = self.write_output_template.format(
+        seq_write_output = write_output_template.format(
             bw=seq_write_bw, iops=seq_write_iops
         ).encode()
         self.mock_check_output.side_effect = [

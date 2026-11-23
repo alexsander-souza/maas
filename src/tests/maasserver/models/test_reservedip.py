@@ -8,10 +8,10 @@ import pytest
 
 from maasserver.models.reservedip import ReservedIP
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 
 
-class TestReservedIP(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb")
+class TestReservedIP:
     """Test class for the ReservedIp model."""
 
     def test_create_reserved_ipv4(self):
@@ -25,10 +25,10 @@ class TestReservedIP(MAASServerTestCase):
         )
 
         reserved_ip.full_clean()
-        self.assertEqual(reserved_ip.ip, "192.168.0.15")
-        self.assertEqual(reserved_ip.subnet.id, subnet.id)
-        self.assertEqual(reserved_ip.mac_address, "00:11:22:33:44:55")
-        self.assertEqual(reserved_ip.comment, "this is a comment")
+        assert reserved_ip.ip == "192.168.0.15"
+        assert reserved_ip.subnet.id == subnet.id
+        assert reserved_ip.mac_address == "00:11:22:33:44:55"
+        assert reserved_ip.comment == "this is a comment"
 
     def test_create_reserved_ipv6(self):
         subnet = factory.make_Subnet(cidr="2002::/64")
@@ -41,10 +41,10 @@ class TestReservedIP(MAASServerTestCase):
         )
 
         reserved_ip.full_clean()
-        self.assertEqual(reserved_ip.ip, ip)
-        self.assertEqual(reserved_ip.subnet.id, subnet.id)
-        self.assertEqual(reserved_ip.mac_address, "00:11:22:33:44:55")
-        self.assertEqual(reserved_ip.comment, "this is a comment")
+        assert reserved_ip.ip == ip
+        assert reserved_ip.subnet.id == subnet.id
+        assert reserved_ip.mac_address == "00:11:22:33:44:55"
+        assert reserved_ip.comment == "this is a comment"
 
     def test_create_requires_a_valid_ip_address(self):
         subnet = factory.make_Subnet(cidr="192.168.0.0/24")
@@ -66,7 +66,7 @@ class TestReservedIP(MAASServerTestCase):
 
             with pytest.raises(ValidationError) as exc_info:
                 reserved_ip.full_clean()
-            self.assertEqual(exc_info.value.message_dict, msg)
+            assert exc_info.value.message_dict == msg
 
     def test_create_requires_ip_address_has_not_been_reserved(self):
         subnet = factory.make_Subnet(cidr="192.168.0.0/24")
@@ -83,10 +83,9 @@ class TestReservedIP(MAASServerTestCase):
                 mac_address=factory.make_mac_address(),
                 subnet=subnet,
             ).full_clean()
-        self.assertEqual(
-            exc_info.value.message_dict,
-            {"ip": ["Reserved IP with this IP address already exists."]},
-        )
+        assert exc_info.value.message_dict == {
+            "ip": ["Reserved IP with this IP address already exists."]
+        }
 
     def test_create_empty_mac_address(self):
         subnet = factory.make_Subnet(cidr="192.168.0.0/24")
@@ -100,10 +99,9 @@ class TestReservedIP(MAASServerTestCase):
 
         with pytest.raises(ValidationError) as exc_info:
             reserved_ip.full_clean()
-        self.assertEqual(
-            exc_info.value.message_dict,
-            {"mac_address": ["This field cannot be null."]},
-        )
+        assert exc_info.value.message_dict == {
+            "mac_address": ["This field cannot be null."]
+        }
 
     def test_create_invalid_mac_address(self):
         subnet = factory.make_Subnet(cidr="192.168.0.0/24")
@@ -117,43 +115,38 @@ class TestReservedIP(MAASServerTestCase):
         )
         with pytest.raises(ValidationError) as exc_info:
             reserved_ip.full_clean()
-        self.assertEqual(
-            exc_info.value.message_dict,
-            {
-                "mac_address": [
-                    "'00:11:22:33:44:gg' is not a valid MAC address."
-                ]
-            },
-        )
+        assert exc_info.value.message_dict == {
+            "mac_address": ["'00:11:22:33:44:gg' is not a valid MAC address."]
+        }
 
     def test_reserved_ip_to_str(self):
         fabric = factory.make_Fabric(name="fabric")
         vlan = factory.make_VLAN(name="vlan", fabric=fabric)
         subnet = factory.make_Subnet(cidr="10.0.0.0/24", vlan=vlan)
 
-        self.assertEqual(
+        assert (
             str(
                 ReservedIP(
                     ip="10.0.0.55",
                     subnet=subnet,
                     mac_address=None,
                 )
-            ),
-            "10.0.0.55 (10.0.0.0/24)",
+            )
+            == "10.0.0.55 (10.0.0.0/24)"
         )
 
-        self.assertEqual(
+        assert (
             str(
                 ReservedIP(
                     ip="10.0.0.55",
                     subnet=subnet,
                     mac_address="00:11:22:33:44:55",
                 )
-            ),
-            "10.0.0.55 (10.0.0.0/24), 00:11:22:33:44:55",
+            )
+            == "10.0.0.55 (10.0.0.0/24), 00:11:22:33:44:55"
         )
 
-        self.assertEqual(
+        assert (
             str(
                 ReservedIP(
                     ip="10.0.0.55",
@@ -161,18 +154,15 @@ class TestReservedIP(MAASServerTestCase):
                     mac_address=None,
                     comment="this is a comment.",
                 )
-            ),
-            "10.0.0.55 (10.0.0.0/24), this is a comment.",
+            )
+            == "10.0.0.55 (10.0.0.0/24), this is a comment."
         )
 
-        self.assertEqual(
-            str(
-                ReservedIP(
-                    ip="10.0.0.55",
-                    subnet=subnet,
-                    mac_address="00:11:22:33:44:55",
-                    comment="this is a comment.",
-                )
-            ),
-            "10.0.0.55 (10.0.0.0/24), 00:11:22:33:44:55, this is a comment.",
-        )
+        assert str(
+            ReservedIP(
+                ip="10.0.0.55",
+                subnet=subnet,
+                mac_address="00:11:22:33:44:55",
+                comment="this is a comment.",
+            )
+        ) == ("10.0.0.55 (10.0.0.0/24), 00:11:22:33:44:55, this is a comment.")

@@ -2141,7 +2141,7 @@ StaticIPAddressTable = Table(
         "maasserver_staticipaddress_discovered_uniq",
         "ip",
         unique=True,
-        postgresql_where=~("alloc_type" == 6),
+        postgresql_where=text("NOT (alloc_type = 6)"),
     ),
     Index("maasserver_staticipaddress__ip_family", func.family("ip")),
 )

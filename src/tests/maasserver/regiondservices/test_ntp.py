@@ -3,6 +3,7 @@
 
 """Tests for `maasserver.regiondservices.ntp`."""
 
+import pytest
 from twisted.internet import reactor
 from twisted.internet.defer import inlineCallbacks
 
@@ -10,19 +11,19 @@ from maasserver.models.config import Config
 from maasserver.regiondservices import ntp
 from maasserver.service_monitor import service_monitor
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import (
-    MAASServerTestCase,
-    MAASTransactionServerTestCase,
-)
 from maasserver.utils.orm import transactional
 from maasserver.utils.threads import deferToDatabase
 from maastesting.crochet import wait_for
-from maastesting.fixtures import MAASRootFixture
-from maastesting.testcase import MAASTestCase
 from maastesting.twisted import always_succeed_with, TwistedLoggerFixture
-from provisioningserver.utils.testing import MAASIDFixture
+from provisioningserver.utils.env import MAAS_ID
 
 wait_for_reactor = wait_for()
+
+
+@pytest.fixture(autouse=True)
+def _disable_post_commit_hooks(mocker):
+    mocker.patch("maasserver.utils.orm.post_commit_hooks")
+    mocker.patch("maasserver.utils.orm.post_commit_do")
 
 
 def make_region_with_address(space):
@@ -37,24 +38,22 @@ def make_region_with_address(space):
     return region, sip4, sip6
 
 
-class TestRegionNetworkTimeProtocolService_Basic(MAASTestCase):
+class TestRegionNetworkTimeProtocolService_Basic:
     """Basic tests for `RegionNetworkTimeProtocolService`."""
 
     def test_service_uses__tryUpdate_as_periodic_function(self):
         service = ntp.RegionNetworkTimeProtocolService(reactor)
-        self.assertEqual((service._tryUpdate, (), {}), service.call)
+        assert (service._tryUpdate, (), {}) == service.call
 
     def test_service_iterates_every_30_seconds(self):
         service = ntp.RegionNetworkTimeProtocolService(reactor)
-        self.assertEqual(30.0, service.step)
+        assert 30.0 == service.step
 
 
-class TestRegionNetworkTimeProtocolService(MAASTransactionServerTestCase):
+@pytest.mark.allow_transactions
+@pytest.mark.usefixtures("maasdb")
+class TestRegionNetworkTimeProtocolService:
     """Tests for `RegionNetworkTimeProtocolService`."""
-
-    def setUp(self):
-        super().setUp()
-        self.useFixture(MAASRootFixture())
 
     @transactional
     def make_example_configuration(self):
@@ -64,7 +63,7 @@ class TestRegionNetworkTimeProtocolService(MAASTransactionServerTestCase):
         # Populate the database with example peers.
         space = factory.make_Space()
         region, addr4, addr6 = make_region_with_address(space)
-        self.useFixture(MAASIDFixture(region.system_id))
+        MAAS_ID.set(region.system_id)
         peer1, addr1_4, addr1_6 = make_region_with_address(space)
         peer2, addr2_4, addr2_6 = make_region_with_address(space)
         # Return the servers and all possible peer IP addresses.
@@ -72,16 +71,20 @@ class TestRegionNetworkTimeProtocolService(MAASTransactionServerTestCase):
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_tryUpdate_updates_ntp_server(self):
+    def test_tryUpdate_updates_ntp_server(self, mocker):
         service = ntp.RegionNetworkTimeProtocolService(reactor)
         refs, peers = yield deferToDatabase(self.make_example_configuration)
-        configure_region = self.patch_autospec(ntp, "configure_region")
-        restartService = self.patch_autospec(service_monitor, "restartService")
+        configure_region = mocker.patch.object(
+            ntp, "configure_region", autospec=True
+        )
+        restartService = mocker.patch.object(
+            service_monitor, "restartService", autospec=True
+        )
         yield service._tryUpdate()
-        self.assertEqual(configure_region.call_count, 1)
+        assert configure_region.call_count == 1
         (called_refs, called_peers) = configure_region.call_args[0]
-        self.assertEqual(called_refs, refs)
-        self.assertGreaterEqual(peers, called_peers)
+        assert called_refs == refs
+        assert peers >= called_peers
 
         restartService.assert_called_once_with("ntp_region")
         # If the configuration has not changed then a second call to
@@ -93,43 +96,46 @@ class TestRegionNetworkTimeProtocolService(MAASTransactionServerTestCase):
         restartService.assert_not_called()
 
 
-class TestRegionNetworkTimeProtocolService_Errors(
-    MAASTransactionServerTestCase
-):
+@pytest.mark.allow_transactions
+@pytest.mark.usefixtures("maasdb")
+class TestRegionNetworkTimeProtocolService_Errors:
     """Tests for error handing in `RegionNetworkTimeProtocolService`."""
-
-    scenarios = (
-        ("_getConfiguration", dict(method="_getConfiguration")),
-        ("_maybeApplyConfiguration", dict(method="_maybeApplyConfiguration")),
-        ("_applyConfiguration", dict(method="_applyConfiguration")),
-        ("_configurationApplied", dict(method="_configurationApplied")),
-    )
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_tryUpdate_logs_errors_from_broken_method(self):
+    @pytest.mark.parametrize(
+        "method",
+        [
+            "_getConfiguration",
+            "_maybeApplyConfiguration",
+            "_applyConfiguration",
+            "_configurationApplied",
+        ],
+    )
+    def test_tryUpdate_logs_errors_from_broken_method(self, method, mocker):
         service = ntp.RegionNetworkTimeProtocolService(reactor)
-        broken_method = self.patch_autospec(service, self.method)
+        broken_method = mocker.patch.object(service, method, autospec=True)
         broken_method.side_effect = factory.make_exception()
 
         # Ensure that we never actually execute against systemd or write an
         # actual configuration file.
-        self.patch_autospec(
-            ntp, "deferToThread"
+        mocker.patch.object(
+            ntp, "deferToThread", autospec=True
         ).side_effect = always_succeed_with(None)
-        self.patch_autospec(service_monitor, "restartService")
+        mocker.patch.object(service_monitor, "restartService", autospec=True)
 
         with TwistedLoggerFixture() as logger:
             yield service._tryUpdate()
 
-        self.assertIn(
-            "Failed to update NTP configuration.\nTraceback (most recent call last):",
-            logger.output,
+        assert (
+            "Failed to update NTP configuration.\nTraceback (most recent call last):"
+            in logger.output
         )
-        self.assertIn(str(broken_method.side_effect), logger.output)
+        assert str(broken_method.side_effect) in logger.output
 
 
-class TestRegionNetworkTimeProtocolService_Database(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb")
+class TestRegionNetworkTimeProtocolService_Database:
     """Database tests for `RegionNetworkTimeProtocolService`."""
 
     def test_getConfiguration_returns_configuration_object(self):
@@ -143,11 +149,11 @@ class TestRegionNetworkTimeProtocolService_Database(MAASServerTestCase):
         space = factory.make_Space()
         # Populate the database with "this" region and an example peer.
         region, _, _ = make_region_with_address(space)
-        self.useFixture(MAASIDFixture(region.system_id))
+        MAAS_ID.set(region.system_id)
         peer, addr4, addr6 = make_region_with_address(space)
 
         observed = service._getConfiguration()
-        self.assertIsInstance(observed, ntp._Configuration)
+        assert isinstance(observed, ntp._Configuration)
 
-        self.assertEqual(observed.references, ntp_servers)
-        self.assertGreater({addr4.ip, addr6.ip}, observed.peers)
+        assert observed.references == ntp_servers
+        assert {addr4.ip, addr6.ip} > observed.peers

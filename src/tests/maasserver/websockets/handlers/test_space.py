@@ -5,20 +5,22 @@
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from maasserver import openfga
 from maasserver.models.space import Space
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from maasserver.utils.orm import reload_object
 from maasserver.websockets.base import (
     dehydrate_datetime,
     HandlerPermissionError,
 )
 from maasserver.websockets.handlers.space import SpaceHandler
-from maastesting.djangotestcase import count_queries
+from maastesting.querycounter import count_queries
 
 
-class TestSpaceHandler(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestSpaceHandler:
     def dehydrate_space(self, space):
         data = {
             "id": space.id,
@@ -42,9 +44,7 @@ class TestSpaceHandler(MAASServerTestCase):
             interface = node.get_boot_interface()
             subnet = factory.make_Subnet(space=space, vlan=interface.vlan)
             factory.make_StaticIPAddress(subnet=subnet, interface=interface)
-        self.assertEqual(
-            self.dehydrate_space(space), handler.get({"id": space.id})
-        )
+        assert self.dehydrate_space(space) == handler.get({"id": space.id})
 
     def test_list(self):
         user = factory.make_User()
@@ -53,7 +53,9 @@ class TestSpaceHandler(MAASServerTestCase):
         expected_spaces = [
             self.dehydrate_space(space) for space in Space.objects.all()
         ]
-        self.assertCountEqual(expected_spaces, handler.list({}))
+        assert sorted(expected_spaces, key=repr) == sorted(
+            handler.list({}), key=repr
+        )
 
     def test_list_constant_queries(self):
         user = factory.make_User()
@@ -68,23 +70,24 @@ class TestSpaceHandler(MAASServerTestCase):
         queries_one, _ = count_queries(handler.list, {"limit": 1})
         queries_multiple, _ = count_queries(handler.list, {})
 
-        self.assertEqual(queries_one, queries_multiple)
+        assert queries_one == queries_multiple
 
 
-class TestSpaceHandlerDelete(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestSpaceHandlerDelete:
     def test_delete_as_admin_success(self):
         user = factory.make_admin()
         handler = SpaceHandler(user, {}, None)
         space = factory.make_Space()
         handler.delete({"id": space.id})
         space = reload_object(space)
-        self.assertIsNone(space)
+        assert space is None
 
     def test_delete_as_non_admin_asserts(self):
         user = factory.make_User()
         handler = SpaceHandler(user, {}, None)
         space = factory.make_Space()
-        with self.assertRaisesRegex(AssertionError, "Permission denied."):
+        with pytest.raises(AssertionError, match="Permission denied."):
             handler.delete({"id": space.id})
 
     def test_reloads_user(self):
@@ -93,11 +96,12 @@ class TestSpaceHandlerDelete(MAASServerTestCase):
         space = factory.make_Space()
         user.is_superuser = False
         user.save()
-        with self.assertRaisesRegex(AssertionError, "Permission denied."):
+        with pytest.raises(AssertionError, match="Permission denied."):
             handler.delete({"id": space.id})
 
 
-class TestSpaceHandlerViewPermission(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestSpaceHandlerViewPermission:
     def deny_global_view(self):
         client = openfga.get_openfga_client()
         client.can_view_global_entities = MagicMock(return_value=False)
@@ -106,18 +110,17 @@ class TestSpaceHandlerViewPermission(MAASServerTestCase):
         self.deny_global_view()
         handler = SpaceHandler(factory.make_User(), {}, None)
         factory.make_Space()
-        self.assertRaises(HandlerPermissionError, handler.list, {})
+        pytest.raises(HandlerPermissionError, handler.list, {})
 
     def test_get_requires_view_permission(self):
         self.deny_global_view()
         space = factory.make_Space()
         handler = SpaceHandler(factory.make_User(), {}, None)
-        self.assertRaises(
-            HandlerPermissionError, handler.get, {"id": space.id}
-        )
+        pytest.raises(HandlerPermissionError, handler.get, {"id": space.id})
 
 
-class TestSpaceHandlerEditPermission(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestSpaceHandlerEditPermission:
     def deny_global_edit(self):
         client = openfga.get_openfga_client()
         client.can_edit_global_entities = MagicMock(return_value=False)
@@ -125,12 +128,10 @@ class TestSpaceHandlerEditPermission(MAASServerTestCase):
     def test_create_requires_edit_permission(self):
         self.deny_global_edit()
         handler = SpaceHandler(factory.make_User(), {}, None)
-        self.assertRaises(HandlerPermissionError, handler.create, {})
+        pytest.raises(HandlerPermissionError, handler.create, {})
 
     def test_update_requires_edit_permission(self):
         self.deny_global_edit()
         space = factory.make_Space()
         handler = SpaceHandler(factory.make_User(), {}, None)
-        self.assertRaises(
-            HandlerPermissionError, handler.update, {"id": space.id}
-        )
+        pytest.raises(HandlerPermissionError, handler.update, {"id": space.id})

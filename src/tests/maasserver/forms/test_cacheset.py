@@ -3,21 +3,22 @@
 
 """Tests for all forms that are used with `CacheSet`."""
 
+import pytest
+
 from maasserver.forms import CreateCacheSetForm, UpdateCacheSetForm
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 
 
-class TestCreateCacheSetForm(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestCreateCacheSetForm:
     def test_required_fields(self):
         node = factory.make_Node()
         form = CreateCacheSetForm(node=node, data={})
 
-        self.assertFalse(form.is_valid(), form.errors)
-        self.assertEqual(
-            form.errors["__all__"],
-            ["Either cache_device or cache_partition must be specified."],
-        )
+        assert not form.is_valid(), form.errors
+        assert form.errors["__all__"] == [
+            "Either cache_device or cache_partition must be specified."
+        ]
 
     def test_choices_are_being_populated_correctly(self):
         node = factory.make_Node(with_boot_disk=False)
@@ -39,13 +40,11 @@ class TestCreateCacheSetForm(MAASServerTestCase):
             bd.id for bd in bds if bd.get_partitiontable() is None
         ] + [bd.name for bd in bds if bd.get_partitiontable() is None]
         form = CreateCacheSetForm(node=node, data={})
-        self.assertCountEqual(
-            block_devices,
-            [k for (k, v) in form.fields["cache_device"].choices],
+        assert sorted(block_devices, key=repr) == sorted(
+            [k for (k, v) in form.fields["cache_device"].choices], key=repr
         )
-        self.assertCountEqual(
-            partition_choices,
-            [k for (k, v) in form.fields["cache_partition"].choices],
+        assert sorted(partition_choices, key=repr) == sorted(
+            [k for (k, v) in form.fields["cache_partition"].choices], key=repr
         )
 
     def test_cache_set_creation_with_block_device(self):
@@ -55,9 +54,9 @@ class TestCreateCacheSetForm(MAASServerTestCase):
             node=node, data={"cache_device": cache_device.id}
         )
 
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         cache_set = form.save()
-        self.assertEqual(cache_device, cache_set.get_device())
+        assert cache_set.get_device() == cache_device
 
     def test_cache_set_creation_with_boot_disk(self):
         node = factory.make_Node(with_boot_disk=False)
@@ -66,10 +65,10 @@ class TestCreateCacheSetForm(MAASServerTestCase):
             node=node, data={"cache_device": boot_disk.id}
         )
 
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         cache_set = form.save()
         boot_partition = boot_disk.get_partitiontable().partitions.first()
-        self.assertEqual(boot_partition, cache_set.get_device())
+        assert cache_set.get_device() == boot_partition
 
     def test_cache_set_creation_with_partition(self):
         node = factory.make_Node()
@@ -82,9 +81,9 @@ class TestCreateCacheSetForm(MAASServerTestCase):
             node=node, data={"cache_partition": partition.id}
         )
 
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         cache_set = form.save()
-        self.assertEqual(partition, cache_set.get_device())
+        assert cache_set.get_device() == partition
 
     def test_bcache_creation_fails_with_both_set(self):
         node = factory.make_Node()
@@ -102,14 +101,14 @@ class TestCreateCacheSetForm(MAASServerTestCase):
             },
         )
 
-        self.assertFalse(form.is_valid(), form.errors)
-        self.assertEqual(
-            form.errors["__all__"],
-            ["Cannot set both cache_device and cache_partition."],
-        )
+        assert not form.is_valid(), form.errors
+        assert form.errors["__all__"] == [
+            "Cannot set both cache_device and cache_partition."
+        ]
 
 
-class TestUpdateCacheSetForm(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestUpdateCacheSetForm:
     def test_choices_are_being_populated_correctly(self):
         node = factory.make_Node(with_boot_disk=False)
         # Make 10 block devices.
@@ -133,13 +132,11 @@ class TestUpdateCacheSetForm(MAASServerTestCase):
         form = UpdateCacheSetForm(cache_set=cache_set, data={})
         # Should allow all devices and partitions, including the one currently
         # in use on the cache set.
-        self.assertCountEqual(
-            block_device_choices,
-            [k for (k, v) in form.fields["cache_device"].choices],
+        assert sorted(block_device_choices, key=repr) == sorted(
+            [k for (k, v) in form.fields["cache_device"].choices], key=repr
         )
-        self.assertCountEqual(
-            partition_choices,
-            [k for (k, v) in form.fields["cache_partition"].choices],
+        assert sorted(partition_choices, key=repr) == sorted(
+            [k for (k, v) in form.fields["cache_partition"].choices], key=repr
         )
 
     def test_save_updates_the_cache_set_with_block_device(self):
@@ -150,10 +147,10 @@ class TestUpdateCacheSetForm(MAASServerTestCase):
         form = UpdateCacheSetForm(
             cache_set=cache_set, data={"cache_device": new_cache_device.id}
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         cache_set = form.save()
-        self.assertEqual(new_cache_device, cache_set.get_device())
-        self.assertIsNone(partition.get_effective_filesystem())
+        assert cache_set.get_device() == new_cache_device
+        assert partition.get_effective_filesystem() is None
 
     def test_save_updates_the_cache_set_with_boot_disk(self):
         node = factory.make_Node(with_boot_disk=False)
@@ -163,11 +160,11 @@ class TestUpdateCacheSetForm(MAASServerTestCase):
         form = UpdateCacheSetForm(
             cache_set=cache_set, data={"cache_device": boot_disk.id}
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         cache_set = form.save()
         boot_partition = boot_disk.get_partitiontable().partitions.first()
-        self.assertEqual(boot_partition, cache_set.get_device())
-        self.assertIsNone(partition.get_effective_filesystem())
+        assert cache_set.get_device() == boot_partition
+        assert partition.get_effective_filesystem() is None
 
     def test_save_updates_the_cache_set_with_partition(self):
         node = factory.make_Node()
@@ -177,7 +174,7 @@ class TestUpdateCacheSetForm(MAASServerTestCase):
         form = UpdateCacheSetForm(
             cache_set=cache_set, data={"cache_partition": new_partition.id}
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         cache_set = form.save()
-        self.assertEqual(new_partition, cache_set.get_device())
-        self.assertIsNone(cache_device.get_effective_filesystem())
+        assert cache_set.get_device() == new_partition
+        assert cache_device.get_effective_filesystem() is None

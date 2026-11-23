@@ -3,14 +3,12 @@
 
 
 import os
-from pathlib import Path
 from subprocess import Popen
 
 import crochet
 from django.db import connections
 from django.db.backends.base.base import BaseDatabaseWrapper
-from fixtures import EnvironmentVariableFixture
-from testtools import monkey
+import pytest
 from twisted.application.service import MultiService
 from twisted.internet import reactor
 
@@ -26,8 +24,6 @@ from maasserver.utils.orm import (
     DisabledDatabaseConnection,
     enable_all_database_connections,
 )
-from maastesting.fixtures import TempDirectory
-from maastesting.testcase import MAASTestCase
 from provisioningserver import logger
 from provisioningserver.utils.twisted import asynchronous, ThreadPool
 
@@ -41,12 +37,12 @@ def import_websocket_handlers():
     import maasserver.websockets.handlers  # noqa
 
 
-class TestOptions(MAASTestCase):
+class TestOptions:
     """Tests for `maasserver.plugin.Options`."""
 
     def test_defaults(self):
         options = Options()
-        self.assertEqual({}, options.defaults)
+        assert options.defaults == {}
 
     def test_parse_minimal_options(self):
         options = Options()
@@ -55,34 +51,32 @@ class TestOptions(MAASTestCase):
         options.parseOptions(arguments)  # No error.
 
 
-class TestServiceMaker(MAASTestCase):
+class TestServiceMaker:
     """Mixin with helpers for all the service marker tests."""
 
-    def setUp(self):
-        super().setUp()
-        self.patch(eventloop.loop, "services", MultiService())
+    @pytest.fixture(autouse=True)
+    def _setup(self, mocker):
+        mocker.patch.object(eventloop.loop, "services", MultiService())
         # Prevent setting the pdeathsig in tests.
-        self.patch_autospec(RegionWorkerServiceMaker, "_set_pdeathsig")
-        self.patch_autospec(crochet, "no_setup")
-        self.patch_autospec(logger, "configure")
+        mocker.patch.object(
+            RegionWorkerServiceMaker, "_set_pdeathsig", autospec=True
+        )
+        mocker.patch.object(crochet, "no_setup", autospec=True)
+        mocker.patch.object(logger, "configure", autospec=True)
         # Enable database access in the reactor just for these tests.
         asynchronous(enable_all_database_connections, timeout=60)()
         import_websocket_handlers()
-
-    def tearDown(self):
-        super().tearDown()
+        yield
         # Disable database access in the reactor again.
         asynchronous(disable_all_database_connections, timeout=60)()
 
     def assertConnectionsEnabled(self):
         for alias in connections:
-            self.assertIsInstance(connections[alias], BaseDatabaseWrapper)
+            assert isinstance(connections[alias], BaseDatabaseWrapper)
 
     def assertConnectionsDisabled(self):
         for alias in connections:
-            self.assertEqual(
-                DisabledDatabaseConnection, type(connections[alias])
-            )
+            assert type(connections[alias]) is DisabledDatabaseConnection
 
 
 class TestRegionWorkerServiceMaker(TestServiceMaker):
@@ -90,27 +84,29 @@ class TestRegionWorkerServiceMaker(TestServiceMaker):
 
     def test_init(self):
         service_maker = RegionWorkerServiceMaker("Harry", "Hill")
-        self.assertEqual("Harry", service_maker.tapname)
-        self.assertEqual("Hill", service_maker.description)
+        assert service_maker.tapname == "Harry"
+        assert service_maker.description == "Hill"
 
     @asynchronous(timeout=60)
-    def test_makeService_configures_pserv_debug(self):
+    def test_makeService_configures_pserv_debug(self, mocker):
         options = Options()
         service_maker = RegionWorkerServiceMaker("Harry", "Hill")
-        mock_pserv = self.patch(service_maker, "_configurePservSettings")
+        mock_pserv = mocker.patch.object(
+            service_maker, "_configurePservSettings"
+        )
         # Disable _configureThreads() as it's too invasive right now.
-        self.patch_autospec(service_maker, "_configureThreads")
+        mocker.patch.object(service_maker, "_configureThreads", autospec=True)
         service_maker.makeService(options)
         mock_pserv.assert_called_once_with()
 
     @asynchronous(timeout=60)
-    def test_makeService_without_import_services(self):
+    def test_makeService_without_import_services(self, mocker):
         options = Options()
         service_maker = RegionWorkerServiceMaker("Harry", "Hill")
         # Disable _configureThreads() as it's too invasive right now.
-        self.patch_autospec(service_maker, "_configureThreads")
+        mocker.patch.object(service_maker, "_configureThreads", autospec=True)
         service = service_maker.makeService(options)
-        self.assertIsInstance(service, MultiService)
+        assert isinstance(service, MultiService)
         expected_services = {
             "database-tasks",
             "postgres-listener-worker",
@@ -119,11 +115,9 @@ class TestRegionWorkerServiceMaker(TestServiceMaker):
             "web",
             "ipc-worker",
         }
-        self.assertEqual(expected_services, service.namedServices.keys())
-        self.assertEqual(
-            len(service.namedServices),
-            len(service.services),
-            "Not all services are named.",
+        assert service.namedServices.keys() == expected_services
+        assert len(service.namedServices) == len(service.services), (
+            "Not all services are named."
         )
         logger.configure.assert_called_once_with(
             options["verbosity"], logger.LoggingMode.TWISTD
@@ -131,19 +125,15 @@ class TestRegionWorkerServiceMaker(TestServiceMaker):
         crochet.no_setup.assert_called_once_with()
 
     @asynchronous(timeout=60)
-    def test_makeService_with_import_services(self):
+    def test_makeService_with_import_services(self, mocker, monkeypatch):
         options = Options()
         service_maker = RegionWorkerServiceMaker("Harry", "Hill")
         # Disable _configureThreads() as it's too invasive right now.
-        self.patch_autospec(service_maker, "_configureThreads")
+        mocker.patch.object(service_maker, "_configureThreads", autospec=True)
         # Set the environment variable to create the import services.
-        self.useFixture(
-            EnvironmentVariableFixture(
-                "MAAS_REGIOND_RUN_IMPORTER_SERVICE", "true"
-            )
-        )
+        monkeypatch.setenv("MAAS_REGIOND_RUN_IMPORTER_SERVICE", "true")
         service = service_maker.makeService(options)
-        self.assertIsInstance(service, MultiService)
+        assert isinstance(service, MultiService)
         expected_services = {
             "database-tasks",
             "postgres-listener-worker",
@@ -154,11 +144,9 @@ class TestRegionWorkerServiceMaker(TestServiceMaker):
             "import-resources-progress",
             "active-discovery",
         }
-        self.assertEqual(expected_services, service.namedServices.keys())
-        self.assertEqual(
-            len(service.namedServices),
-            len(service.services),
-            "Not all services are named.",
+        assert service.namedServices.keys() == expected_services
+        assert len(service.namedServices) == len(service.services), (
+            "Not all services are named."
         )
         logger.configure.assert_called_once_with(
             options["verbosity"], logger.LoggingMode.TWISTD
@@ -167,27 +155,22 @@ class TestRegionWorkerServiceMaker(TestServiceMaker):
         crochet.no_setup.assert_called_once_with()
 
     @asynchronous(timeout=60)
-    def test_configures_thread_pool(self):
+    def test_configures_thread_pool(self, monkeypatch):
         # Patch and restore where it's visible because patching a running
         # reactor is potentially fairly harmful.
-        patcher = monkey.MonkeyPatcher()
-        patcher.add_patch(reactor, "threadpool", None)
-        patcher.add_patch(reactor, "threadpoolForDatabase", None)
-        patcher.patch()
-        try:
-            service_maker = RegionWorkerServiceMaker("Harry", "Hill")
-            service_maker.makeService(Options())
-            threadpool = reactor.getThreadPool()
-            self.assertIsInstance(threadpool, ThreadPool)
-        finally:
-            patcher.restore()
+        monkeypatch.setattr(reactor, "threadpool", None)
+        monkeypatch.setattr(reactor, "threadpoolForDatabase", None)
+        service_maker = RegionWorkerServiceMaker("Harry", "Hill")
+        service_maker.makeService(Options())
+        threadpool = reactor.getThreadPool()
+        assert isinstance(threadpool, ThreadPool)
 
     @asynchronous(timeout=60)
-    def test_disables_database_connections_in_reactor(self):
+    def test_disables_database_connections_in_reactor(self, mocker):
         self.assertConnectionsEnabled()
         service_maker = RegionWorkerServiceMaker("Harry", "Hill")
         # Disable _configureThreads() as it's too invasive right now.
-        self.patch_autospec(service_maker, "_configureThreads")
+        mocker.patch.object(service_maker, "_configureThreads", autospec=True)
         service_maker.makeService(Options())
         self.assertConnectionsDisabled()
 
@@ -203,31 +186,33 @@ class TestRegionMasterServiceMaker(TestServiceMaker):
 
     def test_init(self):
         service_maker = RegionMasterServiceMaker("Harry", "Hill")
-        self.assertEqual("Harry", service_maker.tapname)
-        self.assertEqual("Hill", service_maker.description)
+        assert service_maker.tapname == "Harry"
+        assert service_maker.description == "Hill"
 
     @asynchronous(timeout=60)
-    def test_makeService_configures_pserv_debug(self):
+    def test_makeService_configures_pserv_debug(self, mocker):
         options = Options()
         service_maker = RegionMasterServiceMaker("Harry", "Hill")
-        mock_pserv = self.patch(service_maker, "_configurePservSettings")
+        mock_pserv = mocker.patch.object(
+            service_maker, "_configurePservSettings"
+        )
         # Disable _ensureConnection() its not allowed in the reactor.
-        self.patch_autospec(service_maker, "_ensureConnection")
+        mocker.patch.object(service_maker, "_ensureConnection", autospec=True)
         # Disable _configureThreads() as it's too invasive right now.
-        self.patch_autospec(service_maker, "_configureThreads")
+        mocker.patch.object(service_maker, "_configureThreads", autospec=True)
         service_maker.makeService(options)
         mock_pserv.assert_called_once_with()
 
     @asynchronous(timeout=60)
-    def test_makeService(self):
+    def test_makeService(self, mocker):
         options = Options()
         service_maker = RegionMasterServiceMaker("Harry", "Hill")
         # Disable _ensureConnection() its not allowed in the reactor.
-        self.patch_autospec(service_maker, "_ensureConnection")
+        mocker.patch.object(service_maker, "_ensureConnection", autospec=True)
         # Disable _configureThreads() as it's too invasive right now.
-        self.patch_autospec(service_maker, "_configureThreads")
+        mocker.patch.object(service_maker, "_configureThreads", autospec=True)
         service = service_maker.makeService(options)
-        self.assertIsInstance(service, MultiService)
+        assert isinstance(service, MultiService)
         expected_services = {
             "database-tasks-master",
             "region-controller",
@@ -252,11 +237,9 @@ class TestRegionMasterServiceMaker(TestServiceMaker):
             "temporal",
             "dns-reload",
         }
-        self.assertEqual(expected_services, service.namedServices.keys())
-        self.assertEqual(
-            len(service.namedServices),
-            len(service.services),
-            "Not all services are named.",
+        assert service.namedServices.keys() == expected_services
+        assert len(service.namedServices) == len(service.services), (
+            "Not all services are named."
         )
         logger.configure.assert_called_once_with(
             options["verbosity"], logger.LoggingMode.TWISTD
@@ -264,11 +247,11 @@ class TestRegionMasterServiceMaker(TestServiceMaker):
         crochet.no_setup.assert_called_once_with()
 
     @asynchronous(timeout=60)
-    def test_makeService_cleanup_prometheus_dir(self):
-        tmpdir = Path(self.useFixture(TempDirectory()).path)
-        self.useFixture(
-            EnvironmentVariableFixture("prometheus_multiproc_dir", str(tmpdir))
-        )
+    def test_makeService_cleanup_prometheus_dir(
+        self, mocker, monkeypatch, tmp_path
+    ):
+        tmpdir = tmp_path
+        monkeypatch.setenv("prometheus_multiproc_dir", str(tmpdir))
         pid = os.getpid()
         file1 = tmpdir / f"histogram_{pid}.db"
         file1.touch()
@@ -277,39 +260,34 @@ class TestRegionMasterServiceMaker(TestServiceMaker):
 
         service_maker = RegionMasterServiceMaker("Harry", "Hill")
         # Disable _ensureConnection() its not allowed in the reactor.
-        self.patch_autospec(service_maker, "_ensureConnection")
+        mocker.patch.object(service_maker, "_ensureConnection", autospec=True)
         # Disable _configureThreads() as it's too invasive right now.
-        self.patch_autospec(service_maker, "_configureThreads")
+        mocker.patch.object(service_maker, "_configureThreads", autospec=True)
         service_maker.makeService(Options())
-        self.assertTrue(file1.exists())
-        self.assertFalse(file2.exists())
+        assert file1.exists()
+        assert not file2.exists()
 
     @asynchronous(timeout=60)
-    def test_configures_thread_pool(self):
+    def test_configures_thread_pool(self, mocker, monkeypatch):
         # Patch and restore where it's visible because patching a running
         # reactor is potentially fairly harmful.
-        patcher = monkey.MonkeyPatcher()
-        patcher.add_patch(reactor, "threadpool", None)
-        patcher.add_patch(reactor, "threadpoolForDatabase", None)
-        patcher.patch()
-        try:
-            service_maker = RegionMasterServiceMaker("Harry", "Hill")
-            # Disable _ensureConnection() its not allowed in the reactor.
-            self.patch_autospec(service_maker, "_ensureConnection")
-            service_maker.makeService(Options())
-            threadpool = reactor.getThreadPool()
-            self.assertIsInstance(threadpool, ThreadPool)
-        finally:
-            patcher.restore()
+        monkeypatch.setattr(reactor, "threadpool", None)
+        monkeypatch.setattr(reactor, "threadpoolForDatabase", None)
+        service_maker = RegionMasterServiceMaker("Harry", "Hill")
+        # Disable _ensureConnection() its not allowed in the reactor.
+        mocker.patch.object(service_maker, "_ensureConnection", autospec=True)
+        service_maker.makeService(Options())
+        threadpool = reactor.getThreadPool()
+        assert isinstance(threadpool, ThreadPool)
 
     @asynchronous(timeout=60)
-    def test_disables_database_connections_in_reactor(self):
+    def test_disables_database_connections_in_reactor(self, mocker):
         self.assertConnectionsEnabled()
         service_maker = RegionMasterServiceMaker("Harry", "Hill")
         # Disable _ensureConnection() its not allowed in the reactor.
-        self.patch_autospec(service_maker, "_ensureConnection")
+        mocker.patch.object(service_maker, "_ensureConnection", autospec=True)
         # Disable _configureThreads() as it's too invasive right now.
-        self.patch_autospec(service_maker, "_configureThreads")
+        mocker.patch.object(service_maker, "_configureThreads", autospec=True)
         service_maker.makeService(Options())
         self.assertConnectionsDisabled()
 
@@ -319,31 +297,33 @@ class TestRegionAllInOneServiceMaker(TestServiceMaker):
 
     def test_init(self):
         service_maker = RegionAllInOneServiceMaker("Harry", "Hill")
-        self.assertEqual("Harry", service_maker.tapname)
-        self.assertEqual("Hill", service_maker.description)
+        assert service_maker.tapname == "Harry"
+        assert service_maker.description == "Hill"
 
     @asynchronous(timeout=60)
-    def test_makeService_configures_pserv_debug(self):
+    def test_makeService_configures_pserv_debug(self, mocker):
         options = Options()
         service_maker = RegionAllInOneServiceMaker("Harry", "Hill")
-        mock_pserv = self.patch(service_maker, "_configurePservSettings")
+        mock_pserv = mocker.patch.object(
+            service_maker, "_configurePservSettings"
+        )
         # Disable _ensureConnection() its not allowed in the reactor.
-        self.patch_autospec(service_maker, "_ensureConnection")
+        mocker.patch.object(service_maker, "_ensureConnection", autospec=True)
         # Disable _configureThreads() as it's too invasive right now.
-        self.patch_autospec(service_maker, "_configureThreads")
+        mocker.patch.object(service_maker, "_configureThreads", autospec=True)
         service_maker.makeService(options)
         mock_pserv.assert_called_once_with()
 
     @asynchronous(timeout=60)
-    def test_makeService(self):
+    def test_makeService(self, mocker):
         options = Options()
         service_maker = RegionAllInOneServiceMaker("Harry", "Hill")
         # Disable _ensureConnection() its not allowed in the reactor.
-        self.patch_autospec(service_maker, "_ensureConnection")
+        mocker.patch.object(service_maker, "_ensureConnection", autospec=True)
         # Disable _configureThreads() as it's too invasive right now.
-        self.patch_autospec(service_maker, "_configureThreads")
+        mocker.patch.object(service_maker, "_configureThreads", autospec=True)
         service = service_maker.makeService(options)
-        self.assertIsInstance(service, MultiService)
+        assert isinstance(service, MultiService)
         expected_services = {
             # Worker services.
             "database-tasks",
@@ -378,11 +358,9 @@ class TestRegionAllInOneServiceMaker(TestServiceMaker):
             "temporal",
             "dns-reload",
         }
-        self.assertEqual(expected_services, service.namedServices.keys())
-        self.assertEqual(
-            len(service.namedServices),
-            len(service.services),
-            "Not all services are named.",
+        assert service.namedServices.keys() == expected_services
+        assert len(service.namedServices) == len(service.services), (
+            "Not all services are named."
         )
         logger.configure.assert_called_once_with(
             options["verbosity"], logger.LoggingMode.TWISTD
@@ -390,30 +368,25 @@ class TestRegionAllInOneServiceMaker(TestServiceMaker):
         crochet.no_setup.assert_called_once_with()
 
     @asynchronous(timeout=60)
-    def test_configures_thread_pool(self):
+    def test_configures_thread_pool(self, mocker, monkeypatch):
         # Patch and restore where it's visible because patching a running
         # reactor is potentially fairly harmful.
-        patcher = monkey.MonkeyPatcher()
-        patcher.add_patch(reactor, "threadpool", None)
-        patcher.add_patch(reactor, "threadpoolForDatabase", None)
-        patcher.patch()
-        try:
-            service_maker = RegionAllInOneServiceMaker("Harry", "Hill")
-            # Disable _ensureConnection() its not allowed in the reactor.
-            self.patch_autospec(service_maker, "_ensureConnection")
-            service_maker.makeService(Options())
-            threadpool = reactor.getThreadPool()
-            self.assertIsInstance(threadpool, ThreadPool)
-        finally:
-            patcher.restore()
+        monkeypatch.setattr(reactor, "threadpool", None)
+        monkeypatch.setattr(reactor, "threadpoolForDatabase", None)
+        service_maker = RegionAllInOneServiceMaker("Harry", "Hill")
+        # Disable _ensureConnection() its not allowed in the reactor.
+        mocker.patch.object(service_maker, "_ensureConnection", autospec=True)
+        service_maker.makeService(Options())
+        threadpool = reactor.getThreadPool()
+        assert isinstance(threadpool, ThreadPool)
 
     @asynchronous(timeout=60)
-    def test_disables_database_connections_in_reactor(self):
+    def test_disables_database_connections_in_reactor(self, mocker):
         self.assertConnectionsEnabled()
         service_maker = RegionAllInOneServiceMaker("Harry", "Hill")
         # Disable _ensureConnection() its not allowed in the reactor.
-        self.patch_autospec(service_maker, "_ensureConnection")
+        mocker.patch.object(service_maker, "_ensureConnection", autospec=True)
         # Disable _configureThreads() as it's too invasive right now.
-        self.patch_autospec(service_maker, "_configureThreads")
+        mocker.patch.object(service_maker, "_configureThreads", autospec=True)
         service_maker.makeService(Options())
         self.assertConnectionsDisabled()

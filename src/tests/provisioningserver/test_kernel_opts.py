@@ -6,8 +6,9 @@
 import random
 from unittest.mock import sentinel
 
+import pytest
+
 from maastesting.factory import factory
-from maastesting.testcase import MAASTestCase
 from provisioningserver import kernel_opts
 from provisioningserver.drivers import Architecture, ArchitectureRegistry
 from provisioningserver.kernel_opts import (
@@ -19,12 +20,12 @@ from provisioningserver.kernel_opts import (
 )
 
 
-def make_kernel_parameters(testcase=None, **parms):
+def make_kernel_parameters(cleanup=None, **parms):
     """Make a randomly populated `KernelParameters` instance.
 
-    If testcase is passed, we poke the generated arch/subarch into the
-    ArchitectureRegistry and call addCleanup on the testcase to make sure
-    it is removed after the test completes.
+    If cleanup is passed, we poke the generated arch/subarch into the
+    ArchitectureRegistry and call cleanup to make sure it is removed
+    after the test completes.
     """
     # fs_host needs to be an IP address, set it if it was not passed.
     if "fs_host" not in parms:
@@ -57,7 +58,7 @@ def make_kernel_parameters(testcase=None, **parms):
         del parms["log_port"]
     params = KernelParameters(**parms)
 
-    if testcase is not None:
+    if cleanup is not None:
         name = f"{params.arch}/{params.subarch}"
         if name in ArchitectureRegistry:
             # It's already there, no need to patch and risk overwriting
@@ -66,26 +67,28 @@ def make_kernel_parameters(testcase=None, **parms):
         resource = Architecture(name, name)
         ArchitectureRegistry.register_item(name, resource)
 
-        testcase.addCleanup(ArchitectureRegistry.unregister_item, name)
+        cleanup(lambda: ArchitectureRegistry.unregister_item(name))
 
     return params
 
 
-class TestUtilitiesKernelOpts(MAASTestCase):
+class TestUtilitiesKernelOpts:
     def test_kernel_parameters_callable(self):
         # KernelParameters instances are callable; an alias for _replace().
         params = make_kernel_parameters()
-        self.assertTrue(callable(params))
-        self.assertIs(params._replace.__func__, params.__call__.__func__)
+        assert callable(params)
+        assert params._replace.__func__ is params.__call__.__func__
 
 
-class TestGetCurtinKernelCmdlineSepTest(MAASTestCase):
-    def test_get_curtin_kernel_cmdline_sep_returns_curtin_value(self):
+class TestGetCurtinKernelCmdlineSepTest:
+    def test_get_curtin_kernel_cmdline_sep_returns_curtin_value(self, mocker):
         sep = factory.make_name("separator")
-        self.patch(kernel_opts.curtin, CURTIN_KERNEL_CMDLINE_NAME, sep)
-        self.assertEqual(sep, get_curtin_kernel_cmdline_sep())
+        mocker.patch.object(
+            kernel_opts.curtin, CURTIN_KERNEL_CMDLINE_NAME, sep
+        )
+        assert sep == get_curtin_kernel_cmdline_sep()
 
-    def test_get_curtin_kernel_cmdline_sep_returns_default(self):
+    def test_get_curtin_kernel_cmdline_sep_returns_default(self, request):
         original_sep = getattr(
             kernel_opts.curtin, CURTIN_KERNEL_CMDLINE_NAME, sentinel.missing
         )
@@ -99,30 +102,37 @@ class TestGetCurtinKernelCmdlineSepTest(MAASTestCase):
                     original_sep,
                 )
 
-            self.addCleanup(restore_sep)
+            request.addfinalizer(restore_sep)
             delattr(kernel_opts.curtin, CURTIN_KERNEL_CMDLINE_NAME)
-        self.assertEqual("--", get_curtin_kernel_cmdline_sep())
+        assert "--" == get_curtin_kernel_cmdline_sep()
 
 
-class TestKernelOpts(MAASTestCase):
+class TestKernelOpts:
+    @pytest.fixture(autouse=True)
+    def _setup(self, mocker, request):
+        self._mocker = mocker
+        self._request = request
+
     def make_kernel_parameters(self, *args, **kwargs):
-        return make_kernel_parameters(self, *args, **kwargs)
+        return make_kernel_parameters(
+            self._request.addfinalizer, *args, **kwargs
+        )
 
     def test_log_port_sets_default(self):
         params = self.make_kernel_parameters()
-        self.assertEqual(5247, params.log_port)
+        assert 5247 == params.log_port
 
     def test_log_port_overrides_default(self):
         new_port = factory.pick_port()
         params = self.make_kernel_parameters(log_port=new_port)
-        self.assertEqual(new_port, params.log_port)
+        assert new_port == params.log_port
 
     def test_compose_kernel_command_line_includes_disable_overlay_cfg(self):
         params = self.make_kernel_parameters(
             purpose=random.choice(["commissioning", "xinstall", "enlist"])
         )
         cmdline = compose_kernel_command_line(params)
-        self.assertIn("overlayroot_cfgdisk=disabled", cmdline)
+        assert "overlayroot_cfgdisk=disabled" in cmdline
 
     def test_xinstall_compose_kernel_command_line_inc_purpose_opts4(self):
         # The result of compose_kernel_command_line includes the purpose
@@ -137,7 +147,7 @@ class TestKernelOpts(MAASTestCase):
             "ip6=off",
             f"ip=::::{params.hostname}:BOOTIF:dhcp",
         ]:
-            self.assertIn(needle, cmdline)
+            assert needle in cmdline
 
     def test_xinstall_tarball(self):
         # The result of compose_kernel_command_line includes the purpose
@@ -166,14 +176,14 @@ class TestKernelOpts(MAASTestCase):
             f"ip=::::{params.hostname}:BOOTIF:dhcp",
             "nvme-core.multipath=0",
         ]:
-            self.assertIn(needle, cmdline)
+            assert needle in cmdline
 
         for forbidden_opt in [
             " ro ",
             "overlayroot=tmpfs",
             "overlayroot_cfgdisk=disabled",
         ]:
-            self.assertNotIn(forbidden_opt, cmdline)
+            assert forbidden_opt not in cmdline
 
     def test_xinstall_compose_kernel_command_line_inc_purpose_opts6(self):
         # The result of compose_kernel_command_line includes the purpose
@@ -188,7 +198,7 @@ class TestKernelOpts(MAASTestCase):
             "ip=off",
             "ip6=dhcp",
         ]:
-            self.assertIn(needle, cmdline)
+            assert needle in cmdline
 
     def test_xinstall_compose_kernel_command_line_inc_cc_datasource(self):
         # The result of compose_kernel_command_line includes the cloud-init
@@ -201,7 +211,7 @@ class TestKernelOpts(MAASTestCase):
             "cc:{'datasource_list': ['MAAS']}end_cc",
             f"cloud-config-url={params.preseed_url}",
         ]:
-            self.assertIn(needle, cmdline)
+            assert needle in cmdline
 
     def test_commissioning_compose_kernel_command_line_inc_purpose_opts4(self):
         # The result of compose_kernel_command_line includes the purpose
@@ -216,7 +226,7 @@ class TestKernelOpts(MAASTestCase):
             "ip6=off",
             f"ip=::::{params.hostname}:BOOTIF:dhcp",
         ]:
-            self.assertIn(needle, cmdline)
+            assert needle in cmdline
 
     def test_commissioning_compose_kernel_command_line_inc_purpose_opts6(self):
         # The result of compose_kernel_command_line includes the purpose
@@ -231,7 +241,7 @@ class TestKernelOpts(MAASTestCase):
             "ip=off",
             "ip6=dhcp",
         ]:
-            self.assertIn(needle, cmdline)
+            assert needle in cmdline
 
     def test_commissioning_compose_kernel_command_line_inc_cc_datasource(self):
         # The result of compose_kernel_command_line includes the cloud-init
@@ -244,7 +254,7 @@ class TestKernelOpts(MAASTestCase):
             "cc:{'datasource_list': ['MAAS']}end_cc",
             "cloud-config-url=%s" % params.preseed_url,
         ]:
-            self.assertIn(needle, cmdline)
+            assert needle in cmdline
 
     def test_enlist_compose_kernel_command_line_inc_purpose_opts4(self):
         # The result of compose_kernel_command_line includes the purpose
@@ -259,7 +269,7 @@ class TestKernelOpts(MAASTestCase):
             "ip6=off",
             "ip=::::%s:BOOTIF:dhcp" % params.hostname,
         ]:
-            self.assertIn(needle, cmdline)
+            assert needle in cmdline
 
     def test_enlist_compose_kernel_command_line_inc_purpose_opts6(self):
         # The result of compose_kernel_command_line includes the purpose
@@ -274,7 +284,7 @@ class TestKernelOpts(MAASTestCase):
             "ip=off",
             "ip6=dhcp",
         ]:
-            self.assertIn(needle, cmdline)
+            assert needle in cmdline
 
     def test_enlist_compose_kernel_command_line_inc_cc_datasource(self):
         # The result of compose_kernel_command_line includes the cloud-init
@@ -287,7 +297,7 @@ class TestKernelOpts(MAASTestCase):
             "cc:{'datasource_list': ['MAAS']}end_cc",
             f"cloud-config-url={params.preseed_url}",
         ]:
-            self.assertIn(needle, cmdline)
+            assert needle in cmdline
 
     def test_enlist_compose_kernel_command_line_apparmor_disabled(self):
         # The result of compose_kernel_command_line includes the
@@ -299,7 +309,7 @@ class TestKernelOpts(MAASTestCase):
             fs_host=factory.make_ipv4_address(),
         )
         cmdline = compose_kernel_command_line(params)
-        self.assertIn("apparmor=0", cmdline)
+        assert "apparmor=0" in cmdline
 
     def test_commissioning_compose_kernel_command_line_apparmor_disabled(self):
         # The result of compose_kernel_command_line includes the
@@ -311,7 +321,7 @@ class TestKernelOpts(MAASTestCase):
             fs_host=factory.make_ipv4_address(),
         )
         cmdline = compose_kernel_command_line(params)
-        self.assertIn("apparmor=0", cmdline)
+        assert "apparmor=0" in cmdline
 
     def test_enlist_compose_kernel_command_line_apparmor_default(self):
         # For Jammy onwards, we should use the kernel default for apparmor
@@ -322,7 +332,7 @@ class TestKernelOpts(MAASTestCase):
             fs_host=factory.make_ipv4_address(),
         )
         cmdline = compose_kernel_command_line(params)
-        self.assertNotIn("apparmor=0", cmdline)
+        assert "apparmor=0" not in cmdline
 
     def test_commissioning_compose_kernel_command_line_apparmor_default(self):
         # For Jammy onwards, we should use the kernel default for apparmor
@@ -333,10 +343,10 @@ class TestKernelOpts(MAASTestCase):
             fs_host=factory.make_ipv4_address(),
         )
         cmdline = compose_kernel_command_line(params)
-        self.assertNotIn("apparmor=0", cmdline)
+        assert "apparmor=0" not in cmdline
 
     def test_commissioning_compose_kernel_command_line_inc_extra_opts(self):
-        mock_get_curtin_sep = self.patch(
+        mock_get_curtin_sep = self._mocker.patch.object(
             kernel_opts, "get_curtin_kernel_cmdline_sep"
         )
         sep = factory.make_name("sep")
@@ -346,12 +356,12 @@ class TestKernelOpts(MAASTestCase):
         cmdline = compose_kernel_command_line(params)
         # There should be KERNEL_CMDLINE_COPY_TO_INSTALL_SEP surrounded by
         # spaces before the options, but otherwise added verbatim.
-        self.assertIn(" %s " % sep + extra_opts, cmdline)
+        assert " %s " % sep + extra_opts in cmdline
 
     def test_commissioning_compose_kernel_handles_extra_opts_None(self):
         params = self.make_kernel_parameters(extra_opts=None)
         cmdline = compose_kernel_command_line(params)
-        self.assertNotIn(cmdline, "None")
+        assert cmdline not in "None"
 
     def test_compose_kernel_command_line_inc_common_opts(self):
         # Test that some kernel arguments appear on commissioning, install
@@ -360,52 +370,45 @@ class TestKernelOpts(MAASTestCase):
             purpose="commissioning", arch="i386"
         )
         cmdline = compose_kernel_command_line(params)
-        self.assertIn("nomodeset", cmdline)
+        assert "nomodeset" in cmdline
 
         params = self.make_kernel_parameters(purpose="xinstall", arch="i386")
         cmdline = compose_kernel_command_line(params)
-        self.assertIn("nomodeset", cmdline)
+        assert "nomodeset" in cmdline
 
         params = self.make_kernel_parameters(purpose="install", arch="i386")
         cmdline = compose_kernel_command_line(params)
-        self.assertIn("nomodeset", cmdline)
+        assert "nomodeset" in cmdline
 
     def test_compose_kernel_command_line_inc_purpose_opts_xinstall_node(self):
         # The result of compose_kernel_command_line includes the purpose
         # options for a "xinstall" node.
         params = self.make_kernel_parameters(purpose="xinstall")
-        self.assertIn(
-            "root=squash:http://", compose_kernel_command_line(params)
-        )
+        assert "root=squash:http://" in compose_kernel_command_line(params)
 
     def test_compose_kernel_command_line_inc_purpose_opts_comm_node(self):
         # The result of compose_kernel_command_line includes the purpose
         # options for a "commissioning" node.
         params = self.make_kernel_parameters(purpose="commissioning")
-        self.assertIn(
-            "root=squash:http://", compose_kernel_command_line(params)
-        )
+        assert "root=squash:http://" in compose_kernel_command_line(params)
 
     def test_compose_kernel_command_line_inc_arm_specific_option(self):
         params = self.make_kernel_parameters(arch="armhf", subarch="highbank")
-        self.assertIn("console=ttyAMA0", compose_kernel_command_line(params))
+        assert "console=ttyAMA0" in compose_kernel_command_line(params)
 
     def test_compose_kernel_command_line_not_inc_arm_specific_option(self):
         params = self.make_kernel_parameters(arch="i386")
-        self.assertNotIn(
-            "console=ttyAMA0",
-            compose_kernel_command_line(params),
-        )
+        assert "console=ttyAMA0" not in compose_kernel_command_line(params)
 
     def test_compose_arch_opts_copes_with_unknown_subarch(self):
-        # Pass a None testcase so that the architecture doesn't get
+        # Pass a None cleanup so that the architecture doesn't get
         # registered.
         params = make_kernel_parameters(
-            testcase=None,
+            cleanup=None,
             arch=factory.make_name("arch"),
             subarch=factory.make_name("subarch"),
         )
-        self.assertEqual([], compose_arch_opts(params))
+        assert [] == compose_arch_opts(params)
 
     def test_compose_rootfs_over_http_ipv4(self):
         params = make_kernel_parameters(fs_host=factory.make_ipv4_address())
@@ -415,7 +418,7 @@ class TestKernelOpts(MAASTestCase):
                 f"root=squash:http://{params.fs_host}:5248/images/{params.xinstall_path}"
             ),
         ]:
-            self.assertIn(needle, compose_kernel_command_line(params))
+            assert needle in compose_kernel_command_line(params)
 
     def test_compose_rootfs_over_http_ipv6(self):
         params = make_kernel_parameters(fs_host=factory.make_ipv6_address())
@@ -425,7 +428,7 @@ class TestKernelOpts(MAASTestCase):
                 f"root=squash:http://[{params.fs_host}]:5248/images/{params.xinstall_path}"
             ),
         ]:
-            self.assertIn(needle, compose_kernel_command_line(params))
+            assert needle in compose_kernel_command_line(params)
 
     def test_compose_without_xinstall_path(self):
         params = make_kernel_parameters(
@@ -435,11 +438,11 @@ class TestKernelOpts(MAASTestCase):
             "ro",
             (f"root=squash:http://[{params.fs_host}]:5248/images/squashfs"),
         ]:
-            self.assertIn(needle, compose_kernel_command_line(params))
+            assert needle in compose_kernel_command_line(params)
 
     def test_xinstall_compose_kernel_command_line_ephemeral_opts(self):
         # ephemeral opts MUST appear before the separator
-        mock_get_curtin_sep = self.patch(
+        mock_get_curtin_sep = self._mocker.patch.object(
             kernel_opts, "get_curtin_kernel_cmdline_sep"
         )
         sep = factory.make_name("sep")
@@ -451,5 +454,5 @@ class TestKernelOpts(MAASTestCase):
             ephemeral_opts=ephem_opt,
         )
         cmdline = compose_kernel_command_line(params)
-        self.assertIn(ephem_opt, cmdline)
-        self.assertGreater(cmdline.find(sep), cmdline.find(ephem_opt))
+        assert ephem_opt in cmdline
+        assert cmdline.find(sep) > cmdline.find(ephem_opt)

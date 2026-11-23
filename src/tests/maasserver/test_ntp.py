@@ -4,11 +4,11 @@
 """Tests for `maasserver.ntp`."""
 
 from netaddr import IPSet
+import pytest
 
 from maasserver.models.config import Config
 from maasserver.ntp import get_peers_for, get_servers_for
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from maasserver.utils.orm import post_commit_hooks
 
 
@@ -18,41 +18,57 @@ def populate_node_with_addresses(node, subnets):
         factory.make_StaticIPAddress(interface=iface, subnet=subnet)
 
 
-class TestGetServersFor_ExternalOnly(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "mock_openfga", "mock_start_workflows")
+class TestGetServersFor_ExternalOnly:
     """Tests `get_servers_for` when `ntp_external_only` is set."""
 
-    scenarios = (
-        ("region", {"make_node": factory.make_RegionController}),
-        ("region+rack", {"make_node": factory.make_RegionRackController}),
-        ("rack", {"make_node": factory.make_RackController}),
-        ("machine", {"make_node": factory.make_Machine}),
-        ("device", {"make_node": factory.make_Device}),
-    )
-
-    def setUp(self):
-        super().setUp()
+    @pytest.fixture(autouse=True)
+    def _set_external_only(self, maasdb):
         Config.objects.set_config("ntp_external_only", True)
 
-    def test_yields_nothing_when_no_ntp_servers_defined(self):
+    @pytest.mark.parametrize(
+        "make_node",
+        [
+            factory.make_RegionController,
+            factory.make_RegionRackController,
+            factory.make_RackController,
+            factory.make_Machine,
+            factory.make_Device,
+        ],
+        ids=["region", "region+rack", "rack", "machine", "device"],
+    )
+    def test_yields_nothing_when_no_ntp_servers_defined(self, make_node):
         Config.objects.set_config("ntp_servers", "")
-        servers = get_servers_for(node=self.make_node())
-        self.assertEqual(servers, set())
+        servers = get_servers_for(node=make_node())
+        assert servers == set()
 
-    def test_yields_all_ntp_servers_when_defined(self):
+    @pytest.mark.parametrize(
+        "make_node",
+        [
+            factory.make_RegionController,
+            factory.make_RegionRackController,
+            factory.make_RackController,
+            factory.make_Machine,
+            factory.make_Device,
+        ],
+        ids=["region", "region+rack", "rack", "machine", "device"],
+    )
+    def test_yields_all_ntp_servers_when_defined(self, make_node):
         ntp_servers = factory.make_hostname(), factory.make_hostname()
         Config.objects.set_config("ntp_servers", " ".join(ntp_servers))
-        servers = get_servers_for(node=self.make_node())
-        self.assertEqual(servers, set(ntp_servers))
+        servers = get_servers_for(node=make_node())
+        assert servers == set(ntp_servers)
 
 
-class TestGetServersFor_Common(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "mock_openfga", "mock_start_workflows")
+class TestGetServersFor_Common:
     """Common basis for tests of `get_servers_for`.
 
     This ensures that `ntp_external_only` is NOT set.
     """
 
-    def setUp(self):
-        super().setUp()
+    @pytest.fixture(autouse=True)
+    def _set_external_only(self, maasdb):
         Config.objects.set_config("ntp_external_only", False)
 
 
@@ -62,30 +78,40 @@ class TestGetServersFor_Region_RegionRack_None(TestGetServersFor_Common):
     Also test for `None`, i.e. where there is no node.
     """
 
-    scenarios = (
-        ("region", {"make_node": factory.make_RegionController}),
-        ("region+rack", {"make_node": factory.make_RegionRackController}),
-        ("none", {"make_node": lambda: None}),
+    @pytest.mark.parametrize(
+        "make_node",
+        [
+            factory.make_RegionController,
+            factory.make_RegionRackController,
+            lambda: None,
+        ],
+        ids=["region", "region+rack", "none"],
     )
-
-    def test_yields_nothing_when_no_ntp_servers_defined(self):
+    def test_yields_nothing_when_no_ntp_servers_defined(self, make_node):
         Config.objects.set_config("ntp_servers", "")
-        servers = get_servers_for(node=self.make_node())
-        self.assertEqual(servers, set())
+        servers = get_servers_for(node=make_node())
+        assert servers == set()
 
-    def test_yields_all_ntp_servers_when_defined(self):
+    @pytest.mark.parametrize(
+        "make_node",
+        [
+            factory.make_RegionController,
+            factory.make_RegionRackController,
+            lambda: None,
+        ],
+        ids=["region", "region+rack", "none"],
+    )
+    def test_yields_all_ntp_servers_when_defined(self, make_node):
         ntp_servers = factory.make_hostname(), factory.make_hostname()
         Config.objects.set_config("ntp_servers", " ".join(ntp_servers))
-        servers = get_servers_for(node=self.make_node())
-        self.assertEqual(servers, set(ntp_servers))
+        servers = get_servers_for(node=make_node())
+        assert servers == set(ntp_servers)
 
 
 class TestGetServersFor_Rack(TestGetServersFor_Common):
     """Tests `get_servers_for` for `RackController` nodes."""
 
     def test_yields_region_addresses(self):
-        Config.objects.set_config("ntp_external_only", False)
-
         rack = factory.make_RackController()
         address = factory.make_StaticIPAddress(
             interface=factory.make_Interface(node=rack)
@@ -104,7 +130,7 @@ class TestGetServersFor_Rack(TestGetServersFor_Common):
         )
 
         servers = get_servers_for(rack)
-        self.assertEqual(servers, {region1_address.ip, region2_address.ip})
+        assert servers == {region1_address.ip, region2_address.ip}
 
 
 class TestGetServersFor_Machine(TestGetServersFor_Common):
@@ -129,7 +155,7 @@ class TestGetServersFor_Machine(TestGetServersFor_Common):
         )
 
         servers = get_servers_for(machine)
-        self.assertEqual(servers, {rack1_address.ip, rack2_address.ip})
+        assert servers == {rack1_address.ip, rack2_address.ip}
 
     def test_yields_boot_rack_addresses_when_machine_has_booted(self):
         machine = factory.make_Machine()
@@ -150,7 +176,7 @@ class TestGetServersFor_Machine(TestGetServersFor_Common):
         )
 
         rack_other = factory.make_RackController()
-        rack_other_address = factory.make_StaticIPAddress(  # noqa
+        factory.make_StaticIPAddress(  # noqa
             interface=factory.make_Interface(node=rack_other),
             subnet=address.subnet,
         )
@@ -164,9 +190,10 @@ class TestGetServersFor_Machine(TestGetServersFor_Common):
             vlan.save()
 
         servers = get_servers_for(machine)
-        self.assertEqual(
-            servers, {rack_primary_address.ip, rack_secondary_address.ip}
-        )
+        assert servers == {
+            rack_primary_address.ip,
+            rack_secondary_address.ip,
+        }
 
 
 class TestGetServersFor_Device(TestGetServersFor_Common):
@@ -189,10 +216,11 @@ class TestGetServersFor_Device(TestGetServersFor_Common):
         )
 
         servers = get_servers_for(device)
-        self.assertEqual(servers, {rack1_address.ip, rack2_address.ip})
+        assert servers == {rack1_address.ip, rack2_address.ip}
 
 
-class TestGetServersFor_Selection(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "mock_openfga", "mock_start_workflows")
+class TestGetServersFor_Selection:
     """Tests the address selection mechanism for `get_servers_for`.
 
     For racks, machines, and devices, a selection process takes place to
@@ -200,35 +228,20 @@ class TestGetServersFor_Selection(MAASServerTestCase):
     result is semi-stable, i.e. it will always prefer "closer" addresses.
     """
 
-    scenarios = (
-        (
-            "rack",
-            {
-                "make_node": factory.make_RackController,
-                "make_server": factory.make_RegionController,
-            },
-        ),
-        (
-            "machine",
-            {
-                "make_node": factory.make_Machine,
-                "make_server": factory.make_RackController,
-            },
-        ),
-        (
-            "device",
-            {
-                "make_node": factory.make_Device,
-                "make_server": factory.make_RackController,
-            },
-        ),
-    )
-
-    def setUp(self):
-        super().setUp()
+    @pytest.fixture(autouse=True)
+    def _set_external_only(self, maasdb):
         Config.objects.set_config("ntp_external_only", False)
 
-    def test_prefers_closest_addresses(self):
+    @pytest.mark.parametrize(
+        "make_node,make_server",
+        [
+            (factory.make_RackController, factory.make_RegionController),
+            (factory.make_Machine, factory.make_RackController),
+            (factory.make_Device, factory.make_RackController),
+        ],
+        ids=["rack", "machine", "device"],
+    )
+    def test_prefers_closest_addresses(self, make_node, make_server):
         subnet4 = factory.make_Subnet(version=4)
         subnet6 = factory.make_Subnet(version=6)
         # Separate subnets but sharing the VLAN, hence routable.
@@ -236,10 +249,10 @@ class TestGetServersFor_Selection(MAASServerTestCase):
         subnet6v = factory.make_Subnet(version=6, vlan=subnet6.vlan)
 
         # Create a node with an address in the first two subnets...
-        node = self.make_node()
+        node = make_node()
         populate_node_with_addresses(node, {subnet4, subnet6})
         # ... and a server with an address in every subnet.
-        server = self.make_server()
+        server = make_server()
         populate_node_with_addresses(
             server, {subnet4, subnet6, subnet4v, subnet6v}
         )
@@ -253,34 +266,44 @@ class TestGetServersFor_Selection(MAASServerTestCase):
         )
 
         servers = get_servers_for(node)
-        self.assertNotEqual(len(servers), 0)
+        assert len(servers) != 0
         for server in servers:
-            self.assertIn(server, preferred_networks)
+            assert server in preferred_networks
 
 
-class TestGetPeersFor_Region_RegionRack(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "mock_openfga", "mock_start_workflows")
+class TestGetPeersFor_Region_RegionRack:
     """Tests `get_peers_for` for region and region+rack controllers."""
 
-    scenarios = (
-        ("region", {"make_node": factory.make_RegionController}),
-        ("region+rack", {"make_node": factory.make_RegionRackController}),
-    )
+    @pytest.fixture(autouse=True)
+    def _set_external_only(self, maasdb):
+        Config.objects.set_config("ntp_external_only", False)
 
-    def test_yields_peer_addresses(self):
-        node1 = self.make_node()
+    @pytest.mark.parametrize(
+        "make_node",
+        [factory.make_RegionController, factory.make_RegionRackController],
+        ids=["region", "region+rack"],
+    )
+    def test_yields_peer_addresses(self, make_node):
+        node1 = make_node()
         node1_address = factory.make_StaticIPAddress(
             interface=factory.make_Interface(node=node1)
         )
-        node2 = self.make_node()
+        node2 = make_node()
         node2_address = factory.make_StaticIPAddress(
             interface=factory.make_Interface(node=node2),
             subnet=node1_address.subnet,
         )
 
-        self.assertEqual(get_peers_for(node1), {node2_address.ip})
-        self.assertEqual(get_peers_for(node2), {node1_address.ip})
+        assert get_peers_for(node1) == {node2_address.ip}
+        assert get_peers_for(node2) == {node1_address.ip}
 
-    def test_prefers_closest_addresses(self):
+    @pytest.mark.parametrize(
+        "make_node",
+        [factory.make_RegionController, factory.make_RegionRackController],
+        ids=["region", "region+rack"],
+    )
+    def test_prefers_closest_addresses(self, make_node):
         subnet4 = factory.make_Subnet(version=4)
         subnet6 = factory.make_Subnet(version=6)
         # Separate subnets but sharing the VLAN, hence routable.
@@ -291,13 +314,13 @@ class TestGetPeersFor_Region_RegionRack(MAASServerTestCase):
 
         # Create a node with an address in the first two subnets and the first
         # two same-VLAN subnets.
-        node1 = self.make_node()
+        node1 = make_node()
         populate_node_with_addresses(
             node1, {subnet4, subnet6, subnet4v1, subnet6v1}
         )
         # Create a node with an address in the first two subnets and the
         # second two same-VLAN subnets.
-        node2 = self.make_node()
+        node2 = make_node()
         populate_node_with_addresses(
             node2, {subnet4, subnet6, subnet4v2, subnet6v2}
         )
@@ -312,37 +335,50 @@ class TestGetPeersFor_Region_RegionRack(MAASServerTestCase):
 
         for node in (node1, node2):
             peers = get_peers_for(node)
-            self.assertNotEqual(len(peers), 0)
+            assert len(peers) != 0
             for peer in peers:
-                self.assertIn(peer, preferred_networks)
+                assert peer in preferred_networks
 
 
-class TestGetPeersFor_Other(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "mock_openfga", "mock_start_workflows")
+class TestGetPeersFor_Other:
     """Tests `get_peers_for` for other node types."""
 
-    scenarios = (
-        ("rack", {"make_node": factory.make_RackController}),
-        ("machine", {"make_node": factory.make_Machine}),
-        ("device", {"make_node": factory.make_Device}),
-    )
+    @pytest.fixture(autouse=True)
+    def _set_external_only(self, maasdb):
+        Config.objects.set_config("ntp_external_only", False)
 
-    def test_yields_nothing(self):
-        node1 = self.make_node()
+    @pytest.mark.parametrize(
+        "make_node",
+        [
+            factory.make_RackController,
+            factory.make_Machine,
+            factory.make_Device,
+        ],
+        ids=["rack", "machine", "device"],
+    )
+    def test_yields_nothing(self, make_node):
+        node1 = make_node()
         node1_address = factory.make_StaticIPAddress(
             interface=factory.make_Interface(node=node1)
         )
-        node2 = self.make_node()
-        node2_address = factory.make_StaticIPAddress(  # noqa
+        node2 = make_node()
+        factory.make_StaticIPAddress(  # noqa
             interface=factory.make_Interface(node=node2),
             subnet=node1_address.subnet,
         )
 
-        self.assertEqual(get_peers_for(node1), set())
-        self.assertEqual(get_peers_for(node2), set())
+        assert get_peers_for(node1) == set()
+        assert get_peers_for(node2) == set()
 
 
-class TestGetPeersFor_None(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "mock_openfga", "mock_start_workflows")
+class TestGetPeersFor_None:
     """Tests `get_peers_for` for `None`, i.e. where there is no node."""
 
+    @pytest.fixture(autouse=True)
+    def _set_external_only(self, maasdb):
+        Config.objects.set_config("ntp_external_only", False)
+
     def test_yields_nothing(self):
-        self.assertEqual(get_peers_for(None), set())
+        assert get_peers_for(None) == set()

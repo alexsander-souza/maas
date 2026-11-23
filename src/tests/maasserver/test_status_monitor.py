@@ -4,8 +4,10 @@
 """Tests for the status monitor module."""
 
 from datetime import timedelta
+import random
 from unittest.mock import call
 
+import pytest
 from twisted.internet.defer import maybeDeferred
 from twisted.internet.task import Clock
 
@@ -25,93 +27,75 @@ from maasserver.status_monitor import (
     StatusMonitorService,
 )
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from maasserver.utils.orm import reload_object
-from maastesting.djangotestcase import CountQueries
+from maastesting.querycounter import CountQueries
 from metadataserver.builtin_scripts import load_builtin_scripts
 from metadataserver.enum import SCRIPT_STATUS, SCRIPT_TYPE
 
 
-class TestMarkNodesFailedAfterExpiring(MAASServerTestCase):
-    def test_marks_all_possible_failed_status_as_failed(self):
-        maaslog = self.patch(status_monitor.maaslog, "info")
-        self.useFixture(SignalsDisabled("power"))
-        self.patch(node_module, "stop_workflow")
+@pytest.mark.usefixtures("maasdb", "mock_openfga", "mock_start_workflows")
+class TestMarkNodesFailedAfterExpiring:
+    def test_marks_all_possible_failed_status_as_failed(self, mocker):
+        maaslog = mocker.patch.object(status_monitor.maaslog, "info")
+        mocker.patch.object(node_module, "stop_workflow")
         current_time = now()
         expired_time = current_time - timedelta(minutes=1)
         nodes = [
             factory.make_Node(status=status, status_expires=expired_time)
             for status in NODE_FAILURE_MONITORED_STATUS_TRANSITIONS.keys()
         ]
-        mark_nodes_failed_after_expiring(current_time, 20)
+        with SignalsDisabled("power"):
+            mark_nodes_failed_after_expiring(current_time, 20)
         failed_statuses = [reload_object(node).status for node in nodes]
-        self.assertCountEqual(
-            NODE_FAILURE_MONITORED_STATUS_TRANSITIONS.values(), failed_statuses
-        )
+        assert sorted(
+            NODE_FAILURE_MONITORED_STATUS_TRANSITIONS.values()
+        ) == sorted(failed_statuses)
         # MAAS logs in the status_monitor that the timeout was detected. It
         # then logs the transisition in the node signal handler.
-        self.assertEqual(
-            len(NODE_FAILURE_MONITORED_STATUS_TRANSITIONS),
-            len(maaslog.call_args_list) / 2,
+        assert (
+            len(NODE_FAILURE_MONITORED_STATUS_TRANSITIONS)
+            == len(maaslog.call_args_list) / 2
         )
 
-    def test_skips_those_that_have_not_expired(self):
-        maaslog = self.patch(status_monitor.maaslog, "info")
-        self.useFixture(SignalsDisabled("power"))
+    def test_skips_those_that_have_not_expired(self, mocker):
+        maaslog = mocker.patch.object(status_monitor.maaslog, "info")
         current_time = now()
         expired_time = current_time + timedelta(minutes=1)
         nodes = [
             factory.make_Node(status=status, status_expires=expired_time)
             for status in NODE_FAILURE_MONITORED_STATUS_TRANSITIONS.keys()
         ]
-        mark_nodes_failed_after_expiring(current_time, 20)
+        with SignalsDisabled("power"):
+            mark_nodes_failed_after_expiring(current_time, 20)
         failed_statuses = [reload_object(node).status for node in nodes]
-        self.assertCountEqual(
-            NODE_FAILURE_MONITORED_STATUS_TRANSITIONS.keys(), failed_statuses
-        )
+        assert sorted(
+            NODE_FAILURE_MONITORED_STATUS_TRANSITIONS.keys()
+        ) == sorted(failed_statuses)
         maaslog.assert_not_called()
 
 
-class TestMarkNodesFailedAfterMissingScriptTimeout(MAASServerTestCase):
-    scenarios = (
-        (
-            "commissioning",
-            {
-                "status": NODE_STATUS.COMMISSIONING,
-                "failed_status": NODE_STATUS.FAILED_COMMISSIONING,
-            },
-        ),
-        (
-            "testing",
-            {
-                "status": NODE_STATUS.TESTING,
-                "failed_status": NODE_STATUS.FAILED_TESTING,
-            },
-        ),
+@pytest.mark.usefixtures("maasdb", "mock_openfga", "mock_start_workflows")
+class TestMarkNodesFailedAfterMissingScriptTimeout:
+    @pytest.fixture(autouse=True)
+    def _setup(self, maasdb, mocker):
+        self.mock_stop = mocker.patch.object(Node, "stop")
+        self.maaslog = mocker.patch.object(status_monitor.maaslog, "info")
+
+    @pytest.mark.parametrize(
+        "status,failed_status",
+        [
+            (
+                NODE_STATUS.COMMISSIONING,
+                NODE_STATUS.FAILED_COMMISSIONING,
+            ),
+            (NODE_STATUS.TESTING, NODE_STATUS.FAILED_TESTING),
+        ],
+        ids=["commissioning", "testing"],
     )
-
-    def setUp(self):
-        super().setUp()
-        self.useFixture(SignalsDisabled("power"))
-        self.mock_stop = self.patch(Node, "stop")
-        self.maaslog = self.patch(status_monitor.maaslog, "info")
-
-    def make_node(self):
-        user = factory.make_admin()
-        node = factory.make_Node(
-            status=self.status,
-            with_empty_script_sets=True,
-            owner=user,
-            enable_ssh=factory.pick_bool(),
-        )
-        if self.status == NODE_STATUS.COMMISSIONING:
-            script_set = node.current_commissioning_script_set
-        elif self.status == NODE_STATUS.TESTING:
-            script_set = node.current_testing_script_set
-        return node, script_set
-
-    def test_mark_nodes_handled_last_ping_None(self):
-        node, script_set = self.make_node()
+    def test_mark_nodes_handled_last_ping_None(
+        self, mocker, status, failed_status
+    ):
+        node, script_set = self.make_node(status)
         script_set.last_ping = None
         script_set.save()
         for _ in range(3):
@@ -120,13 +104,27 @@ class TestMarkNodesFailedAfterMissingScriptTimeout(MAASServerTestCase):
             )
 
         # No exception should be raised.
-        mark_nodes_failed_after_missing_script_timeout(now(), 20)
+        with SignalsDisabled("power"):
+            mark_nodes_failed_after_missing_script_timeout(now(), 20)
         node = reload_object(node)
-        self.assertEqual(self.status, node.status)
+        assert status == node.status
         self.maaslog.assert_not_called()
 
-    def test_mark_nodes_failed_after_missing_timeout_heartbeat(self):
-        node, script_set = self.make_node()
+    @pytest.mark.parametrize(
+        "status,failed_status",
+        [
+            (
+                NODE_STATUS.COMMISSIONING,
+                NODE_STATUS.FAILED_COMMISSIONING,
+            ),
+            (NODE_STATUS.TESTING, NODE_STATUS.FAILED_TESTING),
+        ],
+        ids=["commissioning", "testing"],
+    )
+    def test_mark_nodes_failed_after_missing_timeout_heartbeat(
+        self, mocker, status, failed_status
+    ):
+        node, script_set = self.make_node(status)
         current_time = now()
         node_timeout = Config.objects.get_config("node_timeout")
         script_set.last_ping = current_time - timedelta(
@@ -140,41 +138,55 @@ class TestMarkNodesFailedAfterMissingScriptTimeout(MAASServerTestCase):
             for _ in range(3)
         ]
 
-        mark_nodes_failed_after_missing_script_timeout(
-            current_time, node_timeout
-        )
+        with SignalsDisabled("power"):
+            mark_nodes_failed_after_missing_script_timeout(
+                current_time, node_timeout
+            )
         node = reload_object(node)
 
-        self.assertEqual(self.failed_status, node.status)
-        self.assertEqual(
+        assert failed_status == node.status
+        assert (
             "Node has not been heard from for the last %s minutes"
-            % node_timeout,
-            node.error_description,
+            % node_timeout
+            == node.error_description
         )
-        self.assertIn(
+        assert (
             call(
                 "%s: Has not been heard from for the last %s minutes"
                 % (node.hostname, node_timeout)
-            ),
-            self.maaslog.call_args_list,
+            )
+            in self.maaslog.call_args_list
         )
         if node.enable_ssh:
             self.mock_stop.assert_not_called()
         else:
             self.mock_stop.assert_called_once()
-            self.assertIn(
-                call(f"{node.hostname}: Stopped because SSH is disabled"),
-                self.maaslog.call_args_list,
+            assert (
+                call(f"{node.hostname}: Stopped because SSH is disabled")
+                in self.maaslog.call_args_list
             )
         for script_result in script_results:
-            self.assertEqual(
-                SCRIPT_STATUS.TIMEDOUT, reload_object(script_result).status
+            assert (
+                SCRIPT_STATUS.TIMEDOUT == reload_object(script_result).status
             )
 
-    def test_sets_status_expires_when_flatlined_with_may_reboot_script(self):
-        node, script_set = self.make_node()
+    @pytest.mark.parametrize(
+        "status,failed_status",
+        [
+            (
+                NODE_STATUS.COMMISSIONING,
+                NODE_STATUS.FAILED_COMMISSIONING,
+            ),
+            (NODE_STATUS.TESTING, NODE_STATUS.FAILED_TESTING),
+        ],
+        ids=["commissioning", "testing"],
+    )
+    def test_sets_status_expires_when_flatlined_with_may_reboot_script(
+        self, status, failed_status
+    ):
+        node, script_set = self.make_node(status)
         current_time = now()
-        if self.status == NODE_STATUS.COMMISSIONING:
+        if status == NODE_STATUS.COMMISSIONING:
             script_type = SCRIPT_TYPE.COMMISSIONING
         else:
             script_type = SCRIPT_TYPE.TESTING
@@ -185,18 +197,32 @@ class TestMarkNodesFailedAfterMissingScriptTimeout(MAASServerTestCase):
         script_set.last_ping = current_time - timedelta(11)
         script_set.save()
 
-        mark_nodes_failed_after_missing_script_timeout(current_time, 20)
+        with SignalsDisabled("power"):
+            mark_nodes_failed_after_missing_script_timeout(current_time, 20)
         node = reload_object(node)
 
-        self.assertEqual(
+        assert (
             current_time
             - (current_time - script_set.last_ping)
-            + timedelta(minutes=get_node_timeout(self.status, 20)),
-            node.status_expires,
+            + timedelta(minutes=get_node_timeout(status, 20))
+            == node.status_expires
         )
 
-    def test_mark_nodes_failed_after_script_overrun(self):
-        node, script_set = self.make_node()
+    @pytest.mark.parametrize(
+        "status,failed_status",
+        [
+            (
+                NODE_STATUS.COMMISSIONING,
+                NODE_STATUS.FAILED_COMMISSIONING,
+            ),
+            (NODE_STATUS.TESTING, NODE_STATUS.FAILED_TESTING),
+        ],
+        ids=["commissioning", "testing"],
+    )
+    def test_mark_nodes_failed_after_script_overrun(
+        self, status, failed_status
+    ):
+        node, script_set = self.make_node(status)
         current_time = now()
         script_set.last_ping = current_time
         script_set.save()
@@ -217,19 +243,20 @@ class TestMarkNodesFailedAfterMissingScriptTimeout(MAASServerTestCase):
             started=current_time - timedelta(minutes=10),
         )
 
-        mark_nodes_failed_after_missing_script_timeout(current_time, 20)
+        with SignalsDisabled("power"):
+            mark_nodes_failed_after_missing_script_timeout(current_time, 20)
         node = reload_object(node)
 
-        self.assertEqual(self.failed_status, node.status)
-        self.assertEqual(
+        assert failed_status == node.status
+        assert (
             "%s has run past it's timeout(%s)"
             % (
                 running_script_result.name,
                 str(running_script_result.script.timeout),
-            ),
-            node.error_description,
+            )
+            == node.error_description
         )
-        self.assertIn(
+        assert (
             call(
                 "%s: %s has run past it's timeout(%s)"
                 % (
@@ -237,32 +264,45 @@ class TestMarkNodesFailedAfterMissingScriptTimeout(MAASServerTestCase):
                     running_script_result.name,
                     str(running_script_result.script.timeout),
                 )
-            ),
-            self.maaslog.call_args_list,
+            )
+            in self.maaslog.call_args_list
         )
         if node.enable_ssh:
             self.mock_stop.assert_not_called()
         else:
             self.mock_stop.assert_called_once()
-            self.assertIn(
-                call(f"{node.hostname}: Stopped because SSH is disabled"),
-                self.maaslog.call_args_list,
+            assert (
+                call(f"{node.hostname}: Stopped because SSH is disabled")
+                in self.maaslog.call_args_list
             )
-        self.assertEqual(
-            SCRIPT_STATUS.PASSED, reload_object(passed_script_result).status
+        assert (
+            SCRIPT_STATUS.PASSED == reload_object(passed_script_result).status
         )
-        self.assertEqual(
-            SCRIPT_STATUS.FAILED, reload_object(failed_script_result).status
+        assert (
+            SCRIPT_STATUS.FAILED == reload_object(failed_script_result).status
         )
-        self.assertEqual(
-            SCRIPT_STATUS.ABORTED, reload_object(pending_script_result).status
+        assert (
+            SCRIPT_STATUS.ABORTED
+            == reload_object(pending_script_result).status
         )
-        self.assertEqual(
-            SCRIPT_STATUS.TIMEDOUT, reload_object(running_script_result).status
+        assert (
+            SCRIPT_STATUS.TIMEDOUT
+            == reload_object(running_script_result).status
         )
 
-    def test_uses_param_runtime(self):
-        node, script_set = self.make_node()
+    @pytest.mark.parametrize(
+        "status,failed_status",
+        [
+            (
+                NODE_STATUS.COMMISSIONING,
+                NODE_STATUS.FAILED_COMMISSIONING,
+            ),
+            (NODE_STATUS.TESTING, NODE_STATUS.FAILED_TESTING),
+        ],
+        ids=["commissioning", "testing"],
+    )
+    def test_uses_param_runtime(self, status, failed_status):
+        node, script_set = self.make_node(status)
         current_time = now()
         script_set.last_ping = current_time
         script_set.save()
@@ -284,28 +324,44 @@ class TestMarkNodesFailedAfterMissingScriptTimeout(MAASServerTestCase):
             parameters={"runtime": {"type": "runtime", "value": 60 * 60}},
         )
 
-        mark_nodes_failed_after_missing_script_timeout(current_time, 20)
+        with SignalsDisabled("power"):
+            mark_nodes_failed_after_missing_script_timeout(current_time, 20)
         node = reload_object(node)
 
-        self.assertEqual(self.status, node.status)
+        assert status == node.status
         self.mock_stop.assert_not_called()
-        self.assertEqual(
-            SCRIPT_STATUS.PASSED, reload_object(passed_script_result).status
+        assert (
+            SCRIPT_STATUS.PASSED == reload_object(passed_script_result).status
         )
-        self.assertEqual(
-            SCRIPT_STATUS.FAILED, reload_object(failed_script_result).status
+        assert (
+            SCRIPT_STATUS.FAILED == reload_object(failed_script_result).status
         )
-        self.assertEqual(
-            SCRIPT_STATUS.PENDING, reload_object(pending_script_result).status
+        assert (
+            SCRIPT_STATUS.PENDING
+            == reload_object(pending_script_result).status
         )
-        self.assertEqual(
-            SCRIPT_STATUS.RUNNING, reload_object(running_script_result).status
+        assert (
+            SCRIPT_STATUS.RUNNING
+            == reload_object(running_script_result).status
         )
 
-    def test_mark_nodes_failed_after_missing_timeout_prefetches(self):
-        self.patch(Node, "mark_failed")
+    @pytest.mark.parametrize(
+        "status,failed_status",
+        [
+            (
+                NODE_STATUS.COMMISSIONING,
+                NODE_STATUS.FAILED_COMMISSIONING,
+            ),
+            (NODE_STATUS.TESTING, NODE_STATUS.FAILED_TESTING),
+        ],
+        ids=["commissioning", "testing"],
+    )
+    def test_mark_nodes_failed_after_missing_timeout_prefetches(
+        self, mocker, status, failed_status
+    ):
+        mocker.patch.object(Node, "mark_failed")
         current_time = now()
-        node, script_set = self.make_node()
+        node, script_set = self.make_node(status)
         script_set.last_ping = current_time
         script_set.save()
         script = factory.make_Script(timeout=timedelta(seconds=60))
@@ -317,12 +373,12 @@ class TestMarkNodesFailedAfterMissingScriptTimeout(MAASServerTestCase):
         )
 
         counter_one = CountQueries()
-        with counter_one:
+        with counter_one, SignalsDisabled("power"):
             mark_nodes_failed_after_missing_script_timeout(current_time, 20)
 
         nodes = []
         for _ in range(6):
-            node, script_set = self.make_node()
+            node, script_set = self.make_node(status)
             script_set.last_ping = current_time
             script_set.save()
             script = factory.make_Script(timeout=timedelta(seconds=60))
@@ -335,7 +391,7 @@ class TestMarkNodesFailedAfterMissingScriptTimeout(MAASServerTestCase):
             nodes.append(node)
 
         counter_many = CountQueries()
-        with counter_many:
+        with counter_many, SignalsDisabled("power"):
             mark_nodes_failed_after_missing_script_timeout(current_time, 20)
 
         # Lookup takes 7 queries no matter the amount of Nodes
@@ -346,22 +402,37 @@ class TestMarkNodesFailedAfterMissingScriptTimeout(MAASServerTestCase):
         # 5. Get all testing ScriptResults
         # 6. Get all commissioning Scripts
         # 7. Get all testing Scripts
-        self.assertEqual(7, counter_one.count)
-        self.assertEqual(7, counter_many.count)
+        assert 7 == counter_one.count
+        assert 7 == counter_many.count
+
+    def make_node(self, status):
+        user = factory.make_admin()
+        node = factory.make_Node(
+            status=status,
+            with_empty_script_sets=True,
+            owner=user,
+            enable_ssh=factory.pick_bool(),
+        )
+        if status == NODE_STATUS.COMMISSIONING:
+            script_set = node.current_commissioning_script_set
+        elif status == NODE_STATUS.TESTING:
+            script_set = node.current_testing_script_set
+        return node, script_set
 
 
-class TestStatusMonitorService(MAASServerTestCase):
-    def setUp(self):
-        super().setUp()
+@pytest.mark.usefixtures("maasdb", "mock_openfga", "mock_start_workflows")
+class TestStatusMonitorService:
+    @pytest.fixture(autouse=True)
+    def _load_scripts(self, maasdb):
         load_builtin_scripts()
 
-    def test_init_with_default_interval(self):
+    def test_init_with_default_interval(self, mocker):
         # The service itself calls `check_status` in a thread, via a couple of
         # decorators. This indirection makes it clearer to mock
         # `cleanup_old_nonces` here and track calls to it.
-        mock_check_status = self.patch(status_monitor, "check_status")
+        mock_check_status = mocker.patch.object(status_monitor, "check_status")
         # Making `deferToDatabase` use the current thread helps testing.
-        self.patch(status_monitor, "deferToDatabase", maybeDeferred)
+        mocker.patch.object(status_monitor, "deferToDatabase", maybeDeferred)
 
         service = StatusMonitorService()
         # Use a deterministic clock instead of the reactor for testing.
@@ -370,7 +441,7 @@ class TestStatusMonitorService(MAASServerTestCase):
         # The interval is stored as `step` by TimerService,
         # StatusMonitorService's parent class.
         interval = 60  # seconds.
-        self.assertEqual(service.step, interval)
+        assert service.step == interval
 
         # `check_status` is not called before the service is started.
         mock_check_status.assert_not_called()
@@ -387,10 +458,10 @@ class TestStatusMonitorService(MAASServerTestCase):
         service.clock.advance(1)
         mock_check_status.assert_called_once_with()
 
-    def test_failures_do_not_stop_the_timer_job(self):
-        mock_check_status = self.patch(status_monitor, "check_status")
+    def test_failures_do_not_stop_the_timer_job(self, mocker):
+        mock_check_status = mocker.patch.object(status_monitor, "check_status")
         mock_check_status.side_effect = Exception("BOOM")
-        self.patch(status_monitor, "deferToDatabase", maybeDeferred)
+        mocker.patch.object(status_monitor, "deferToDatabase", maybeDeferred)
 
         service = StatusMonitorService()
         # Use a deterministic clock instead of the reactor for testing.
@@ -399,7 +470,7 @@ class TestStatusMonitorService(MAASServerTestCase):
         # The interval is stored as `step` by TimerService,
         # StatusMonitorService's parent class.
         interval = 60  # seconds.
-        self.assertEqual(service.step, interval)
+        assert service.step == interval
 
         service.startService()
         mock_check_status.assert_called_once_with()
@@ -410,11 +481,12 @@ class TestStatusMonitorService(MAASServerTestCase):
         mock_check_status.assert_called_once_with()
         mock_check_status.reset_mock()
 
-        # The function should be called again even if the previous call has crashed
+        # The function should be called again even if the previous call has
+        # crashed
         service.clock.advance(interval)
         mock_check_status.assert_called_once_with()
 
     def test_interval_can_be_set(self):
-        interval = self.getUniqueInteger()
+        interval = random.randint(1, 1000)
         service = StatusMonitorService(interval)
-        self.assertEqual(interval, service.step)
+        assert interval == service.step

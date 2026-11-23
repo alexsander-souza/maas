@@ -5,9 +5,9 @@
 
 from copy import deepcopy
 from functools import wraps
+from unittest.mock import patch
 
 from fixtures import Fixture
-from testtools import monkey
 
 from maasserver.clusterrpc import driver_parameters
 from provisioningserver.drivers.power.registry import PowerDriverRegistry
@@ -35,7 +35,8 @@ class StaticDriverTypesFixture(Fixture):
             # Callers can mutate this, so deep copy.
             return deepcopy(power_types)
 
-        restore = monkey.patch(
+        patcher = patch.object(
             driver_parameters, "get_all_power_types", get_all_power_types
         )
-        self.addCleanup(restore)
+        patcher.start()
+        self.addCleanup(patcher.stop)

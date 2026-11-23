@@ -6,15 +6,25 @@
 import http.client
 
 from django.urls import reverse
+import pytest
 
 from maasserver.api.networks import convert_to_network_name
 from maasserver.enum import INTERFACE_TYPE, IPADDRESS_TYPE, NODE_STATUS
-from maasserver.testing.api import APITestCase
 from maasserver.testing.factory import factory
 from maasserver.utils.converters import json_load_bytes
 
 
-class TestNetworksAPI(APITestCase.ForUser):
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user=user,client=oauth", id="user=user,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestNetworksAPI:
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maas_user, api_client):
+        self.user = maas_user
+        self.client = api_client
+
     def make_interface(self, subnets=None, owner=None, node=None):
         """Create a Interface.
 
@@ -45,48 +55,40 @@ class TestNetworksAPI(APITestCase.ForUser):
         return interface
 
     def test_handler_path(self):
-        self.assertEqual(
-            "/MAAS/api/2.0/networks/", reverse("networks_handler")
-        )
+        assert "/MAAS/api/2.0/networks/" == reverse("networks_handler")
 
     def test_POST_returns_410(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         response = self.client.post(reverse("networks_handler"))
-        self.assertEqual(http.client.GONE, response.status_code)
+        assert http.client.GONE == response.status_code
 
     def test_GET_returns_networks(self):
         subnet = factory.make_Subnet()
         subnet_cidr = subnet.get_ipnetwork()
         response = self.client.get(reverse("networks_handler"))
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
 
         parsed_result = json_load_bytes(response.content)
-        self.assertEqual(1, len(parsed_result))
+        assert 1 == len(parsed_result)
         [returned_subnet] = parsed_result
-        self.assertEqual(
-            {
-                "name": "subnet-%d" % subnet.id,
-                "ip": str(subnet_cidr.ip),
-                "netmask": str(subnet_cidr.netmask),
-                "vlan_tag": subnet.vlan.vid,
-                "description": subnet.name,
-                "default_gateway": subnet.gateway_ip,
-                "dns_servers": subnet.dns_servers,
-                "resource_uri": reverse(
-                    "network_handler", args=["subnet-%d" % subnet.id]
-                ),
-            },
-            returned_subnet,
-        )
+        assert {
+            "name": "subnet-%d" % subnet.id,
+            "ip": str(subnet_cidr.ip),
+            "netmask": str(subnet_cidr.netmask),
+            "vlan_tag": subnet.vlan.vid,
+            "description": subnet.name,
+            "default_gateway": subnet.gateway_ip,
+            "dns_servers": subnet.dns_servers,
+            "resource_uri": reverse(
+                "network_handler", args=["subnet-%d" % subnet.id]
+            ),
+        } == returned_subnet
 
     def test_GET_returns_empty_if_no_subnets(self):
         response = self.client.get(reverse("networks_handler"))
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
-        self.assertEqual([], json_load_bytes(response.content))
+        assert http.client.OK == response.status_code, response.content
+        assert [] == json_load_bytes(response.content)
 
     def test_GET_sorts_by_id(self):
         subnets = [
@@ -94,17 +96,11 @@ class TestNetworksAPI(APITestCase.ForUser):
             for _ in range(3)
         ]
         response = self.client.get(reverse("networks_handler"))
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
-
-        self.assertEqual(
-            [
-                convert_to_network_name(subnet)
-                for subnet in sorted(subnets, key=lambda subnet: subnet.id)
-            ],
-            [network["name"] for network in json_load_bytes(response.content)],
-        )
+        assert http.client.OK == response.status_code, response.content
+        assert [
+            convert_to_network_name(subnet)
+            for subnet in sorted(subnets, key=lambda subnet: subnet.id)
+        ] == [network["name"] for network in json_load_bytes(response.content)]
 
     def test_GET_filters_by_node(self):
         subnets = [factory.make_Subnet() for _ in range(5)]
@@ -113,14 +109,10 @@ class TestNetworksAPI(APITestCase.ForUser):
         response = self.client.get(
             reverse("networks_handler"), {"node": [node.system_id]}
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
-
-        self.assertEqual(
-            {convert_to_network_name(subnet) for subnet in subnets[1:3]},
-            {network["name"] for network in json_load_bytes(response.content)},
-        )
+        assert http.client.OK == response.status_code, response.content
+        assert {
+            convert_to_network_name(subnet) for subnet in subnets[1:3]
+        } == {network["name"] for network in json_load_bytes(response.content)}
 
     def test_GET_combines_node_filters_as_intersection_of_networks(self):
         subnets = [factory.make_Subnet() for _ in range(5)]
@@ -135,24 +127,19 @@ class TestNetworksAPI(APITestCase.ForUser):
             reverse("networks_handler"),
             {"node": [node1.system_id, node2.system_id]},
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
-
-        self.assertEqual(
-            {convert_to_network_name(subnets[2])},
-            {network["name"] for network in json_load_bytes(response.content)},
-        )
+        assert http.client.OK == response.status_code, response.content
+        assert {convert_to_network_name(subnets[2])} == {
+            network["name"] for network in json_load_bytes(response.content)
+        }
 
     def test_GET_fails_if_filtering_by_nonexistent_node(self):
         bad_system_id = factory.make_name("no_node")
         response = self.client.get(
             reverse("networks_handler"), {"node": [bad_system_id]}
         )
-        self.assertEqual(http.client.BAD_REQUEST, response.status_code)
-        self.assertEqual(
-            {"node": ["Unknown node(s): %s." % bad_system_id]},
-            json_load_bytes(response.content),
+        assert http.client.BAD_REQUEST == response.status_code
+        assert {"node": ["Unknown node(s): %s." % bad_system_id]} == (
+            json_load_bytes(response.content)
         )
 
     def test_GET_ignores_duplicates(self):
@@ -163,10 +150,7 @@ class TestNetworksAPI(APITestCase.ForUser):
             reverse("networks_handler"),
             {"node": [node.system_id, node.system_id]},
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
-        self.assertEqual(
-            {convert_to_network_name(subnet)},
-            {network["name"] for network in json_load_bytes(response.content)},
-        )
+        assert http.client.OK == response.status_code, response.content
+        assert {convert_to_network_name(subnet)} == {
+            network["name"] for network in json_load_bytes(response.content)
+        }

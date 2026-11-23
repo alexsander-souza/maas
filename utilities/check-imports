@@ -167,9 +167,6 @@ TestingLibraries = Pattern(
     "pytest|pytest.**",
     "pytest_django.plugin.*",
     "requests.exceptions.**",
-    "testscenarios|testscenarios.**",
-    "tests|tests.**",
-    "testtools|testtools.**",
     "zhmcclient_mock.**",
 )
 

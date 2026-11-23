@@ -5,15 +5,15 @@
 
 from unittest.mock import call
 
+import pytest
+
 from maastesting.factory import factory
-from maastesting.testcase import MAASTestCase
 from provisioningserver.drivers.power import moonshot as moonshot_module
 from provisioningserver.drivers.power import PowerActionError
 from provisioningserver.drivers.power.moonshot import MoonshotIPMIPowerDriver
 from provisioningserver.utils.shell import (
     ExternalProcessError,
     get_env_with_locale,
-    has_command_available,
 )
 
 
@@ -65,64 +65,68 @@ def make_ipmitool_command(power_change, context):
     ) + ("power", power_change)
 
 
-class TestMoonshotIPMIPowerDriver(MAASTestCase):
-    def test_missing_packages(self):
-        mock = self.patch(has_command_available)
-        mock.return_value = False
+class TestMoonshotIPMIPowerDriver:
+    def test_missing_packages(self, mocker):
+        mocker.patch.object(
+            moonshot_module.shell, "has_command_available", return_value=False
+        )
         driver = moonshot_module.MoonshotIPMIPowerDriver()
         missing = driver.detect_missing_packages()
-        self.assertEqual(["ipmitool"], missing)
+        assert ["ipmitool"] == missing
 
-    def test_no_missing_packages(self):
-        mock = self.patch(has_command_available)
-        mock.return_value = True
+    def test_no_missing_packages(self, mocker):
+        mocker.patch.object(
+            moonshot_module.shell, "has_command_available", return_value=True
+        )
         driver = moonshot_module.MoonshotIPMIPowerDriver()
         missing = driver.detect_missing_packages()
-        self.assertEqual([], missing)
+        assert [] == missing
 
-    def test_issue_ipmitool_command_sets_pxe_boot(self):
+    def test_issue_ipmitool_command_sets_pxe_boot(self, mocker):
         context = make_context()
         env = get_env_with_locale()
         pxe_command = make_pxe_command(context)
         moonshot_driver = MoonshotIPMIPowerDriver()
-        call_and_check_mock = self.patch(moonshot_module, "call_and_check")
+        call_and_check_mock = mocker.patch.object(
+            moonshot_module, "call_and_check"
+        )
 
         moonshot_driver._issue_ipmitool_command("pxe", **context)
 
         call_and_check_mock.assert_called_once_with(pxe_command, env=env)
 
-    def test_issue_ipmitool_command_returns_stdout_if_no_match(self):
+    def test_issue_ipmitool_command_returns_stdout_if_no_match(self, mocker):
         context = make_context()
         env = get_env_with_locale()
         ipmitool_command = make_ipmitool_command("status", context)
         moonshot_driver = MoonshotIPMIPowerDriver()
-        call_and_check_mock = self.patch(moonshot_module, "call_and_check")
+        call_and_check_mock = mocker.patch.object(
+            moonshot_module, "call_and_check"
+        )
         call_and_check_mock.return_value = b"other"
 
         result = moonshot_driver._issue_ipmitool_command("status", **context)
 
         call_and_check_mock.assert_called_once_with(ipmitool_command, env=env)
-        self.assertEqual(result, "other")
+        assert result == "other"
 
-    def test_issue_ipmitool_raises_power_action_error(self):
+    def test_issue_ipmitool_raises_power_action_error(self, mocker):
         context = make_context()
         moonshot_driver = MoonshotIPMIPowerDriver()
-        call_and_check_mock = self.patch(moonshot_module, "call_and_check")
+        call_and_check_mock = mocker.patch.object(
+            moonshot_module, "call_and_check"
+        )
         call_and_check_mock.side_effect = ExternalProcessError(
             1, "ipmitool something"
         )
 
-        self.assertRaises(
-            PowerActionError,
-            moonshot_driver._issue_ipmitool_command,
-            "status",
-            **context,
-        )
+        with pytest.raises(PowerActionError):
+            moonshot_driver._issue_ipmitool_command("status", **context)
 
-    def test_power_on_calls__issue_ipmitool_command(self):
+    def test_power_on_calls__issue_ipmitool_command(self, mocker):
         context = make_context()
         moonshot_driver = MoonshotIPMIPowerDriver()
-        _issue_ipmitool_command_mock = self.patch(
+        _issue_ipmitool_command_mock = mocker.patch.object(
             moonshot_driver, "_issue_ipmitool_command"
         )
         system_id = factory.make_name("system_id")
@@ -132,10 +136,10 @@ class TestMoonshotIPMIPowerDriver(MAASTestCase):
             [call("pxe", **context), call("on", **context)]
         )
 
-    def test_power_off_calls__issue_ipmitool_command(self):
+    def test_power_off_calls__issue_ipmitool_command(self, mocker):
         context = make_context()
         moonshot_driver = MoonshotIPMIPowerDriver()
-        _issue_ipmitool_command_mock = self.patch(
+        _issue_ipmitool_command_mock = mocker.patch.object(
             moonshot_driver, "_issue_ipmitool_command"
         )
         system_id = factory.make_name("system_id")
@@ -143,10 +147,10 @@ class TestMoonshotIPMIPowerDriver(MAASTestCase):
 
         _issue_ipmitool_command_mock.assert_called_once_with("off", **context)
 
-    def test_power_query_calls__issue_ipmitool_command(self):
+    def test_power_query_calls__issue_ipmitool_command(self, mocker):
         context = make_context()
         moonshot_driver = MoonshotIPMIPowerDriver()
-        _issue_ipmitool_command_mock = self.patch(
+        _issue_ipmitool_command_mock = mocker.patch.object(
             moonshot_driver, "_issue_ipmitool_command"
         )
         system_id = factory.make_name("system_id")

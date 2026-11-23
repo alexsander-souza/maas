@@ -650,6 +650,8 @@ class Factory(maastesting.factory.Factory):
         url="",
         bmc=None,
         managing_process=None,
+        power_type=None,
+        power_parameters=None,
     ):
         if controller_type is None:
             controller_type = random.choice(
@@ -663,6 +665,13 @@ class Factory(maastesting.factory.Factory):
             hostname = self.make_string(prefix="controller")
         if owner is None:
             owner = get_worker_user()
+        power_settings = {}
+        if power_type is not None or power_parameters is not None:
+            power_settings = {
+                "bmc": bmc,
+                "power_type": power_type or "virsh",
+                "power_parameters": power_parameters,
+            }
         node = self.make_Node_with_Interface_on_Subnet(
             node_type=controller_type,
             hostname=hostname,
@@ -678,8 +687,11 @@ class Factory(maastesting.factory.Factory):
             url=url,
             managing_process=managing_process,
             zone=zone,
+            **power_settings,
         )
-        node.bmc = bmc
+        if not power_settings:
+            node.bmc = bmc
+
         if last_image_sync is undefined:
             node.last_image_sync = timezone.now() - timedelta(
                 minutes=random.randint(1, 15)

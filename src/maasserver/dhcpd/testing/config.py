@@ -5,10 +5,10 @@
 
 from itertools import cycle
 import random
+from unittest.mock import patch
 
 from fixtures import Fixture
 from netaddr import IPAddress
-from testtools.monkey import patch
 
 from maasserver.dhcpd import config
 from maastesting.factory import factory
@@ -164,8 +164,11 @@ class DHCPConfigNameResolutionDisabled(Fixture):
 
     def _setUp(self):
         assert hasattr(config, "_gen_addresses")
-        restore = patch(config, "_gen_addresses", self._genRandomAddresses)
-        self.addCleanup(restore)
+        patcher = patch.object(
+            config, "_gen_addresses", self._genRandomAddresses
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def _genRandomAddresses(self, hostname):
         # Mimic config._gen_addresses by yielding a random IPv4 address and a

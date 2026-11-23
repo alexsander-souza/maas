@@ -3,8 +3,11 @@
 
 """Tests for `LicenseKeyForm`."""
 
+from collections import Counter
 from operator import itemgetter
 import random
+
+import pytest
 
 from maascommon.osystem import OperatingSystemRegistry, WindowsOS
 from maascommon.osystem.windows import REQUIRE_LICENSE_KEY
@@ -13,12 +16,21 @@ from maasserver.enum import BOOT_RESOURCE_TYPE
 from maasserver.forms import LicenseKeyForm
 from maasserver.models import LicenseKey
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from maasserver.utils.orm import reload_object
 
 
-class TestLicenseKeyForm(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestLicenseKeyForm:
     """Tests for `LicenseKeyForm`."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, mocker, request):
+        self.patch_autospec = lambda target, attribute: mocker.patch.object(
+            target, attribute, autospec=True
+        )
+        self.addCleanup = lambda callback, *args: request.addfinalizer(
+            lambda: callback(*args)
+        )
 
     def make_os_with_license_key(
         self, osystem=None, osystem_title=None, release=None
@@ -65,9 +77,9 @@ class TestLicenseKeyForm(MAASServerTestCase):
         license_key_obj = LicenseKey.objects.get(
             osystem=osystem["name"], distro_series=release["name"]
         )
-        self.assertEqual(license_key_obj.osystem, osystem["name"])
-        self.assertEqual(license_key_obj.distro_series, release["name"])
-        self.assertEqual(license_key_obj.license_key, key)
+        assert license_key_obj.osystem == osystem["name"]
+        assert license_key_obj.distro_series == release["name"]
+        assert license_key_obj.license_key == key
 
     def test_updates_license_key(self):
         osystem, release = self.make_os_with_license_key()
@@ -83,7 +95,7 @@ class TestLicenseKeyForm(MAASServerTestCase):
         )
         form.save()
         license_key = reload_object(license_key)
-        self.assertEqual(new_key, license_key.license_key)
+        assert new_key == license_key.license_key
 
     def test_validates_license_key(self):
         osystem, release = self.make_os_with_license_key()
@@ -97,15 +109,17 @@ class TestLicenseKeyForm(MAASServerTestCase):
         form = LicenseKeyForm(
             data={"license_key": new_key}, instance=license_key
         )
-        self.assertFalse(form.is_valid(), form.errors)
-        self.assertEqual({"__all__": ["Invalid license key."]}, form.errors)
+        assert not form.is_valid(), form.errors
+        assert {"__all__": ["Invalid license key."]} == form.errors
 
     def test_requires_all_fields(self):
         form = LicenseKeyForm(data={})
-        self.assertFalse(form.is_valid(), form.errors)
-        self.assertEqual(
-            {"osystem", "distro_series", "license_key"}, form.errors.keys()
-        )
+        assert not form.is_valid(), form.errors
+        assert {
+            "osystem",
+            "distro_series",
+            "license_key",
+        } == form.errors.keys()
 
     def test_errors_on_not_unique(self):
         osystem, release = self.make_os_with_license_key()
@@ -122,23 +136,20 @@ class TestLicenseKeyForm(MAASServerTestCase):
             "license_key": key,
         }
         form = LicenseKeyForm(data=definition)
-        self.assertFalse(form.is_valid(), form.errors)
-        self.assertEqual(
-            {
-                "__all__": [
-                    "%s %s"
-                    % (
-                        "License key with this operating system and distro series",
-                        "already exists.",
-                    )
-                ]
-            },
-            form.errors,
-        )
+        assert not form.is_valid(), form.errors
+        assert {
+            "__all__": [
+                "%s %s"
+                % (
+                    "License key with this operating system and distro series",
+                    "already exists.",
+                )
+            ]
+        } == form.errors
 
     def test_doesnt_include_default_osystem(self):
         form = LicenseKeyForm()
-        self.assertNotIn(("", "Default OS"), form.fields["osystem"].choices)
+        assert ("", "Default OS") not in form.fields["osystem"].choices
 
     def test_includes_all_osystems_sorted(self):
         osystems = [self.make_os_with_license_key()[0] for _ in range(3)]
@@ -147,7 +158,7 @@ class TestLicenseKeyForm(MAASServerTestCase):
             for osystem in sorted(osystems, key=itemgetter("title"))
         ]
         form = LicenseKeyForm()
-        self.assertEqual(choices, form.fields["osystem"].choices)
+        assert choices == form.fields["osystem"].choices
 
     def test_includes_only_osystems_that_require_license_keys(self):
         osystems = [self.make_os_with_license_key()[0] for _ in range(2)]
@@ -157,13 +168,13 @@ class TestLicenseKeyForm(MAASServerTestCase):
             for osystem in sorted(osystems, key=itemgetter("title"))
         ]
         form = LicenseKeyForm()
-        self.assertEqual(choices, form.fields["osystem"].choices)
+        assert choices == form.fields["osystem"].choices
 
     def test_doesnt_include_default_distro_series(self):
         form = LicenseKeyForm()
-        self.assertNotIn(
-            ("", "Default OS Release"), form.fields["distro_series"].choices
-        )
+        assert ("", "Default OS Release") not in form.fields[
+            "distro_series"
+        ].choices
 
     def test_includes_only_distro_series_that_require_license_keys(self):
         osystem = factory.make_name("osystem")
@@ -178,4 +189,6 @@ class TestLicenseKeyForm(MAASServerTestCase):
             for release in releases
         ]
         form = LicenseKeyForm()
-        self.assertCountEqual(choices, form.fields["distro_series"].choices)
+        assert Counter(choices) == Counter(
+            form.fields["distro_series"].choices
+        )

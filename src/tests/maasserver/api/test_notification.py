@@ -7,14 +7,15 @@ import http.client
 import json
 import random
 
+from django.contrib.auth.models import AnonymousUser
 from django.urls import reverse
+import pytest
 
 from maasserver.models.notification import Notification, NotificationDismissal
-from maasserver.testing.api import APITestCase
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
+from maasserver.testing.testclient import MAASSensibleOAuthClient
 from maasserver.utils.orm import reload_object
-from tests.maasserver.auth.test_auth import OpenFGAMockMixin
+from tests.maasserver.auth.test_auth import PytestOpenFGAMockMixin
 
 
 def get_notifications_uri():
@@ -27,60 +28,60 @@ def get_notification_uri(notification):
     return reverse("notification_handler", args=[notification.id])
 
 
-class TestURIs(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestURIs:
     def test_notifications_handler_path(self):
-        self.assertEqual(
-            "/MAAS/api/2.0/notifications/", get_notifications_uri()
-        )
+        assert "/MAAS/api/2.0/notifications/" == get_notifications_uri()
 
     def test_notification_handler_path(self):
         notification = factory.make_Notification()
-        self.assertEqual(
-            "/MAAS/api/2.0/notifications/%s/" % notification.id,
-            get_notification_uri(notification),
+        assert (
+            "/MAAS/api/2.0/notifications/%d/" % notification.id
+            == get_notification_uri(notification)
         )
 
 
-class AssertNotificationsMixin:
-    def assert_notification_matches(self, notification, parsed_notification):
-        """Assert the expected JSON rendering of `notification`."""
-        self.assertEqual(parsed_notification.get("id"), notification.id)
-        self.assertEqual(parsed_notification.get("ident"), notification.ident)
-        if notification.user_id is None:
-            self.assertIsNone(parsed_notification.get("user", object()))
-        else:
-            self.assertEqual(
-                parsed_notification.get("user").get("username"),
-                notification.user.username,
-            )
-            self.assertEqual(
-                parsed_notification.get("users"), notification.users
-            )
-            self.assertEqual(
-                parsed_notification.get("admins"), notification.admins
-            )
-            self.assertEqual(
-                parsed_notification.get("message"), notification.message
-            )
-            self.assertEqual(
-                parsed_notification.get("context"), notification.context
-            )
-            self.assertEqual(
-                parsed_notification.get("category"), notification.category
-            )
-            self.assertEqual(
-                parsed_notification.get("dismissable"),
-                notification.dismissable,
-            )
-            self.assertEqual(
-                parsed_notification.get("resource_uri"),
-                get_notification_uri(notification),
-            )
+def check_notification_matches(notification, parsed_notification):
+    """Check the expected JSON rendering of `notification`."""
+    assert parsed_notification.get("id") == notification.id
+    assert parsed_notification.get("ident") == notification.ident
+    if notification.user_id is None:
+        assert parsed_notification.get("user", object()) is None
+    else:
+        assert (
+            parsed_notification.get("user").get("username")
+            == notification.user.username
+        )
+        assert parsed_notification.get("users") == notification.users
+        assert parsed_notification.get("admins") == notification.admins
+        assert parsed_notification.get("message") == notification.message
+        assert parsed_notification.get("context") == notification.context
+        assert parsed_notification.get("category") == notification.category
+        assert (
+            parsed_notification.get("dismissable") == notification.dismissable
+        )
+        assert parsed_notification.get("resource_uri") == get_notification_uri(
+            notification
+        )
 
 
-class TestNotificationsAPI(
-    AssertNotificationsMixin, APITestCase.ForUserAndAdmin
-):
+@pytest.mark.parametrize(
+    "api_identity",
+    [
+        pytest.param("maas_user", id="user=user,client=oauth"),
+        pytest.param("admin", id="user=admin,client=oauth"),
+    ],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestNotificationsAPI:
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, request):
+        self.user = request.getfixturevalue(api_identity)
+        client_fixture = (
+            "api_client" if api_identity == "maas_user" else "admin_api_client"
+        )
+        self.client = request.getfixturevalue(client_fixture)
+
     def test_read(self):
         notifications = [
             factory.make_Notification(
@@ -89,30 +90,28 @@ class TestNotificationsAPI(
             factory.make_Notification(user=None, users=True, admins=False),
             factory.make_Notification(user=None, users=False, admins=True),
         ]
-        uri = get_notifications_uri()
-        response = self.client.get(uri)
-        self.assertEqual(response.status_code, http.client.OK)
+        response = self.client.get(get_notifications_uri())
+        assert response.status_code == http.client.OK
         parsed_notifications = response.json()
         for notification, parsed_notification in zip(
             notifications, parsed_notifications, strict=False
         ):
             if notification.is_relevant_to(self.user):
-                self.assert_notification_matches(
-                    notification, parsed_notification
-                )
+                check_notification_matches(notification, parsed_notification)
 
     def test_create_with_minimal_fields(self):
         message = factory.make_name("message")
-        uri = get_notifications_uri()
-        response = self.client.post(uri, {"message": message})
+        response = self.client.post(
+            get_notifications_uri(), {"message": message}
+        )
         if self.user.is_superuser:
-            self.assertEqual(response.status_code, http.client.OK)
+            assert response.status_code == http.client.OK
             response = response.json()
-            self.assertIsInstance(response.get("id"), int)
+            assert isinstance(response.get("id"), int)
             notification = Notification.objects.get(id=response["id"])
-            self.assert_notification_matches(notification, response)
+            check_notification_matches(notification, response)
         else:
-            self.assertEqual(response.status_code, http.client.FORBIDDEN)
+            assert response.status_code == http.client.FORBIDDEN
 
     def test_create_with_all_fields(self):
         context = {factory.make_name("key"): factory.make_name("value")}
@@ -126,290 +125,336 @@ class TestNotificationsAPI(
             "category": random.choice(("info", "success", "warning", "error")),
             "dismissable": random.choice(["true", "false"]),
         }
-        uri = get_notifications_uri()
-        response = self.client.post(uri, data)
+        response = self.client.post(get_notifications_uri(), data)
         if self.user.is_superuser:
-            self.assertEqual(response.status_code, http.client.OK)
+            assert response.status_code == http.client.OK
             notification = response.json()
-            self.assertIsInstance(notification.get("id"), int)
-            self.assertEqual(notification.get("ident"), data["ident"])
-            self.assertEqual(
-                notification.get("user").get("username"), self.user.username
+            assert isinstance(notification.get("id"), int)
+            assert notification.get("ident") == data["ident"]
+            assert (
+                notification.get("user").get("username") == self.user.username
             )
-            self.assertEqual(
-                notification.get("users"), data["users"] == "true"
-            )
-            self.assertEqual(
-                notification.get("admins"), data["admins"] == "true"
-            )
-            self.assertEqual(notification.get("message"), data["message"])
-            self.assertEqual(notification.get("context"), context)
-            self.assertEqual(notification.get("category"), data["category"])
-            self.assertEqual(
-                notification.get("dismissable"), data["dismissable"] == "true"
+            assert notification.get("users") == (data["users"] == "true")
+            assert notification.get("admins") == (data["admins"] == "true")
+            assert notification.get("message") == data["message"]
+            assert notification.get("context") == context
+            assert notification.get("category") == data["category"]
+            assert notification.get("dismissable") == (
+                data["dismissable"] == "true"
             )
         else:
-            self.assertEqual(response.status_code, http.client.FORBIDDEN)
+            assert response.status_code == http.client.FORBIDDEN
 
     def test_create_with_username_user_field(self):
         recipient = factory.make_User()
-        uri = get_notifications_uri()
         response = self.client.post(
-            uri,
+            get_notifications_uri(),
             {
                 "message": factory.make_name("message"),
                 "user": recipient.username,
             },
         )
         if self.user.is_superuser:
-            self.assertEqual(response.status_code, http.client.OK)
+            assert response.status_code == http.client.OK
             notification = response.json()
-            self.assertEqual(
-                notification.get("user").get("username"), recipient.username
+            assert (
+                notification.get("user").get("username") == recipient.username
             )
         else:
-            self.assertEqual(response.status_code, http.client.FORBIDDEN)
+            assert response.status_code == http.client.FORBIDDEN
 
     def test_create_rejects_unknown_username_user_field(self):
-        uri = get_notifications_uri()
         response = self.client.post(
-            uri,
+            get_notifications_uri(),
             {
                 "message": factory.make_name("message"),
                 "user": "no-such-user",
             },
         )
         if self.user.is_superuser:
-            self.assertEqual(response.status_code, http.client.BAD_REQUEST)
-            self.assertEqual(
-                response.json().get("user"),
-                ["Enter a valid user id or username."],
-            )
+            assert response.status_code == http.client.BAD_REQUEST
+            assert response.json().get("user") == [
+                "Enter a valid user id or username."
+            ]
         else:
-            self.assertEqual(response.status_code, http.client.FORBIDDEN)
+            assert response.status_code == http.client.FORBIDDEN
 
 
-class TestNotificationsAPI_Anonymous(APITestCase.ForAnonymous):
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("anonymous", id="user=anonymous,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestNotificationsAPI_Anonymous:
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity):
+        assert api_identity == "anonymous"
+        self.client = MAASSensibleOAuthClient(user=AnonymousUser())
+
     def test_read(self):
-        uri = get_notifications_uri()
-        response = self.client.get(uri)
-        self.assertEqual(response.status_code, http.client.UNAUTHORIZED)
+        response = self.client.get(get_notifications_uri())
+        assert response.status_code == http.client.UNAUTHORIZED
 
     def test_create(self):
-        uri = get_notifications_uri()
-        response = self.client.post(uri, {"message": factory.make_name()})
-        self.assertEqual(response.status_code, http.client.UNAUTHORIZED)
+        response = self.client.post(
+            get_notifications_uri(), {"message": factory.make_name()}
+        )
+        assert response.status_code == http.client.UNAUTHORIZED
 
 
-class TestNotificationAPI(
-    AssertNotificationsMixin, APITestCase.ForUserAndAdmin
-):
+@pytest.mark.parametrize(
+    "api_identity",
+    [
+        pytest.param("maas_user", id="user=user,client=oauth"),
+        pytest.param("admin", id="user=admin,client=oauth"),
+    ],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestNotificationAPI:
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, request):
+        self.user = request.getfixturevalue(api_identity)
+        client_fixture = (
+            "api_client" if api_identity == "maas_user" else "admin_api_client"
+        )
+        self.client = request.getfixturevalue(client_fixture)
+
     def test_read_notification_for_self(self):
         notification = factory.make_Notification(user=self.user)
-        uri = get_notification_uri(notification)
-        response = self.client.get(uri)
-        self.assertEqual(response.status_code, http.client.OK)
-        self.assert_notification_matches(notification, response.json())
+        response = self.client.get(get_notification_uri(notification))
+        assert response.status_code == http.client.OK
+        check_notification_matches(notification, response.json())
 
     def test_read_notification_for_other(self):
         other = factory.make_User()
         notification = factory.make_Notification(user=other)
-        uri = get_notification_uri(notification)
-        response = self.client.get(uri)
+        response = self.client.get(get_notification_uri(notification))
         if self.user.is_superuser:
-            self.assertEqual(response.status_code, http.client.OK)
-            self.assert_notification_matches(notification, response.json())
+            assert response.status_code == http.client.OK
+            check_notification_matches(notification, response.json())
         else:
-            self.assertEqual(response.status_code, http.client.FORBIDDEN)
+            assert response.status_code == http.client.FORBIDDEN
 
     def test_read_notification_for_users(self):
         notification = factory.make_Notification(users=True)
-        uri = get_notification_uri(notification)
-        response = self.client.get(uri)
-        self.assertEqual(response.status_code, http.client.OK)
-        self.assert_notification_matches(notification, response.json())
+        response = self.client.get(get_notification_uri(notification))
+        assert response.status_code == http.client.OK
+        check_notification_matches(notification, response.json())
 
     def test_read_notification_for_admins(self):
         notification = factory.make_Notification(admins=True)
-        uri = get_notification_uri(notification)
-        response = self.client.get(uri)
+        response = self.client.get(get_notification_uri(notification))
         if self.user.is_superuser:
-            self.assertEqual(response.status_code, http.client.OK)
-            self.assert_notification_matches(notification, response.json())
+            assert response.status_code == http.client.OK
+            check_notification_matches(notification, response.json())
         else:
-            self.assertEqual(response.status_code, http.client.FORBIDDEN)
+            assert response.status_code == http.client.FORBIDDEN
 
     def test_update_is_for_admins_only(self):
         notification = factory.make_Notification()
         message_new = factory.make_name("message")
-        uri = get_notification_uri(notification)
-        response = self.client.put(uri, {"message": message_new})
+        response = self.client.put(
+            get_notification_uri(notification), {"message": message_new}
+        )
         if self.user.is_superuser:
-            self.assertEqual(response.status_code, http.client.OK)
+            assert response.status_code == http.client.OK
             notification = reload_object(notification)
-            self.assertEqual(message_new, notification.message)
-            self.assert_notification_matches(notification, response.json())
+            assert message_new == notification.message
+            check_notification_matches(notification, response.json())
         else:
-            self.assertEqual(response.status_code, http.client.FORBIDDEN)
+            assert response.status_code == http.client.FORBIDDEN
 
     def test_update_with_username_user_field(self):
         notification = factory.make_Notification()
         recipient = factory.make_User()
-        uri = get_notification_uri(notification)
         response = self.client.put(
-            uri,
+            get_notification_uri(notification),
             {
                 "message": factory.make_name("message"),
                 "user": recipient.username,
             },
         )
         if self.user.is_superuser:
-            self.assertEqual(response.status_code, http.client.OK)
-            self.assertEqual(
-                response.json().get("user").get("username"), recipient.username
+            assert response.status_code == http.client.OK
+            assert (
+                response.json().get("user").get("username")
+                == recipient.username
             )
         else:
-            self.assertEqual(response.status_code, http.client.FORBIDDEN)
+            assert response.status_code == http.client.FORBIDDEN
 
     def test_update_rejects_unknown_username_user_field(self):
         notification = factory.make_Notification()
-        uri = get_notification_uri(notification)
         response = self.client.put(
-            uri,
+            get_notification_uri(notification),
             {
                 "message": factory.make_name("message"),
                 "user": "no-such-user",
             },
         )
         if self.user.is_superuser:
-            self.assertEqual(response.status_code, http.client.BAD_REQUEST)
-            self.assertEqual(
-                response.json().get("user"),
-                ["Enter a valid user id or username."],
-            )
+            assert response.status_code == http.client.BAD_REQUEST
+            assert response.json().get("user") == [
+                "Enter a valid user id or username."
+            ]
         else:
-            self.assertEqual(response.status_code, http.client.FORBIDDEN)
+            assert response.status_code == http.client.FORBIDDEN
 
     def test_delete_is_for_admins_only(self):
         notification = factory.make_Notification()
-        uri = get_notification_uri(notification)
-        response = self.client.delete(uri)
+        response = self.client.delete(get_notification_uri(notification))
         if self.user.is_superuser:
-            self.assertEqual(response.status_code, http.client.NO_CONTENT)
-            self.assertIsNone(reload_object(notification))
+            assert response.status_code == http.client.NO_CONTENT
+            assert reload_object(notification) is None
         else:
-            self.assertEqual(response.status_code, http.client.FORBIDDEN)
+            assert response.status_code == http.client.FORBIDDEN
 
     def test_dismiss_notification_for_self(self):
         notification = factory.make_Notification(user=self.user)
-        uri = get_notification_uri(notification)
-        response = self.client.post(uri, {"op": "dismiss"})
-        self.assertEqual(response.status_code, http.client.OK)
+        response = self.client.post(
+            get_notification_uri(notification), {"op": "dismiss"}
+        )
+        assert response.status_code == http.client.OK
         has_been_dismissed = NotificationDismissal.objects.filter(
             notification=notification, user=self.user
         ).exists()
-        self.assertTrue(has_been_dismissed)
+        assert has_been_dismissed
 
     def test_dismiss_notification_for_other(self):
         other = factory.make_User()
         notification = factory.make_Notification(user=other)
-        uri = get_notification_uri(notification)
-        response = self.client.post(uri, {"op": "dismiss"})
-        self.assertEqual(response.status_code, http.client.FORBIDDEN)
+        response = self.client.post(
+            get_notification_uri(notification), {"op": "dismiss"}
+        )
+        assert response.status_code == http.client.FORBIDDEN
 
     def test_dismiss_notification_for_users(self):
         notification = factory.make_Notification(users=True)
-        uri = get_notification_uri(notification)
-        response = self.client.post(uri, {"op": "dismiss"})
+        response = self.client.post(
+            get_notification_uri(notification), {"op": "dismiss"}
+        )
         if notification.is_relevant_to(self.user):
-            self.assertEqual(response.status_code, http.client.OK)
+            assert response.status_code == http.client.OK
             has_been_dismissed = NotificationDismissal.objects.filter(
                 notification=notification, user=self.user
             ).exists()
-            self.assertTrue(has_been_dismissed)
+            assert has_been_dismissed
         else:
-            self.assertEqual(response.status_code, http.client.FORBIDDEN)
+            assert response.status_code == http.client.FORBIDDEN
 
     def test_dismiss_notification_for_admins(self):
         notification = factory.make_Notification(admins=True)
-        uri = get_notification_uri(notification)
-        response = self.client.post(uri, {"op": "dismiss"})
+        response = self.client.post(
+            get_notification_uri(notification), {"op": "dismiss"}
+        )
         if notification.is_relevant_to(self.user):
-            self.assertEqual(response.status_code, http.client.OK)
+            assert response.status_code == http.client.OK
             has_been_dismissed = NotificationDismissal.objects.filter(
                 notification=notification, user=self.user
             ).exists()
-            self.assertTrue(has_been_dismissed)
+            assert has_been_dismissed
         else:
-            self.assertEqual(response.status_code, http.client.FORBIDDEN)
+            assert response.status_code == http.client.FORBIDDEN
 
 
-class TestNotificationAPI_Anonymous(APITestCase.ForAnonymous):
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("anonymous", id="user=anonymous,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestNotificationAPI_Anonymous:
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity):
+        assert api_identity == "anonymous"
+        self.client = MAASSensibleOAuthClient(user=AnonymousUser())
+
     def test_read_notification_for_other(self):
         other = factory.make_User()
         notification = factory.make_Notification(user=other)
-        uri = get_notification_uri(notification)
-        response = self.client.get(uri)
-        self.assertEqual(response.status_code, http.client.UNAUTHORIZED)
+        response = self.client.get(get_notification_uri(notification))
+        assert response.status_code == http.client.UNAUTHORIZED
 
     def test_read_notification_for_users(self):
         notification = factory.make_Notification(users=True)
-        uri = get_notification_uri(notification)
-        response = self.client.get(uri)
-        self.assertEqual(response.status_code, http.client.UNAUTHORIZED)
+        response = self.client.get(get_notification_uri(notification))
+        assert response.status_code == http.client.UNAUTHORIZED
 
     def test_read_notification_for_admins(self):
         notification = factory.make_Notification(admins=True)
-        uri = get_notification_uri(notification)
-        response = self.client.get(uri)
-        self.assertEqual(response.status_code, http.client.UNAUTHORIZED)
+        response = self.client.get(get_notification_uri(notification))
+        assert response.status_code == http.client.UNAUTHORIZED
 
     def test_update_is_for_admins_only(self):
         notification = factory.make_Notification()
         message_new = factory.make_name("message")
-        uri = get_notification_uri(notification)
-        response = self.client.put(uri, {"message": message_new})
-        self.assertEqual(response.status_code, http.client.UNAUTHORIZED)
+        response = self.client.put(
+            get_notification_uri(notification), {"message": message_new}
+        )
+        assert response.status_code == http.client.UNAUTHORIZED
 
     def test_delete_is_for_admins_only(self):
         notification = factory.make_Notification()
-        uri = get_notification_uri(notification)
-        response = self.client.delete(uri)
-        self.assertEqual(response.status_code, http.client.UNAUTHORIZED)
+        response = self.client.delete(get_notification_uri(notification))
+        assert response.status_code == http.client.UNAUTHORIZED
 
 
-class TestNotificationsOpenFGAIntegration(
-    OpenFGAMockMixin, APITestCase.ForUser
-):
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user", id="user=user,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestNotificationsOpenFGAIntegration(PytestOpenFGAMockMixin):
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, request):
+        self.user = request.getfixturevalue(
+            {"user": "maas_user"}[api_identity]
+        )
+        self.client = request.getfixturevalue(
+            {"user": "api_client"}[api_identity]
+        )
+
     def test_create_requires_can_edit_notifications(self):
         self.openfga_client.can_edit_notifications.return_value = True
-        uri = get_notifications_uri()
-        response = self.client.post(uri, {"message": factory.make_name()})
-        self.assertEqual(http.client.OK, response.status_code)
+        response = self.client.post(
+            get_notifications_uri(), {"message": factory.make_name()}
+        )
+        assert http.client.OK == response.status_code
         self.openfga_client.can_edit_notifications.assert_called_once_with(
             self.user
         )
 
 
-class TestNotificationOpenFGAIntegration(
-    OpenFGAMockMixin, APITestCase.ForUser
-):
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user", id="user=user,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestNotificationOpenFGAIntegration(PytestOpenFGAMockMixin):
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, request):
+        self.user = request.getfixturevalue(
+            {"user": "maas_user"}[api_identity]
+        )
+        self.client = request.getfixturevalue(
+            {"user": "api_client"}[api_identity]
+        )
+
     def test_view_all_if_can_view_notifications(self):
         self.openfga_client.can_view_notifications.return_value = True
         other = factory.make_User()
         notification = factory.make_Notification(user=other)
-        uri = get_notification_uri(notification)
-        response = self.client.get(uri)
-        self.assertEqual(http.client.OK, response.status_code)
+        response = self.client.get(get_notification_uri(notification))
+        assert http.client.OK == response.status_code
         self.openfga_client.can_view_notifications.assert_called()
 
     def test_update_requires_can_edit_notifications(self):
         self.openfga_client.can_edit_notifications.return_value = True
         notification = factory.make_Notification()
         message_new = factory.make_name("message")
-        uri = get_notification_uri(notification)
-        response = self.client.put(uri, {"message": message_new})
-        self.assertEqual(http.client.OK, response.status_code)
+        response = self.client.put(
+            get_notification_uri(notification), {"message": message_new}
+        )
+        assert http.client.OK == response.status_code
         self.openfga_client.can_edit_notifications.assert_called_once_with(
             self.user
         )
@@ -417,9 +462,8 @@ class TestNotificationOpenFGAIntegration(
     def test_delete_requires_can_edit_notifications(self):
         self.openfga_client.can_edit_notifications.return_value = True
         notification = factory.make_Notification()
-        uri = get_notification_uri(notification)
-        response = self.client.delete(uri)
-        self.assertEqual(http.client.NO_CONTENT, response.status_code)
+        response = self.client.delete(get_notification_uri(notification))
+        assert http.client.NO_CONTENT == response.status_code
         self.openfga_client.can_edit_notifications.assert_called_once_with(
             self.user
         )

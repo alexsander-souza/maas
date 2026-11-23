@@ -7,6 +7,7 @@ import random
 from unittest.mock import Mock
 
 from netaddr import IPNetwork
+import pytest
 from twisted.internet.defer import inlineCallbacks
 from twisted.internet.task import Clock
 
@@ -14,7 +15,6 @@ from maasserver.models import Config
 from maasserver.regiondservices import active_discovery
 from maasserver.regiondservices.active_discovery import ActiveDiscoveryService
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASTransactionServerTestCase
 from maasserver.utils.orm import transactional
 from maasserver.utils.threads import deferToDatabase
 from maastesting.crochet import wait_for
@@ -23,19 +23,22 @@ from maastesting.twisted import TwistedLoggerFixture
 wait_for_reactor = wait_for()
 
 
-class TestActiveDiscoveryService(MAASTransactionServerTestCase):
-    def test_registers_and_unregisters_listener(self):
+@pytest.mark.allow_transactions
+@pytest.mark.usefixtures(
+    "maasdb", "transactional_maasdb", "maas_region_test", "factory"
+)
+class TestActiveDiscoveryService:
+    def test_registers_and_unregisters_listener(self, mocker):
         mock_listener = Mock()
         register = mock_listener.register = Mock()
         unregister = mock_listener.unregister = Mock()
         clock = Clock()
-        run = self.patch(ActiveDiscoveryService, "run")
+        run = mocker.patch.object(ActiveDiscoveryService, "run")
         service = ActiveDiscoveryService(clock, mock_listener)
-        # Make sure the service doesn't actually do anything.
         service.startService()
-        self.assertEqual(service.call, (run, (), {}))
-        self.assertEqual(service.step, active_discovery.CHECK_INTERVAL)
-        self.assertEqual(service.clock, clock)
+        assert service.call == (run, (), {})
+        assert service.step == active_discovery.CHECK_INTERVAL
+        assert service.clock == clock
         register.assert_called_once_with(
             "config", service.refreshDiscoveryConfig
         )
@@ -45,58 +48,58 @@ class TestActiveDiscoveryService(MAASTransactionServerTestCase):
             "config", service.refreshDiscoveryConfig
         )
 
-    def test_run_calls_refreshDiscoveryConfig(self):
+    def test_run_calls_refreshDiscoveryConfig(self, mocker):
         clock = Clock()
         service = ActiveDiscoveryService(clock)
-        refreshDiscoveryConfig = self.patch(service, "refreshDiscoveryConfig")
+        refreshDiscoveryConfig = mocker.patch.object(
+            service, "refreshDiscoveryConfig"
+        )
         service.startService()
         refreshDiscoveryConfig.assert_called_once_with()
 
-    def test_run_calls_scanIfNeeded_if_discovery_enabled(self):
+    def test_run_calls_scanIfNeeded_if_discovery_enabled(self, mocker):
         clock = Clock()
         service = ActiveDiscoveryService(clock)
-        self.patch(service, "refreshDiscoveryConfig")
-        scanIfNeeded = self.patch(service, "scanIfNeeded")
+        mocker.patch.object(service, "refreshDiscoveryConfig")
+        scanIfNeeded = mocker.patch.object(service, "scanIfNeeded")
         service.startService()
-        # Pretend the call to refreshDiscoveryConfig enabled discovery,
-        # as expected.
         service.discovery_enabled = True
         clock.advance(300)
         scanIfNeeded.assert_called_once_with()
 
-    def test_run_handles_refresh_failure(self):
+    def test_run_handles_refresh_failure(self, mocker):
         clock = Clock()
         service = ActiveDiscoveryService(clock)
-        refreshDiscoveryConfig = self.patch(service, "refreshDiscoveryConfig")
+        refreshDiscoveryConfig = mocker.patch.object(
+            service, "refreshDiscoveryConfig"
+        )
         refreshDiscoveryConfig.side_effect = Exception
         with TwistedLoggerFixture() as logger:
             service.startService()
-        self.assertIn(
-            ": error refreshing discovery configuration.\nTraceback (most recent call last):",
-            logger.output,
+        assert (
+            ": error refreshing discovery configuration.\nTraceback (most recent call last):"
+            in logger.output
         )
 
-    def test_monitorServices_handles_scan_failure(self):
+    def test_monitorServices_handles_scan_failure(self, mocker):
         clock = Clock()
         service = ActiveDiscoveryService(clock)
-        self.patch(service, "refreshDiscoveryConfig")
-        scanIfNeeded = self.patch(service, "scanIfNeeded")
+        mocker.patch.object(service, "refreshDiscoveryConfig")
+        scanIfNeeded = mocker.patch.object(service, "scanIfNeeded")
         scanIfNeeded.side_effect = Exception
-        # Pretend the call to refreshDiscoveryConfig enabled discovery,
-        # as expected.
         service.discovery_enabled = True
         with TwistedLoggerFixture() as logger:
             service.run()
-        self.assertIn(
-            ": periodic scan failed.\nTraceback (most recent call last):",
-            logger.output,
+        assert (
+            ": periodic scan failed.\nTraceback (most recent call last):"
+            in logger.output
         )
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_scanIfNeeded_logs_success(self):
+    def test_scanIfNeeded_logs_success(self, mocker):
         service = ActiveDiscoveryService(Clock())
-        try_lock_and_scan = self.patch(service, "try_lock_and_scan")
+        try_lock_and_scan = mocker.patch.object(service, "try_lock_and_scan")
         try_lock_and_scan.return_value = "happy"
         service.discovery_enabled = True
         service.discovery_last_scan = 0
@@ -104,10 +107,14 @@ class TestActiveDiscoveryService(MAASTransactionServerTestCase):
         service.startService()
         with TwistedLoggerFixture() as logger:
             yield service.run()
-        self.assertIn("Active network discovery: happy", logger.output)
+        assert "Active network discovery: happy" in logger.output
 
 
-class TestRefreshDiscoveryConfig(MAASTransactionServerTestCase):
+@pytest.mark.allow_transactions
+@pytest.mark.usefixtures(
+    "maasdb", "transactional_maasdb", "maas_region_test", "factory"
+)
+class TestRefreshDiscoveryConfig:
     @transactional
     def set_last_scan(self, last_scan):
         Config.objects.set_config("active_discovery_last_scan", last_scan)
@@ -118,41 +125,45 @@ class TestRefreshDiscoveryConfig(MAASTransactionServerTestCase):
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_stores_correct_values_and_fires_timer(self):
+    def test_stores_correct_values_and_fires_timer(self, mocker):
         expected_last_scan = random.randint(1, 1000)
         expected_interval = random.randint(1, 1000)
         yield deferToDatabase(self.set_interval, expected_interval)
         yield deferToDatabase(self.set_last_scan, expected_last_scan)
         service = ActiveDiscoveryService(Clock())
-        run = self.patch(service, "run")
+        run = mocker.patch.object(service, "run")
         with TwistedLoggerFixture() as logger:
             yield service.refreshDiscoveryConfig()
-        self.assertIn("Discovery interval set to", logger.output)
-        self.assertTrue(service.discovery_enabled)
-        self.assertEqual(expected_interval, service.discovery_interval)
-        self.assertEqual(expected_last_scan, service.discovery_last_scan)
+        assert "Discovery interval set to" in logger.output
+        assert service.discovery_enabled
+        assert service.discovery_interval == expected_interval
+        assert service.discovery_last_scan == expected_last_scan
         run.assert_called_once_with()
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_disables_discovery_if_interval_is_zero(self):
+    def test_disables_discovery_if_interval_is_zero(self, mocker):
         expected_last_scan = random.randint(1, 1000)
         expected_interval = random.randint(1, 1000)
         yield deferToDatabase(self.set_interval, expected_interval)
         yield deferToDatabase(self.set_last_scan, expected_last_scan)
         service = ActiveDiscoveryService(Clock())
-        self.patch(service, "run")
+        mocker.patch.object(service, "run")
         yield service.refreshDiscoveryConfig()
         yield deferToDatabase(self.set_interval, 0)
         with TwistedLoggerFixture() as logger:
             yield service.refreshDiscoveryConfig()
-        self.assertIn("discovery is disabled", logger.output)
-        self.assertFalse(service.discovery_enabled)
-        self.assertEqual(0, service.discovery_interval)
-        self.assertEqual(expected_last_scan, service.discovery_last_scan)
+        assert "discovery is disabled" in logger.output
+        assert not service.discovery_enabled
+        assert service.discovery_interval == 0
+        assert service.discovery_last_scan == expected_last_scan
 
 
-class TestGetActiveDiscoveryConfig(MAASTransactionServerTestCase):
+@pytest.mark.allow_transactions
+@pytest.mark.usefixtures(
+    "maasdb", "transactional_maasdb", "maas_region_test", "factory"
+)
+class TestGetActiveDiscoveryConfig:
     def test_returns_expected_interval(self):
         expected_interval = random.randint(1, 1000)
         Config.objects.set_config(
@@ -160,9 +171,8 @@ class TestGetActiveDiscoveryConfig(MAASTransactionServerTestCase):
         )
         service = ActiveDiscoveryService(Clock())
         enabled, interval, last_scan = service.get_active_discovery_config()
-        self.assertEqual(expected_interval, interval)
-        # Enabled is True if interval is > 0
-        self.assertTrue(enabled)
+        assert interval == expected_interval
+        assert enabled
 
     def test_returns_expected_last_scan(self):
         expected_last_scan = random.randint(1, 1000)
@@ -171,20 +181,14 @@ class TestGetActiveDiscoveryConfig(MAASTransactionServerTestCase):
         )
         service = ActiveDiscoveryService(Clock())
         enabled, interval, last_scan = service.get_active_discovery_config()
-        self.assertEqual(expected_last_scan, last_scan)
+        assert last_scan == expected_last_scan
 
     def test_returns_disabled_if_interval_is_zero(self):
-        expected_interval = 0
-        expected_last_scan = 0
-        Config.objects.set_config(
-            "active_discovery_last_scan", expected_last_scan
-        )
-        Config.objects.set_config(
-            "active_discovery_interval", expected_interval
-        )
+        Config.objects.set_config("active_discovery_last_scan", 0)
+        Config.objects.set_config("active_discovery_interval", 0)
         service = ActiveDiscoveryService(Clock())
         enabled, interval, last_scan = service.get_active_discovery_config()
-        self.assertFalse(enabled)
+        assert not enabled
 
     def test_returns_disabled_if_interval_is_invalid(self):
         expected_interval = factory.make_name()
@@ -197,27 +201,31 @@ class TestGetActiveDiscoveryConfig(MAASTransactionServerTestCase):
         )
         service = ActiveDiscoveryService(Clock())
         enabled, interval, last_scan = service.get_active_discovery_config()
-        self.assertFalse(enabled)
-        self.assertEqual(0, interval)
-        self.assertEqual(0, last_scan)
+        assert not enabled
+        assert interval == 0
+        assert last_scan == 0
 
 
-class TestTryLockAndScan(MAASTransactionServerTestCase):
+@pytest.mark.allow_transactions
+@pytest.mark.usefixtures(
+    "maasdb", "transactional_maasdb", "maas_region_test", "factory"
+)
+class TestTryLockAndScan:
     """ActiveDiscoveryService.check_settings_and_scan_rack_networks tests."""
 
-    def setUp(self):
-        super().setUp()
+    @pytest.fixture(autouse=True)
+    def _setup(self, mocker):
         self.service = ActiveDiscoveryService(Clock())
-        self.get_active_discovery_config = self.patch(
+        self.get_active_discovery_config = mocker.patch.object(
             self.service, "get_active_discovery_config"
         )
-        self.getCurrentTimestamp = self.patch(
+        self.getCurrentTimestamp = mocker.patch.object(
             self.service, "getCurrentTimestamp"
         )
-        self.get_network_discovery_config = self.patch(
+        self.get_network_discovery_config = mocker.patch.object(
             active_discovery.Config.objects, "get_network_discovery_config"
         )
-        self.get_cidr_list = self.patch(
+        self.get_cidr_list = mocker.patch.object(
             active_discovery.Subnet.objects,
             "get_cidr_list_for_periodic_active_scan",
         )
@@ -229,15 +237,15 @@ class TestTryLockAndScan(MAASTransactionServerTestCase):
     def test_aborts_if_passive_discovery_is_disabled(self):
         self.mock_discovery_config.passive = False
         result = self.service.try_lock_and_scan()
-        self.assertIn("discovery is disabled. Skipping", result)
+        assert "discovery is disabled. Skipping" in result
 
     def test_aborts_if_periodic_discovery_is_disabled(self):
         self.mock_discovery_config.passive = True
         self.get_active_discovery_config.return_value = (False, 0, 0)
         result = self.service.try_lock_and_scan()
-        self.assertIn(
-            "Skipping active scan. Periodic discovery is now disabled.",
-            result,
+        assert (
+            "Skipping active scan. Periodic discovery is now disabled."
+            in result
         )
 
     def test_aborts_if_periodic_discovery_if_last_scan_too_recent(self):
@@ -245,7 +253,7 @@ class TestTryLockAndScan(MAASTransactionServerTestCase):
         self.get_active_discovery_config.return_value = (True, 10, 91)
         self.getCurrentTimestamp.return_value = 100
         result = self.service.try_lock_and_scan()
-        self.assertIn("Another region controller is already scanning", result)
+        assert "Another region controller is already scanning" in result
 
     def test_aborts_if_periodic_discovery_if_no_subnets_enabled(self):
         self.mock_discovery_config.passive = True
@@ -253,24 +261,24 @@ class TestTryLockAndScan(MAASTransactionServerTestCase):
         self.getCurrentTimestamp.return_value = 100
         self.get_cidr_list.return_value = []
         result = self.service.try_lock_and_scan()
-        self.assertIn("Active scanning is not enabled on any subnet", result)
+        assert "Active scanning is not enabled on any subnet" in result
 
-    def test_calls_scan_all_rack_networks_if_everything_is_okay(self):
+    def test_calls_scan_all_rack_networks_if_everything_is_okay(self, mocker):
         self.mock_discovery_config.passive = True
         self.get_active_discovery_config.return_value = (True, 10, 90)
         self.getCurrentTimestamp.return_value = 100
         cidrs = [IPNetwork(factory.make_ipv4_network())]
         self.get_cidr_list.return_value = cidrs
-        scan_all_rack_networks = self.patch(
+        scan_all_rack_networks = mocker.patch.object(
             active_discovery, "scan_all_rack_networks"
         )
         rpc_results = Mock()
         rpc_results.available = ["rack1"]
         scan_all_rack_networks.return_value = rpc_results
-        get_result_string = self.patch(
+        get_result_string = mocker.patch.object(
             active_discovery, "get_scan_result_string_for_humans"
         )
         get_result_string.return_value = "sensational"
         result = self.service.try_lock_and_scan()
-        self.assertEqual("sensational", result)
+        assert result == "sensational"
         scan_all_rack_networks.assert_called_once_with(cidrs=cidrs)

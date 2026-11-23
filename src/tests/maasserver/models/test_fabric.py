@@ -2,7 +2,10 @@
 # GNU Affero General Public License version 3 (see the file LICENSE).
 
 
+from collections import Counter
+
 from django.core.exceptions import PermissionDenied, ValidationError
+import pytest
 
 from maasserver.enum import INTERFACE_TYPE
 from maasserver.models.fabric import Fabric
@@ -10,194 +13,170 @@ from maasserver.models.interface import Interface
 from maasserver.models.vlan import DEFAULT_VID, DEFAULT_VLAN_NAME, VLAN
 from maasserver.permissions import NodePermission
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
-from maastesting.djangotestcase import count_queries
+from maastesting.querycounter import count_queries
 
 
-class TestFabricManagerGetFabricOr404(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestFabricManagerGetFabricOr404:
     def test_user_view_returns_fabric(self):
         user = factory.make_User()
         fabric = factory.make_Fabric()
-        self.assertEqual(
-            fabric,
-            Fabric.objects.get_fabric_or_404(
-                fabric.id, user, NodePermission.view
-            ),
+        assert fabric == Fabric.objects.get_fabric_or_404(
+            fabric.id, user, NodePermission.view
         )
 
     def test_user_edit_raises_PermissionError(self):
         user = factory.make_User()
         fabric = factory.make_Fabric()
-        self.assertRaises(
-            PermissionDenied,
-            Fabric.objects.get_fabric_or_404,
-            fabric.id,
-            user,
-            NodePermission.edit,
-        )
+        with pytest.raises(PermissionDenied):
+            Fabric.objects.get_fabric_or_404(
+                fabric.id, user, NodePermission.edit
+            )
 
     def test_user_admin_raises_PermissionError(self):
         user = factory.make_User()
         fabric = factory.make_Fabric()
-        self.assertRaises(
-            PermissionDenied,
-            Fabric.objects.get_fabric_or_404,
-            fabric.id,
-            user,
-            NodePermission.admin,
-        )
+        with pytest.raises(PermissionDenied):
+            Fabric.objects.get_fabric_or_404(
+                fabric.id, user, NodePermission.admin
+            )
 
     def test_admin_view_returns_fabric(self):
         admin = factory.make_admin()
         fabric = factory.make_Fabric()
-        self.assertEqual(
-            fabric,
-            Fabric.objects.get_fabric_or_404(
-                fabric.id, admin, NodePermission.view
-            ),
+        assert fabric == Fabric.objects.get_fabric_or_404(
+            fabric.id, admin, NodePermission.view
         )
 
     def test_admin_edit_returns_fabric(self):
         admin = factory.make_admin()
         fabric = factory.make_Fabric()
-        self.assertEqual(
-            fabric,
-            Fabric.objects.get_fabric_or_404(
-                fabric.id, admin, NodePermission.edit
-            ),
+        assert fabric == Fabric.objects.get_fabric_or_404(
+            fabric.id, admin, NodePermission.edit
         )
 
     def test_admin_admin_returns_fabric(self):
         admin = factory.make_admin()
         fabric = factory.make_Fabric()
-        self.assertEqual(
-            fabric,
-            Fabric.objects.get_fabric_or_404(
-                fabric.id, admin, NodePermission.admin
-            ),
+        assert fabric == Fabric.objects.get_fabric_or_404(
+            fabric.id, admin, NodePermission.admin
         )
 
 
-class TestFabricManager(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestFabricManager:
     def test_default_specifier_matches_id(self):
         factory.make_Fabric()
         fabric = factory.make_Fabric()
         factory.make_Fabric()
         id = fabric.id
-        self.assertCountEqual(
-            Fabric.objects.filter_by_specifiers("%s" % id), [fabric]
-        )
+        assert Counter(
+            Fabric.objects.filter_by_specifiers("%s" % id)
+        ) == Counter([fabric])
 
     def test_default_specifier_matches_name_with_id(self):
         factory.make_Fabric()
         fabric = factory.make_Fabric()
         factory.make_Fabric()
         id = fabric.id
-        self.assertCountEqual(
-            Fabric.objects.filter_by_specifiers("fabric-%s" % id), [fabric]
-        )
+        assert Counter(
+            Fabric.objects.filter_by_specifiers("fabric-%s" % id)
+        ) == Counter([fabric])
 
     def test_default_specifier_matches_name(self):
         factory.make_Fabric()
         fabric = factory.make_Fabric(name="infinite-improbability")
         factory.make_Fabric()
-        self.assertCountEqual(
-            Fabric.objects.filter_by_specifiers("infinite-improbability"),
-            [fabric],
-        )
+        assert Counter(
+            Fabric.objects.filter_by_specifiers("infinite-improbability")
+        ) == Counter([fabric])
 
     def test_name_specifier_matches_name(self):
         factory.make_Fabric()
         fabric = factory.make_Fabric(name="infinite-improbability")
         factory.make_Fabric()
-        self.assertCountEqual(
-            Fabric.objects.filter_by_specifiers("name:infinite-improbability"),
-            [fabric],
-        )
+        assert Counter(
+            Fabric.objects.filter_by_specifiers("name:infinite-improbability")
+        ) == Counter([fabric])
 
     def test_class_specifier_matches_class(self):
         factory.make_Fabric(class_type="1 Gbps")
         fabric = factory.make_Fabric(class_type="400 Tbps")
         factory.make_Fabric(class_type="10 Gbps")
-        self.assertCountEqual(
-            Fabric.objects.filter_by_specifiers("class:400 Tbps"), [fabric]
-        )
+        assert Counter(
+            Fabric.objects.filter_by_specifiers("class:400 Tbps")
+        ) == Counter([fabric])
 
 
-class TestFabric(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestFabric:
     def test_get_name_for_empty_name(self):
         fabric = factory.make_Fabric()
-        self.assertEqual("fabric-%s" % fabric.id, fabric.get_name())
+        assert "fabric-%s" % fabric.id == fabric.get_name()
 
     def test_invalid_name_raises_exception(self):
-        self.assertRaises(
-            ValidationError, factory.make_Fabric, name="invalid*name"
-        )
+        with pytest.raises(ValidationError):
+            factory.make_Fabric(name="invalid*name")
 
     def test_reserved_name_raises_exception(self):
-        self.assertRaises(
-            ValidationError, factory.make_Fabric, name="fabric-33"
-        )
+        with pytest.raises(ValidationError):
+            factory.make_Fabric(name="fabric-33")
 
     def test_get_name_for_set_name(self):
         name = factory.make_name("name")
         fabric = factory.make_Fabric(name=name)
-        self.assertEqual(name, fabric.get_name())
+        assert name == fabric.get_name()
 
     def test_creates_fabric_with_default_vlan(self):
         name = factory.make_name("name")
         fabric = factory.make_Fabric(name=name)
-        self.assertEqual(name, fabric.name)
+        assert name == fabric.name
         default_vlan = fabric.get_default_vlan()
-        self.assertEqual(default_vlan.vid, DEFAULT_VID)
-        self.assertEqual(default_vlan.name, DEFAULT_VLAN_NAME)
-        self.assertEqual(default_vlan.fabric, fabric)
+        assert default_vlan.vid == DEFAULT_VID
+        assert default_vlan.name == DEFAULT_VLAN_NAME
+        assert default_vlan.fabric == fabric
 
     def test_get_default_fabric_creates_default_fabric(self):
         default_fabric = Fabric.objects.get_default_fabric()
-        self.assertEqual(0, default_fabric.id)
-        self.assertEqual("fabric-0", default_fabric.get_name())
-        self.assertEqual("fabric-0", default_fabric.name)
+        assert 0 == default_fabric.id
+        assert "fabric-0" == default_fabric.get_name()
+        assert "fabric-0" == default_fabric.name
 
     def test_create_sets_name(self):
         fabric = Fabric.objects.create(name=None)
-        self.assertEqual("fabric-%d" % fabric.id, fabric.name)
+        assert "fabric-%d" % fabric.id == fabric.name
 
     def test_create_does_not_override_name(self):
         name = factory.make_name()
         fabric = factory.make_Fabric(name=name)
-        self.assertEqual(name, fabric.name)
+        assert name == fabric.name
 
     def test_nonreserved_name_does_not_raise_exception(self):
         fabric = factory.make_Fabric(name="myfabric-33")
-        self.assertEqual("myfabric-33", fabric.name)
+        assert "myfabric-33" == fabric.name
 
     def test_rejects_names_with_blanks(self):
-        self.assertRaises(
-            ValidationError,
-            factory.make_Fabric,
-            name=factory.make_name("Fabric "),
-        )
+        with pytest.raises(ValidationError):
+            factory.make_Fabric(name=factory.make_name("Fabric "))
 
     def test_rejects_duplicate_names(self):
         fabric1 = factory.make_Fabric()
-        self.assertRaises(
-            ValidationError, factory.make_Fabric, name=fabric1.name
-        )
+        with pytest.raises(ValidationError):
+            factory.make_Fabric(name=fabric1.name)
 
     def test_get_default_fabric_is_idempotent(self):
         default_fabric = Fabric.objects.get_default_fabric()
         default_fabric2 = Fabric.objects.get_default_fabric()
-        self.assertEqual(default_fabric.id, default_fabric2.id)
+        assert default_fabric.id == default_fabric2.id
 
     def test_is_default_detects_default_fabric(self):
         default_fabric = Fabric.objects.get_default_fabric()
-        self.assertTrue(default_fabric.is_default())
+        assert default_fabric.is_default()
 
     def test_is_default_detects_non_default_fabric(self):
         name = factory.make_name("name")
         fabric = factory.make_Fabric(name=name)
-        self.assertFalse(fabric.is_default())
+        assert not fabric.is_default()
 
     def test_get_default_vlan_returns_default_vlan(self):
         fabric = factory.make_Fabric()
@@ -209,12 +188,12 @@ class TestFabric(MAASServerTestCase):
         first_id = sorted(
             VLAN.objects.filter(fabric=fabric).values_list("id", flat=True)
         )[0]
-        self.assertEqual(first_id, default_vlan.id)
+        assert first_id == default_vlan.id
 
     def test_can_delete_nonconnected_fabric(self):
         fabric = factory.make_Fabric()
         fabric.delete()
-        self.assertCountEqual([], Fabric.objects.filter(id=fabric.id))
+        assert not Fabric.objects.filter(id=fabric.id).exists()
 
     def test_cant_delete_fabric_if_connected_to_interfaces(self):
         fabric = factory.make_Fabric()
@@ -223,7 +202,7 @@ class TestFabric(MAASServerTestCase):
         )
         msg = "Can't delete fabric; the following interfaces are still connected: "
 
-        with self.assertRaisesRegex(ValidationError, msg):
+        with pytest.raises(ValidationError, match=msg):
             fabric.delete()
 
     def _assert_delete_interface_query_count_constant(self, make_interfaces):
@@ -232,15 +211,16 @@ class TestFabric(MAASServerTestCase):
             make_interfaces(fabric, interface_count)
 
             def do_delete():
-                self.assertRaises(ValidationError, fabric.delete)
+                with pytest.raises(ValidationError):
+                    fabric.delete()
 
             count, _ = count_queries(do_delete)
             return count
 
         count_2 = attempt_delete(2)
         count_4 = attempt_delete(4)
-        self.assertEqual(3, count_2)
-        self.assertEqual(count_2, count_4)
+        assert 3 == count_2
+        assert count_2 == count_4
 
     def _make_orphan_interfaces(self, fabric, interface_count):
         parent = factory.make_Interface(
@@ -280,11 +260,12 @@ class TestFabric(MAASServerTestCase):
         fabric = factory.make_Fabric()
         parent, interfaces = self._make_orphan_interfaces(fabric, 1)
 
-        error = self.assertRaises(ValidationError, fabric.delete)
+        with pytest.raises(ValidationError) as error:
+            fabric.delete()
 
-        self.assertIn(
-            f"{interfaces[0].name} (vlan) on {parent.get_node().hostname}",
-            error.message,
+        assert (
+            f"{interfaces[0].name} (vlan) on {parent.get_node().hostname}"
+            in error.value.message
         )
 
     def test_delete_interface_listing_matches_get_node_for_orphan(self):
@@ -316,12 +297,13 @@ class TestFabric(MAASServerTestCase):
         Interface.objects.filter(id=interface.id).update(node_config=None)
         orphan = Interface.objects.get(id=interface.id)
 
-        error = self.assertRaises(ValidationError, fabric.delete)
+        with pytest.raises(ValidationError) as error:
+            fabric.delete()
 
-        self.assertEqual("oldest-parent", orphan.get_node().hostname)
-        self.assertEqual(1, error.message.count("bond0 (bond) on "))
-        self.assertIn("bond0 (bond) on oldest-parent", error.message)
-        self.assertNotIn("bond0 (bond) on newer-parent", error.message)
+        assert "oldest-parent" == orphan.get_node().hostname
+        assert 1 == error.value.message.count("bond0 (bond) on ")
+        assert "bond0 (bond) on oldest-parent" in error.value.message
+        assert "bond0 (bond) on newer-parent" not in error.value.message
 
     def test_delete_interface_listing_deduplicates_multi_parent_interface(
         self,
@@ -345,15 +327,15 @@ class TestFabric(MAASServerTestCase):
             vlan=fabric.get_default_vlan(),
         )
 
-        error = self.assertRaises(ValidationError, fabric.delete)
+        with pytest.raises(ValidationError) as error:
+            fabric.delete()
 
-        self.assertEqual(
+        assert (
             "Can't delete fabric; the following interfaces are still "
             f"connected: bond0 (bond) on {node.hostname}, "
             f"eth0 (physical) on {node.hostname}, "
-            f"eth1 (physical) on {node.hostname}",
-            error.message,
-        )
+            f"eth1 (physical) on {node.hostname}"
+        ) == error.value.message
 
     def test_cant_delete_fabric_if_connected_to_subnet(self):
         fabric = factory.make_Fabric()
@@ -363,15 +345,16 @@ class TestFabric(MAASServerTestCase):
         )
         msg = "Can't delete fabric; the following subnets are still present: "
 
-        with self.assertRaisesRegex(ValidationError, msg):
+        with pytest.raises(ValidationError, match=msg):
             fabric.delete()
 
     def test_cant_delete_default_fabric(self):
         default_fabric = Fabric.objects.get_default_fabric()
-        error = self.assertRaises(ValidationError, default_fabric.delete)
-        self.assertEqual(
-            "This fabric is the default fabric, it cannot be deleted.",
-            error.message,
+        with pytest.raises(ValidationError) as error:
+            default_fabric.delete()
+        assert (
+            "This fabric is the default fabric, it cannot be deleted."
+            == error.value.message
         )
 
     def test_can_delete_non_default_fabric(self):
@@ -379,11 +362,11 @@ class TestFabric(MAASServerTestCase):
         fabric = factory.make_Fabric(name=name)
         fabric.vlan_set.all().delete()
         fabric.delete()
-        self.assertCountEqual([], Fabric.objects.filter(id=fabric.id))
+        assert not Fabric.objects.filter(id=fabric.id).exists()
 
     def test_save_accepts_default_vlan_in_fabric(self):
         fabric = factory.make_Fabric()
         vlan = factory.make_VLAN(fabric=fabric)
         fabric.default_vlan = vlan
         # No exception.
-        self.assertIsNone(fabric.save())
+        assert fabric.save() is None

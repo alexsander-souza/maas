@@ -5,6 +5,8 @@
 
 from unittest.mock import call
 
+import pytest
+
 from maasserver.models import BootSource
 import maasserver.models.bootsourceselection as bootsourceselection_module
 from maasserver.models.bootsourceselection import (
@@ -13,17 +15,18 @@ from maasserver.models.bootsourceselection import (
 )
 from maasserver.models.signals import bootsources
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 
 
-class TestBootSourceSelectionLegacy(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test")
+class TestBootSourceSelectionLegacy:
     """Tests for the `BootSourceSelection` model."""
 
-    def setUp(self):
-        super().setUp()
+    @pytest.fixture(autouse=True)
+    def disable_boot_source_cache_signals(self):
         # Disable boot source cache signals.
-        self.addCleanup(bootsources.signals.enable)
         bootsources.signals.disable()
+        yield
+        bootsources.signals.enable()
 
     def test_can_create_selection(self):
         boot_source = BootSource(
@@ -39,53 +42,47 @@ class TestBootSourceSelectionLegacy(MAASServerTestCase):
             labels=["release"],
         )
         selection.save()
-        self.assertEqual(
-            ("ubuntu", "trusty", ["i386"], ["generic"], ["release"]),
-            (
-                selection.os,
-                selection.release,
-                selection.arches,
-                selection.subarches,
-                selection.labels,
-            ),
+        assert ("ubuntu", "trusty", ["i386"], ["generic"], ["release"]) == (
+            selection.os,
+            selection.release,
+            selection.arches,
+            selection.subarches,
+            selection.labels,
         )
 
-    def test_deleting_boot_source_deletes_its_selections(self):
+    def test_deleting_boot_source_deletes_its_selections(self, mocker):
         # BootSource deletion cascade-deletes related
         # BootSourceSelections. This is implicit in Django but it's
         # worth adding a test for it all the same.
-        self.patch(bootsourceselection_module, "stop_workflow")
+        mocker.patch.object(bootsourceselection_module, "stop_workflow")
         boot_source = factory.make_BootSource()
         boot_source_selection = factory.make_BootSourceSelection(
             boot_source=boot_source
         )
         boot_source.delete()
-        self.assertNotIn(
-            boot_source_selection.id,
-            [selection.id for selection in BootSourceSelection.objects.all()],
-        )
+        assert boot_source_selection.id not in [
+            selection.id for selection in BootSourceSelection.objects.all()
+        ]
 
-    def test_delete_deletes_selection(self):
-        self.patch(bootsourceselection_module, "stop_workflow")
+    def test_delete_deletes_selection(self, mocker):
+        mocker.patch.object(bootsourceselection_module, "stop_workflow")
         boot_source_selection_legacy = factory.make_BootSourceSelection()
         boot_source_selection_new = factory.make_BootSourceSelectionNew(
             legacy_selection=boot_source_selection_legacy
         )
 
         boot_source_selection_legacy.delete()
-        self.assertFalse(
-            BootSourceSelection.objects.filter(
-                id=boot_source_selection_legacy.id
-            ).exists()
-        )
-        self.assertFalse(
-            BootSourceSelectionNew.objects.filter(
-                id=boot_source_selection_new.id
-            ).exists()
-        )
+        assert not BootSourceSelection.objects.filter(
+            id=boot_source_selection_legacy.id
+        ).exists()
+        assert not BootSourceSelectionNew.objects.filter(
+            id=boot_source_selection_new.id
+        ).exists()
 
-    def test_delete_stops_temporal_workflows(self):
-        stop_wf_mock = self.patch(bootsourceselection_module, "stop_workflow")
+    def test_delete_stops_temporal_workflows(self, mocker):
+        stop_wf_mock = mocker.patch.object(
+            bootsourceselection_module, "stop_workflow"
+        )
         boot_source_selection_legacy = factory.make_BootSourceSelection(
             arches=["amd64"]
         )
@@ -95,8 +92,10 @@ class TestBootSourceSelectionLegacy(MAASServerTestCase):
         boot_source_selection_legacy.delete()
         stop_wf_mock.assert_called_once_with(f"sync-selection:{selection.id}")
 
-    def test_delete_stops_temporal_workflows_multiple_selections(self):
-        stop_wf_mock = self.patch(bootsourceselection_module, "stop_workflow")
+    def test_delete_stops_temporal_workflows_multiple_selections(self, mocker):
+        stop_wf_mock = mocker.patch.object(
+            bootsourceselection_module, "stop_workflow"
+        )
         boot_source_selection_legacy = factory.make_BootSourceSelection(
             arches=["amd64", "arm64", "s390x"]
         )
@@ -122,8 +121,8 @@ class TestBootSourceSelectionLegacy(MAASServerTestCase):
             release="focal",
             legacy_selection=boot_source_selection_legacy,
         ).all()
-        self.assertEqual(1, len(new_selections))
-        self.assertEqual("amd64", new_selections[0].arch)
+        assert 1 == len(new_selections)
+        assert "amd64" == new_selections[0].arch
 
     def test_create_new_selections_multiple_arch(self):
         boot_source = factory.make_BootSource()
@@ -140,10 +139,10 @@ class TestBootSourceSelectionLegacy(MAASServerTestCase):
             release="focal",
             legacy_selection=boot_source_selection_legacy,
         ).all()
-        self.assertEqual(len(arches), len(new_selections))
+        assert len(arches) == len(new_selections)
         new_selection_arches = [selection.arch for selection in new_selections]
         for arch in arches:
-            self.assertIn(arch, new_selection_arches)
+            assert arch in new_selection_arches
 
     def test_create_new_selections_with_wildcard_arches(self):
         boot_source = factory.make_BootSource()
@@ -167,7 +166,7 @@ class TestBootSourceSelectionLegacy(MAASServerTestCase):
             release="focal",
             legacy_selection=boot_source_selection_legacy,
         ).all()
-        self.assertEqual(len(arches), len(new_selections))
+        assert len(arches) == len(new_selections)
         new_selection_arches = [selection.arch for selection in new_selections]
         for arch in arches:
-            self.assertIn(arch, new_selection_arches)
+            assert arch in new_selection_arches

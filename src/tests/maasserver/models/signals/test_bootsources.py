@@ -5,19 +5,22 @@
 
 from unittest.mock import call
 
+import pytest
 from twisted.internet import reactor
 
 from maasserver import bootsources as bootsources_module
 from maasserver.bootsources import cache_boot_sources
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 
 
-class TestBootSourceSignals(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestBootSourceSignals:
     """Tests for the `BootSource` model's signals."""
 
-    def test_arranges_for_update_on_BootSource_create(self):
-        post_commit_do = self.patch(bootsources_module, "post_commit_do")
+    def test_arranges_for_update_on_BootSource_create(self, mocker):
+        post_commit_do = mocker.patch.object(
+            bootsources_module, "post_commit_do"
+        )
         boot_source1 = factory.make_BootSource(
             keyring_data=factory.make_bytes()
         )
@@ -35,8 +38,10 @@ class TestBootSourceSignals(MAASServerTestCase):
             ]
         )
 
-    def test_arranges_for_update_always_when_empty(self):
-        post_commit_do = self.patch(bootsources_module, "post_commit_do")
+    def test_arranges_for_update_always_when_empty(self, mocker):
+        post_commit_do = mocker.patch.object(
+            bootsources_module, "post_commit_do"
+        )
         boot_source = factory.make_BootSource(
             keyring_data=factory.make_bytes()
         )
@@ -44,11 +49,13 @@ class TestBootSourceSignals(MAASServerTestCase):
             reactor.callLater, 0, cache_boot_sources, boot_source.id
         )
 
-    def test_arranges_for_update_on_BootSource_update(self):
+    def test_arranges_for_update_on_BootSource_update(self, mocker):
         boot_source = factory.make_BootSource(
             keyring_data=factory.make_bytes()
         )
-        post_commit_do = self.patch(bootsources_module, "post_commit_do")
+        post_commit_do = mocker.patch.object(
+            bootsources_module, "post_commit_do"
+        )
         boot_source.keyring_data = factory.make_bytes()
         boot_source.save()
         post_commit_do.assert_called_once_with(

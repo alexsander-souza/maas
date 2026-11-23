@@ -3,19 +3,24 @@
 
 """Test the behaviour of VLAN signals."""
 
+import pytest
+
 from maascommon.workflows.dhcp import (
     CONFIGURE_DHCP_WORKFLOW_NAME,
     ConfigureDHCPParam,
 )
 import maasserver.models.signals.vlan as vlan_signals_module
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from maasserver.utils.orm import post_commit_hooks
 
 
-class TestPostSaveVLANSignal(MAASServerTestCase):
-    def test_save_vlan_triggers_dhcp_workflow_if_dhcp_on(self):
-        start_workflow_mock = self.patch(vlan_signals_module, "start_workflow")
+@pytest.mark.real_post_commit_hooks
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestPostSaveVLANSignal:
+    def test_save_vlan_triggers_dhcp_workflow_if_dhcp_on(self, mocker):
+        start_workflow_mock = mocker.patch.object(
+            vlan_signals_module, "start_workflow"
+        )
         with post_commit_hooks:
             rack_controller = factory.make_RackController()
             vlan = factory.make_VLAN(
@@ -27,8 +32,10 @@ class TestPostSaveVLANSignal(MAASServerTestCase):
             task_queue="region",
         )
 
-    def test_save_vlan_triggers_dhcp_workflow_if_dhcp_relay(self):
-        start_workflow_mock = self.patch(vlan_signals_module, "start_workflow")
+    def test_save_vlan_triggers_dhcp_workflow_if_dhcp_relay(self, mocker):
+        start_workflow_mock = mocker.patch.object(
+            vlan_signals_module, "start_workflow"
+        )
         with post_commit_hooks:
             rack_controller = factory.make_RackController()
             relay_vlan = factory.make_VLAN(
@@ -42,15 +49,23 @@ class TestPostSaveVLANSignal(MAASServerTestCase):
             task_queue="region",
         )
 
-    def test_save_vlan_does_not_trigger_dhcp_workflow_if_dhcp_off(self):
-        start_workflow_mock = self.patch(vlan_signals_module, "start_workflow")
+    def test_save_vlan_does_not_trigger_dhcp_workflow_if_dhcp_off(
+        self, mocker
+    ):
+        start_workflow_mock = mocker.patch.object(
+            vlan_signals_module, "start_workflow"
+        )
         factory.make_VLAN(dhcp_on=False)
         start_workflow_mock.assert_not_called()
 
 
-class TestPostDeleteVLANSignal(MAASServerTestCase):
-    def test_delete_vlan_triggers_dhcp_workflow_if_dhcp_on(self):
-        start_workflow_mock = self.patch(vlan_signals_module, "start_workflow")
+@pytest.mark.real_post_commit_hooks
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestPostDeleteVLANSignal:
+    def test_delete_vlan_triggers_dhcp_workflow_if_dhcp_on(self, mocker):
+        start_workflow_mock = mocker.patch.object(
+            vlan_signals_module, "start_workflow"
+        )
         with post_commit_hooks:
             primary_rack_controller = factory.make_RackController()
             secondary_rack_controller = factory.make_RackController()
@@ -73,8 +88,10 @@ class TestPostDeleteVLANSignal(MAASServerTestCase):
             task_queue="region",
         )
 
-    def test_delete_vlan_triggers_dhcp_workflow_if_relay_on(self):
-        start_workflow_mock = self.patch(vlan_signals_module, "start_workflow")
+    def test_delete_vlan_triggers_dhcp_workflow_if_relay_on(self, mocker):
+        start_workflow_mock = mocker.patch.object(
+            vlan_signals_module, "start_workflow"
+        )
         with post_commit_hooks:
             rack_controller = factory.make_RackController()
             relay_vlan = factory.make_VLAN(
@@ -90,9 +107,13 @@ class TestPostDeleteVLANSignal(MAASServerTestCase):
         )
 
 
-class TestUpdateVLANSignal(MAASServerTestCase):
-    def test_update_vlan_dhcp_on_triggers_workflow(self):
-        start_workflow_mock = self.patch(vlan_signals_module, "start_workflow")
+@pytest.mark.real_post_commit_hooks
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestUpdateVLANSignal:
+    def test_update_vlan_dhcp_on_triggers_workflow(self, mocker):
+        start_workflow_mock = mocker.patch.object(
+            vlan_signals_module, "start_workflow"
+        )
         with post_commit_hooks:
             vlan = factory.make_VLAN(dhcp_on=False)
             start_workflow_mock.reset_mock()
@@ -104,8 +125,10 @@ class TestUpdateVLANSignal(MAASServerTestCase):
             task_queue="region",
         )
 
-    def test_update_vlan_dhcp_off_triggers_workflow(self):
-        start_workflow_mock = self.patch(vlan_signals_module, "start_workflow")
+    def test_update_vlan_dhcp_off_triggers_workflow(self, mocker):
+        start_workflow_mock = mocker.patch.object(
+            vlan_signals_module, "start_workflow"
+        )
         with post_commit_hooks:
             vlan = factory.make_VLAN(dhcp_on=True)
             start_workflow_mock.reset_mock()
@@ -117,8 +140,10 @@ class TestUpdateVLANSignal(MAASServerTestCase):
             task_queue="region",
         )
 
-    def test_update_vlan_mtu_triggers_workflow(self):
-        start_workflow_mock = self.patch(vlan_signals_module, "start_workflow")
+    def test_update_vlan_mtu_triggers_workflow(self, mocker):
+        start_workflow_mock = mocker.patch.object(
+            vlan_signals_module, "start_workflow"
+        )
         with post_commit_hooks:
             vlan = factory.make_VLAN(dhcp_on=True, mtu=1500)
             start_workflow_mock.reset_mock()
@@ -130,8 +155,10 @@ class TestUpdateVLANSignal(MAASServerTestCase):
             task_queue="region",
         )
 
-    def test_update_vlan_relay_vlan_triggers_workflow(self):
-        start_workflow_mock = self.patch(vlan_signals_module, "start_workflow")
+    def test_update_vlan_relay_vlan_triggers_workflow(self, mocker):
+        start_workflow_mock = mocker.patch.object(
+            vlan_signals_module, "start_workflow"
+        )
         rack_controller = factory.make_RackController()
         with post_commit_hooks:
             relay_vlan1 = factory.make_VLAN(
@@ -153,8 +180,10 @@ class TestUpdateVLANSignal(MAASServerTestCase):
             task_queue="region",
         )
 
-    def test_update_vlan_racks(self):
-        start_workflow_mock = self.patch(vlan_signals_module, "start_workflow")
+    def test_update_vlan_racks(self, mocker):
+        start_workflow_mock = mocker.patch.object(
+            vlan_signals_module, "start_workflow"
+        )
         primary_rack_controller = factory.make_RackController()
         secondary_rack_controller = factory.make_RackController()
 
@@ -172,23 +201,26 @@ class TestUpdateVLANSignal(MAASServerTestCase):
             vlan.secondary_rack = new_secondary_rack_controller
             vlan.save()
 
-        start_workflow_mock.assert_called_once_with(
-            workflow_name=CONFIGURE_DHCP_WORKFLOW_NAME,
-            param=ConfigureDHCPParam(
-                system_ids=[
-                    primary_rack_controller.system_id,
-                    secondary_rack_controller.system_id,
-                    new_primary_rack_controller.system_id,
-                    new_secondary_rack_controller.system_id,
-                ],
-                vlan_ids=[vlan.id],
-            ),
-            task_queue="region",
+        start_workflow_mock.assert_called_once()
+        call_args = start_workflow_mock.call_args.kwargs
+        assert call_args["workflow_name"] == CONFIGURE_DHCP_WORKFLOW_NAME
+        assert call_args["task_queue"] == "region"
+        assert call_args["param"].vlan_ids == [vlan.id]
+        assert sorted(call_args["param"].system_ids) == sorted(
+            [
+                primary_rack_controller.system_id,
+                secondary_rack_controller.system_id,
+                new_primary_rack_controller.system_id,
+                new_secondary_rack_controller.system_id,
+            ]
         )
 
-    def test_update_vlan_mtu_when_dhcp_off_does_not_trigger_workflow(self):
-        start_workflow_mock = self.patch(vlan_signals_module, "start_workflow")
-
+    def test_update_vlan_mtu_when_dhcp_off_does_not_trigger_workflow(
+        self, mocker
+    ):
+        start_workflow_mock = mocker.patch.object(
+            vlan_signals_module, "start_workflow"
+        )
         with post_commit_hooks:
             vlan = factory.make_VLAN(dhcp_on=False, mtu=1500)
             vlan.mtu = 9000

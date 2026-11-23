@@ -9,17 +9,14 @@ from unittest.mock import ANY, Mock
 import bson
 from django.conf import settings
 from django.urls import reverse
+import pytest
 from twisted.internet.defer import succeed
 
 from maasserver.enum import NODE_STATUS, NODE_STATUS_CHOICES, NODE_TYPE
 from maasserver.models import Config, Node, NodeKey
 from maasserver.models import node as node_module
 from maasserver.models.scriptset import get_status_from_qs
-from maasserver.testing.api import APITestCase
-from maasserver.testing.architecture import make_usable_architecture
 from maasserver.testing.factory import factory
-from maasserver.testing.osystems import make_usable_osystem
-from maasserver.testing.testcase import MAASServerTestCase
 from maasserver.testing.testclient import MAASSensibleOAuthClient
 from maasserver.utils import osystems
 from maasserver.utils.converters import json_load_bytes
@@ -37,50 +34,81 @@ from provisioningserver.refresh.node_info_scripts import (
     LLDP_OUTPUT_NAME,
     LSHW_OUTPUT_NAME,
 )
-from tests.maasserver.auth.test_auth import OpenFGAMockMixin
+from tests.maasserver.auth.test_auth import PytestOpenFGAMockMixin
 
 
-class TestNodeAnonAPI(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestNodeAnonAPI:
     def test_anonymous_user_cannot_access(self):
         client = MAASSensibleOAuthClient()
         response = client.get(reverse("nodes_handler"))
-        self.assertEqual(http.client.BAD_REQUEST, response.status_code)
-        self.assertEqual(
-            "Unrecognised signature: method=GET op=None",
-            response.content.decode(),
+        assert response.status_code == http.client.BAD_REQUEST
+        assert response.content.decode() == (
+            "Unrecognised signature: method=GET op=None"
         )
 
     def test_node_init_user_cannot_access(self):
         token = NodeKey.objects.get_token_for_node(factory.make_Node())
         client = MAASSensibleOAuthClient(get_node_init_user(), token)
         response = client.get(reverse("nodes_handler"))
-        self.assertEqual(http.client.FORBIDDEN, response.status_code)
+        assert response.status_code == http.client.FORBIDDEN
 
 
-class TestNodesAPILoggedIn(APITestCase.ForUserAndAdmin):
-    def setUp(self):
-        super().setUp()
-        self.patch(node_module, "wait_for_power_command")
+@pytest.mark.parametrize(
+    "user_fixture,client_fixture",
+    [
+        pytest.param("maas_user", "api_client", id="user=user,client=oauth"),
+        pytest.param(
+            "admin", "admin_api_client", id="user=admin,client=oauth"
+        ),
+    ],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestNodesAPILoggedIn:
+    @pytest.fixture(autouse=True)
+    def _setup(self, user_fixture, client_fixture, request, mocker):
+        self.user = request.getfixturevalue(user_fixture)
+        self.client = request.getfixturevalue(client_fixture)
+        mocker.patch.object(node_module, "wait_for_power_command", create=True)
 
     def test_nodes_GET_logged_in(self):
         node = factory.make_Node()
         response = self.client.get(reverse("nodes_handler"))
         parsed_result = json_load_bytes(response.content)
 
-        self.assertEqual(http.client.OK, response.status_code)
-        self.assertEqual(
-            [node.system_id],
-            [parsed_node.get("system_id") for parsed_node in parsed_result],
-        )
+        assert http.client.OK == response.status_code
+        assert [node.system_id] == [
+            parsed_node.get("system_id") for parsed_node in parsed_result
+        ]
 
 
-class TestNodeAPI(APITestCase.ForUser):
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user=user,client=oauth", id="user=user,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestNodeAPI:
     """Tests for /api/2.0/nodes/<node>/."""
 
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maas_user, api_client):
+        self.user = maas_user
+        self.client = api_client
+
+    @staticmethod
+    def _make_usable_architecture(mocker):
+        from maasserver import forms
+        from maasserver.testing.architecture import make_arch
+
+        architecture = make_arch()
+        mocker.patch.object(
+            forms, "list_all_usable_architectures", return_value=[architecture]
+        )
+        return architecture
+
     def test_handler_path(self):
-        self.assertEqual(
-            "/MAAS/api/2.0/nodes/node-name/",
-            reverse("node_handler", args=["node-name"]),
+        assert "/MAAS/api/2.0/nodes/node-name/" == reverse(
+            "node_handler", args=["node-name"]
         )
 
     @staticmethod
@@ -95,10 +123,9 @@ class TestNodeAPI(APITestCase.ForUser):
 
         response = self.client.get(url)
 
-        self.assertEqual(http.client.NOT_FOUND, response.status_code)
-        self.assertEqual(
-            "No Node matches the given query.",
-            response.content.decode(settings.DEFAULT_CHARSET),
+        assert http.client.NOT_FOUND == response.status_code
+        assert "No Node matches the given query." == response.content.decode(
+            settings.DEFAULT_CHARSET
         )
 
     def test_GET_returns_404_if_node_name_contains_invalid_characters(self):
@@ -108,78 +135,78 @@ class TestNodeAPI(APITestCase.ForUser):
 
         response = self.client.get(url)
 
-        self.assertEqual(http.client.NOT_FOUND, response.status_code)
-        self.assertEqual(
-            "No Node matches the given query.",
-            response.content.decode(settings.DEFAULT_CHARSET),
+        assert http.client.NOT_FOUND == response.status_code
+        assert "No Node matches the given query." == response.content.decode(
+            settings.DEFAULT_CHARSET
         )
 
-    def test_resource_uri_points_back_at_machine(self):
-        self.become_admin()
+    def test_resource_uri_points_back_at_machine(
+        self, admin, admin_api_client, mocker
+    ):
         # When a Machine is returned by the API, the field 'resource_uri'
         # provides the URI for this Machine.
         machine = factory.make_Node(
             hostname="diane",
             owner=self.user,
-            architecture=make_usable_architecture(self),
+            architecture=self._make_usable_architecture(mocker),
         )
-        response = self.client.get(self.get_node_uri(machine))
+        response = admin_api_client.get(self.get_node_uri(machine))
         parsed_result = json_load_bytes(response.content)
 
-        self.assertEqual(http.client.OK, response.status_code)
-        self.assertEqual(
-            reverse("machine_handler", args=[parsed_result["system_id"]]),
-            parsed_result["resource_uri"],
+        assert http.client.OK == response.status_code
+        assert (
+            reverse("machine_handler", args=[parsed_result["system_id"]])
+            == parsed_result["resource_uri"]
         )
 
-    def test_resource_uri_points_back_at_device(self):
-        self.become_admin()
+    def test_resource_uri_points_back_at_device(self, admin, admin_api_client):
         # When a Device is returned by the API, the field 'resource_uri'
         # provides the URI for this Device.
         device = factory.make_Device(hostname="diane", owner=self.user)
-        response = self.client.get(self.get_node_uri(device))
+        response = admin_api_client.get(self.get_node_uri(device))
         parsed_result = json_load_bytes(response.content)
 
-        self.assertEqual(http.client.OK, response.status_code)
-        self.assertEqual(
-            reverse("device_handler", args=[parsed_result["system_id"]]),
-            parsed_result["resource_uri"],
+        assert http.client.OK == response.status_code
+        assert (
+            reverse("device_handler", args=[parsed_result["system_id"]])
+            == parsed_result["resource_uri"]
         )
 
-    def test_resource_uri_points_back_at_rack_controller(self):
-        self.become_admin()
+    def test_resource_uri_points_back_at_rack_controller(
+        self, admin, admin_api_client
+    ):
         # When a RackController is returned by the API, the field
         # 'resource_uri' provides the URI for this RackController.
         rack = factory.make_RackController(hostname="diane", owner=self.user)
-        response = self.client.get(self.get_node_uri(rack))
+        response = admin_api_client.get(self.get_node_uri(rack))
         parsed_result = json_load_bytes(response.content)
 
-        self.assertEqual(http.client.OK, response.status_code)
-        self.assertEqual(
+        assert http.client.OK == response.status_code
+        assert (
             reverse(
                 "rackcontroller_handler", args=[parsed_result["system_id"]]
-            ),
-            parsed_result["resource_uri"],
+            )
+            == parsed_result["resource_uri"]
         )
 
-    def test_resource_uri_points_back_at_region_controller(self):
-        self.become_admin()
+    def test_resource_uri_points_back_at_region_controller(
+        self, admin, admin_api_client
+    ):
         # When a RegionController is returned by the API, the field
         # 'resource_uri' provides the URI for this RegionController.
         rack = factory.make_RegionController(hostname="diane", owner=self.user)
-        response = self.client.get(self.get_node_uri(rack))
+        response = admin_api_client.get(self.get_node_uri(rack))
         parsed_result = json_load_bytes(response.content)
 
-        self.assertEqual(http.client.OK, response.status_code)
-        self.assertEqual(
+        assert http.client.OK == response.status_code
+        assert (
             reverse(
                 "regioncontroller_handler", args=[parsed_result["system_id"]]
-            ),
-            parsed_result["resource_uri"],
+            )
+            == parsed_result["resource_uri"]
         )
 
-    def test_health_status(self):
-        self.become_admin()
+    def test_health_status(self, admin, admin_api_client):
         machine = factory.make_Machine(owner=self.user)
         commissioning_script_set = factory.make_ScriptSet(
             result_type=RESULT_TYPE.COMMISSIONING, node=machine
@@ -241,7 +268,7 @@ class TestNodeAPI(APITestCase.ForUser):
         )
         testing_status = get_status_from_qs(testing_script_results)
 
-        response = self.client.get(self.get_node_uri(machine))
+        response = admin_api_client.get(self.get_node_uri(machine))
         parsed_result = json_load_bytes(response.content)
 
         def status(s):
@@ -250,66 +277,63 @@ class TestNodeAPI(APITestCase.ForUser):
         def status_name(s):
             return SCRIPT_STATUS_CHOICES[status(s)][1]
 
-        self.assertEqual(response.status_code, http.client.OK)
-        self.assertEqual(
-            status(commissioning_script_result),
-            parsed_result["commissioning_status"],
+        assert http.client.OK == response.status_code
+        assert (
+            status(commissioning_script_result)
+            == parsed_result["commissioning_status"]
         )
-        self.assertEqual(
-            status_name(commissioning_script_result),
-            parsed_result["commissioning_status_name"],
+        assert (
+            status_name(commissioning_script_result)
+            == parsed_result["commissioning_status_name"]
         )
-        self.assertEqual(testing_status, parsed_result["testing_status"])
-        self.assertEqual(
-            SCRIPT_STATUS_CHOICES[testing_status][1],
-            parsed_result["testing_status_name"],
+        assert testing_status == parsed_result["testing_status"]
+        assert (
+            SCRIPT_STATUS_CHOICES[testing_status][1]
+            == parsed_result["testing_status_name"]
         )
-        self.assertEqual(
-            status(cpu_script_result), parsed_result["cpu_test_status"]
+        assert status(cpu_script_result) == parsed_result["cpu_test_status"]
+        assert (
+            status_name(cpu_script_result)
+            == parsed_result["cpu_test_status_name"]
         )
-        self.assertEqual(
-            status_name(cpu_script_result),
-            parsed_result["cpu_test_status_name"],
+        assert (
+            status(memory_script_result) == parsed_result["memory_test_status"]
         )
-        self.assertEqual(
-            status(memory_script_result), parsed_result["memory_test_status"]
+        assert (
+            status_name(memory_script_result)
+            == parsed_result["memory_test_status_name"]
         )
-        self.assertEqual(
-            status_name(memory_script_result),
-            parsed_result["memory_test_status_name"],
+        assert (
+            status(network_script_result)
+            == parsed_result["network_test_status"]
         )
-        self.assertEqual(
-            status(network_script_result), parsed_result["network_test_status"]
+        assert (
+            status_name(network_script_result)
+            == parsed_result["network_test_status_name"]
         )
-        self.assertEqual(
-            status_name(network_script_result),
-            parsed_result["network_test_status_name"],
+        assert (
+            status(storage_script_result)
+            == parsed_result["storage_test_status"]
         )
-        self.assertEqual(
-            status(storage_script_result), parsed_result["storage_test_status"]
+        assert (
+            status_name(storage_script_result)
+            == parsed_result["storage_test_status_name"]
         )
-        self.assertEqual(
-            status_name(storage_script_result),
-            parsed_result["storage_test_status_name"],
+        assert status(node_script_result) == parsed_result["other_test_status"]
+        assert (
+            status_name(node_script_result)
+            == parsed_result["other_test_status_name"]
         )
-        self.assertEqual(
-            status(node_script_result), parsed_result["other_test_status"]
+        assert (
+            status(interface_script_result)
+            == parsed_result["interface_test_status"]
         )
-        self.assertEqual(
-            status_name(node_script_result),
-            parsed_result["other_test_status_name"],
-        )
-        self.assertEqual(
-            status(interface_script_result),
-            parsed_result["interface_test_status"],
-        )
-        self.assertEqual(
-            status_name(interface_script_result),
-            parsed_result["interface_test_status_name"],
+        assert (
+            status_name(interface_script_result)
+            == parsed_result["interface_test_status_name"]
         )
 
-    def test_hardware_info(self):
-        self.become_admin()
+    def test_hardware_info(self, admin, admin_api_client):
         machine = factory.make_Machine(owner=self.user)
         system_vendor = factory.make_NodeMetadata(machine, "system_vendor")
         system_product = factory.make_NodeMetadata(machine, "system_product")
@@ -345,57 +369,53 @@ class TestNodeAPI(APITestCase.ForUser):
         chassis_version = factory.make_NodeMetadata(machine, "chassis_version")
         factory.make_NodeMetadata(machine)
 
-        response = self.client.get(self.get_node_uri(machine))
+        response = admin_api_client.get(self.get_node_uri(machine))
         parsed_result = json_load_bytes(response.content)
 
-        self.assertEqual(response.status_code, http.client.OK)
-        self.assertEqual(
-            {
-                "system_vendor": system_vendor.value,
-                "system_product": system_product.value,
-                "system_family": system_family.value,
-                "system_version": system_version.value,
-                "system_sku": system_sku.value,
-                "system_serial": system_serial.value,
-                "cpu_model": cpu_model.value,
-                "mainboard_vendor": mainboard_vendor.value,
-                "mainboard_product": mainboard_product.value,
-                "mainboard_serial": mainboard_serial.value,
-                "mainboard_version": mainboard_version.value,
-                "mainboard_firmware_vendor": mainboard_firmware_vendor.value,
-                "mainboard_firmware_version": mainboard_firmware_version.value,
-                "mainboard_firmware_date": mainboard_firmware_date.value,
-                "chassis_vendor": chassis_vendor.value,
-                "chassis_type": chassis_type.value,
-                "chassis_serial": chassis_serial.value,
-                "chassis_version": chassis_version.value,
-            },
-            parsed_result["hardware_info"],
-        )
+        assert http.client.OK == response.status_code
+        assert {
+            "system_vendor": system_vendor.value,
+            "system_product": system_product.value,
+            "system_family": system_family.value,
+            "system_version": system_version.value,
+            "system_sku": system_sku.value,
+            "system_serial": system_serial.value,
+            "cpu_model": cpu_model.value,
+            "mainboard_vendor": mainboard_vendor.value,
+            "mainboard_product": mainboard_product.value,
+            "mainboard_serial": mainboard_serial.value,
+            "mainboard_version": mainboard_version.value,
+            "mainboard_firmware_vendor": mainboard_firmware_vendor.value,
+            "mainboard_firmware_version": mainboard_firmware_version.value,
+            "mainboard_firmware_date": mainboard_firmware_date.value,
+            "chassis_vendor": chassis_vendor.value,
+            "chassis_type": chassis_type.value,
+            "chassis_serial": chassis_serial.value,
+            "chassis_version": chassis_version.value,
+        } == parsed_result["hardware_info"]
 
-    def test_DELETE_deletes_node(self):
+    def test_DELETE_deletes_node(self, admin, admin_api_client):
         # The api allows to delete a Node.
-        self.become_admin()
         node = factory.make_Node(owner=self.user)
         system_id = node.system_id
-        response = self.client.delete(self.get_node_uri(node))
+        response = admin_api_client.delete(self.get_node_uri(node))
 
-        self.assertEqual(204, response.status_code)
-        self.assertCountEqual([], Node.objects.filter(system_id=system_id))
+        assert 204 == response.status_code
+        assert [] == list(Node.objects.filter(system_id=system_id))
 
     def test_DELETE_deletes_node_fails_if_not_admin(self):
         # Only superusers can delete nodes.
         node = factory.make_Node(owner=self.user)
         response = self.client.delete(self.get_node_uri(node))
 
-        self.assertEqual(http.client.FORBIDDEN, response.status_code)
+        assert http.client.FORBIDDEN == response.status_code
 
     def test_DELETE_forbidden_without_edit_permission(self):
         # A user without the edit permission cannot delete a Node.
         node = factory.make_Node()
         response = self.client.delete(self.get_node_uri(node))
 
-        self.assertEqual(http.client.FORBIDDEN, response.status_code)
+        assert http.client.FORBIDDEN == response.status_code
 
     def test_DELETE_refuses_to_delete_invisible_node(self):
         # The request to delete a single node is denied if the node isn't
@@ -406,7 +426,7 @@ class TestNodeAPI(APITestCase.ForUser):
 
         response = self.client.delete(self.get_node_uri(other_node))
 
-        self.assertEqual(http.client.FORBIDDEN, response.status_code)
+        assert http.client.FORBIDDEN == response.status_code
 
     def test_DELETE_refuses_to_delete_nonexistent_node(self):
         # When deleting a Node, the api returns a 'Not Found' (404) error
@@ -414,28 +434,41 @@ class TestNodeAPI(APITestCase.ForUser):
         url = reverse("node_handler", args=["invalid-uuid"])
         response = self.client.delete(url)
 
-        self.assertEqual(http.client.NOT_FOUND, response.status_code)
+        assert http.client.NOT_FOUND == response.status_code
 
     def test_CREATE_disabled(self):
         response = self.client.post(
             reverse("node_handler", args=["invalid-uuid"]), {}
         )
-        self.assertEqual(http.client.METHOD_NOT_ALLOWED, response.status_code)
+        assert http.client.METHOD_NOT_ALLOWED == response.status_code
 
-    def test_UPDATE_disabled(self):
+    def test_UPDATE_disabled(self, mocker):
         machine = factory.make_Node(
-            owner=self.user, architecture=make_usable_architecture(self)
+            owner=self.user,
+            architecture=self._make_usable_architecture(mocker),
         )
         response = self.client.put(
             self.get_node_uri(machine), {"hostname": "francis"}
         )
-        self.assertEqual(http.client.METHOD_NOT_ALLOWED, response.status_code)
+        assert http.client.METHOD_NOT_ALLOWED == response.status_code
 
 
-class TestGetDetails(APITestCase.ForUser):
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user=user,client=oauth", id="user=user,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestGetDetails:
     """Tests for /api/2.0/nodes/<node>/?op=details."""
 
-    def make_script_result(self, node, script_result=0, script_name=None):
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maas_user, api_client):
+        self.user = maas_user
+        self.client = api_client
+
+    def make_script_result(
+        self, factory, node, script_result=0, script_name=None
+    ):
         script_set = node.current_commissioning_script_set
         if script_set is None:
             script_set = factory.make_ScriptSet(
@@ -454,245 +487,308 @@ class TestGetDetails(APITestCase.ForUser):
             script_name=script_name,
         )
 
-    def make_lshw_result(self, node, script_result=0):
-        return self.make_script_result(node, script_result, LSHW_OUTPUT_NAME)
+    def make_lshw_result(self, factory, node, script_result=0):
+        return self.make_script_result(
+            factory, node, script_result, LSHW_OUTPUT_NAME
+        )
 
-    def make_lldp_result(self, node, script_result=0):
-        return self.make_script_result(node, script_result, LLDP_OUTPUT_NAME)
+    def make_lldp_result(self, factory, node, script_result=0):
+        return self.make_script_result(
+            factory, node, script_result, LLDP_OUTPUT_NAME
+        )
 
-    def get_details(self, node):
+    def get_details(self, node, api_client):
         url = reverse("node_handler", args=[node.system_id])
-        response = self.client.get(url, {"op": "details"})
-        self.assertEqual(http.client.OK, response.status_code)
-        self.assertEqual("application/bson", response["content-type"])
+        response = api_client.get(url, {"op": "details"})
+        assert http.client.OK == response.status_code
+        assert "application/bson" == response["content-type"]
         return bson.BSON(response.content).decode()
 
-    def test_GET_returns_empty_details_when_there_are_none(self):
+    def test_GET_returns_empty_details_when_there_are_none(
+        self, maas_user, api_client, factory
+    ):
         node = factory.make_Node()
-        self.assertDictEqual(
-            {"lshw": None, "lldp": None}, self.get_details(node)
+        assert {"lshw": None, "lldp": None} == self.get_details(
+            node, api_client
         )
 
-    def test_GET_returns_all_details(self):
+    def test_GET_returns_all_details(self, maas_user, api_client, factory):
         node = factory.make_Node()
-        lshw_result = self.make_lshw_result(node)
-        lldp_result = self.make_lldp_result(node)
-        self.assertDictEqual(
-            {"lshw": lshw_result.stdout, "lldp": lldp_result.stdout},
-            self.get_details(node),
+        lshw_result = self.make_lshw_result(factory, node)
+        lldp_result = self.make_lldp_result(factory, node)
+        assert {
+            "lshw": lshw_result.stdout,
+            "lldp": lldp_result.stdout,
+        } == self.get_details(node, api_client)
+
+    def test_GET_returns_only_those_details_that_exist(
+        self, maas_user, api_client, factory
+    ):
+        node = factory.make_Node()
+        lshw_result = self.make_lshw_result(factory, node)
+        assert {"lshw": lshw_result.stdout, "lldp": None} == self.get_details(
+            node, api_client
         )
 
-    def test_GET_returns_only_those_details_that_exist(self):
-        node = factory.make_Node()
-        lshw_result = self.make_lshw_result(node)
-        self.assertDictEqual(
-            {"lshw": lshw_result.stdout, "lldp": None}, self.get_details(node)
-        )
-
-    def test_GET_returns_not_found_when_node_does_not_exist(self):
+    def test_GET_returns_not_found_when_node_does_not_exist(
+        self, maas_user, api_client
+    ):
         url = reverse("node_handler", args=["does-not-exist"])
-        response = self.client.get(url, {"op": "details"})
-        self.assertEqual(http.client.NOT_FOUND, response.status_code)
+        response = api_client.get(url, {"op": "details"})
+        assert http.client.NOT_FOUND == response.status_code
 
-    def test_GET_returns_all_details_for_administrator(self):
-        self.become_admin()
+    def test_GET_returns_all_details_for_administrator(
+        self, admin, admin_api_client, factory
+    ):
         node = factory.make_Node(owner=factory.make_User())
-        lshw_result = self.make_lshw_result(node)
-        lldp_result = self.make_lldp_result(node)
-        self.assertDictEqual(
-            {"lshw": lshw_result.stdout, "lldp": lldp_result.stdout},
-            self.get_details(node),
-        )
+        lshw_result = self.make_lshw_result(factory, node)
+        lldp_result = self.make_lldp_result(factory, node)
+        assert {
+            "lshw": lshw_result.stdout,
+            "lldp": lldp_result.stdout,
+        } == self.get_details(node, admin_api_client)
 
-    def test_GET_returns_forbidden_for_non_owned_nodes(self):
+    def test_GET_returns_forbidden_for_non_owned_nodes(
+        self, maas_user, api_client, factory
+    ):
         node = factory.make_Node(owner=factory.make_User())
         url = reverse("node_handler", args=[node.system_id])
-        response = self.client.get(url, {"op": "details"})
-        self.assertEqual(http.client.FORBIDDEN, response.status_code)
+        response = api_client.get(url, {"op": "details"})
+        assert http.client.FORBIDDEN == response.status_code
 
 
-class TestPowerParameters(APITestCase.ForUser):
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user=user,client=oauth", id="user=user,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestPowerParameters:
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maas_user, api_client):
+        self.user = maas_user
+        self.client = api_client
+
     def get_node_uri(self, node):
         """Get the API URI for `node`."""
         return reverse("node_handler", args=[node.system_id])
 
-    def test_get_power_parameters_superuser(self):
-        self.become_admin()
+    def test_get_power_parameters_superuser(self, admin, admin_api_client):
         power_parameters = {factory.make_string(): factory.make_string()}
         node = factory.make_Node(power_parameters=power_parameters)
-        response = self.client.get(
+        response = admin_api_client.get(
             self.get_node_uri(node), {"op": "power_parameters"}
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed_params = json_load_bytes(response.content)
-        self.assertEqual(node.get_power_parameters(), parsed_params)
+        assert node.get_power_parameters() == parsed_params
 
-    def test_get_power_parameters_user(self):
+    def test_get_power_parameters_user(self, maas_user, api_client):
         power_parameters = {factory.make_string(): factory.make_string()}
         node = factory.make_Node(power_parameters=power_parameters)
-        response = self.client.get(
+        response = api_client.get(
             self.get_node_uri(node), {"op": "power_parameters"}
         )
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content
 
-    def test_get_power_parameters_empty(self):
-        self.become_admin()
+    def test_get_power_parameters_empty(self, admin, admin_api_client):
         node = factory.make_Node()
-        response = self.client.get(
+        response = admin_api_client.get(
             self.get_node_uri(node), {"op": "power_parameters"}
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed_params = json_load_bytes(response.content)
-        self.assertEqual(node.get_power_parameters(), parsed_params)
+        assert node.get_power_parameters() == parsed_params
 
-    def test_get_power_parameters_view_lock(self):
-        self.become_admin()
+    def test_get_power_parameters_view_lock(self, admin, admin_api_client):
         power_parameters = {factory.make_string(): factory.make_string()}
         node = factory.make_Node(
-            owner=self.user, power_parameters=power_parameters, locked=True
+            owner=admin, power_parameters=power_parameters, locked=True
         )
-        response = self.client.get(
+        response = admin_api_client.get(
             self.get_node_uri(node), {"op": "power_parameters"}
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed_params = json_load_bytes(response.content)
-        self.assertEqual(node.get_power_parameters(), parsed_params)
+        assert node.get_power_parameters() == parsed_params
 
 
-class TestSetWorkloadAnnotations(APITestCase.ForUser):
-    scenarios = (
-        (
-            "machine",
-            {"handler": "machine_handler", "maker": factory.make_Node},
+@pytest.mark.parametrize(
+    "handler,maker",
+    [
+        pytest.param(
+            "machine_handler",
+            factory.make_Node,
+            id="user=user,client=oauth,machine",
         ),
-        (
-            "device",
-            {"handler": "device_handler", "maker": factory.make_Device},
+        pytest.param(
+            "device_handler",
+            factory.make_Device,
+            id="user=user,client=oauth,device",
         ),
-    )
-
-    def get_node_uri(self, node):
+    ],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestSetWorkloadAnnotations:
+    def get_node_uri(self, handler, node):
         """Get the API URI for `node`."""
-        return reverse(self.handler, args=[node.system_id])
+        return reverse(handler, args=[node.system_id])
 
-    def test_must_be_owned(self):
-        node = self.maker(status=NODE_STATUS.READY)
+    def test_must_be_owned(self, maker, handler, maas_user, api_client):
+        node = maker(status=NODE_STATUS.READY)
         params = {
             factory.make_name("key"): factory.make_name("value")
             for _ in range(3)
         }
         params["op"] = "set_workload_annotations"
-        response = self.client.post(self.get_node_uri(node), params)
+        response = api_client.post(self.get_node_uri(handler, node), params)
 
         if node.node_type == NODE_TYPE.MACHINE:
-            self.assertEqual(http.client.CONFLICT, response.status_code)
+            assert http.client.CONFLICT == response.status_code
         else:
-            self.assertEqual(http.client.FORBIDDEN, response.status_code)
+            assert http.client.FORBIDDEN == response.status_code
 
-    def test_adds_data(self):
-        node = self.maker(status=NODE_STATUS.ALLOCATED, owner=self.user)
+    def test_adds_data(self, maker, handler, maas_user, api_client):
+        node = maker(status=NODE_STATUS.ALLOCATED, owner=maas_user)
         annotations = {
             factory.make_name("key"): factory.make_name("value")
             for _ in range(3)
         }
         params = annotations.copy()
         params["op"] = "set_workload_annotations"
-        response = self.client.post(self.get_node_uri(node), params)
-        self.assertEqual(http.client.OK, response.status_code)
-        self.assertEqual(
-            json_load_bytes(response.content)["workload_annotations"],
-            annotations,
+        response = api_client.post(self.get_node_uri(handler, node), params)
+        assert http.client.OK == response.status_code
+        assert (
+            json_load_bytes(response.content)["workload_annotations"]
+            == annotations
         )
 
-    def test_updates_data(self):
+    def test_updates_data(self, maker, handler, maas_user, api_client):
         annotations = {
             factory.make_name("key"): factory.make_name("value")
             for _ in range(3)
         }
-        node = self.maker(
+        node = maker(
             status=NODE_STATUS.ALLOCATED,
-            owner=self.user,
+            owner=maas_user,
             owner_data=annotations,
         )
         for key in annotations:
             annotations[key] = factory.make_name("value")
         params = annotations.copy()
         params["op"] = "set_workload_annotations"
-        response = self.client.post(self.get_node_uri(node), params)
-        self.assertEqual(http.client.OK, response.status_code)
-        self.assertEqual(
-            json_load_bytes(response.content)["workload_annotations"],
-            annotations,
+        response = api_client.post(self.get_node_uri(handler, node), params)
+        assert http.client.OK == response.status_code
+        assert (
+            json_load_bytes(response.content)["workload_annotations"]
+            == annotations
         )
 
-    def test_removes_data(self):
+    def test_removes_data(self, maker, handler, maas_user, api_client):
         annotations = {
             factory.make_name("key"): factory.make_name("value")
             for _ in range(3)
         }
-        node = self.maker(
+        node = maker(
             status=NODE_STATUS.ALLOCATED,
-            owner=self.user,
+            owner=maas_user,
             owner_data=annotations,
         )
         for key in annotations:
             annotations[key] = ""
         params = annotations.copy()
         params["op"] = "set_workload_annotations"
-        response = self.client.post(self.get_node_uri(node), params)
-        self.assertEqual(http.client.OK, response.status_code)
-        self.assertEqual(
-            json_load_bytes(response.content)["workload_annotations"],
-            {},
-        )
+        response = api_client.post(self.get_node_uri(handler, node), params)
+        assert http.client.OK == response.status_code
+        assert json_load_bytes(response.content)["workload_annotations"] == {}
 
 
-class TestSetOwnerData(APITestCase.ForUser):
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user=user,client=oauth", id="user=user,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestSetOwnerData:
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maas_user, api_client):
+        self.user = maas_user
+        self.client = api_client
+
     def get_node_uri(self, node):
         """Get the API URI for `node`."""
         return reverse("machine_handler", args=[node.system_id])
 
-    def test_adds_data(self):
-        node = factory.make_Node(status=NODE_STATUS.ALLOCATED, owner=self.user)
+    def test_adds_data(self, maas_user, api_client):
+        node = factory.make_Node(status=NODE_STATUS.ALLOCATED, owner=maas_user)
         owner_data = {
             factory.make_name("key"): factory.make_name("value")
             for _ in range(3)
         }
         params = owner_data.copy()
         params["op"] = "set_owner_data"
-        response = self.client.post(self.get_node_uri(node), params)
-        self.assertEqual(http.client.OK, response.status_code)
-        self.assertEqual(
-            json_load_bytes(response.content)["owner_data"],
-            owner_data,
-        )
+        response = api_client.post(self.get_node_uri(node), params)
+        assert http.client.OK == response.status_code
+        assert json_load_bytes(response.content)["owner_data"] == owner_data
 
 
-class TestPowerMixin(APITestCase.ForUser):
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user=user,client=oauth", id="user=user,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestPowerMixin:
     """Test the power mixin."""
 
-    def setUp(self):
-        super().setUp()
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maas_user, api_client, mocker):
+        self.user = maas_user
+        self.client = api_client
         commissioning_osystem = Config.objects.get_config(
             name="commissioning_osystem"
         )
         commissioning_series = Config.objects.get_config(
             name="commissioning_distro_series"
         )
-        self.patch(osystems, "list_all_usable_osystems").return_value = [
-            {
-                "name": commissioning_osystem,
-                "releases": [{"name": commissioning_series}],
-            }
-        ]
+        mocker.patch.object(
+            osystems,
+            "list_all_usable_osystems",
+            return_value=[
+                {
+                    "name": commissioning_osystem,
+                    "releases": [{"name": commissioning_series}],
+                }
+            ],
+        )
+
+    @staticmethod
+    def _make_usable_osystem(mocker):
+        commissioning_osystem = Config.objects.get_config(
+            name="commissioning_osystem"
+        )
+        commissioning_series = Config.objects.get_config(
+            name="commissioning_distro_series"
+        )
+        mocker.patch.object(
+            osystems,
+            "list_all_usable_osystems",
+            return_value=[
+                {
+                    "name": commissioning_osystem,
+                    "releases": [{"name": commissioning_series}],
+                }
+            ],
+        )
+        return commissioning_osystem, [commissioning_series]
+
+    @staticmethod
+    def _make_usable_architecture(mocker):
+        from maasserver import forms
+        from maasserver.testing.architecture import make_arch
+
+        architecture = make_arch()
+        mocker.patch.object(
+            forms, "list_all_usable_architectures", return_value=[architecture]
+        )
+        return architecture
 
     def get_node_uri(self, node):
         """Get the API URI for `node`."""
@@ -700,54 +796,56 @@ class TestPowerMixin(APITestCase.ForUser):
         # power commands
         return reverse("machine_handler", args=[node.system_id])
 
-    def test_POST_power_off_checks_permission(self):
+    def test_POST_power_off_checks_permission(self, mocker):
         machine = factory.make_Node(owner=factory.make_User())
-        machine_stop = self.patch(machine, "stop")
+        machine_stop = mocker.patch.object(machine, "stop")
         response = self.client.post(
             self.get_node_uri(machine), {"op": "power_off"}
         )
-        self.assertEqual(http.client.FORBIDDEN, response.status_code)
+        assert http.client.FORBIDDEN == response.status_code
         machine_stop.assert_not_called()
 
-    def test_POST_power_off_returns_nothing_if_machine_was_not_stopped(self):
+    def test_POST_power_off_returns_nothing_if_machine_was_not_stopped(
+        self, mocker
+    ):
         # The machine may not be stopped because, for example, its power type
         # does not support it. In this case the machine is not returned to the
         # caller.
         machine = factory.make_Node(owner=self.user)
-        machine_stop = self.patch(node_module.Machine, "stop")
+        machine_stop = mocker.patch.object(node_module.Machine, "stop")
         machine_stop.return_value = False
         response = self.client.post(
             self.get_node_uri(machine), {"op": "power_off"}
         )
-        self.assertEqual(http.client.OK, response.status_code)
-        self.assertIsNone(json_load_bytes(response.content))
+        assert http.client.OK == response.status_code
+        assert json_load_bytes(response.content) is None
         machine_stop.mock_called_once_with(ANY, stop_mode=ANY, comment=None)
 
-    def test_POST_power_off_returns_machine(self):
+    def test_POST_power_off_returns_machine(self, mocker):
         machine = factory.make_Node(owner=self.user)
-        self.patch(node_module.Machine, "stop").return_value = True
+        mocker.patch.object(node_module.Machine, "stop").return_value = True
         response = self.client.post(
             self.get_node_uri(machine), {"op": "power_off"}
         )
-        self.assertEqual(http.client.OK, response.status_code)
-        self.assertEqual(
-            machine.system_id, json_load_bytes(response.content)["system_id"]
+        assert http.client.OK == response.status_code
+        assert (
+            machine.system_id == json_load_bytes(response.content)["system_id"]
         )
 
-    def test_POST_power_off_may_be_repeated(self):
+    def test_POST_power_off_may_be_repeated(self, mocker):
         machine = factory.make_Node(
             owner=self.user, interface=True, power_type="manual"
         )
-        self.patch(machine, "stop")
+        mocker.patch.object(machine, "stop")
         self.client.post(self.get_node_uri(machine), {"op": "power_off"})
         response = self.client.post(
             self.get_node_uri(machine), {"op": "power_off"}
         )
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code
 
-    def test_POST_power_off_power_offs_machines(self):
+    def test_POST_power_off_power_offs_machines(self, mocker):
         machine = factory.make_Node(owner=self.user)
-        machine_stop = self.patch(node_module.Machine, "stop")
+        machine_stop = mocker.patch.object(node_module.Machine, "stop")
         stop_mode = factory.make_name("stop_mode")
         comment = factory.make_name("comment")
         self.client.post(
@@ -758,9 +856,9 @@ class TestPowerMixin(APITestCase.ForUser):
             self.user, stop_mode=stop_mode, comment=comment
         )
 
-    def test_POST_power_off_handles_missing_comment(self):
+    def test_POST_power_off_handles_missing_comment(self, mocker):
         machine = factory.make_Node(owner=self.user)
-        machine_stop = self.patch(node_module.Machine, "stop")
+        machine_stop = mocker.patch.object(node_module.Machine, "stop")
         stop_mode = factory.make_name("stop_mode")
         self.client.post(
             self.get_node_uri(machine),
@@ -777,60 +875,66 @@ class TestPowerMixin(APITestCase.ForUser):
         response = self.client.post(
             self.get_node_uri(machine), {"op": "power_on"}
         )
-        self.assertEqual(http.client.FORBIDDEN, response.status_code)
+        assert http.client.FORBIDDEN == response.status_code
 
-    def test_POST_power_on_checks_ownership(self):
-        self.become_admin()
+    def test_POST_power_on_checks_ownership(self, admin, admin_api_client):
         machine = factory.make_Node_with_Interface_on_Subnet(
             status=NODE_STATUS.READY
         )
-        response = self.client.post(
+        response = admin_api_client.post(
             self.get_node_uri(machine), {"op": "power_on"}
         )
-        self.assertEqual(http.client.CONFLICT, response.status_code)
-        self.assertEqual(
-            "Can't start node: it hasn't been allocated.",
-            response.content.decode(settings.DEFAULT_CHARSET),
+        assert http.client.CONFLICT == response.status_code
+        assert (
+            "Can't start node: it hasn't been allocated."
+            == response.content.decode(settings.DEFAULT_CHARSET)
         )
 
-    def test_POST_power_on_returns_machine(self):
-        self.patch(node_module.Machine, "_start")
+    def test_POST_power_on_returns_machine(self, mocker):
+        mocker.patch.object(node_module.Machine, "_start")
         machine = factory.make_Node(
             owner=self.user,
             interface=True,
             power_type="manual",
-            architecture=make_usable_architecture(self),
+            architecture=self._make_usable_architecture(mocker),
         )
-        osystem, releases = make_usable_osystem(self)
+        _, releases = self._make_usable_osystem(mocker)
         distro_series = releases[0]
         response = self.client.post(
             self.get_node_uri(machine),
             {"op": "power_on", "distro_series": distro_series},
         )
-        self.assertEqual(http.client.OK, response.status_code)
-        self.assertEqual(
-            machine.system_id, json_load_bytes(response.content)["system_id"]
+        assert http.client.OK == response.status_code
+        assert (
+            machine.system_id == json_load_bytes(response.content)["system_id"]
         )
 
-    def test_query_power_state(self):
-        node = factory.make_Node()
-        mock__power_control_node = self.patch(
+    def test_query_power_state(self, mocker):
+        mock__power_control_node = mocker.patch.object(
             node_module.Node, "power_query"
         ).return_value
         mock__power_control_node.wait = Mock(return_value=POWER_STATE.ON)
+        node = factory.make_Node()
         response = self.client.get(
             self.get_node_uri(node), {"op": "query_power_state"}
         )
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code
         parsed_result = json_load_bytes(response.content)
-        self.assertEqual(POWER_STATE.ON, parsed_result["state"])
+        assert POWER_STATE.ON == parsed_result["state"]
 
-    def test_POST_test_tests_machine(self):
-        self.patch(node_module.Machine, "_start").return_value = succeed(None)
+    def test_POST_test_tests_machine(self, admin, admin_api_client, mocker):
+        mocker.patch.object(
+            node_module.Machine, "_start"
+        ).return_value = succeed(None)
         factory.make_Script(
             script_type=SCRIPT_TYPE.TESTING, tags=["commissioning"]
         )
-        self.patch(
+        mocker.patch.object(
+            node_module.Node,
+            "_start_testing_async",
+            return_value=succeed(None),
+        )
+        mocker.patch.object(
             node_module.Node, "_power_control_node"
         ).return_value = succeed(None)
         node = factory.make_Node(
@@ -838,19 +942,28 @@ class TestPowerMixin(APITestCase.ForUser):
             owner=factory.make_User(),
             interface=True,
         )
-        self.become_admin()
-        response = self.client.post(self.get_node_uri(node), {"op": "test"})
-        self.assertEqual(http.client.OK, response.status_code)
-        self.assertEqual(NODE_STATUS.TESTING, reload_object(node).status)
+        response = admin_api_client.post(
+            self.get_node_uri(node), {"op": "test"}
+        )
+        assert http.client.OK == response.status_code
+        assert NODE_STATUS.TESTING == reload_object(node).status
 
-    def test_POST_test_tests_machine_with_options(self):
-        self.patch(node_module.Machine, "_start").return_value = succeed(None)
+    def test_POST_test_tests_machine_with_options(
+        self, admin, admin_api_client, mocker
+    ):
+        mocker.patch.object(
+            node_module.Machine, "_start"
+        ).return_value = succeed(None)
+        mocker.patch.object(
+            node_module.Node,
+            "_start_testing_async",
+            return_value=succeed(None),
+        )
         node = factory.make_Node(
             status=NODE_STATUS.DEPLOYED,
             owner=factory.make_User(),
             interface=True,
         )
-        self.become_admin()
 
         testing_scripts = [
             factory.make_Script(script_type=SCRIPT_TYPE.TESTING)
@@ -863,7 +976,7 @@ class TestPowerMixin(APITestCase.ForUser):
             testing_script_selected_by_name.name,
         ]
 
-        response = self.client.post(
+        response = admin_api_client.post(
             self.get_node_uri(node),
             {
                 "op": "test",
@@ -882,35 +995,42 @@ class TestPowerMixin(APITestCase.ForUser):
                 ),
             },
         )
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code
         node = reload_object(node)
         testing_script_set = node.current_testing_script_set
-        self.assertTrue(node.enable_ssh)
-        self.assertEqual(
-            set(expected_testing_scripts),
-            {script_result.name for script_result in testing_script_set},
-        )
+        assert node.enable_ssh
+        assert set(expected_testing_scripts) == {
+            script_result.name for script_result in testing_script_set
+        }
 
-    def test_POST_test_tests_machine_errors_on_no_scripts_found(self):
+    def test_POST_test_tests_machine_errors_on_no_scripts_found(
+        self, admin, admin_api_client
+    ):
         node = factory.make_Node(
             status=NODE_STATUS.DEPLOYED,
             owner=factory.make_User(),
             interface=True,
         )
-        self.become_admin()
-        response = self.client.post(self.get_node_uri(node), {"op": "test"})
-        self.assertEqual(http.client.BAD_REQUEST, response.status_code)
-        self.assertEqual(b"No testing scripts found!", response.content)
+        response = admin_api_client.post(
+            self.get_node_uri(node), {"op": "test"}
+        )
+        assert http.client.BAD_REQUEST == response.status_code
+        assert b"No testing scripts found!" == response.content
 
-    def test_POST_test_tests_machine_errors_on_bad_form_data(self):
+    def test_POST_test_tests_machine_errors_on_bad_form_data(
+        self, admin, admin_api_client
+    ):
         node = factory.make_Node(
             status=NODE_STATUS.NEW, owner=factory.make_User()
         )
-        self.become_admin()
-        response = self.client.post(self.get_node_uri(node), {"op": "test"})
-        self.assertEqual(http.client.BAD_REQUEST, response.status_code)
+        response = admin_api_client.post(
+            self.get_node_uri(node), {"op": "test"}
+        )
+        assert http.client.BAD_REQUEST == response.status_code
 
-    def test_POST_test_deletes_scriptset_on_failure(self):
+    def test_POST_test_deletes_scriptset_on_failure(
+        self, admin, admin_api_client
+    ):
         node = factory.make_Node(
             status=NODE_STATUS.READY,
             owner=factory.make_User(),
@@ -920,31 +1040,29 @@ class TestPowerMixin(APITestCase.ForUser):
             script_type=SCRIPT_TYPE.TESTING,
             parameters={"interface": {"type": "interface"}},
         )
-        self.become_admin()
-        response = self.client.post(
+        response = admin_api_client.post(
             self.get_node_uri(node),
             {"op": "test", "testing_scripts": script.name},
         )
-        self.assertEqual(http.client.BAD_REQUEST, response.status_code)
-        self.assertEqual(
-            b"An interface must be configured to run network testing!",
-            response.content,
+        assert http.client.BAD_REQUEST == response.status_code
+        assert (
+            b"An interface must be configured to run network testing!"
+            == response.content
         )
-        self.assertFalse(node.scriptset_set.exists())
+        assert not node.scriptset_set.exists()
 
-    def test_POST_override_failed_testing(self):
+    def test_POST_override_failed_testing(self, admin, admin_api_client):
         node = factory.make_Node(
             status=NODE_STATUS.FAILED_TESTING,
             owner=factory.make_User(),
             osystem="",
         )
-        self.become_admin()
-        response = self.client.post(
+        response = admin_api_client.post(
             self.get_node_uri(node), {"op": "override_failed_testing"}
         )
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         node = reload_object(node)
-        self.assertEqual(NODE_STATUS.READY, node.status)
+        assert NODE_STATUS.READY == node.status
 
     def test_abort_fails_for_unsupported_operation(self):
         status = factory.pick_choice(
@@ -958,31 +1076,41 @@ class TestPowerMixin(APITestCase.ForUser):
         )
         node = factory.make_Node(status=status)
         response = self.client.post(self.get_node_uri(node), {"op": "abort"})
-        self.assertEqual(http.client.CONFLICT, response.status_code)
+        assert http.client.CONFLICT == response.status_code
 
-    def test_abort_passes_comment(self):
-        self.become_admin()
+    def test_abort_passes_comment(self, admin, admin_api_client, mocker):
         node = factory.make_Node(
             status=NODE_STATUS.DISK_ERASING, owner=self.user
         )
-        node_method = self.patch(node_module.Node, "abort_operation")
+        node_method = mocker.patch.object(node_module.Node, "abort_operation")
         comment = factory.make_name("comment")
-        self.client.post(
+        admin_api_client.post(
             self.get_node_uri(node), {"op": "abort", "comment": comment}
         )
         node_method.mock_called_once_with(self.user, comment)
 
-    def test_abort_handles_missing_comment(self):
-        self.become_admin()
+    def test_abort_handles_missing_comment(
+        self, admin, admin_api_client, mocker
+    ):
         node = factory.make_Node(
             status=NODE_STATUS.DISK_ERASING, owner=self.user
         )
-        node_method = self.patch(node_module.Node, "abort_operation")
-        self.client.post(self.get_node_uri(node), {"op": "abort"})
+        node_method = mocker.patch.object(node_module.Node, "abort_operation")
+        admin_api_client.post(self.get_node_uri(node), {"op": "abort"})
         node_method.mock_called_once_with(self.user, None)
 
 
-class TestPowerMixinOpenFGAIntegration(OpenFGAMockMixin, APITestCase.ForUser):
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user=user,client=oauth", id="user=user,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestPowerMixinOpenFGAIntegration(PytestOpenFGAMockMixin):
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maas_user, api_client):
+        self.user = maas_user
+        self.client = api_client
+
     def test_get_power_parameters_requires_can_edit_machines(self):
         self.openfga_client.can_edit_machines.return_value = True
         power_parameters = {factory.make_string(): factory.make_string()}
@@ -990,9 +1118,7 @@ class TestPowerMixinOpenFGAIntegration(OpenFGAMockMixin, APITestCase.ForUser):
         response = self.client.get(
             reverse("machines_handler"), {"op": "power_parameters"}
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         self.openfga_client.can_edit_machines.assert_called_once_with(
             self.user
         )

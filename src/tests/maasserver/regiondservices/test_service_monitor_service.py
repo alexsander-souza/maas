@@ -4,12 +4,13 @@
 """Tests for service monitoring in the regiond."""
 
 import random
+from unittest import TestCase as UnittestTestCase
 from unittest.mock import sentinel
 
+import pytest
 from twisted.internet.defer import fail, inlineCallbacks, succeed
 from twisted.internet.task import Clock
 
-from maasserver import proxyconfig
 from maasserver.enum import SERVICE_STATUS
 from maasserver.models.node import RegionController
 from maasserver.models.service import Service
@@ -19,11 +20,11 @@ from maasserver.regiondservices.service_monitor_service import (
 )
 from maasserver.service_monitor import service_monitor
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASTransactionServerTestCase
 from maasserver.utils.orm import transactional
 from maasserver.utils.threads import deferToDatabase
 from maastesting.crochet import wait_for
 from maastesting.twisted import TwistedLoggerFixture
+from provisioningserver.proxy import config as proxy_config
 from provisioningserver.utils.service_monitor import (
     SERVICE_STATE,
     ServiceState,
@@ -32,7 +33,28 @@ from provisioningserver.utils.service_monitor import (
 wait_for_reactor = wait_for()
 
 
-class TestServiceMonitorService(MAASTransactionServerTestCase):
+@pytest.mark.allow_transactions
+@pytest.mark.usefixtures(
+    "maasdb", "transactional_maasdb", "maas_region_test", "factory"
+)
+class TestServiceMonitorService:
+    @pytest.fixture(autouse=True)
+    def _setup_test_helpers(self, mocker):
+        self._mocker = mocker
+        self._assertions = UnittestTestCase()
+
+    def __getattr__(self, name):
+        if name.startswith("assert") or name == "fail":
+            return getattr(self._assertions, name)
+        raise AttributeError(name)
+
+    def patch(self, obj, attribute=None, value=None):
+        if attribute is None:
+            return self._mocker.patch(obj)
+        if value is None:
+            return self._mocker.patch.object(obj, attribute)
+        return self._mocker.patch.object(obj, attribute, value)
+
     def pick_service(self):
         # Skip the proxy service because of the expected state is conditional.
         return random.choice(
@@ -100,7 +122,7 @@ class TestServiceMonitorService(MAASTransactionServerTestCase):
         self.patch(
             service_monitor_service, "is_dev_environment"
         ).return_value = False
-        self.patch(proxyconfig, "is_config_present").return_value = True
+        self.patch(proxy_config, "is_config_present").return_value = True
 
         service = self.pick_service()
         state = ServiceState(SERVICE_STATE.ON, "running")
@@ -127,7 +149,7 @@ class TestServiceMonitorService(MAASTransactionServerTestCase):
     @wait_for_reactor
     @inlineCallbacks
     def test_buildServices_builds_services_list(self):
-        self.patch(proxyconfig, "is_config_present").return_value = True
+        self.patch(proxy_config, "is_config_present").return_value = True
         monitor_service = ServiceMonitorService(Clock())
         service = self.pick_service()
         state = ServiceState(SERVICE_STATE.ON, "running")

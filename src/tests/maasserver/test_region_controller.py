@@ -3,36 +3,41 @@
 
 """Tests for the region controller service."""
 
-from unittest import TestCase
 from unittest.mock import ANY, call, MagicMock, sentinel
 
+import pytest
 from twisted.internet import reactor
 from twisted.internet.defer import fail, inlineCallbacks, succeed
 
 from maasserver import eventloop, region_controller
 from maasserver.region_controller import RegionControllerService
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from maastesting.crochet import wait_for
 from provisioningserver.utils.events import Event
 
 wait_for_reactor = wait_for()
 
 
-class TestRegionControllerService(MAASServerTestCase):
-    assertRaises = TestCase.assertRaises
-
+@pytest.mark.usefixtures("maas_region_test", "factory")
+class TestRegionControllerService:
     def make_service(self, listener=MagicMock(), dbtasks=MagicMock()):  # noqa: B008
         # Don't retry on failure or the tests will loop forever.
         return RegionControllerService(listener, dbtasks, retryOnFailure=False)
 
+    @pytest.fixture(autouse=True)
+    def _setup(self, mocker):
+        self._mocker = mocker
+
+    def patch(self, obj, attribute):
+        return self._mocker.patch.object(obj, attribute)
+
     def test_init_sets_properties(self):
         service = self.make_service(sentinel.listener, sentinel.dbtasks)
-        self.assertEqual(service.clock, reactor)
-        self.assertIsNone(service.processingDefer)
-        self.assertTrue(service.needsDNSUpdate)
-        self.assertEqual(service.postgresListener, sentinel.listener)
-        self.assertEqual(service.dbtasks, sentinel.dbtasks)
+        assert service.clock == reactor
+        assert service.processingDefer is None
+        assert service.needsDNSUpdate
+        assert service.postgresListener == sentinel.listener
+        assert service.dbtasks == sentinel.dbtasks
 
     @wait_for_reactor
     @inlineCallbacks
@@ -74,13 +79,13 @@ class TestRegionControllerService(MAASServerTestCase):
         service = self.make_service()
         service.startProcessing()
         yield service.stopService()
-        self.assertIsNone(service.processingDefer)
+        assert service.processingDefer is None
 
     def test_markProxyForUpdate_sets_needsProxyUpdate_and_starts_process(self):
         service = self.make_service()
         mock_startProcessing = self.patch(service, "startProcessing")
         service.markProxyForUpdate(None, None)
-        self.assertTrue(service.needsProxyUpdate)
+        assert service.needsProxyUpdate
         mock_startProcessing.assert_called_once_with()
 
     def test_restart_region_restarts_eventloop(self):
@@ -121,7 +126,7 @@ class TestRegionControllerService(MAASServerTestCase):
         service.needsDNSUpdate = False
         service.startProcessing()
         yield service.processingDefer
-        self.assertIsNone(service.processingDefer)
+        assert service.processingDefer is None
 
     @wait_for_reactor
     @inlineCallbacks

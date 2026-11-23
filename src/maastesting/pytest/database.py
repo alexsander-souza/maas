@@ -4,15 +4,18 @@
 from contextlib import contextmanager
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import tempfile
 
+from django.conf import settings
 from postgresfixture import ClusterFixture
 import pytest
 
 import maasserver.testing
-from maasserver.testing.resources import create_postgres_cluster
+from maasserver.testing.resources import (
+    close_all_connections,
+    create_postgres_cluster,
+)
 
 cluster_stash = pytest.StashKey[ClusterFixture]()
 db_template_stash = pytest.StashKey[str]()
@@ -113,35 +116,61 @@ def _set_up_template_db(
     if template_name not in cluster.databases:
         load_initial_db_file(cluster, template_name, template_path)
 
-    from maasserver.djangosettings import development
-
-    settings_contents = Path(development.__file__).read_text()
     settings_name = "maasdjangotestsettings"
-    tmp_python_path = Path(tempfile.mkdtemp())
-    tmp_python_path.joinpath(f"{settings_name}.py").write_text(
-        settings_contents.replace(
-            '"NAME": "maas"', f'"NAME": "{template_name}"'
+    with tempfile.TemporaryDirectory() as temp_dir:
+        settings_path = Path(temp_dir) / f"{settings_name}.py"
+        settings_path.write_text(
+            "from maasserver.djangosettings.pytest import *\n"
+            f'DATABASES["default"]["NAME"] = "{template_name}"\n'
         )
-    )
+        subprocess.run(
+            [
+                "bin/maas-region",
+                "dbupgrade",
+                "--pythonpath",
+                temp_dir,
+                "--settings",
+                settings_name,
+                "--openfga-path",
+                os.getcwd() + "/src/maasopenfga/build/",
+            ],
+            check=True,
+        )
 
-    old_name = development.DATABASES["default"]["NAME"]
-    development.DATABASES["default"]["NAME"] = template_name
-
-    subprocess.run(
-        [
-            "bin/maas-region",
-            "dbupgrade",
-            "--pythonpath",
-            str(tmp_python_path),
-            "--settings",
-            settings_name,
-            "--openfga-path",
-            os.getcwd() + "/src/maasopenfga/build/",
-        ]
-    )
-    shutil.rmtree(tmp_python_path)
-
-    development.DATABASES["default"]["NAME"] = old_name
+    database = settings.DATABASES["default"]
+    old_name = database["NAME"]
+    close_all_connections()
+    settings_name = "maasdjangotestsyncdbsettings"
+    with tempfile.TemporaryDirectory() as temp_dir:
+        settings_path = Path(temp_dir) / f"{settings_name}.py"
+        settings_path.write_text(
+            "from maasserver.djangosettings.pytest import *\n"
+            f'DATABASES["default"]["NAME"] = "{template_name}"\n'
+            "MIGRATION_MODULES = {\n"
+            "    **MIGRATION_MODULES,\n"
+            '    "auth": "maastesting.empty",\n'
+            '    "contenttypes": "maastesting.empty",\n'
+            '    "sessions": "maastesting.empty",\n'
+            '    "sites": "maastesting.empty",\n'
+            '    "piston3": "maastesting.empty",\n'
+            '    "maasserver": "maastesting.empty",\n'
+            '    "metadataserver": "maastesting.empty",\n'
+            "}\n"
+        )
+        subprocess.run(
+            [
+                "bin/maas-region",
+                "migrate",
+                "--run-syncdb",
+                "--verbosity=0",
+                "--pythonpath",
+                temp_dir,
+                "--settings",
+                settings_name,
+            ],
+            check=True,
+        )
+    database["NAME"] = old_name
 
 
 @pytest.fixture(scope="session")

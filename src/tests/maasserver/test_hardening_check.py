@@ -6,13 +6,14 @@ Uses Django ORM (maasserver test suite).  Run via:
     bin/pytest src/tests/maasserver/test_hardening_check.py
 """
 
+import pytest
+
 from maasserver.models import Notification
 from maasserver.regiondservices.hardening_check import (
     HARDENING_CTRL_IDENT_PREFIX,
     HARDENING_NOTIFICATION_IDENT_PREFIX,
     sync_hardening_notifications,
 )
-from maasserver.testing.testcase import MAASServerTestCase
 from maasservicelayer.services.hardening import _ident, HardeningViolation
 
 
@@ -44,54 +45,53 @@ def _ctrl_ident(ctrl: str, config_key: str) -> str:
     return f"{HARDENING_CTRL_IDENT_PREFIX}{ctrl}-{config_key}"
 
 
-class TestSyncHardeningNotifications(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb")
+class TestSyncHardeningNotifications:
     def test_empty_violations_no_notifications_created(self):
         sync_hardening_notifications([])
         count = Notification.objects.filter(
             ident__startswith=HARDENING_NOTIFICATION_IDENT_PREFIX
         ).count()
-        self.assertEqual(0, count)
+        assert count == 0
 
     def test_violation_creates_error_notification(self):
         v = _make_violation("MISSING_TLS_CERT")
         sync_hardening_notifications([v])
 
         n = Notification.objects.get(ident=v.ident)
-        self.assertEqual("error", n.category)
-        self.assertTrue(n.admins)
-        self.assertFalse(n.users)
-        self.assertFalse(n.dismissable)
-        self.assertIn("MISSING_TLS_CERT", n.context["code"])
+        assert n.category == "error"
+        assert n.admins
+        assert not n.users
+        assert not n.dismissable
+        assert "MISSING_TLS_CERT" in n.context["code"]
 
     def test_violation_message_contains_resolution(self):
         v = _make_violation("MISSING_TLS_CERT")
         sync_hardening_notifications([v])
         n = Notification.objects.get(ident=v.ident)
-        self.assertIn("config-hardening", n.message)
+        assert "config-hardening" in n.message
 
     def test_resolved_violation_cleared_on_next_sync(self):
         v = _make_violation("MISSING_TLS_CERT")
         sync_hardening_notifications([v])
-        self.assertTrue(Notification.objects.filter(ident=v.ident).exists())
+        assert Notification.objects.filter(ident=v.ident).exists()
         sync_hardening_notifications([])
-        self.assertFalse(Notification.objects.filter(ident=v.ident).exists())
+        assert not Notification.objects.filter(ident=v.ident).exists()
 
     def test_unrelated_notifications_not_touched(self):
         Notification.objects.create_info_for_admins(
             "Unrelated", ident="some-other-ident"
         )
         sync_hardening_notifications([])
-        self.assertTrue(
-            Notification.objects.filter(ident="some-other-ident").exists()
-        )
+        assert Notification.objects.filter(ident="some-other-ident").exists()
 
     def test_second_violation_replaces_first(self):
         v1 = _make_violation("MISSING_TLS_CERT")
         v2 = _make_violation("WEAK_DH_PARAMS")
         sync_hardening_notifications([v1])
         sync_hardening_notifications([v2])
-        self.assertFalse(Notification.objects.filter(ident=v1.ident).exists())
-        self.assertTrue(Notification.objects.filter(ident=v2.ident).exists())
+        assert not Notification.objects.filter(ident=v1.ident).exists()
+        assert Notification.objects.filter(ident=v2.ident).exists()
 
     def test_multiple_violations_all_posted(self):
         violations = [
@@ -101,16 +101,15 @@ class TestSyncHardeningNotifications(MAASServerTestCase):
         ]
         sync_hardening_notifications(violations)
         for v in violations:
-            self.assertTrue(
-                Notification.objects.filter(ident=v.ident).exists(),
-                f"Missing notification for {v.ident}",
+            assert Notification.objects.filter(ident=v.ident).exists(), (
+                f"Missing notification for {v.ident}"
             )
 
     def test_dismissable_is_false(self):
         v = _make_violation("MISSING_TLS_CERT")
         sync_hardening_notifications([v])
         n = Notification.objects.get(ident=v.ident)
-        self.assertFalse(n.dismissable)
+        assert not n.dismissable
 
     def test_context_has_code_config_key_file_path(self):
         v = HardeningViolation(
@@ -123,12 +122,13 @@ class TestSyncHardeningNotifications(MAASServerTestCase):
         )
         sync_hardening_notifications([v])
         n = Notification.objects.get(ident=v.ident)
-        self.assertEqual("MISSING_TLS_CERT", n.context["code"])
-        self.assertEqual("api_tls_cert", n.context["config_key"])
-        self.assertEqual("/etc/maas/certs/tls.pem", n.context["file_path"])
+        assert n.context["code"] == "MISSING_TLS_CERT"
+        assert n.context["config_key"] == "api_tls_cert"
+        assert n.context["file_path"] == "/etc/maas/certs/tls.pem"
 
 
-class TestSyncHardeningNotificationsWithControllerId(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb")
+class TestSyncHardeningNotificationsWithControllerId:
     """Bind violations are scoped per controller; non-bind ones are global."""
 
     CTRL_A = "abc123"
@@ -138,12 +138,10 @@ class TestSyncHardeningNotificationsWithControllerId(MAASServerTestCase):
         v = _make_bind_violation()
         sync_hardening_notifications([v], controller_id=self.CTRL_A)
 
-        self.assertTrue(
-            Notification.objects.filter(
-                ident=_ctrl_ident(self.CTRL_A, "api_bind")
-            ).exists()
-        )
-        self.assertFalse(Notification.objects.filter(ident=v.ident).exists())
+        assert Notification.objects.filter(
+            ident=_ctrl_ident(self.CTRL_A, "api_bind")
+        ).exists()
+        assert not Notification.objects.filter(ident=v.ident).exists()
 
     def test_bind_violation_message_contains_controller_id(self):
         v = _make_bind_violation()
@@ -151,7 +149,7 @@ class TestSyncHardeningNotificationsWithControllerId(MAASServerTestCase):
         n = Notification.objects.get(
             ident=_ctrl_ident(self.CTRL_A, "api_bind")
         )
-        self.assertIn(self.CTRL_A, n.message)
+        assert self.CTRL_A in n.message
 
     def test_bind_violation_context_contains_controller_id(self):
         v = _make_bind_violation()
@@ -159,29 +157,27 @@ class TestSyncHardeningNotificationsWithControllerId(MAASServerTestCase):
         n = Notification.objects.get(
             ident=_ctrl_ident(self.CTRL_A, "api_bind")
         )
-        self.assertEqual(self.CTRL_A, n.context["controller_id"])
+        assert n.context["controller_id"] == self.CTRL_A
 
     def test_non_bind_violation_keeps_global_ident_with_controller_id(self):
         v = _make_violation("MISSING_TLS_CERT")
         sync_hardening_notifications([v], controller_id=self.CTRL_A)
 
-        self.assertTrue(Notification.objects.filter(ident=v.ident).exists())
-        self.assertEqual(
-            0,
+        assert Notification.objects.filter(ident=v.ident).exists()
+        assert (
             Notification.objects.filter(
                 ident__startswith=f"{HARDENING_CTRL_IDENT_PREFIX}{self.CTRL_A}-"
-            ).count(),
+            ).count()
+            == 0
         )
 
     def test_stale_bind_notification_cleared_on_resolution(self):
         v = _make_bind_violation()
         sync_hardening_notifications([v], controller_id=self.CTRL_A)
         ctrl_ident = _ctrl_ident(self.CTRL_A, "api_bind")
-        self.assertTrue(Notification.objects.filter(ident=ctrl_ident).exists())
+        assert Notification.objects.filter(ident=ctrl_ident).exists()
         sync_hardening_notifications([], controller_id=self.CTRL_A)
-        self.assertFalse(
-            Notification.objects.filter(ident=ctrl_ident).exists()
-        )
+        assert not Notification.objects.filter(ident=ctrl_ident).exists()
 
     def test_other_controller_bind_notification_not_cleared(self):
         v = _make_bind_violation()
@@ -189,13 +185,9 @@ class TestSyncHardeningNotificationsWithControllerId(MAASServerTestCase):
         sync_hardening_notifications([v], controller_id=self.CTRL_B)
 
         ctrl_b_ident = _ctrl_ident(self.CTRL_B, "api_bind")
-        self.assertTrue(
-            Notification.objects.filter(ident=ctrl_b_ident).exists()
-        )
+        assert Notification.objects.filter(ident=ctrl_b_ident).exists()
         sync_hardening_notifications([], controller_id=self.CTRL_A)
-        self.assertTrue(
-            Notification.objects.filter(ident=ctrl_b_ident).exists()
-        )
+        assert Notification.objects.filter(ident=ctrl_b_ident).exists()
 
     def test_multiple_bind_violations_all_scoped(self):
         violations = [
@@ -205,13 +197,13 @@ class TestSyncHardeningNotificationsWithControllerId(MAASServerTestCase):
         sync_hardening_notifications(violations, controller_id=self.CTRL_A)
         for config_key in ("api_bind", "agent_api_bind"):
             ident = _ctrl_ident(self.CTRL_A, config_key)
-            self.assertTrue(
-                Notification.objects.filter(ident=ident).exists(),
-                f"Missing scoped notification: {ident}",
+            assert Notification.objects.filter(ident=ident).exists(), (
+                f"Missing scoped notification: {ident}"
             )
 
 
-class TestHardeningIdentLength(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb")
+class TestHardeningIdentLength:
     """Controller-scoped idents must stay within Notification.ident max_length=40."""
 
     # All bind config_keys produced by HardeningValidator.__init__'s
@@ -236,11 +228,9 @@ class TestHardeningIdentLength(MAASServerTestCase):
         system_id = "abc123"  # representative 6-char system_id
         for config_key in self.BIND_CONFIG_KEYS:
             ident = _ctrl_ident(system_id, config_key)
-            self.assertLessEqual(
-                len(ident),
-                40,
+            assert len(ident) <= 40, (
                 f"ident {ident!r} is {len(ident)} chars — exceeds "
-                f"Notification.ident max_length=40",
+                f"Notification.ident max_length=40"
             )
 
     def test_scoped_ident_can_be_stored_and_retrieved(self):
@@ -252,7 +242,6 @@ class TestHardeningIdentLength(MAASServerTestCase):
         ident = _ctrl_ident(system_id, config_key)
         v = _make_bind_violation(config_key=config_key)
         sync_hardening_notifications([v], controller_id=system_id)
-        self.assertTrue(
-            Notification.objects.filter(ident=ident).exists(),
-            f"Notification with ident {ident!r} was not created",
+        assert Notification.objects.filter(ident=ident).exists(), (
+            f"Notification with ident {ident!r} was not created"
         )

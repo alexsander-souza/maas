@@ -9,8 +9,9 @@ import os
 import shutil
 import textwrap
 
+import pytest
+
 from maastesting.factory import factory
-from maastesting.testcase import MAASTestCase
 from provisioningserver.dns.commands.edit_named_options import (
     add_arguments,
     run,
@@ -75,13 +76,27 @@ OPTIONS_FILE_WITH_EXTRA_AND_DUP_FORWARDER = textwrap.dedent(
 )
 
 
-class TestGetNamedConfCommand(MAASTestCase):
-    def setUp(self):
-        super().setUp()
+class TestGetNamedConfCommand:
+    @pytest.fixture(autouse=True)
+    def _setup(self, tmp_path, mocker):
         self.output = io.StringIO()
         self.error_output = io.StringIO()
         self.parser = ArgumentParser()
         add_arguments(self.parser)
+        self.mocker = mocker
+        self.tmp_path = tmp_path
+
+    def make_file(self, contents=""):
+        dir_path = self.tmp_path / factory.make_name("dir")
+        dir_path.mkdir(parents=True, exist_ok=True)
+        path = dir_path / factory.make_name("file")
+        path.write_text(contents)
+        return str(path)
+
+    def make_dir(self):
+        path = self.tmp_path / factory.make_name("dir")
+        path.mkdir(parents=True, exist_ok=True)
+        return str(path)
 
     def run_command(self, *args):
         parsed_args = self.parser.parse_args([*args])
@@ -89,8 +104,8 @@ class TestGetNamedConfCommand(MAASTestCase):
 
     def assertFailsWithMessage(self, config_path, message):
         rc = self.run_command("--config-path", config_path)
-        self.assertEqual(1, rc)
-        self.assertIn(message, self.error_output.getvalue())
+        assert rc == 1
+        assert message in self.error_output.getvalue()
 
     def assertContentFailsWithMessage(self, content, message):
         options_file = self.make_file(contents=content)
@@ -98,7 +113,7 @@ class TestGetNamedConfCommand(MAASTestCase):
         # The original file must be untouched.
         with open(options_file, "r") as fh:
             contents = fh.read()
-        self.assertEqual(contents, content)
+        assert contents == content
 
     def test_exits_when_no_file_to_edit(self):
         dir = self.make_dir()
@@ -117,7 +132,9 @@ class TestGetNamedConfCommand(MAASTestCase):
         self.assertContentFailsWithMessage(content, "Failed to parse")
 
     def test_exits_when_fails_to_make_backup(self):
-        self.patch(shutil, "copyfile").side_effect = IOError("whatever")
+        self.mocker.patch.object(
+            shutil, "copyfile", side_effect=IOError("whatever")
+        )
         self.assertContentFailsWithMessage(
             OPTIONS_FILE, "Failed to make a backup"
         )
@@ -129,7 +146,7 @@ class TestGetNamedConfCommand(MAASTestCase):
         # Check that the file was re-written without forwarders (since
         # that's now in the included file).
         options = read_isc_file(options_file)
-        self.assertNotIn("forwarders", make_isc_string(options))
+        assert "forwarders" not in make_isc_string(options)
 
     def test_removes_existing_dnssec_validation_config(self):
         options_file = self.make_file(contents=OPTIONS_FILE_WITH_DNSSEC)
@@ -138,7 +155,7 @@ class TestGetNamedConfCommand(MAASTestCase):
         # Check that the file was re-written without dnssec-validation (since
         # that's now in the included file).
         options = read_isc_file(options_file)
-        self.assertNotIn("dnssec-validation", make_isc_string(options))
+        assert "dnssec-validation" not in make_isc_string(options)
 
     def test_normal_operation(self):
         options_file = self.make_file(contents=OPTIONS_FILE)
@@ -151,17 +168,15 @@ class TestGetNamedConfCommand(MAASTestCase):
 
         # Check that the file was re-written with the include statement.
         options = read_isc_file(options_file)
-        self.assertIn(
-            'include "%s";' % expected_path, make_isc_string(options)
-        )
+        assert 'include "%s";' % expected_path in make_isc_string(options)
 
         # Check that the backup was made.
         options_file_base = os.path.dirname(options_file)
         files = os.listdir(options_file_base)
-        self.assertEqual(2, len(files))
+        assert len(files) == 2
         files.remove(os.path.basename(options_file))
         [backup_file] = files
         backup_file = os.path.join(options_file_base, backup_file)
         with open(backup_file, "r") as fh:
             contents = fh.read()
-        self.assertIn(OPTIONS_FILE, contents)
+        assert OPTIONS_FILE in contents

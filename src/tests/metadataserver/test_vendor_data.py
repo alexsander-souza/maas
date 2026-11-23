@@ -4,6 +4,7 @@
 import random
 
 from netaddr import IPAddress
+import pytest
 import tempita
 import yaml
 
@@ -13,7 +14,6 @@ from maasserver.node_status import COMMISSIONING_LIKE_STATUSES
 from maasserver.secrets import SecretManager
 from maasserver.server_address import get_maas_facing_server_host
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from maasserver.utils.converters import systemd_interval_to_calendar
 from maasserver.utils.orm import post_commit_hooks
 from metadataserver.vendor_data import (
@@ -35,26 +35,26 @@ from metadataserver.vendor_data import (
 )
 
 
-class TestGetVendorData(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test")
+class TestGetVendorData:
     """Tests for `get_vendor_data`."""
 
     def test_returns_dict(self):
         node = factory.make_Node()
-        self.assertIsInstance(get_vendor_data(node, None), dict)
+        assert isinstance(get_vendor_data(node, None), dict)
 
     def test_includes_no_system_information_if_no_default_user(self):
         node = factory.make_Node(owner=factory.make_User())
         vendor_data = get_vendor_data(node, None)
-        self.assertNotIn("system_info", vendor_data)
+        assert "system_info" not in vendor_data
 
     def test_includes_system_information_if_default_user(self):
         owner = factory.make_User()
         node = factory.make_Node(owner=owner, default_user=owner)
         vendor_data = get_vendor_data(node, None)
         system_info = vendor_data.get("system_info")
-        self.assertEqual(
-            system_info.get("default_user"),
-            {"name": owner.username, "gecos": ",,,,"},
+        assert {"name": owner.username, "gecos": ",,,,"} == system_info.get(
+            "default_user"
         )
 
     def test_includes_ntp_server_information(self):
@@ -63,24 +63,25 @@ class TestGetVendorData(MAASServerTestCase):
         node = factory.make_Node()
         vendor_data = get_vendor_data(node, None)
         ntp = vendor_data.get("ntp")
-        self.assertEqual(ntp, {"servers": [], "pools": ["bar", "foo"]})
+        assert ntp == {"servers": [], "pools": ["bar", "foo"]}
 
 
-class TestGenerateSystemInfo(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test")
+class TestGenerateSystemInfo:
     """Tests for `generate_system_info`."""
 
     def test_yields_nothing_when_node_has_no_owner(self):
         node = factory.make_Node()
-        self.assertIsNone(node.owner)
+        assert node.owner is None
         configuration = generate_system_info(node)
-        self.assertEqual({}, dict(configuration))
+        assert {} == dict(configuration)
 
     def test_yields_nothing_when_owner_and_no_default_user(self):
         node = factory.make_Node()
-        self.assertIsNone(node.owner)
-        self.assertIs(node.default_user, "")
+        assert node.owner is None
+        assert node.default_user == ""
         configuration = generate_system_info(node)
-        self.assertEqual({}, dict(configuration))
+        assert {} == dict(configuration)
 
     def test_yields_basic_system_info_when_node_owned_with_default_user(self):
         owner = factory.make_User()
@@ -89,51 +90,47 @@ class TestGenerateSystemInfo(MAASServerTestCase):
         owner.save()
         node = factory.make_Node(owner=owner, default_user=owner)
         configuration = generate_system_info(node)
-        self.assertEqual(
-            dict(configuration),
-            {
-                "system_info": {
-                    "default_user": {
-                        "name": owner.username,
-                        "gecos": "First Last,,,,",
-                    }
+        assert dict(configuration) == {
+            "system_info": {
+                "default_user": {
+                    "name": owner.username,
+                    "gecos": "First Last,,,,",
                 }
-            },
-        )
+            }
+        }
 
 
-class TestGenerateSnapConfiguration(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test")
+class TestGenerateSnapConfiguration:
     def test_no_proxy(self):
         node = factory.make_Node()
         config = generate_snap_configuration(node, None)
-        self.assertEqual(list(config), [])
+        assert [] == list(config)
 
     def test_proxy(self):
         node = factory.make_Node()
         config = generate_snap_configuration(node, "http://proxy.example.com/")
-        self.assertEqual(
-            list(config),
-            [
-                (
-                    "snap",
-                    {
-                        "commands": [
-                            'snap set system proxy.http="http://proxy.example.com/" proxy.https="http://proxy.example.com/"'
-                        ],
-                    },
-                ),
-            ],
-        )
+        assert list(config) == [
+            (
+                "snap",
+                {
+                    "commands": [
+                        'snap set system proxy.http="http://proxy.example.com/" proxy.https="http://proxy.example.com/"'
+                    ],
+                },
+            ),
+        ]
 
 
-class TestGenerateNTPConfiguration(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test")
+class TestGenerateNTPConfiguration:
     """Tests for `generate_ntp_configuration`."""
 
     def test_external_only_yields_nothing_when_no_ntp_servers_defined(self):
         Config.objects.set_config("ntp_external_only", True)
         Config.objects.set_config("ntp_servers", "")
         configuration = generate_ntp_configuration(node=factory.make_Node())
-        self.assertEqual({}, dict(configuration))
+        assert {} == dict(configuration)
 
     def test_external_only_yields_all_ntp_servers_when_defined(self):
         Config.objects.set_config("ntp_external_only", True)
@@ -142,15 +139,12 @@ class TestGenerateNTPConfiguration(MAASServerTestCase):
         ntp_servers = ntp_hosts + ntp_addrs
         Config.objects.set_config("ntp_servers", " ".join(ntp_servers))
         configuration = generate_ntp_configuration(node=factory.make_Node())
-        self.assertEqual(
-            dict(configuration),
-            {
-                "ntp": {
-                    "servers": sorted(ntp_addrs, key=IPAddress),
-                    "pools": sorted(ntp_hosts),
-                }
-            },
-        )
+        assert dict(configuration) == {
+            "ntp": {
+                "servers": sorted(ntp_addrs, key=IPAddress),
+                "pools": sorted(ntp_hosts),
+            }
+        }
 
     def test_yields_nothing_when_machine_has_no_boot_cluster_address(self):
         Config.objects.set_config("ntp_external_only", False)
@@ -158,7 +152,7 @@ class TestGenerateNTPConfiguration(MAASServerTestCase):
         machine.boot_cluster_ip = None
         machine.save()
         configuration = generate_ntp_configuration(machine)
-        self.assertEqual({}, dict(configuration))
+        assert {} == dict(configuration)
 
     def test_yields_boot_cluster_address_when_machine_has_booted(self):
         Config.objects.set_config("ntp_external_only", False)
@@ -189,24 +183,22 @@ class TestGenerateNTPConfiguration(MAASServerTestCase):
             vlan.save()
 
         configuration = generate_ntp_configuration(machine)
-        self.assertEqual(
-            dict(configuration),
-            {
-                "ntp": {
-                    "servers": sorted(
-                        (
-                            rack_primary_address.ip,
-                            rack_secondary_address.ip,
-                        ),
-                        key=IPAddress,
+        assert dict(configuration) == {
+            "ntp": {
+                "servers": sorted(
+                    (
+                        rack_primary_address.ip,
+                        rack_secondary_address.ip,
                     ),
-                    "pools": [],
-                }
-            },
-        )
+                    key=IPAddress,
+                ),
+                "pools": [],
+            }
+        }
 
 
-class TestGenerateOpenVSwitchConfiguration(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test")
+class TestGenerateOpenVSwitchConfiguration:
     def test_yields_empty_without_ovs(self):
         node = factory.make_Node(status=NODE_STATUS.TESTING)
         iface = factory.make_Interface(node=node)
@@ -217,10 +209,7 @@ class TestGenerateOpenVSwitchConfiguration(MAASServerTestCase):
             parents=[iface],
             params={"bridge_type": BRIDGE_TYPE.STANDARD},
         )
-        self.assertCountEqual(
-            generate_openvswitch_configuration(node),
-            [],
-        )
+        assert list(generate_openvswitch_configuration(node)) == []
 
     def test_yields_openvswitch_configuration_when_ovs_bridge(self):
         node = factory.make_Node(status=NODE_STATUS.TESTING)
@@ -231,36 +220,37 @@ class TestGenerateOpenVSwitchConfiguration(MAASServerTestCase):
             parents=[iface],
             params={"bridge_type": BRIDGE_TYPE.OVS},
         )
-        self.assertCountEqual(
-            generate_openvswitch_configuration(node),
-            [("packages", ["openvswitch-switch"])],
-        )
+        assert list(generate_openvswitch_configuration(node)) == [
+            ("packages", ["openvswitch-switch"])
+        ]
 
 
-class TestGenerateEphemeralNetplanLockRemoval(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test")
+class TestGenerateEphemeralNetplanLockRemoval:
     def test_does_nothing_if_deploying(self):
         # MAAS transitions a machine from DEPLOYING to DEPLOYED after
         # user_data has been requested. Make sure deploying nodes don't
         # get this config.
         node = factory.make_Node(status=NODE_STATUS.DEPLOYING)
         config = list(generate_ephemeral_netplan_lock_removal(node))
-        self.assertEqual(config, [])
+        assert config == []
 
     def test_removes_lock_when_ephemeral(self):
         node = factory.make_Node(
             status=random.choice(COMMISSIONING_LIKE_STATUSES)
         )
         config = list(generate_ephemeral_netplan_lock_removal(node))
-        self.assertEqual(config, [("runcmd", ["rm -rf /run/netplan"])])
+        assert config == [("runcmd", ["rm -rf /run/netplan"])]
 
 
-class TestGenerateEphemeralDeploymentNetworkConfiguration(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test")
+class TestGenerateEphemeralDeploymentNetworkConfiguration:
     def test_yields_nothing_when_node_is_not_ephemeral_deployment(self):
         node = factory.make_Node()
         config = list(
             generate_ephemeral_deployment_network_configuration(node)
         )
-        self.assertEqual(config, [])
+        assert config == []
 
     def test_yields_configuration_when_node_is_ephemeral_deployment(self):
         node = factory.make_Node(
@@ -271,31 +261,26 @@ class TestGenerateEphemeralDeploymentNetworkConfiguration(MAASServerTestCase):
         config = list(
             generate_ephemeral_deployment_network_configuration(node)
         )
-        self.assertEqual(
-            config,
-            [
-                (
-                    "write_files",
-                    [
-                        {
-                            "path": "/etc/netplan/50-maas.yaml",
-                            "content": yaml.safe_dump(
-                                {"network": {"version": 2}}
-                            ),
-                            "permissions": "0600",
-                        },
-                    ],
-                ),
-                (
-                    "runcmd",
-                    [
-                        "rm -rf /run/netplan",
-                        "rm -rf /etc/netplan/50-cloud-init.yaml",
-                        "netplan apply --debug",
-                    ],
-                ),
-            ],
-        )
+        assert config == [
+            (
+                "write_files",
+                [
+                    {
+                        "path": "/etc/netplan/50-maas.yaml",
+                        "content": yaml.safe_dump({"network": {"version": 2}}),
+                        "permissions": "0600",
+                    },
+                ],
+            ),
+            (
+                "runcmd",
+                [
+                    "rm -rf /run/netplan",
+                    "rm -rf /etc/netplan/50-cloud-init.yaml",
+                    "netplan apply --debug",
+                ],
+            ),
+        ]
 
     def test_yields_configuration_when_node_is_ephemeral_deployment_with_custom_ubuntu_image(
         self,
@@ -316,45 +301,41 @@ class TestGenerateEphemeralDeploymentNetworkConfiguration(MAASServerTestCase):
         config = list(
             generate_ephemeral_deployment_network_configuration(node)
         )
-        self.assertEqual(
-            config,
-            [
-                (
-                    "write_files",
-                    [
-                        {
-                            "path": "/etc/netplan/50-maas.yaml",
-                            "content": yaml.safe_dump(
-                                {"network": {"version": 2}}
-                            ),
-                            "permissions": "0600",
-                        },
-                    ],
-                ),
-                (
-                    "runcmd",
-                    [
-                        "rm -rf /run/netplan",
-                        "rm -rf /etc/netplan/50-cloud-init.yaml",
-                        "netplan apply --debug",
-                    ],
-                ),
-            ],
-        )
+        assert config == [
+            (
+                "write_files",
+                [
+                    {
+                        "path": "/etc/netplan/50-maas.yaml",
+                        "content": yaml.safe_dump({"network": {"version": 2}}),
+                        "permissions": "0600",
+                    },
+                ],
+            ),
+            (
+                "runcmd",
+                [
+                    "rm -rf /run/netplan",
+                    "rm -rf /etc/netplan/50-cloud-init.yaml",
+                    "netplan apply --debug",
+                ],
+            ),
+        ]
 
 
-class TestGenerateOverlayrootTmpfsSizeFix(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test")
+class TestGenerateOverlayrootTmpfsSizeFix:
     def test_yields_nothing_when_node_is_not_ephemeral_deployment(self):
         node = factory.make_Node()
         config = list(generate_overlayroot_tmpfs_size_fix(node))
-        self.assertEqual(config, [])
+        assert config == []
 
     def test_yields_nothing_when_no_overlayroot_size_parameter(self):
         node = factory.make_Node(
             ephemeral_deploy=True, status=NODE_STATUS.DEPLOYING
         )
         config = list(generate_overlayroot_tmpfs_size_fix(node))
-        self.assertEqual(config, [])
+        assert config == []
 
     def test_yields_nothing_when_overlayroot_without_size(self):
         node = factory.make_Node(
@@ -363,7 +344,7 @@ class TestGenerateOverlayrootTmpfsSizeFix(MAASServerTestCase):
         tag = factory.make_Tag(kernel_opts="overlayroot=tmpfs")
         node.tags.add(tag)
         config = list(generate_overlayroot_tmpfs_size_fix(node))
-        self.assertEqual(config, [])
+        assert config == []
 
     def test_yields_runcmd_when_overlayroot_with_size_in_tag(self):
         node = factory.make_Node(
@@ -372,17 +353,14 @@ class TestGenerateOverlayrootTmpfsSizeFix(MAASServerTestCase):
         tag = factory.make_Tag(kernel_opts="overlayroot=tmpfs:size=4G")
         node.tags.add(tag)
         config = list(generate_overlayroot_tmpfs_size_fix(node))
-        self.assertEqual(
-            config,
-            [
-                (
-                    "runcmd",
-                    [
-                        "mountpoint -q /media/root-rw && mount -o remount,size=4G /media/root-rw || true"
-                    ],
-                )
-            ],
-        )
+        assert config == [
+            (
+                "runcmd",
+                [
+                    "mountpoint -q /media/root-rw && mount -o remount,size=4G /media/root-rw || true"
+                ],
+            )
+        ]
 
     def test_yields_runcmd_when_overlayroot_with_percentage_size(self):
         node = factory.make_Node(
@@ -391,17 +369,14 @@ class TestGenerateOverlayrootTmpfsSizeFix(MAASServerTestCase):
         tag = factory.make_Tag(kernel_opts="overlayroot=tmpfs:size=25%")
         node.tags.add(tag)
         config = list(generate_overlayroot_tmpfs_size_fix(node))
-        self.assertEqual(
-            config,
-            [
-                (
-                    "runcmd",
-                    [
-                        "mountpoint -q /media/root-rw && mount -o remount,size=25% /media/root-rw || true"
-                    ],
-                )
-            ],
-        )
+        assert config == [
+            (
+                "runcmd",
+                [
+                    "mountpoint -q /media/root-rw && mount -o remount,size=25% /media/root-rw || true"
+                ],
+            )
+        ]
 
     def test_yields_runcmd_when_overlayroot_size_in_global_config(self):
         node = factory.make_Node(
@@ -409,28 +384,26 @@ class TestGenerateOverlayrootTmpfsSizeFix(MAASServerTestCase):
         )
         Config.objects.set_config("kernel_opts", "overlayroot=tmpfs:size=2G")
         config = list(generate_overlayroot_tmpfs_size_fix(node))
-        self.assertEqual(
-            config,
-            [
-                (
-                    "runcmd",
-                    [
-                        "mountpoint -q /media/root-rw && mount -o remount,size=2G /media/root-rw || true"
-                    ],
-                )
-            ],
-        )
+        assert config == [
+            (
+                "runcmd",
+                [
+                    "mountpoint -q /media/root-rw && mount -o remount,size=2G /media/root-rw || true"
+                ],
+            )
+        ]
 
 
-class TestGenerateVcenterConfiguration(MAASServerTestCase):
-    def test_does_nothing_if_not_vmware(self):
-        mock_get_configs = self.patch(Config.objects, "get_configs")
+@pytest.mark.usefixtures("maasdb", "maas_region_test")
+class TestGenerateVcenterConfiguration:
+    def test_does_nothing_if_not_vmware(self, mocker):
+        mock_get_configs = mocker.patch.object(Config.objects, "get_configs")
         node = factory.make_Node(
             status=NODE_STATUS.DEPLOYING, owner=factory.make_admin()
         )
         config = get_vendor_data(node, None)
         mock_get_configs.assert_not_called()
-        self.assertNotIn("write_files", config)
+        assert "write_files" not in config
 
     def test_returns_nothing_if_no_values_set(self):
         node = factory.make_Node(
@@ -440,7 +413,7 @@ class TestGenerateVcenterConfiguration(MAASServerTestCase):
         )
         node.nodemetadata_set.create(key="vcenter_registration", value="True")
         config = get_vendor_data(node, None)
-        self.assertNotIn("write_files", config)
+        assert "write_files" not in config
 
     def test_returns_vcenter_yaml(self):
         node = factory.make_Node(
@@ -461,15 +434,12 @@ class TestGenerateVcenterConfiguration(MAASServerTestCase):
         SecretManager().set_simple_secret("vcenter-password", vcenter_password)
         vcenter["vcenter_password"] = vcenter_password
         config = get_vendor_data(node, None)
-        self.assertEqual(
-            config["write_files"],
-            [
-                {
-                    "content": yaml.safe_dump(vcenter),
-                    "path": "/altbootbank/maas/vcenter.yaml",
-                },
-            ],
-        )
+        assert config["write_files"] == [
+            {
+                "content": yaml.safe_dump(vcenter),
+                "path": "/altbootbank/maas/vcenter.yaml",
+            },
+        ]
 
     def test_returns_nothing_if_no_user(self):
         node = factory.make_Node(status=NODE_STATUS.DEPLOYING, osystem="esxi")
@@ -477,7 +447,7 @@ class TestGenerateVcenterConfiguration(MAASServerTestCase):
             key = "vcenter_%s" % i
             Config.objects.set_config(key, factory.make_name(key))
         config = get_vendor_data(node, None)
-        self.assertNotIn("write_files", config)
+        assert "write_files" not in config
 
     def test_returns_nothing_if_user(self):
         node = factory.make_Node(
@@ -489,7 +459,7 @@ class TestGenerateVcenterConfiguration(MAASServerTestCase):
             key = "vcenter_%s" % i
             Config.objects.set_config(key, factory.make_name(key))
         config = get_vendor_data(node, None)
-        self.assertNotIn("write_files", config)
+        assert "write_files" not in config
 
     def test_returns_nothing_if_vcenter_registration_not_set(self):
         node = factory.make_Node(
@@ -501,10 +471,11 @@ class TestGenerateVcenterConfiguration(MAASServerTestCase):
             key = "vcenter_%s" % i
             Config.objects.set_config(key, factory.make_name(key))
         config = get_vendor_data(node, None)
-        self.assertNotIn("write_files", config)
+        assert "write_files" not in config
 
 
-class TestGenerateHardwareSyncSystemdConfiguration(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test")
+class TestGenerateHardwareSyncSystemdConfiguration:
     def _get_timer_template(self):
         return tempita.Template(
             _get_metadataserver_template(HARDWARE_SYNC_TIMER_TEMPLATE),
@@ -520,7 +491,8 @@ class TestGenerateHardwareSyncSystemdConfiguration(MAASServerTestCase):
             status=NODE_STATUS.DEPLOYING,
         )
         config = generate_hardware_sync_systemd_configuration(node)
-        self.assertRaises(StopIteration, next, config)
+        with pytest.raises(StopIteration):
+            next(config)
 
     def test_returns_timer_and_service_when_node_enable_hw_sync_is_True(self):
         node = factory.make_Node(
@@ -571,10 +543,11 @@ class TestGenerateHardwareSyncSystemdConfiguration(MAASServerTestCase):
             ],
         )
 
-        self.assertCountEqual(next(config), expected)
+        assert sorted(next(config), key=repr) == sorted(expected, key=repr)
 
 
-class TestGetNodeMAASURL(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test")
+class TestGetNodeMAASURL:
     def test_maas_url_uses_boot_rack_controller(self):
         subnet = factory.make_Subnet()
         rack_controller = factory.make_RackController()
@@ -585,10 +558,11 @@ class TestGetNodeMAASURL(MAASServerTestCase):
         expected_url = (
             f"http://{get_maas_facing_server_host(rack_controller)}:5240/MAAS"
         )
-        self.assertEqual(expected_url, get_node_maas_url(node))
+        assert expected_url == get_node_maas_url(node)
 
 
-class TestGetNodeRackURL(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test")
+class TestGetNodeRackURL:
     def test_url_uses_machine_facing_rack_controller(self):
         vlan1 = factory.make_VLAN()
         vlan2 = factory.make_VLAN()
@@ -618,4 +592,4 @@ class TestGetNodeRackURL(MAASServerTestCase):
         node.save()
 
         expected_url = "http://10.0.0.1:5248/MAAS"
-        self.assertEqual(expected_url, get_node_rack_url(node))
+        assert expected_url == get_node_rack_url(node)

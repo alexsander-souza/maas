@@ -3,16 +3,18 @@
 
 """Test the behaviour of RegionRackRPCConnection signals."""
 
+import pytest
+
 from maasserver.models import DNSPublication
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 
 
-class TestPostSaveRegionRackRPCConnectionSignal(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestPostSaveRegionRackRPCConnectionSignal:
     def test_save_region_rack_rpc_connection_creates_dnspublication(self):
         factory.make_RegionRackRPCConnection()
         dnspublication = DNSPublication.objects.get_most_recent()
-        self.assertIn("connected", dnspublication.source)
+        assert "connected" in dnspublication.source
 
     def test_save_region_rack_rpc_connection_does_not_create_dnspublication_after_first_connection(
         self,
@@ -27,17 +29,16 @@ class TestPostSaveRegionRackRPCConnectionSignal(MAASServerTestCase):
         factory.make_RegionRackRPCConnection(
             rack_controller=rack_controller, endpoint=endpoint2
         )
-        self.assertEqual(
-            dnspublication, DNSPublication.objects.get_most_recent()
-        )
+        assert dnspublication == DNSPublication.objects.get_most_recent()
 
 
-class TestPostRegionRackRPCConnectionSubnetSignal(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestPostRegionRackRPCConnectionSubnetSignal:
     def test_delete_rack_rpc_connection_creates_dnspublication(self):
         connection = factory.make_RegionRackRPCConnection()
         connection.delete()
         dnspublication = DNSPublication.objects.get_most_recent()
-        self.assertIn("disconnected", dnspublication.source)
+        assert "disconnected" in dnspublication.source
 
     def test_delete_rack_rpc_connection_does_not_create_dnspublication_when_still_connected(
         self,
@@ -49,4 +50,4 @@ class TestPostRegionRackRPCConnectionSubnetSignal(MAASServerTestCase):
         )
         connection.delete()
         dnspublication = DNSPublication.objects.get_most_recent()
-        self.assertNotIn("disconnected", dnspublication.source)
+        assert "disconnected" not in dnspublication.source

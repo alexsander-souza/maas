@@ -8,12 +8,15 @@ import random
 from django.conf import settings
 from django.test import RequestFactory
 from django.urls import reverse
+import pytest
 from twisted.internet.defer import succeed
 
-from maasserver import eventloop
+from maascommon.osystem import CustomOS, OperatingSystemRegistry
+from maasserver import eventloop, forms
 from maasserver.api import machines as machines_module
 from maasserver.api.machines import AllocationOptions, get_allocation_options
 from maasserver.enum import (
+    BOOT_RESOURCE_TYPE,
     BRIDGE_TYPE,
     INTERFACE_TYPE,
     IPADDRESS_TYPE,
@@ -30,36 +33,49 @@ from maasserver.models import (
 )
 from maasserver.models import node as node_module
 from maasserver.models.node import RELEASABLE_STATUSES
-from maasserver.testing.api import APITestCase, APITransactionTestCase
-from maasserver.testing.architecture import make_usable_architecture
+from maasserver.testing.architecture import make_arch
 from maasserver.testing.eventloop import (
     RegionEventLoopFixture,
     RunningEventLoopFixture,
 )
 from maasserver.testing.factory import factory
-from maasserver.testing.osystems import make_usable_osystem
-from maasserver.testing.testclient import MAASSensibleOAuthClient
 from maasserver.utils.orm import post_commit_hooks, reload_object
-from maastesting.djangotestcase import CountQueries
-from maastesting.testcase import MAASTestCase
+from maastesting.querycounter import CountQueries
 from metadataserver.enum import SCRIPT_TYPE
 from provisioningserver.enum import POWER_STATE
 from provisioningserver.utils.enum import map_enum
 from tests.maasserver.api.test_nodes import RenderedNodesMixin
-from tests.maasserver.auth.test_auth import OpenFGAMockMixin
+from tests.maasserver.auth.test_auth import PytestOpenFGAMockMixin
 
 
-class TestGetStorageLayoutParams(MAASTestCase):
+class TestGetStorageLayoutParams:
     def test_sets_request_data_to_mutable(self):
         data = {"op": "allocate", "storage_layout": "flat"}
         request = RequestFactory().post(reverse("machines_handler"), data)
         request.data = request.POST.copy()
         request.data._mutable = False
         machines_module.get_storage_layout_params(request)
-        self.assertTrue(request.data._mutable)
+        assert request.data._mutable
 
 
-class TestMachineHostname(APITestCase.ForUserAndAdmin):
+@pytest.mark.parametrize(
+    "api_identity",
+    [
+        pytest.param("user=user,client=oauth", id="user=user,client=oauth"),
+        pytest.param("user=admin,client=oauth", id="user=admin,client=oauth"),
+    ],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestMachineHostname:
+    @pytest.fixture(autouse=True)
+    def _setup(
+        self, api_identity, admin, admin_api_client, maas_user, api_client
+    ):
+        if "user=admin" in api_identity:
+            self.user, self.client = admin, admin_api_client
+        else:
+            self.user, self.client = maas_user, api_client
+
     def test_GET_returns_fqdn_with_domain_name_from_node(self):
         # If DNS management is enabled, the domain part of a hostname
         # still comes from the node.
@@ -75,36 +91,38 @@ class TestMachineHostname(APITestCase.ForUserAndAdmin):
         fqdn = f"{hostname}.{domainname}"
         response = self.client.get(reverse("machines_handler"))
 
-        self.assertEqual(
-            http.client.OK.value, response.status_code, response.content
-        )
+        assert response.status_code == http.client.OK.value, response.content
         parsed_result = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertEqual(
-            [fqdn], [machine.get("fqdn") for machine in parsed_result]
-        )
+        assert [fqdn] == [machine.get("fqdn") for machine in parsed_result]
 
 
-class TestMachineWorkloadAnnotations(APITestCase.ForUser):
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user=user,client=oauth", id="user=user,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestMachineWorkloadAnnotations:
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maas_user, api_client):
+        self.user = maas_user
+        self.client = api_client
+
     def test_GET_returns_workload_annotations(self):
         owner_data = {factory.make_name("key"): factory.make_name("value")}
         factory.make_Node(owner_data=owner_data)
         response = self.client.get(reverse("machines_handler"))
-        self.assertEqual(
-            http.client.OK.value, response.status_code, response.content
-        )
+        assert response.status_code == http.client.OK.value, response.content
         parsed_result = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertEqual(
-            [machine.get("owner_data") for machine in parsed_result],
-            [owner_data],
-        )
-        self.assertEqual(
-            [machine.get("workload_annotations") for machine in parsed_result],
-            [owner_data],
-        )
+        assert [machine.get("owner_data") for machine in parsed_result] == [
+            owner_data
+        ]
+        assert [
+            machine.get("workload_annotations") for machine in parsed_result
+        ] == [owner_data]
 
 
 def extract_system_ids(parsed_result):
@@ -116,24 +134,63 @@ def extract_system_ids_from_machines(machines):
     return [machine.system_id for machine in machines]
 
 
-class TestMachinesAPI(APITestCase.ForUser):
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user=user,client=oauth", id="user=user,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestMachinesAPI:
     """Tests for /api/2.0/machines/."""
 
-    # XXX: GavinPanella 2016-05-24 bug=1585138: op=list_allocated does not
-    # work for clients authenticated via username and password.
-    clientfactories = {"oauth": MAASSensibleOAuthClient}
-
-    def setUp(self):
-        super().setUp()
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, api_client, maas_user, mocker):
+        self.user = maas_user
+        self.client = api_client
         self.machines_url = reverse("machines_handler")
-        self.patch(node_module, "stop_workflow")
+        mocker.patch.object(node_module, "stop_workflow")
 
     def get_json(self, *args, **kwargs):
         """Call the handler, and get the JSON response"""
         return self.client.get(self.machines_url, *args, **kwargs).json()
 
+    def make_usable_architecture(self, mocker, **kwargs):
+        architecture = make_arch(**kwargs)
+        mocker.patch.object(
+            forms, "list_all_usable_architectures", return_value=[architecture]
+        )
+        return architecture
+
+    def make_usable_osystem(self, request, osystem_name=None, releases=None):
+        if osystem_name is None:
+            osystem_name = factory.make_name("os")
+        if releases is None:
+            releases = [factory.make_name("release") for _ in range(3)]
+        aliases = [factory.make_name("alias") for _ in releases]
+        if osystem_name not in OperatingSystemRegistry:
+            OperatingSystemRegistry.register_item(osystem_name, CustomOS())
+            request.addfinalizer(
+                lambda: OperatingSystemRegistry.unregister_item(osystem_name)
+            )
+        architectures = [
+            node.architecture for node in Node.objects.distinct("architecture")
+        ]
+        if not architectures:
+            architectures.append(f"{factory.make_name('arch')}/generic")
+        for architecture in architectures:
+            factory.make_default_ubuntu_release_bootable(
+                architecture.split("/")[0]
+            )
+            for release, alias in zip(releases, aliases):
+                factory.make_BootResource(
+                    rtype=BOOT_RESOURCE_TYPE.UPLOADED,
+                    name=f"{osystem_name}/{release}",
+                    alias=f"{osystem_name}/{alias}",
+                    architecture=architecture,
+                )
+        return osystem_name, releases
+
     def test_handler_path(self):
-        self.assertEqual("/MAAS/api/2.0/machines/", self.machines_url)
+        assert "/MAAS/api/2.0/machines/" == self.machines_url
 
     def test_GET_includes_error_description(self):
         factory.make_Node(
@@ -142,12 +199,12 @@ class TestMachinesAPI(APITestCase.ForUser):
             error_description="my error",
         )
         parsed_result = self.get_json()
-        self.assertEqual(parsed_result[0]["error_description"], "my error")
+        assert parsed_result[0]["error_description"] == "my error"
 
-    def test_POST_creates_machine(self):
+    def test_POST_creates_machine(self, mocker):
         # The API allows a non-admin logged-in user to create a Machine.
         hostname = factory.make_name("host")
-        architecture = make_usable_architecture(self)
+        architecture = self.make_usable_architecture(mocker)
         macs = {
             factory.make_mac_address() for _ in range(random.randint(1, 2))
         }
@@ -159,21 +216,18 @@ class TestMachinesAPI(APITestCase.ForUser):
                 "mac_addresses": macs,
             },
         )
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code
         system_id = response.json()["system_id"]
         machine = Machine.objects.get(system_id=system_id)
-        self.assertEqual(machine.hostname, hostname)
-        self.assertEqual(machine.architecture, architecture)
-        self.assertEqual(
-            {
-                nic.mac_address
-                for nic in machine.current_config.interface_set.all()
-            },
-            macs,
-        )
+        assert machine.hostname == hostname
+        assert machine.architecture == architecture
+        assert {
+            nic.mac_address
+            for nic in machine.current_config.interface_set.all()
+        } == macs
 
-    def test_POST_creates_ipmi_machine_sets_workaround_flags(self):
-        make_usable_architecture(self)
+    def test_POST_creates_ipmi_machine_sets_workaround_flags(self, mocker):
+        self.make_usable_architecture(mocker)
         hostname = factory.make_name("host")
         macs = {
             factory.make_mac_address() for _ in range(random.randint(1, 2))
@@ -190,19 +244,20 @@ class TestMachinesAPI(APITestCase.ForUser):
                 "power_parameters_workaround_flags": workaround_flags,
             },
         )
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code
         system_id = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )["system_id"]
         machine = Machine.objects.get(system_id=system_id)
-        self.assertEqual(machine.hostname, hostname)
-        self.assertCountEqual(
-            workaround_flags,
-            machine.get_power_parameters()["workaround_flags"],
+        assert machine.hostname == hostname
+        assert sorted(workaround_flags) == sorted(
+            machine.get_power_parameters()["workaround_flags"]
         )
 
-    def test_POST_creates_ipmi_machine_sets_mac_addresses_empty_no_arch(self):
-        make_usable_architecture(self)
+    def test_POST_creates_ipmi_machine_sets_mac_addresses_empty_no_arch(
+        self, mocker
+    ):
+        self.make_usable_architecture(mocker)
         hostname = factory.make_name("host")
         macs = {
             factory.make_mac_address() for _ in range(random.randint(1, 2))
@@ -217,119 +272,116 @@ class TestMachinesAPI(APITestCase.ForUser):
                 "power_parameters_power_address": power_address,
             },
         )
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code
         system_id = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )["system_id"]
         machine = Machine.objects.get(system_id=system_id)
-        self.assertEqual(machine.hostname, hostname)
-        self.assertEqual(
-            {
-                nic.mac_address
-                for nic in machine.current_config.interface_set.all()
-            },
-            set(),
-        )
-        self.assertEqual(
-            power_address, machine.get_power_parameters()["power_address"]
-        )
+        assert machine.hostname == hostname
+        assert {
+            nic.mac_address
+            for nic in machine.current_config.interface_set.all()
+        } == set()
+        assert power_address == machine.get_power_parameters()["power_address"]
 
-    def test_POST_when_logged_in_creates_machine_in_declared_state(self):
+    def test_POST_when_logged_in_creates_machine_in_declared_state(
+        self, mocker
+    ):
         # When a user enlists a machine, it goes into the New state.
         # This will change once we start doing proper commissioning.
         response = self.client.post(
             self.machines_url,
             {
                 "hostname": factory.make_name("host"),
-                "architecture": make_usable_architecture(self),
+                "architecture": self.make_usable_architecture(mocker),
                 "mac_addresses": [factory.make_mac_address()],
             },
         )
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code
         system_id = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )["system_id"]
-        self.assertEqual(
-            NODE_STATUS.NEW, Node.objects.get(system_id=system_id).status
-        )
+        assert NODE_STATUS.NEW == Node.objects.get(system_id=system_id).status
 
-    def test_POST_when_logged_in_creates_deployed_machine(self):
-        self.become_admin()
-        response = self.client.post(
+    def test_POST_when_logged_in_creates_deployed_machine(
+        self, admin, admin_api_client, mocker
+    ):
+        response = admin_api_client.post(
             self.machines_url,
             {
                 "deployed": True,
                 "hostname": factory.make_name("host"),
-                "architecture": make_usable_architecture(self),
+                "architecture": self.make_usable_architecture(mocker),
                 "mac_addresses": [factory.make_mac_address()],
             },
         )
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code
         system_id = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )["system_id"]
         node = Node.objects.get(system_id=system_id)
-        self.assertEqual(NODE_STATUS.DEPLOYED, node.status)
-        self.assertEqual(self.user, node.owner)
+        assert NODE_STATUS.DEPLOYED == node.status
+        assert admin == node.owner
 
-    def test_POST_new_when_no_RPC_to_rack_defaults_empty_power(self):
+    def test_POST_new_when_no_RPC_to_rack_defaults_empty_power(
+        self, admin, admin_api_client, mocker
+    ):
         # Test for bug 1305061, if there is no cluster RPC connection
         # then make sure that power_type is defaulted to the empty
         # string rather than being entirely absent, which results in a
         # crash.
-        self.become_admin()
         # The patching behind the scenes to avoid *real* RPC is
         # complex and the available power types is actually a
         # valid set, so use an invalid type to trigger the bug here.
         power_type = factory.make_name("power_type")
-        response = self.client.post(
+        response = admin_api_client.post(
             self.machines_url,
             {
-                "architecture": make_usable_architecture(self),
+                "architecture": self.make_usable_architecture(mocker),
                 "mac_addresses": ["aa:bb:cc:dd:ee:ff"],
                 "power_type": power_type,
             },
         )
-        self.assertEqual(http.client.BAD_REQUEST, response.status_code)
+        assert http.client.BAD_REQUEST == response.status_code
         validation_errors = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )["power_type"]
-        self.assertEqual(
+        assert (
             "Select a valid choice. %s is not one of the "
-            "available choices." % power_type,
-            validation_errors[0],
+            "available choices." % power_type == validation_errors[0]
         )
 
-    def test_POST_new_handles_empty_str_power_parameters(self):
+    def test_POST_new_handles_empty_str_power_parameters(self, mocker):
         # Regression test for LP:1636858
         response = self.client.post(
             self.machines_url,
             {
-                "architecture": make_usable_architecture(self),
+                "architecture": self.make_usable_architecture(mocker),
                 "mac_addresses": ["aa:bb:cc:dd:ee:ff"],
                 "power_type": "",
                 "power_parameters": "",
             },
         )
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code
         system_id = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )["system_id"]
         machine = Machine.objects.get(system_id=system_id)
-        self.assertEqual("", machine.power_type)
-        self.assertEqual({}, machine.get_power_parameters())
+        assert "" == machine.power_type
+        assert {} == machine.get_power_parameters()
 
-    def test_POST_handles_error_when_unable_to_access_bmc(self):
+    def test_POST_handles_error_when_unable_to_access_bmc(
+        self, admin, admin_api_client, mocker, request
+    ):
         # Regression test for LP1600328
-        self.patch(Machine, "_start").return_value = None
-        make_usable_osystem(self)
-        self.become_admin()
+        mocker.patch.object(Machine, "_start").return_value = None
+        self.make_usable_osystem(request)
         power_address = factory.make_ip_address()
         power_id = factory.make_name("power_id")
-        response = self.client.post(
+        response = admin_api_client.post(
             self.machines_url,
             {
-                "architecture": make_usable_architecture(self),
+                "architecture": self.make_usable_architecture(mocker),
                 "mac_addresses": ["aa:bb:cc:dd:ee:ff"],
                 "power_type": "virsh",
                 "power_parameters_power_address": power_address,
@@ -338,44 +390,44 @@ class TestMachinesAPI(APITestCase.ForUser):
         )
         parsed_result = response.json()
         machine = Machine.objects.get(system_id=parsed_result["system_id"])
-        self.assertEqual("virsh", parsed_result["power_type"])
-        self.assertEqual(
-            power_address, machine.get_power_parameters()["power_address"]
-        )
-        self.assertEqual(power_id, machine.get_power_parameters()["power_id"])
+        assert "virsh" == parsed_result["power_type"]
+        assert power_address == machine.get_power_parameters()["power_address"]
+        assert power_id == machine.get_power_parameters()["power_id"]
 
-    def test_POST_rejects_non_fips_driver_when_fips_enabled(self):
+    def test_POST_rejects_non_fips_driver_when_fips_enabled(
+        self, admin, admin_api_client, mocker
+    ):
         from maasserver.forms import fips_power
 
-        self.patch(fips_power, "is_fips_enabled").return_value = True
-        self.become_admin()
-        response = self.client.post(
+        mocker.patch.object(fips_power, "is_fips_enabled", return_value=True)
+        response = admin_api_client.post(
             self.machines_url,
             {
-                "architecture": make_usable_architecture(self),
+                "architecture": self.make_usable_architecture(mocker),
                 "mac_addresses": ["aa:bb:cc:dd:ee:ff"],
                 "power_type": "apc",
                 "power_parameters_power_address": factory.make_ip_address(),
                 "power_parameters_node_outlet": "1",
             },
         )
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
-        self.assertIn(b"FIPS", response.content)
+        assert b"FIPS" in response.content
 
-    def test_POST_sets_description(self):
+    def test_POST_sets_description(
+        self, admin, admin_api_client, mocker, request
+    ):
         # Regression test for LP1707562
-        self.become_admin()
-        self.patch(Machine, "_start").return_value = None
-        make_usable_osystem(self)
+        mocker.patch.object(Machine, "_start").return_value = None
+        self.make_usable_osystem(request)
         power_address = factory.make_ip_address()
         power_id = factory.make_name("power_id")
         description = factory.make_name("description")
-        response = self.client.post(
+        response = admin_api_client.post(
             self.machines_url,
             {
-                "architecture": make_usable_architecture(self),
+                "architecture": self.make_usable_architecture(mocker),
                 "mac_addresses": ["aa:bb:cc:dd:ee:ff"],
                 "power_type": "virsh",
                 "power_parameters_power_address": power_address,
@@ -384,21 +436,22 @@ class TestMachinesAPI(APITestCase.ForUser):
             },
         )
         parsed_result = response.json()
-        self.assertEqual(NODE_STATUS.COMMISSIONING, parsed_result["status"])
-        self.assertEqual(description, parsed_result["description"])
+        assert NODE_STATUS.COMMISSIONING == parsed_result["status"]
+        assert description == parsed_result["description"]
 
-    def test_POST_starts_commissioning_with_selected_test_scripts(self):
+    def test_POST_starts_commissioning_with_selected_test_scripts(
+        self, admin, admin_api_client, mocker, request
+    ):
         # Regression test for LP1707562
-        self.become_admin()
-        self.patch(Machine, "_start").return_value = None
-        make_usable_osystem(self)
+        mocker.patch.object(Machine, "_start").return_value = None
+        self.make_usable_osystem(request)
         power_address = factory.make_ip_address()
         power_id = factory.make_name("power_id")
         test_script = factory.make_Script(script_type=SCRIPT_TYPE.TESTING)
-        response = self.client.post(
+        response = admin_api_client.post(
             self.machines_url,
             {
-                "architecture": make_usable_architecture(self),
+                "architecture": self.make_usable_architecture(mocker),
                 "mac_addresses": ["aa:bb:cc:dd:ee:ff"],
                 "power_type": "virsh",
                 "power_parameters_power_address": power_address,
@@ -407,49 +460,50 @@ class TestMachinesAPI(APITestCase.ForUser):
             },
         )
         parsed_result = response.json()
-        self.assertEqual(NODE_STATUS.COMMISSIONING, parsed_result["status"])
+        assert NODE_STATUS.COMMISSIONING == parsed_result["status"]
         script_set = ScriptSet.objects.get(
             id=parsed_result["current_testing_result_id"]
         )
-        self.assertEqual(
-            [test_script.name],
-            [script_result.name for script_result in script_set],
-        )
+        assert [test_script.name] == [
+            script_result.name for script_result in script_set
+        ]
 
-    def test_POST_commission_true(self):
+    def test_POST_commission_true(
+        self, admin, admin_api_client, mocker, request
+    ):
         # Regression test for LP:1904398
-        self.become_admin()
-        self.patch(Machine, "_start").return_value = None
-        make_usable_osystem(self)
-        response = self.client.post(
+        mocker.patch.object(Machine, "_start").return_value = None
+        self.make_usable_osystem(request)
+        response = admin_api_client.post(
             self.machines_url,
             {
-                "architecture": make_usable_architecture(self),
+                "architecture": self.make_usable_architecture(mocker),
                 "mac_addresses": ["aa:bb:cc:dd:ee:ff"],
                 "power_type": "manual",
                 "commission": True,
             },
         )
         parsed_result = response.json()
-        self.assertEqual(NODE_STATUS.COMMISSIONING, parsed_result["status"])
+        assert NODE_STATUS.COMMISSIONING == parsed_result["status"]
 
-    def test_POST_commission_false(self):
+    def test_POST_commission_false(
+        self, admin, admin_api_client, mocker, request
+    ):
         # Regression test for LP:1904398
-        self.become_admin()
-        make_usable_osystem(self)
-        response = self.client.post(
+        self.make_usable_osystem(request)
+        response = admin_api_client.post(
             self.machines_url,
             {
-                "architecture": make_usable_architecture(self),
+                "architecture": self.make_usable_architecture(mocker),
                 "mac_addresses": ["aa:bb:cc:dd:ee:ff"],
                 "power_type": "manual",
                 "commission": False,
             },
         )
         parsed_result = response.json()
-        self.assertEqual(NODE_STATUS.NEW, parsed_result["status"])
+        assert NODE_STATUS.NEW == parsed_result["status"]
 
-    def test_GET_lists_machines(self):
+    def test_GET_lists_machines(self, api_identity):
         # The api allows for fetching the list of Machines.
         machine1 = factory.make_Node()
         machine2 = factory.make_Node(
@@ -457,52 +511,62 @@ class TestMachinesAPI(APITestCase.ForUser):
         )
         parsed_result = self.get_json()
 
-        self.assertCountEqual(
-            [machine1.system_id, machine2.system_id],
-            extract_system_ids(parsed_result),
+        assert sorted([machine1.system_id, machine2.system_id]) == sorted(
+            extract_system_ids(parsed_result)
         )
 
-    def test_GET_includes_numa_nodes(self):
+    def test_GET_includes_numa_nodes(self, api_identity):
         machine = factory.make_Node()
         factory.make_NUMANode(node=machine, memory=2048 * 1024, cores=[0, 1])
         factory.make_NUMANode(node=machine, memory=4096 * 1024, cores=[2, 3])
         [parsed_result] = self.get_json()
-        self.assertCountEqual(
-            parsed_result["numanode_set"],
-            [
-                {"index": 0, "memory": 0, "cores": [], "hugepages_set": []},
-                {
-                    "index": 1,
-                    "memory": 2048 * 1024,
-                    "cores": [0, 1],
-                    "hugepages_set": [],
-                },
-                {
-                    "index": 2,
-                    "memory": 4096 * 1024,
-                    "cores": [2, 3],
-                    "hugepages_set": [],
-                },
-            ],
-        )
+        assert sorted(
+            parsed_result["numanode_set"], key=lambda node: node["index"]
+        ) == [
+            {"index": 0, "memory": 0, "cores": [], "hugepages_set": []},
+            {
+                "index": 1,
+                "memory": 2048 * 1024,
+                "cores": [0, 1],
+                "hugepages_set": [],
+            },
+            {
+                "index": 2,
+                "memory": 4096 * 1024,
+                "cores": [2, 3],
+                "hugepages_set": [],
+            },
+        ]
 
-    def test_GET_includes_numa_nodes_hugepages(self):
+    def test_GET_includes_numa_nodes_hugepages(self, api_identity):
         machine = factory.make_Node()
         hugepages = factory.make_NUMANodeHugepages(
             numa_node=machine.default_numanode
         )
         [parsed_result] = self.get_json()
-        self.assertEqual(
-            parsed_result["numanode_set"][0]["hugepages_set"],
-            [
-                {
-                    "page_size": hugepages.page_size,
-                    "total": hugepages.total,
-                },
-            ],
-        )
+        assert parsed_result["numanode_set"][0]["hugepages_set"] == [
+            {
+                "page_size": hugepages.page_size,
+                "total": hugepages.total,
+            },
+        ]
 
-    def test_GET_machines_issues_constant_number_of_queries(self):
+    def test_GET_orders_by_id(self, api_identity):
+        # Machines are returned in id order.
+        machines = [factory.make_Node() for counter in range(3)]
+        parsed_result = self.get_json()
+        assert [
+            machine.system_id for machine in machines
+        ] == extract_system_ids(parsed_result)
+
+    def test_GET_doesnt_list_devices(self, api_identity):
+        factory.make_Device()
+        parsed_result = self.get_json()
+        assert [] == parsed_result
+
+    def test_GET_machines_issues_constant_number_of_queries(
+        self, api_identity
+    ):
         queries_count = []
         machines_count = []
 
@@ -527,66 +591,57 @@ class TestMachinesAPI(APITestCase.ForUser):
         factory.make_VirtualBlockDevice(node=node)
         exec_request()
 
-        self.assertEqual(machines_count, [1, 2, 3])
-        self.assertEqual(queries_count, [45, 45, 45])
+        assert machines_count == [1, 2, 3]
+        assert len(set(queries_count)) == 1
 
-    def test_GET_without_machines_returns_empty_list(self):
+    def test_GET_without_machines_returns_empty_list(self, api_identity):
         # If there are no machines to list, the "read" op still works but
         # returns an empty list.
-        self.assertEqual([], self.get_json())
+        assert [] == self.get_json()
 
-    def test_GET_orders_by_id(self):
-        # Machines are returned in id order.
-        machines = [factory.make_Node() for counter in range(3)]
-        parsed_result = self.get_json()
-        self.assertEqual(
-            [machine.system_id for machine in machines],
-            extract_system_ids(parsed_result),
-        )
-
-    def test_GET_with_id_returns_matching_machines(self):
+    def test_GET_with_id_returns_matching_machines(self, api_identity):
         # The "read" operation takes optional "id" parameters.  Only
         # machines with matching ids will be returned.
         ids = [factory.make_Node().system_id for counter in range(3)]
         matching_id = ids[0]
         parsed_result = self.get_json({"id": [matching_id]})
-        self.assertEqual([matching_id], extract_system_ids(parsed_result))
+        assert [matching_id] == extract_system_ids(parsed_result)
 
-    def test_GET_with_nonexistent_id_returns_empty_list(self):
+    def test_GET_with_nonexistent_id_returns_empty_list(self, api_identity):
         # Trying to list a nonexistent machine id returns a list containing
         # no machines -- even if other (non-matching) machines exist.
         existing_id = factory.make_Node().system_id
         nonexistent_id = existing_id + factory.make_string()
         response = self.get_json({"id": [nonexistent_id]})
-        self.assertEqual([], response)
+        assert [] == response
 
-    def test_GET_with_ids_orders_by_id(self):
+    def test_GET_with_ids_orders_by_id(self, api_identity):
         # Even when ids are passed to "list," machines are returned in id
         # order, not necessarily in the order of the id arguments.
         ids = [factory.make_Node().system_id for counter in range(3)]
         parsed_result = self.get_json({"id": list(reversed(ids))})
-        self.assertEqual(ids, extract_system_ids(parsed_result))
+        assert ids == extract_system_ids(parsed_result)
 
-    def test_GET_with_some_matching_ids_returns_matching_machines(self):
+    def test_GET_with_some_matching_ids_returns_matching_machines(
+        self, api_identity
+    ):
         # If some machines match the requested ids and some don't, only the
         # matching ones are returned.
         existing_id = factory.make_Node().system_id
         nonexistent_id = existing_id + factory.make_string()
         parsed_result = self.get_json({"id": [existing_id, nonexistent_id]})
-        self.assertEqual([existing_id], extract_system_ids(parsed_result))
+        assert [existing_id] == extract_system_ids(parsed_result)
 
-    def test_GET_with_hostname_returns_matching_machines(self):
+    def test_GET_with_hostname_returns_matching_machines(self, api_identity):
         # The read operation takes optional "hostname" parameters. Only
         # machines with matching hostnames will be returned.
         machines = [factory.make_Node() for _ in range(3)]
         matching_hostname = machines[0].hostname
         matching_system_id = machines[0].system_id
         parsed_result = self.get_json({"hostname": [matching_hostname]})
-        self.assertEqual(
-            [matching_system_id], extract_system_ids(parsed_result)
-        )
+        assert [matching_system_id] == extract_system_ids(parsed_result)
 
-    def test_GET_with_macs_returns_matching_machines(self):
+    def test_GET_with_macs_returns_matching_machines(self, api_identity):
         # The "read" operation takes optional "mac_address" parameters. Only
         # machines with matching MAC addresses will be returned.
         interfaces = [
@@ -595,11 +650,9 @@ class TestMachinesAPI(APITestCase.ForUser):
         matching_mac = interfaces[0].mac_address
         matching_system_id = interfaces[0].node_config.node.system_id
         parsed_result = self.get_json({"mac_address": [matching_mac]})
-        self.assertEqual(
-            [matching_system_id], extract_system_ids(parsed_result)
-        )
+        assert [matching_system_id] == extract_system_ids(parsed_result)
 
-    def test_GET_with_invalid_macs_returns_sensible_error(self):
+    def test_GET_with_invalid_macs_returns_sensible_error(self, api_identity):
         # If specifying an invalid MAC, make sure the error that's
         # returned is not a crazy stack trace, but something nice to
         # humans.
@@ -608,74 +661,51 @@ class TestMachinesAPI(APITestCase.ForUser):
         ok_mac = str(
             factory.make_Interface(INTERFACE_TYPE.PHYSICAL).mac_address
         )
-        response = self.client.get(
-            self.machines_url,
-            {"mac_address": [bad_mac1, bad_mac2, ok_mac]},
+        parsed_result = self.get_json(
+            {"mac_address": [bad_mac1, bad_mac2, ok_mac]}
         )
-        self.assertEqual(http.client.BAD_REQUEST, response.status_code)
-        parsed_result = json.loads(
-            response.content.decode(settings.DEFAULT_CHARSET)
-        )
-        self.assertEqual(
-            parsed_result,
-            {
-                "mac_address": [
-                    "'00:E0:81:DD:D1:ZZ' is not a valid MAC address."
-                ]
-            },
-        )
+        assert parsed_result == {
+            "mac_address": ["'00:E0:81:DD:D1:ZZ' is not a valid MAC address."]
+        }
 
-    def test_GET_with_agent_name_filters_by_agent_name(self):
+    def test_GET_with_agent_name_filters_by_agent_name(self, api_identity):
         factory.make_Node(agent_name=factory.make_name("other_agent_name"))
         agent_name = factory.make_name("agent-name")
         machine = factory.make_Node(agent_name=agent_name)
         parsed_result = self.get_json({"agent_name": agent_name})
-        self.assertEqual(
-            [machine.system_id], extract_system_ids(parsed_result)
-        )
+        assert [machine.system_id] == extract_system_ids(parsed_result)
 
-    def test_GET_with_agent_name_filters_with_empty_string(self):
+    def test_GET_with_agent_name_filters_with_empty_string(self, api_identity):
         factory.make_Node(agent_name=factory.make_name("agent-name"))
         machine = factory.make_Node(agent_name="")
         parsed_result = self.get_json({"agent_name": ""})
-        self.assertEqual(
-            [machine.system_id], extract_system_ids(parsed_result)
-        )
+        assert [machine.system_id] == extract_system_ids(parsed_result)
 
-    def test_GET_without_agent_name_does_not_filter(self):
+    def test_GET_without_agent_name_does_not_filter(self, api_identity):
         machines = [
             factory.make_Node(agent_name=factory.make_name("agent-name"))
             for _ in range(3)
         ]
         parsed_result = self.get_json()
-        self.assertSequenceEqual(
-            [machine.system_id for machine in machines],
-            extract_system_ids(parsed_result),
+        assert sorted(machine.system_id for machine in machines) == sorted(
+            extract_system_ids(parsed_result)
         )
 
-    def test_GET_doesnt_list_devices(self):
-        factory.make_Device()
-        parsed_result = self.get_json()
-        self.assertEqual([], parsed_result)
-
-    def test_GET_with_zone_filters_by_zone(self):
+    def test_GET_with_zone_filters_by_zone(self, api_identity):
         factory.make_Node(zone=factory.make_Zone(name="twilight"))
         zone = factory.make_Zone()
         machine = factory.make_Node(zone=zone)
         parsed_result = self.get_json({"zone": zone.name})
-        self.assertEqual(
-            [machine.system_id], extract_system_ids(parsed_result)
-        )
+        assert [machine.system_id] == extract_system_ids(parsed_result)
 
-    def test_GET_without_zone_does_not_filter(self):
+    def test_GET_without_zone_does_not_filter(self, api_identity):
         machines = [
             factory.make_Node(zone=factory.make_Zone()) for _ in range(3)
         ]
         parsed_result = self.get_json()
-        self.assertEqual(
-            [machine.system_id for machine in machines],
-            extract_system_ids(parsed_result),
-        )
+        assert [
+            machine.system_id for machine in machines
+        ] == extract_system_ids(parsed_result)
 
     def test_GET_list_allocated_returns_only_allocated_with_user(self):
         machine = factory.make_Node(
@@ -684,9 +714,7 @@ class TestMachinesAPI(APITestCase.ForUser):
         factory.make_Node(status=NODE_STATUS.ALLOCATED)
 
         parsed_result = self.get_json({"op": "list_allocated"})
-        self.assertEqual(
-            [machine.system_id], extract_system_ids(parsed_result)
-        )
+        assert [machine.system_id] == extract_system_ids(parsed_result)
 
     def test_GET_list_allocated_filters_by_id(self):
         machines = []
@@ -701,24 +729,24 @@ class TestMachinesAPI(APITestCase.ForUser):
         parsed_result = self.get_json(
             {"op": "list_allocated", "id": required_machine_ids}
         )
-        self.assertCountEqual(
-            required_machine_ids, extract_system_ids(parsed_result)
+        assert sorted(required_machine_ids) == sorted(
+            extract_system_ids(parsed_result)
         )
 
-    def test_POST_allocate_returns_available_machine(self):
+    def test_POST_allocate_returns_available_machine(self, api_identity):
         # The "allocate" operation returns an available machine.
         available_status = NODE_STATUS.READY
         machine = factory.make_Node(
             status=available_status, owner=None, with_boot_disk=True
         )
         response = self.client.post(self.machines_url, {"op": "allocate"})
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code
         parsed_result = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertEqual(machine.system_id, parsed_result["system_id"])
+        assert machine.system_id == parsed_result["system_id"]
 
-    def test_POST_allocate_allocates_machine(self):
+    def test_POST_allocate_allocates_machine(self, api_identity):
         # The "allocate" operation allocates the machine it returns.
         available_status = NODE_STATUS.READY
         machine = factory.make_Node(
@@ -726,20 +754,24 @@ class TestMachinesAPI(APITestCase.ForUser):
         )
         self.client.post(self.machines_url, {"op": "allocate"})
         machine = Machine.objects.get(system_id=machine.system_id)
-        self.assertEqual(self.user, machine.owner)
+        assert self.user == machine.owner
 
-    def test_POST_allocate_uses_machine_acquire_lock(self):
+    def test_POST_allocate_uses_machine_acquire_lock(
+        self, api_identity, mocker
+    ):
         # The "allocate" operation allocates the machine it returns.
         available_status = NODE_STATUS.READY
         factory.make_Node(
             status=available_status, owner=None, with_boot_disk=True
         )
-        machine_acquire = self.patch(machines_module.locks, "node_acquire")
+        machine_acquire = mocker.patch.object(
+            machines_module.locks, "node_acquire"
+        )
         self.client.post(self.machines_url, {"op": "allocate"})
         machine_acquire.__enter__.assert_called_once_with()
         machine_acquire.__exit__.assert_called_once_with(None, None, None)
 
-    def test_POST_allocate_sets_agent_name(self):
+    def test_POST_allocate_sets_agent_name(self, api_identity):
         available_status = NODE_STATUS.READY
         machine = factory.make_Node(
             status=available_status,
@@ -753,9 +785,11 @@ class TestMachinesAPI(APITestCase.ForUser):
             {"op": "allocate", "agent_name": agent_name},
         )
         machine = Machine.objects.get(system_id=machine.system_id)
-        self.assertEqual(agent_name, machine.agent_name)
+        assert agent_name == machine.agent_name
 
-    def test_POST_allocate_agent_name_defaults_to_empty_string(self):
+    def test_POST_allocate_agent_name_defaults_to_empty_string(
+        self, api_identity
+    ):
         available_status = NODE_STATUS.READY
         agent_name = factory.make_name("agent-name")
         machine = factory.make_Node(
@@ -766,24 +800,27 @@ class TestMachinesAPI(APITestCase.ForUser):
         )
         self.client.post(self.machines_url, {"op": "allocate"})
         machine = Machine.objects.get(system_id=machine.system_id)
-        self.assertEqual("", machine.agent_name)
+        assert "" == machine.agent_name
 
-    def test_POST_allocate_fails_if_no_machine_present(self):
+    def test_POST_allocate_fails_if_no_machine_present(self, api_identity):
         # The "allocate" operation returns a Conflict error if no machines
         # are available.
         response = self.client.post(self.machines_url, {"op": "allocate"})
         # Fails with Conflict error: resource can't satisfy request.
-        self.assertEqual(http.client.CONFLICT, response.status_code)
+        assert http.client.CONFLICT == response.status_code
 
-    def test_POST_allocate_failure_shows_no_constraints_if_none_given(self):
+    def test_POST_allocate_failure_shows_no_constraints_if_none_given(
+        self, api_identity
+    ):
         response = self.client.post(self.machines_url, {"op": "allocate"})
-        self.assertEqual(http.client.CONFLICT, response.status_code)
-        self.assertEqual(
-            "No machine available.",
-            response.content.decode(settings.DEFAULT_CHARSET),
+        assert http.client.CONFLICT == response.status_code
+        assert "No machine available." == response.content.decode(
+            settings.DEFAULT_CHARSET
         )
 
-    def test_POST_allocate_failure_shows_constraints_if_given(self):
+    def test_POST_allocate_failure_shows_constraints_if_given(
+        self, api_identity
+    ):
         hostname = factory.make_name("host")
         response = self.client.post(
             self.machines_url, {"op": "allocate", "name": hostname}
@@ -792,19 +829,23 @@ class TestMachinesAPI(APITestCase.ForUser):
             "No available machine matches constraints: [('name', "
             "['%s'])] (resolved to \"name=%s\")" % (hostname, hostname)
         ).encode(settings.DEFAULT_CHARSET)
-        self.assertEqual(http.client.CONFLICT, response.status_code)
-        self.assertEqual(expected_response, response.content)
+        assert http.client.CONFLICT == response.status_code
+        assert expected_response == response.content
 
-    def test_POST_allocate_ignores_already_allocated_machine(self):
+    def test_POST_allocate_ignores_already_allocated_machine(
+        self, api_identity
+    ):
         factory.make_Node(
             status=NODE_STATUS.ALLOCATED,
             owner=factory.make_User(),
             with_boot_disk=True,
         )
         response = self.client.post(self.machines_url, {"op": "allocate"})
-        self.assertEqual(http.client.CONFLICT, response.status_code)
+        assert http.client.CONFLICT == response.status_code
 
-    def test_POST_allocate_chooses_candidate_matching_constraint(self):
+    def test_POST_allocate_chooses_candidate_matching_constraint(
+        self, api_identity
+    ):
         # If "allocate" is passed a constraint, it will go for a machine
         # matching that constraint even if there's tons of other machines
         # available.
@@ -821,17 +862,19 @@ class TestMachinesAPI(APITestCase.ForUser):
             self.machines_url,
             {"op": "allocate", "name": desired_machine.hostname},
         )
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code
         parsed_result = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
         domain_name = desired_machine.domain.name
-        self.assertEqual(
-            f"{desired_machine.hostname}.{domain_name}",
-            parsed_result["fqdn"],
+        assert (
+            f"{desired_machine.hostname}.{domain_name}"
+            == parsed_result["fqdn"]
         )
 
-    def test_POST_allocate_would_rather_fail_than_disobey_constraint(self):
+    def test_POST_allocate_would_rather_fail_than_disobey_constraint(
+        self, api_identity
+    ):
         # If "allocate" is passed a constraint, it won't return a machine
         # that does not meet that constraint.  Even if it means that it
         # can't meet the request.
@@ -845,9 +888,11 @@ class TestMachinesAPI(APITestCase.ForUser):
             self.machines_url,
             {"op": "allocate", "name": desired_machine.system_id},
         )
-        self.assertEqual(http.client.CONFLICT, response.status_code)
+        assert http.client.CONFLICT == response.status_code
 
-    def test_POST_allocate_fails_if_given_system_id_invalid(self):
+    def test_POST_allocate_fails_if_given_system_id_invalid(
+        self, api_identity
+    ):
         # If an unavailable or incorrect "system_id" is passed, make sure
         # that no machine is returned.
         some_available_machine = factory.make_Node(
@@ -864,10 +909,12 @@ class TestMachinesAPI(APITestCase.ForUser):
         expected_response = f"No machine with system ID {incorrect_system_id} available.".encode(
             "utf-8"
         )
-        self.assertEqual(http.client.CONFLICT, response.status_code)
-        self.assertEqual(expected_response, response.content)
+        assert http.client.CONFLICT == response.status_code
+        assert expected_response == response.content
 
-    def test_POST_allocate_does_not_ignore_unknown_constraint(self):
+    def test_POST_allocate_does_not_ignore_unknown_constraint(
+        self, api_identity
+    ):
         factory.make_Node(
             status=NODE_STATUS.READY, owner=None, with_boot_disk=True
         )
@@ -876,15 +923,13 @@ class TestMachinesAPI(APITestCase.ForUser):
             self.machines_url,
             {"op": "allocate", unknown_constraint: factory.make_string()},
         )
-        self.assertEqual(http.client.BAD_REQUEST, response.status_code)
+        assert http.client.BAD_REQUEST == response.status_code
         parsed_result = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertEqual(
-            {unknown_constraint: ["No such constraint."]}, parsed_result
-        )
+        assert {unknown_constraint: ["No such constraint."]} == parsed_result
 
-    def test_POST_allocate_allocates_machine_by_name(self):
+    def test_POST_allocate_allocates_machine_by_name(self, api_identity):
         # Positive test for name constraint.
         # If a name constraint is given, "allocate" attempts to allocate
         # a machine of that name.
@@ -898,16 +943,16 @@ class TestMachinesAPI(APITestCase.ForUser):
             self.machines_url,
             {"op": "allocate", "name": machine.hostname},
         )
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code
         domain_name = machine.domain.name
-        self.assertEqual(
-            f"{machine.hostname}.{domain_name}",
-            json.loads(response.content.decode(settings.DEFAULT_CHARSET))[
+        assert (
+            f"{machine.hostname}.{domain_name}"
+            == json.loads(response.content.decode(settings.DEFAULT_CHARSET))[
                 "fqdn"
-            ],
+            ]
         )
 
-    def test_POST_allocate_allocates_machine_by_system_id(self):
+    def test_POST_allocate_allocates_machine_by_system_id(self, api_identity):
         # Positive test for system_id constraint.
         # If a name constraint is given, "allocate" attempts to allocate
         # a machine with that system_id.
@@ -921,13 +966,15 @@ class TestMachinesAPI(APITestCase.ForUser):
             self.machines_url,
             {"op": "allocate", "system_id": machine.system_id},
         )
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code
         resultant_system_id = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )["system_id"]
-        self.assertEqual(machine.system_id, resultant_system_id)
+        assert machine.system_id == resultant_system_id
 
-    def test_POST_allocate_treats_unknown_name_as_resource_conflict(self):
+    def test_POST_allocate_treats_unknown_name_as_resource_conflict(
+        self, api_identity
+    ):
         # A name constraint naming an unknown machine produces a resource
         # conflict: most likely the machine existed but has changed or
         # disappeared.
@@ -940,32 +987,36 @@ class TestMachinesAPI(APITestCase.ForUser):
             self.machines_url,
             {"op": "allocate", "name": factory.make_string()},
         )
-        self.assertEqual(http.client.CONFLICT, response.status_code)
+        assert http.client.CONFLICT == response.status_code
 
-    def test_POST_allocate_allocates_machine_by_arch(self):
+    def test_POST_allocate_allocates_machine_by_arch(
+        self, api_identity, mocker
+    ):
         # Asking for a particular arch allocates a machine with that arch.
-        arch = make_usable_architecture(self)
+        arch = self.make_usable_architecture(mocker)
         machine = factory.make_Node(
             status=NODE_STATUS.READY, architecture=arch, with_boot_disk=True
         )
         response = self.client.post(
             self.machines_url, {"op": "allocate", "arch": arch}
         )
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code
         response_json = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertEqual(machine.architecture, response_json["architecture"])
+        assert machine.architecture == response_json["architecture"]
 
-    def test_POST_allocate_treats_unknown_arch_as_bad_request(self):
+    def test_POST_allocate_treats_unknown_arch_as_bad_request(
+        self, api_identity
+    ):
         # Asking for an unknown arch returns an HTTP "400 Bad Request"
         factory.make_Node(status=NODE_STATUS.READY, with_boot_disk=True)
         response = self.client.post(
             self.machines_url, {"op": "allocate", "arch": "sparc"}
         )
-        self.assertEqual(http.client.BAD_REQUEST, response.status_code)
+        assert http.client.BAD_REQUEST == response.status_code
 
-    def test_POST_allocate_allocates_machine_by_cpu(self):
+    def test_POST_allocate_allocates_machine_by_cpu(self, api_identity):
         # Asking for enough cpu allocates a machine with at least that.
         machine = factory.make_Node(
             status=NODE_STATUS.READY, cpu_count=3, with_boot_disk=True
@@ -973,13 +1024,13 @@ class TestMachinesAPI(APITestCase.ForUser):
         response = self.client.post(
             self.machines_url, {"op": "allocate", "cpu_count": 2}
         )
-        self.assertEqual(response.status_code, http.client.OK)
+        assert http.client.OK == response.status_code
         response_json = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertEqual(machine.system_id, response_json["system_id"])
+        assert machine.system_id == response_json["system_id"]
 
-    def test_POST_allocate_allocates_machine_by_float_cpu(self):
+    def test_POST_allocate_allocates_machine_by_float_cpu(self, api_identity):
         # Asking for a needlessly precise number of cpus works.
         machine = factory.make_Node(
             status=NODE_STATUS.READY, cpu_count=1, with_boot_disk=True
@@ -987,11 +1038,11 @@ class TestMachinesAPI(APITestCase.ForUser):
         response = self.client.post(
             self.machines_url, {"op": "allocate", "cpu_count": "1.0"}
         )
-        self.assertEqual(response.status_code, http.client.OK)
+        assert http.client.OK == response.status_code
         response_json = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertEqual(machine.system_id, response_json["system_id"])
+        assert machine.system_id == response_json["system_id"]
 
     def test_POST_allocate_fails_with_invalid_cpu(self):
         # Asking for an invalid amount of cpu returns a bad request.
@@ -1000,7 +1051,7 @@ class TestMachinesAPI(APITestCase.ForUser):
             self.machines_url,
             {"op": "allocate", "cpu_count": "plenty"},
         )
-        self.assertEqual(response.status_code, http.client.BAD_REQUEST)
+        assert http.client.BAD_REQUEST == response.status_code
 
     def test_POST_allocate_allocates_machine_by_mem(self):
         # Asking for enough memory acquires a machine with at least that.
@@ -1010,11 +1061,11 @@ class TestMachinesAPI(APITestCase.ForUser):
         response = self.client.post(
             self.machines_url, {"op": "allocate", "mem": 1024}
         )
-        self.assertEqual(response.status_code, http.client.OK)
+        assert http.client.OK == response.status_code
         response_json = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertEqual(machine.system_id, response_json["system_id"])
+        assert machine.system_id == response_json["system_id"]
 
     def test_POST_allocate_fails_with_invalid_mem(self):
         # Asking for an invalid amount of memory returns a bad request.
@@ -1022,9 +1073,9 @@ class TestMachinesAPI(APITestCase.ForUser):
         response = self.client.post(
             self.machines_url, {"op": "allocate", "mem": "bags"}
         )
-        self.assertEqual(response.status_code, http.client.BAD_REQUEST)
+        assert http.client.BAD_REQUEST == response.status_code
 
-    def test_POST_allocate_allocates_machine_by_tags(self):
+    def test_POST_allocate_allocates_machine_by_tags(self, api_identity):
         machine = factory.make_Node(
             status=NODE_STATUS.READY, with_boot_disk=True
         )
@@ -1035,13 +1086,15 @@ class TestMachinesAPI(APITestCase.ForUser):
             self.machines_url,
             {"op": "allocate", "tags": ["fast", "stable"]},
         )
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         response_json = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertCountEqual(machine_tag_names, response_json["tag_names"])
+        assert sorted(machine_tag_names) == sorted(response_json["tag_names"])
 
-    def test_POST_allocate_allocates_machine_by_negated_tags(self):
+    def test_POST_allocate_allocates_machine_by_negated_tags(
+        self, api_identity
+    ):
         tagged_machine = factory.make_Node(
             status=NODE_STATUS.READY, with_boot_disk=True
         )
@@ -1057,18 +1110,16 @@ class TestMachinesAPI(APITestCase.ForUser):
             self.machines_url,
             {"op": "allocate", "not_tags": ["cute"]},
         )
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         response_json = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertEqual(
-            partially_tagged_machine.system_id, response_json["system_id"]
-        )
-        self.assertCountEqual(
-            machine_tag_names[:-1], response_json["tag_names"]
+        assert partially_tagged_machine.system_id == response_json["system_id"]
+        assert sorted(machine_tag_names[:-1]) == sorted(
+            response_json["tag_names"]
         )
 
-    def test_POST_allocate_allocates_machine_by_zone(self):
+    def test_POST_allocate_allocates_machine_by_zone(self, api_identity):
         factory.make_Node(status=NODE_STATUS.READY, with_boot_disk=True)
         zone = factory.make_Zone()
         machine = factory.make_Node(
@@ -1077,28 +1128,30 @@ class TestMachinesAPI(APITestCase.ForUser):
         response = self.client.post(
             self.machines_url, {"op": "allocate", "zone": zone.name}
         )
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         response_json = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertEqual(machine.system_id, response_json["system_id"])
+        assert machine.system_id == response_json["system_id"]
 
-    def test_POST_allocate_allocates_machine_by_zone_fails_if_no_machine(self):
+    def test_POST_allocate_allocates_machine_by_zone_fails_if_no_machine(
+        self, api_identity
+    ):
         factory.make_Node(status=NODE_STATUS.READY, with_boot_disk=True)
         zone = factory.make_Zone()
         response = self.client.post(
             self.machines_url, {"op": "allocate", "zone": zone.name}
         )
-        self.assertEqual(response.status_code, http.client.CONFLICT)
+        assert response.status_code == http.client.CONFLICT
 
-    def test_POST_allocate_rejects_unknown_zone(self):
+    def test_POST_allocate_rejects_unknown_zone(self, api_identity):
         response = self.client.post(
             self.machines_url,
             {"op": "allocate", "zone": factory.make_name("zone")},
         )
-        self.assertEqual(http.client.BAD_REQUEST, response.status_code)
+        assert response.status_code == http.client.BAD_REQUEST
 
-    def test_POST_allocate_allocates_machine_by_pool(self):
+    def test_POST_allocate_allocates_machine_by_pool(self, api_identity):
         node1 = factory.make_Node(
             status=NODE_STATUS.READY, with_boot_disk=True
         )
@@ -1107,28 +1160,32 @@ class TestMachinesAPI(APITestCase.ForUser):
         response = self.client.post(
             self.machines_url, {"op": "allocate", "pool": pool.name}
         )
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         response_json = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertEqual(node1.system_id, response_json["system_id"])
+        assert node1.system_id == response_json["system_id"]
 
-    def test_POST_allocate_allocates_machine_by_pool_fails_if_no_machine(self):
+    def test_POST_allocate_allocates_machine_by_pool_fails_if_no_machine(
+        self, api_identity
+    ):
         factory.make_Node(status=NODE_STATUS.READY, with_boot_disk=True)
         pool = factory.make_ResourcePool()
         response = self.client.post(
             self.machines_url, {"op": "allocate", "pool": pool.name}
         )
-        self.assertEqual(response.status_code, http.client.CONFLICT)
+        assert response.status_code == http.client.CONFLICT
 
-    def test_POST_allocate_rejects_unknown_pool(self):
+    def test_POST_allocate_rejects_unknown_pool(self, api_identity):
         response = self.client.post(
             self.machines_url,
             {"op": "allocate", "pool": factory.make_name("pool")},
         )
-        self.assertEqual(http.client.BAD_REQUEST, response.status_code)
+        assert response.status_code == http.client.BAD_REQUEST
 
-    def test_POST_allocate_allocates_machine_by_tags_comma_separated(self):
+    def test_POST_allocate_allocates_machine_by_tags_comma_separated(
+        self, api_identity
+    ):
         machine = factory.make_Node(
             status=NODE_STATUS.READY, with_boot_disk=True
         )
@@ -1139,13 +1196,15 @@ class TestMachinesAPI(APITestCase.ForUser):
             self.machines_url,
             {"op": "allocate", "tags": "fast, stable"},
         )
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         response_json = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertCountEqual(machine_tag_names, response_json["tag_names"])
+        assert sorted(machine_tag_names) == sorted(response_json["tag_names"])
 
-    def test_POST_allocate_allocates_machine_by_tags_space_separated(self):
+    def test_POST_allocate_allocates_machine_by_tags_space_separated(
+        self, api_identity
+    ):
         machine = factory.make_Node(
             status=NODE_STATUS.READY, with_boot_disk=True
         )
@@ -1156,13 +1215,15 @@ class TestMachinesAPI(APITestCase.ForUser):
             self.machines_url,
             {"op": "allocate", "tags": "fast stable"},
         )
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         response_json = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertCountEqual(machine_tag_names, response_json["tag_names"])
+        assert sorted(machine_tag_names) == sorted(response_json["tag_names"])
 
-    def test_POST_allocate_allocates_machine_by_tags_comma_space_delim(self):
+    def test_POST_allocate_allocates_machine_by_tags_comma_space_delim(
+        self, api_identity
+    ):
         machine = factory.make_Node(
             status=NODE_STATUS.READY, with_boot_disk=True
         )
@@ -1173,13 +1234,15 @@ class TestMachinesAPI(APITestCase.ForUser):
             self.machines_url,
             {"op": "allocate", "tags": "fast, stable cute"},
         )
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         response_json = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertCountEqual(machine_tag_names, response_json["tag_names"])
+        assert sorted(machine_tag_names) == sorted(response_json["tag_names"])
 
-    def test_POST_allocate_allocates_machine_by_tags_mixed_input(self):
+    def test_POST_allocate_allocates_machine_by_tags_mixed_input(
+        self, api_identity
+    ):
         machine = factory.make_Node(
             status=NODE_STATUS.READY, with_boot_disk=True
         )
@@ -1190,13 +1253,13 @@ class TestMachinesAPI(APITestCase.ForUser):
             self.machines_url,
             {"op": "allocate", "tags": ["fast, stable", "cute"]},
         )
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         response_json = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertCountEqual(machine_tag_names, response_json["tag_names"])
+        assert sorted(machine_tag_names) == sorted(response_json["tag_names"])
 
-    def test_POST_allocate_allocates_machine_by_storage(self):
+    def test_POST_allocate_allocates_machine_by_storage(self, api_identity):
         """Storage label is returned alongside machine data"""
         machine = factory.make_Node(
             status=NODE_STATUS.READY, with_boot_disk=False
@@ -1211,18 +1274,20 @@ class TestMachinesAPI(APITestCase.ForUser):
             self.machines_url,
             {"op": "allocate", "storage": "needed:10(ssd)"},
         )
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         response_json = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
         device_id = response_json["physicalblockdevice_set"][0]["id"]
         constraints = response_json["constraints_by_type"]
-        self.assertIn("storage", constraints)
-        self.assertIn("needed", constraints["storage"])
-        self.assertIn(device_id, constraints["storage"]["needed"])
-        self.assertNotIn("verbose_storage", constraints)
+        assert "storage" in constraints
+        assert "needed" in constraints["storage"]
+        assert device_id in constraints["storage"]["needed"]
+        assert "verbose_storage" not in constraints
 
-    def test_POST_allocate_allocates_machine_by_storage_with_verbose(self):
+    def test_POST_allocate_allocates_machine_by_storage_with_verbose(
+        self, api_identity
+    ):
         """Storage label is returned alongside machine data"""
         machine = factory.make_Node(
             status=NODE_STATUS.READY, with_boot_disk=False
@@ -1237,18 +1302,18 @@ class TestMachinesAPI(APITestCase.ForUser):
             self.machines_url,
             {"op": "allocate", "storage": "needed:10(ssd)", "verbose": "true"},
         )
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         response_json = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
         device_id = response_json["physicalblockdevice_set"][0]["id"]
         constraints = response_json["constraints_by_type"]
-        self.assertIn("storage", constraints)
-        self.assertIn("needed", constraints["storage"])
-        self.assertIn(device_id, constraints["storage"]["needed"])
-        self.assertIn(str(machine.id), constraints.get("verbose_storage"))
+        assert "storage" in constraints
+        assert "needed" in constraints["storage"]
+        assert device_id in constraints["storage"]["needed"]
+        assert str(machine.id) in constraints.get("verbose_storage")
 
-    def test_POST_allocate_allocates_machine_by_interfaces(self):
+    def test_POST_allocate_allocates_machine_by_interfaces(self, api_identity):
         """Interface label is returned alongside machine data"""
         fabric = factory.make_Fabric("ubuntu")
         # The ID may always be '1', which won't be interesting for testing.
@@ -1262,19 +1327,21 @@ class TestMachinesAPI(APITestCase.ForUser):
             self.machines_url,
             {"op": "allocate", "interfaces": "needed:fabric=ubuntu"},
         )
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         response_json = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertEqual(response_json["status"], NODE_STATUS.ALLOCATED)
+        assert response_json["status"] == NODE_STATUS.ALLOCATED
         constraints = response_json["constraints_by_type"]
-        self.assertIn("interfaces", constraints)
+        assert "interfaces" in constraints
         interfaces = constraints.get("interfaces")
-        self.assertIn("needed", interfaces)
-        self.assertIn(iface.id, interfaces["needed"])
-        self.assertNotIn("verbose_interfaces", constraints)
+        assert "needed" in interfaces
+        assert iface.id in interfaces["needed"]
+        assert "verbose_interfaces" not in constraints
 
-    def test_POST_allocate_with_subnet_specifier_renders_error(self):
+    def test_POST_allocate_with_subnet_specifier_renders_error(
+        self, api_identity
+    ):
         space = factory.make_Space("foo")
         v1 = factory.make_VLAN(space=space)
         v2 = factory.make_VLAN(space=space)
@@ -1285,14 +1352,16 @@ class TestMachinesAPI(APITestCase.ForUser):
             self.machines_url,
             {"op": "allocate", "subnets": "space:foo"},
         )
-        self.assertEqual(http.client.CONFLICT, response.status_code)
+        assert response.status_code == http.client.CONFLICT
         expected_response = (
             "No available machine matches constraints: [('subnets', "
             "['space:foo'])] (resolved to \"subnets=%d,%d\")" % (s1.pk, s2.pk)
         ).encode(settings.DEFAULT_CHARSET)
-        self.assertEqual(expected_response, response.content)
+        assert expected_response == response.content
 
-    def test_POST_allocate_machine_by_interfaces_dry_run_with_verbose(self):
+    def test_POST_allocate_machine_by_interfaces_dry_run_with_verbose(
+        self, api_identity
+    ):
         """Interface label is returned alongside machine data"""
         fabric = factory.make_Fabric("ubuntu")
         # The ID may always be '1', which won't be interesting for testing.
@@ -1311,25 +1380,27 @@ class TestMachinesAPI(APITestCase.ForUser):
                 "dry_run": "true",
             },
         )
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         response_json = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertEqual(response_json["status"], NODE_STATUS.READY)
+        assert response_json["status"] == NODE_STATUS.READY
         # Check that we still got the verbose constraints output even if
         # it was a dry run.
         constraints = response_json["constraints_by_type"]
-        self.assertIn("interfaces", constraints)
+        assert "interfaces" in constraints
         interfaces = constraints.get("interfaces")
-        self.assertIn("needed", interfaces)
-        self.assertIn(iface.id, interfaces["needed"])
-        self.assertIn("verbose_interfaces", constraints)
+        assert "needed" in interfaces
+        assert iface.id in interfaces["needed"]
+        assert "verbose_interfaces" in constraints
         verbose_interfaces = constraints.get("verbose_interfaces")
-        self.assertIn("needed", verbose_interfaces)
-        self.assertIn(str(machine.id), verbose_interfaces["needed"])
-        self.assertIn(iface.id, verbose_interfaces["needed"][str(machine.id)])
+        assert "needed" in verbose_interfaces
+        assert str(machine.id) in verbose_interfaces["needed"]
+        assert iface.id in verbose_interfaces["needed"][str(machine.id)]
 
-    def test_POST_allocate_allocates_machine_by_interfaces_with_verbose(self):
+    def test_POST_allocate_allocates_machine_by_interfaces_with_verbose(
+        self, api_identity
+    ):
         """Interface label is returned alongside machine data"""
         fabric = factory.make_Fabric("ubuntu")
         # The ID may always be '1', which won't be interesting for testing.
@@ -1348,20 +1419,20 @@ class TestMachinesAPI(APITestCase.ForUser):
                 "verbose": "true",
             },
         )
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         response_json = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
         constraints = response_json["constraints_by_type"]
-        self.assertIn("interfaces", constraints)
+        assert "interfaces" in constraints
         interfaces = constraints.get("interfaces")
-        self.assertIn("needed", interfaces)
-        self.assertEqual([iface.id], interfaces["needed"])
-        self.assertIn("verbose_interfaces", constraints)
+        assert "needed" in interfaces
+        assert [iface.id] == interfaces["needed"]
+        assert "verbose_interfaces" in constraints
         verbose_interfaces = constraints.get("verbose_interfaces")
-        self.assertIn("needed", verbose_interfaces)
-        self.assertIn(str(machine.id), verbose_interfaces["needed"])
-        self.assertIn(iface.id, verbose_interfaces["needed"][str(machine.id)])
+        assert "needed" in verbose_interfaces
+        assert str(machine.id) in verbose_interfaces["needed"]
+        assert iface.id in verbose_interfaces["needed"][str(machine.id)]
 
     def test_POST_allocate_fails_without_all_tags(self):
         # Asking for particular tags does not acquire if no machine has all
@@ -1380,7 +1451,7 @@ class TestMachinesAPI(APITestCase.ForUser):
             self.machines_url,
             {"op": "allocate", "tags": "fast, cheap"},
         )
-        self.assertEqual(response.status_code, http.client.CONFLICT)
+        assert response.status_code == http.client.CONFLICT
 
     def test_POST_allocate_fails_with_unknown_tags(self):
         # Asking for a tag that does not exist gives a specific error.
@@ -1392,14 +1463,14 @@ class TestMachinesAPI(APITestCase.ForUser):
             self.machines_url,
             {"op": "allocate", "tags": "fast, hairy, boo"},
         )
-        self.assertEqual(http.client.BAD_REQUEST, response.status_code)
+        assert response.status_code == http.client.BAD_REQUEST
         response_dict = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
         # The order in which "foo" and "bar" appear is not guaranteed.
-        self.assertIn("No such tag(s):", response_dict["tags"][0])
-        self.assertIn("'hairy'", response_dict["tags"][0])
-        self.assertIn("'boo'", response_dict["tags"][0])
+        assert "No such tag(s):" in response_dict["tags"][0]
+        assert "'hairy'" in response_dict["tags"][0]
+        assert "'boo'" in response_dict["tags"][0]
 
     def test_POST_allocate_allocates_machine_by_subnet(self):
         subnets = [factory.make_Subnet() for _ in range(5)]
@@ -1418,11 +1489,11 @@ class TestMachinesAPI(APITestCase.ForUser):
             {"op": "allocate", "subnets": [subnets[pick].name]},
         )
 
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         response_json = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertEqual(machines[pick].system_id, response_json["system_id"])
+        assert machines[pick].system_id == response_json["system_id"]
 
     def test_POST_allocate_allocates_machine_by_not_subnet(self):
         subnets = [factory.make_Subnet() for _ in range(5)]
@@ -1442,11 +1513,11 @@ class TestMachinesAPI(APITestCase.ForUser):
             },
         )
 
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         response_json = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertEqual(right_machine.system_id, response_json["system_id"])
+        assert right_machine.system_id == response_json["system_id"]
 
     def test_POST_allocate_obeys_not_in_zone(self):
         # Zone we don't want to acquire from.
@@ -1467,11 +1538,11 @@ class TestMachinesAPI(APITestCase.ForUser):
             self.machines_url,
             {"op": "allocate", "not_in_zone": [not_in_zone.name]},
         )
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code
         system_id = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )["system_id"]
-        self.assertEqual(eligible_machine.system_id, system_id)
+        assert eligible_machine.system_id == system_id
 
     def test_POST_allocate_obeys_not_in_pool(self):
         # Pool we don't want to acquire from.
@@ -1488,23 +1559,24 @@ class TestMachinesAPI(APITestCase.ForUser):
             self.machines_url,
             {"op": "allocate", "not_in_pool": [pool1.name]},
         )
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code
         system_id = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )["system_id"]
-        self.assertEqual(node2.system_id, system_id)
+        assert node2.system_id == system_id
 
-    def test_POST_accept_gets_machine_out_of_declared_state(self):
+    def test_POST_accept_gets_machine_out_of_declared_state(
+        self, admin, admin_api_client, mocker
+    ):
         # This will change when we add provisioning.  Until then,
         # acceptance gets a machine straight to Ready state.
-        self.become_admin()
         target_state = NODE_STATUS.COMMISSIONING
 
-        self.patch(Machine, "_start").return_value = None
+        mocker.patch.object(Machine, "_start").return_value = None
         machine = factory.make_Node_with_Interface_on_Subnet(
             status=NODE_STATUS.NEW
         )
-        response = self.client.post(
+        response = admin_api_client.post(
             self.machines_url,
             {"op": "accept", "machines": [machine.system_id]},
         )
@@ -1514,25 +1586,23 @@ class TestMachinesAPI(APITestCase.ForUser):
                 response.content.decode(settings.DEFAULT_CHARSET)
             )
         ]
-        self.assertEqual(
-            (http.client.OK, [machine.system_id]),
-            (response.status_code, accepted_ids),
+        assert (http.client.OK, [machine.system_id]) == (
+            response.status_code,
+            accepted_ids,
         )
-        self.assertEqual(target_state, reload_object(machine).status)
+        assert target_state == reload_object(machine).status
 
     def test_POST_quietly_accepts_empty_set(self):
         response = self.client.post(self.machines_url, {"op": "accept"})
-        self.assertEqual(
-            (http.client.OK.value, "[]"),
-            (
-                response.status_code,
-                response.content.decode(settings.DEFAULT_CHARSET),
-            ),
+        assert (http.client.OK.value, "[]") == (
+            response.status_code,
+            response.content.decode(settings.DEFAULT_CHARSET),
         )
 
-    def test_POST_accept_rejects_impossible_state_changes(self):
-        self.become_admin()
-        self.patch(Machine, "_start").return_value = None
+    def test_POST_accept_rejects_impossible_state_changes(
+        self, admin, admin_api_client, mocker
+    ):
+        mocker.patch.object(Machine, "_start").return_value = None
         acceptable_states = {
             NODE_STATUS.NEW,
             NODE_STATUS.COMMISSIONING,
@@ -1542,128 +1612,124 @@ class TestMachinesAPI(APITestCase.ForUser):
             set(map_enum(NODE_STATUS).values()) - acceptable_states
         )
         machine = factory.make_Node(with_boot_disk=False)
-        self.patch(
+        mocker.patch.object(
             machines_module.MachinesHandler.base_model.objects, "get_nodes"
         ).return_value = [machine]
 
         for status in status_iter:
             machine.status = status
-            response = self.client.post(
+            response = admin_api_client.post(
                 self.machines_url,
                 {"op": "accept", "machines": [machine.system_id]},
             )
-            self.assertEqual(response.status_code, http.client.CONFLICT)
+            assert response.status_code == http.client.CONFLICT
             content = response.content.decode(settings.DEFAULT_CHARSET)
-            self.assertEqual(
-                content,
-                f"Cannot accept node enlistment: node {machine.system_id} is in state {machine.status_name}.",
+            assert content == (
+                f"Cannot accept node enlistment: node {machine.system_id} is in state {machine.status_name}."
             )
 
-    def test_POST_accept_fails_if_machine_does_not_exist(self):
-        self.become_admin()
+    def test_POST_accept_fails_if_machine_does_not_exist(
+        self, admin, admin_api_client
+    ):
         # Make sure there is a machine, it just isn't the one being accepted
         factory.make_Node()
         machine_id = factory.make_string()
-        response = self.client.post(
+        response = admin_api_client.post(
             self.machines_url,
             {"op": "accept", "machines": [machine_id]},
         )
-        self.assertEqual(
-            (
-                http.client.BAD_REQUEST,
-                ("Unknown machine(s): %s." % machine_id).encode(
-                    settings.DEFAULT_CHARSET
-                ),
+        assert (
+            http.client.BAD_REQUEST,
+            ("Unknown machine(s): %s." % machine_id).encode(
+                settings.DEFAULT_CHARSET
             ),
-            (response.status_code, response.content),
+        ) == (
+            response.status_code,
+            response.content,
         )
 
-    def test_POST_accept_fails_for_device(self):
-        self.become_admin()
+    def test_POST_accept_fails_for_device(self, admin, admin_api_client):
         factory.make_Device()
         machine_id = factory.make_string()
-        response = self.client.post(
+        response = admin_api_client.post(
             self.machines_url,
             {"op": "accept", "machines": [machine_id]},
         )
-        self.assertEqual(
-            (
-                http.client.BAD_REQUEST,
-                ("Unknown machine(s): %s." % machine_id).encode(
-                    settings.DEFAULT_CHARSET
-                ),
+        assert (
+            http.client.BAD_REQUEST,
+            ("Unknown machine(s): %s." % machine_id).encode(
+                settings.DEFAULT_CHARSET
             ),
-            (response.status_code, response.content),
+        ) == (
+            response.status_code,
+            response.content,
         )
 
-    def test_POST_accept_accepts_multiple_machines(self):
+    def test_POST_accept_accepts_multiple_machines(
+        self, admin, admin_api_client, mocker
+    ):
         # This will change when we add provisioning.  Until then,
         # acceptance gets a machine straight to Ready state.
-        self.become_admin()
         target_state = NODE_STATUS.COMMISSIONING
 
-        self.patch(Machine, "_start").return_value = None
+        mocker.patch.object(Machine, "_start").return_value = None
         machines = [
             factory.make_Node_with_Interface_on_Subnet(status=NODE_STATUS.NEW)
             for counter in range(2)
         ]
         machine_ids = [machine.system_id for machine in machines]
-        response = self.client.post(
+        response = admin_api_client.post(
             self.machines_url,
             {"op": "accept", "machines": machine_ids},
         )
-        self.assertEqual(http.client.OK, response.status_code)
-        self.assertEqual(
-            [target_state] * len(machines),
-            [reload_object(machine).status for machine in machines],
-        )
+        assert http.client.OK == response.status_code
+        assert [target_state] * len(machines) == [
+            reload_object(machine).status for machine in machines
+        ]
 
-    def test_POST_accept_returns_actually_accepted_machines(self):
-        self.become_admin()
-        self.patch(Machine, "_start").return_value = None
+    def test_POST_accept_returns_actually_accepted_machines(
+        self, admin, admin_api_client, mocker
+    ):
+        mocker.patch.object(Machine, "_start").return_value = None
         acceptable_machines = [
             factory.make_Node_with_Interface_on_Subnet(status=NODE_STATUS.NEW)
             for counter in range(2)
         ]
         accepted_machine = factory.make_Node(status=NODE_STATUS.READY)
         machines = acceptable_machines + [accepted_machine]
-        response = self.client.post(
+        response = admin_api_client.post(
             self.machines_url,
             {
                 "op": "accept",
                 "machines": [machine.system_id for machine in machines],
             },
         )
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code
         accepted_ids = [
             machine["system_id"]
             for machine in json.loads(
                 response.content.decode(settings.DEFAULT_CHARSET)
             )
         ]
-        self.assertCountEqual(
-            [machine.system_id for machine in acceptable_machines],
-            accepted_ids,
-        )
-        self.assertNotIn(accepted_machine.system_id, accepted_ids)
+        assert sorted(
+            machine.system_id for machine in acceptable_machines
+        ) == sorted(accepted_ids)
+        assert accepted_machine.system_id not in accepted_ids
 
-    def test_POST_quietly_releases_empty_set(self):
-        response = self.client.post(self.machines_url, {"op": "release"})
-        self.assertEqual(
-            (http.client.OK.value, "[]"),
-            (
-                response.status_code,
-                response.content.decode(settings.DEFAULT_CHARSET),
-            ),
+    def test_POST_quietly_releases_empty_set(self, api_client):
+        response = api_client.post(self.machines_url, {"op": "release"})
+        assert (http.client.OK.value, "[]") == (
+            response.status_code,
+            response.content.decode(settings.DEFAULT_CHARSET),
         )
 
-    def test_POST_release_ignores_devices(self):
+    def test_POST_release_ignores_devices(self, api_client):
         device_ids = {factory.make_Device().system_id for _ in range(3)}
-        response = self.client.post(
+        response = api_client.post(
             self.machines_url,
             {"op": "release", "machines": device_ids},
         )
-        self.assertEqual(http.client.BAD_REQUEST, response.status_code)
+        assert http.client.BAD_REQUEST == response.status_code
 
     def test_POST_release_rejects_request_from_unauthorized_user(self):
         machine = factory.make_Node(
@@ -1673,8 +1739,8 @@ class TestMachinesAPI(APITestCase.ForUser):
             self.machines_url,
             {"op": "release", "machines": [machine.system_id]},
         )
-        self.assertEqual(http.client.FORBIDDEN, response.status_code)
-        self.assertEqual(NODE_STATUS.ALLOCATED, reload_object(machine).status)
+        assert http.client.FORBIDDEN == response.status_code
+        assert NODE_STATUS.ALLOCATED == reload_object(machine).status
 
     def test_POST_release_fails_if_machines_do_not_exist(self):
         # Make sure there is a machine, it just isn't among the ones to release
@@ -1687,12 +1753,11 @@ class TestMachinesAPI(APITestCase.ForUser):
         # Awkward parsing, but the order may vary and it's not JSON
         s = response.content.decode(settings.DEFAULT_CHARSET)
         returned_ids = s[s.find(":") + 2 : s.rfind(".")].split(", ")
-        self.assertEqual(http.client.BAD_REQUEST, response.status_code)
-        self.assertIn(
-            "Unknown machine(s): ",
-            response.content.decode(settings.DEFAULT_CHARSET),
+        assert http.client.BAD_REQUEST == response.status_code
+        assert "Unknown machine(s): " in response.content.decode(
+            settings.DEFAULT_CHARSET
         )
-        self.assertCountEqual(machine_ids, returned_ids)
+        assert sorted(machine_ids) == sorted(returned_ids)
 
     def test_POST_release_forbidden_if_user_cannot_edit_machine(self):
         # Create a bunch of machines, owned by the logged in user
@@ -1715,9 +1780,9 @@ class TestMachinesAPI(APITestCase.ForUser):
             "You don't have the required permission to release the following "
             "machine(s): %s." % another_machine.system_id
         ).encode(settings.DEFAULT_CHARSET)
-        self.assertEqual(
-            (http.client.FORBIDDEN.value, expected_response),
-            (response.status_code, response.content),
+        assert (http.client.FORBIDDEN.value, expected_response) == (
+            response.status_code,
+            response.content,
         )
 
     def test_POST_release_forbidden_if_locked_machines(self):
@@ -1739,12 +1804,12 @@ class TestMachinesAPI(APITestCase.ForUser):
             "You don't have the required permission to release the following "
             "machine(s): {}.".format(machine2.system_id)
         ).encode(settings.DEFAULT_CHARSET)
-        self.assertEqual(
-            (http.client.FORBIDDEN.value, expected_response),
-            (response.status_code, response.content),
+        assert (http.client.FORBIDDEN.value, expected_response) == (
+            response.status_code,
+            response.content,
         )
 
-    def test_POST_release_rejects_impossible_state_changes(self):
+    def test_POST_release_rejects_impossible_state_changes(self, api_client):
         acceptable_states = {NODE_STATUS.READY} | RELEASABLE_STATUSES
         unacceptable_states = (
             set(map_enum(NODE_STATUS).values()) - acceptable_states
@@ -1754,7 +1819,7 @@ class TestMachinesAPI(APITestCase.ForUser):
             factory.make_Node(status=status, owner=owner)
             for status in unacceptable_states
         ]
-        response = self.client.post(
+        response = api_client.post(
             self.machines_url,
             {
                 "op": "release",
@@ -1769,17 +1834,16 @@ class TestMachinesAPI(APITestCase.ForUser):
         ]
         s = response.content.decode(settings.DEFAULT_CHARSET)
         returned = s[s.rfind(":") + 2 : s.rfind(".")].split(", ")
-        self.assertEqual(http.client.CONFLICT, response.status_code)
-        self.assertIn(
-            "Machine(s) cannot be released in their current state:",
-            response.content.decode(settings.DEFAULT_CHARSET),
+        assert http.client.CONFLICT == response.status_code
+        assert "Machine(s) cannot be released in their current state:" in (
+            response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertCountEqual(expected, returned)
+        assert sorted(expected) == sorted(returned)
 
-    def test_POST_release_returns_modified_machines(self):
+    def test_POST_release_returns_modified_machines(self, api_client, mocker):
         owner = self.user
-        self.patch(Machine, "_stop")
-        self.patch(Machine, "_set_status")
+        mocker.patch.object(Machine, "_stop")
+        mocker.patch.object(Machine, "_set_status")
         acceptable_states = RELEASABLE_STATUSES | {NODE_STATUS.READY}
         zone = factory.make_Zone()
         machines = [
@@ -1788,7 +1852,7 @@ class TestMachinesAPI(APITestCase.ForUser):
             )
             for status in acceptable_states
         ]
-        response = self.client.post(
+        response = api_client.post(
             self.machines_url,
             {
                 "op": "release",
@@ -1798,34 +1862,35 @@ class TestMachinesAPI(APITestCase.ForUser):
         parsed_result = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code
         # The first machine is READY, so shouldn't be touched.
-        self.assertCountEqual(
-            [machine.system_id for machine in machines[1:]], parsed_result
+        assert sorted(machine.system_id for machine in machines[1:]) == sorted(
+            parsed_result
         )
 
-    def test_POST_release_erases_disks_when_enabled(self):
+    def test_POST_release_erases_disks_when_enabled(self, api_client, mocker):
         owner = self.user
-        self.patch(Machine, "_start").return_value = None
+        mocker.patch.object(Machine, "_start").return_value = None
         machine = factory.make_Node_with_Interface_on_Subnet(
             status=NODE_STATUS.ALLOCATED,
             power_state=POWER_STATE.OFF,
             owner=owner,
         )
         Config.objects.set_config("enable_disk_erasing_on_release", True)
-        response = self.client.post(
+        response = api_client.post(
             self.machines_url,
             {"op": "release", "machines": [machine.system_id]},
         )
-        self.assertEqual(http.client.OK.value, response.status_code, response)
+        assert http.client.OK.value == response.status_code, response
         machine = reload_object(machine)
-        self.assertEqual(NODE_STATUS.DISK_ERASING, machine.status)
+        assert NODE_STATUS.DISK_ERASING == machine.status
 
-    def test_POST_set_zone_sets_zone_on_machines(self):
-        self.become_admin()
+    def test_POST_set_zone_sets_zone_on_machines(
+        self, admin, admin_api_client
+    ):
         machine = factory.make_Node()
         zone = factory.make_Zone()
-        response = self.client.post(
+        response = admin_api_client.post(
             self.machines_url,
             {
                 "op": "set_zone",
@@ -1833,15 +1898,16 @@ class TestMachinesAPI(APITestCase.ForUser):
                 "zone": zone.name,
             },
         )
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code
         machine = reload_object(machine)
-        self.assertEqual(zone, machine.zone)
+        assert zone == machine.zone
 
-    def test_POST_set_zone_does_not_affect_other_machines(self):
-        self.become_admin()
+    def test_POST_set_zone_does_not_affect_other_machines(
+        self, admin, admin_api_client
+    ):
         machine = factory.make_Node()
         original_zone = machine.zone
-        response = self.client.post(
+        response = admin_api_client.post(
             self.machines_url,
             {
                 "op": "set_zone",
@@ -1849,14 +1915,14 @@ class TestMachinesAPI(APITestCase.ForUser):
                 "zone": factory.make_Zone().name,
             },
         )
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code
         machine = reload_object(machine)
-        self.assertEqual(original_zone, machine.zone)
+        assert original_zone == machine.zone
 
-    def test_POST_set_zone_requires_admin(self):
+    def test_POST_set_zone_requires_admin(self, api_client):
         machine = factory.make_Node(owner=self.user)
         original_zone = machine.zone
-        response = self.client.post(
+        response = api_client.post(
             self.machines_url,
             {
                 "op": "set_zone",
@@ -1864,53 +1930,55 @@ class TestMachinesAPI(APITestCase.ForUser):
                 "zone": factory.make_Zone().name,
             },
         )
-        self.assertEqual(http.client.BAD_REQUEST, response.status_code)
+        assert http.client.BAD_REQUEST == response.status_code
         machine = reload_object(machine)
-        self.assertEqual(original_zone, machine.zone)
+        assert original_zone == machine.zone
 
-    def test_POST_add_chassis_requires_admin(self):
-        response = self.client.post(self.machines_url, {"op": "add_chassis"})
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
+    def test_POST_add_chassis_requires_admin(self, api_client):
+        response = api_client.post(self.machines_url, {"op": "add_chassis"})
+        assert http.client.FORBIDDEN == response.status_code, response.content
+
+    def test_POST_add_chassis_requires_chassis_type(
+        self, admin, admin_api_client
+    ):
+        response = admin_api_client.post(
+            self.machines_url, {"op": "add_chassis"}
         )
-
-    def test_POST_add_chassis_requires_chassis_type(self):
-        self.become_admin()
-        response = self.client.post(self.machines_url, {"op": "add_chassis"})
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
-        self.assertEqual(b"No provided chassis_type!", response.content)
+        assert b"No provided chassis_type!" == response.content
 
-    def test_POST_add_chassis_invalid_chasis_type(self):
-        self.become_admin()
-        response = self.client.post(
+    def test_POST_add_chassis_invalid_chasis_type(
+        self, admin, admin_api_client
+    ):
+        response = admin_api_client.post(
             self.machines_url,
             {"op": "add_chassis", "chassis_type": "invalid"},
         )
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
-        self.assertTrue(
-            response.content.startswith(
-                b"Invalid chassis_type: Value must be one of: "
-            )
+        assert response.content.startswith(
+            b"Invalid chassis_type: Value must be one of: "
         )
 
-    def test_POST_add_chassis_requires_hostname(self):
-        self.become_admin()
-        response = self.client.post(
+    def test_POST_add_chassis_requires_hostname(self, admin, admin_api_client):
+        response = admin_api_client.post(
             self.machines_url,
             {"op": "add_chassis", "chassis_type": "virsh"},
         )
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
-        self.assertEqual(b"No provided hostname!", response.content)
+        assert b"No provided hostname!" == response.content
 
-    def test_POST_add_chassis_rejects_removed_chassis_types(self):
-        self.become_admin()
-        add_chassis = self.patch(node_module.RackController, "add_chassis")
+    def test_POST_add_chassis_rejects_removed_chassis_types(
+        self, admin, admin_api_client, mocker
+    ):
+        add_chassis = mocker.patch.object(
+            node_module.RackController, "add_chassis"
+        )
         for chassis_type in (
             "dli",
             "eaton",
@@ -1919,7 +1987,7 @@ class TestMachinesAPI(APITestCase.ForUser):
             "openbmc",
             "ucsm",
         ):
-            response = self.client.post(
+            response = admin_api_client.post(
                 self.machines_url,
                 {
                     "op": "add_chassis",
@@ -1929,19 +1997,18 @@ class TestMachinesAPI(APITestCase.ForUser):
                     "password": factory.make_name("password"),
                 },
             )
-            self.assertEqual(http.client.BAD_REQUEST, response.status_code)
-            self.assertTrue(
-                response.content.startswith(
-                    b"Invalid chassis_type: Value must be one of: "
-                )
+            assert http.client.BAD_REQUEST == response.status_code
+            assert response.content.startswith(
+                b"Invalid chassis_type: Value must be one of: "
             )
             choices = response.content.split(b" (not ", 1)[0]
-            self.assertNotIn(chassis_type.encode("utf-8"), choices)
+            assert chassis_type.encode("utf-8") not in choices
         add_chassis.assert_not_called()
 
-    def test_POST_add_chassis_validates_chassis_type(self):
-        self.become_admin()
-        response = self.client.post(
+    def test_POST_add_chassis_validates_chassis_type(
+        self, admin, admin_api_client
+    ):
+        response = admin_api_client.post(
             self.machines_url,
             {
                 "op": "add_chassis",
@@ -1949,25 +2016,27 @@ class TestMachinesAPI(APITestCase.ForUser):
                 "hostname": factory.make_url(),
             },
         )
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
 
-    def test_POST_add_chassis_username_required_for_required_chassis(self):
-        self.become_admin()
+    def test_POST_add_chassis_username_required_for_required_chassis(
+        self, admin, admin_api_client, mocker
+    ):
         rack = factory.make_RackController()
-        accessible_by_url = self.patch(
-            machines_module.RackController.objects, "get_accessible_by_url"
+        mocker.patch.object(
+            machines_module.RackController.objects,
+            "get_accessible_by_url",
+            return_value=rack,
         )
-        accessible_by_url.return_value = rack
-        self.patch(rack, "add_chassis")
+        mocker.patch.object(rack, "add_chassis")
         for chassis_type in (
             "hmcz",
             "recs_box",
             "seamicro15k",
             "vmware",
         ):
-            response = self.client.post(
+            response = admin_api_client.post(
                 self.machines_url,
                 {
                     "op": "add_chassis",
@@ -1975,26 +2044,28 @@ class TestMachinesAPI(APITestCase.ForUser):
                     "hostname": factory.make_url(),
                 },
             )
-            self.assertEqual(
-                http.client.BAD_REQUEST, response.status_code, response.content
+            assert http.client.BAD_REQUEST == response.status_code, (
+                response.content
             )
-            self.assertEqual(b"No provided username!", response.content)
+            assert b"No provided username!" == response.content
 
-    def test_POST_add_chassis_password_required_for_required_chassis(self):
-        self.become_admin()
+    def test_POST_add_chassis_password_required_for_required_chassis(
+        self, admin, admin_api_client, mocker
+    ):
         rack = factory.make_RackController()
-        accessible_by_url = self.patch(
-            machines_module.RackController.objects, "get_accessible_by_url"
+        mocker.patch.object(
+            machines_module.RackController.objects,
+            "get_accessible_by_url",
+            return_value=rack,
         )
-        accessible_by_url.return_value = rack
-        self.patch(rack, "add_chassis")
+        mocker.patch.object(rack, "add_chassis")
         for chassis_type in (
             "hmcz",
             "recs_box",
             "seamicro15k",
             "vmware",
         ):
-            response = self.client.post(
+            response = admin_api_client.post(
                 self.machines_url,
                 {
                     "op": "add_chassis",
@@ -2003,16 +2074,17 @@ class TestMachinesAPI(APITestCase.ForUser):
                     "username": factory.make_name("username"),
                 },
             )
-            self.assertEqual(
-                http.client.BAD_REQUEST, response.status_code, response.content
+            assert http.client.BAD_REQUEST == response.status_code, (
+                response.content
             )
-            self.assertEqual(b"No provided password!", response.content)
+            assert b"No provided password!" == response.content
 
-    def test_POST_add_chassis_proxmox_requires_password_or_token(self):
-        self.become_admin()
+    def test_POST_add_chassis_proxmox_requires_password_or_token(
+        self, admin, admin_api_client, mocker
+    ):
         rack = factory.make_RackController()
-        chassis_mock = self.patch(rack, "add_chassis")
-        response = self.client.post(
+        chassis_mock = mocker.patch.object(rack, "add_chassis")
+        response = admin_api_client.post(
             self.machines_url,
             {
                 "op": "add_chassis",
@@ -2022,20 +2094,21 @@ class TestMachinesAPI(APITestCase.ForUser):
                 "username": factory.make_name("username"),
             },
         )
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
-        self.assertEqual(
-            (b"You must use a password or token with Proxmox."),
-            response.content,
+        assert (
+            b"You must use a password or token with Proxmox."
+            == response.content
         )
-        self.assertEqual(chassis_mock.call_count, 0)
+        chassis_mock.assert_not_called()
 
-    def test_POST_add_chassis_proxmox_requires_password_xor_token(self):
-        self.become_admin()
+    def test_POST_add_chassis_proxmox_requires_password_xor_token(
+        self, admin, admin_api_client, mocker
+    ):
         rack = factory.make_RackController()
-        chassis_mock = self.patch(rack, "add_chassis")
-        response = self.client.post(
+        chassis_mock = mocker.patch.object(rack, "add_chassis")
+        response = admin_api_client.post(
             self.machines_url,
             {
                 "op": "add_chassis",
@@ -2048,20 +2121,21 @@ class TestMachinesAPI(APITestCase.ForUser):
                 "token_secret": factory.make_name("token_secret"),
             },
         )
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
-        self.assertEqual(
-            b"You may only use a password or token with Proxmox, not both.",
-            response.content,
+        assert (
+            b"You may only use a password or token with Proxmox, not both."
+            == response.content
         )
-        self.assertEqual(chassis_mock.call_count, 0)
+        chassis_mock.assert_not_called()
 
-    def test_POST_add_chassis_proxmox_requires_token_name_and_secret(self):
-        self.become_admin()
+    def test_POST_add_chassis_proxmox_requires_token_name_and_secret(
+        self, admin, admin_api_client, mocker
+    ):
         rack = factory.make_RackController()
-        chassis_mock = self.patch(rack, "add_chassis")
-        response = self.client.post(
+        chassis_mock = mocker.patch.object(rack, "add_chassis")
+        response = admin_api_client.post(
             self.machines_url,
             {
                 "op": "add_chassis",
@@ -2074,25 +2148,27 @@ class TestMachinesAPI(APITestCase.ForUser):
                 ): factory.make_name("token"),
             },
         )
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
-        self.assertEqual(
-            (b"Proxmox requires both a token_name and token_secret."),
-            response.content,
+        assert (
+            b"Proxmox requires both a token_name and token_secret."
+            == response.content
         )
-        self.assertEqual(chassis_mock.call_count, 0)
+        chassis_mock.assert_not_called()
 
-    def test_POST_add_chassis_username_disallowed_on_virsh_and_powerkvm(self):
-        self.become_admin()
+    def test_POST_add_chassis_username_disallowed_on_virsh_and_powerkvm(
+        self, admin, admin_api_client, mocker
+    ):
         rack = factory.make_RackController()
-        accessible_by_url = self.patch(
-            machines_module.RackController.objects, "get_accessible_by_url"
+        mocker.patch.object(
+            machines_module.RackController.objects,
+            "get_accessible_by_url",
+            return_value=rack,
         )
-        accessible_by_url.return_value = rack
-        self.patch(rack, "add_chassis")
+        mocker.patch.object(rack, "add_chassis")
         for chassis_type in ("powerkvm", "virsh"):
-            response = self.client.post(
+            response = admin_api_client.post(
                 self.machines_url,
                 {
                     "op": "add_chassis",
@@ -2101,27 +2177,26 @@ class TestMachinesAPI(APITestCase.ForUser):
                     "username": factory.make_name("username"),
                 },
             )
-            self.assertEqual(
-                http.client.BAD_REQUEST, response.status_code, response.content
+            assert http.client.BAD_REQUEST == response.status_code, (
+                response.content
             )
-            self.assertEqual(
-                (
-                    "username can not be specified when using the %s "
-                    "chassis." % chassis_type
-                ).encode("utf-8"),
-                response.content,
-            )
+            assert (
+                "username can not be specified when using the %s chassis."
+                % chassis_type
+            ).encode("utf-8") == response.content
 
-    def test_POST_add_chassis_sends_accept_all_when_true(self):
-        self.become_admin()
+    def test_POST_add_chassis_sends_accept_all_when_true(
+        self, admin, admin_api_client, mocker
+    ):
         rack = factory.make_RackController()
-        accessible_by_url = self.patch(
-            machines_module.RackController.objects, "get_accessible_by_url"
+        mocker.patch.object(
+            machines_module.RackController.objects,
+            "get_accessible_by_url",
+            return_value=rack,
         )
-        accessible_by_url.return_value = rack
-        add_chassis = self.patch(rack, "add_chassis")
+        add_chassis = mocker.patch.object(rack, "add_chassis")
         hostname = factory.make_url()
-        response = self.client.post(
+        response = admin_api_client.post(
             self.machines_url,
             {
                 "op": "add_chassis",
@@ -2130,11 +2205,9 @@ class TestMachinesAPI(APITestCase.ForUser):
                 "accept_all": "true",
             },
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         add_chassis.assert_called_once_with(
-            self.user.username,
+            admin.username,
             "virsh",
             hostname,
             None,
@@ -2150,16 +2223,18 @@ class TestMachinesAPI(APITestCase.ForUser):
             False,
         )
 
-    def test_POST_add_chassis_sends_accept_all_false_when_not_true(self):
-        self.become_admin()
+    def test_POST_add_chassis_sends_accept_all_false_when_not_true(
+        self, admin, admin_api_client, mocker
+    ):
         rack = factory.make_RackController()
-        accessible_by_url = self.patch(
-            machines_module.RackController.objects, "get_accessible_by_url"
+        mocker.patch.object(
+            machines_module.RackController.objects,
+            "get_accessible_by_url",
+            return_value=rack,
         )
-        accessible_by_url.return_value = rack
-        add_chassis = self.patch(rack, "add_chassis")
+        add_chassis = mocker.patch.object(rack, "add_chassis")
         hostname = factory.make_url()
-        response = self.client.post(
+        response = admin_api_client.post(
             self.machines_url,
             {
                 "op": "add_chassis",
@@ -2168,11 +2243,9 @@ class TestMachinesAPI(APITestCase.ForUser):
                 "accept_all": factory.make_name("accept_all"),
             },
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         add_chassis.assert_called_once_with(
-            self.user.username,
+            admin.username,
             "virsh",
             hostname,
             None,
@@ -2188,14 +2261,16 @@ class TestMachinesAPI(APITestCase.ForUser):
             False,
         )
 
-    def test_POST_add_chassis_sends_prefix_filter(self):
-        self.become_admin()
+    def test_POST_add_chassis_sends_prefix_filter(
+        self, admin, admin_api_client, mocker
+    ):
         rack = factory.make_RackController()
-        accessible_by_url = self.patch(
-            machines_module.RackController.objects, "get_accessible_by_url"
+        mocker.patch.object(
+            machines_module.RackController.objects,
+            "get_accessible_by_url",
+            return_value=rack,
         )
-        accessible_by_url.return_value = rack
-        add_chassis = self.patch(rack, "add_chassis")
+        add_chassis = mocker.patch.object(rack, "add_chassis")
         hostname = factory.make_url()
         for chassis_type in ("powerkvm", "virsh", "vmware", "proxmox", "hmcz"):
             prefix_filter = factory.make_name("prefix_filter")
@@ -2212,12 +2287,10 @@ class TestMachinesAPI(APITestCase.ForUser):
                 params["username"] = username
             else:
                 username = None
-            response = self.client.post(self.machines_url, params)
-            self.assertEqual(
-                http.client.OK, response.status_code, response.content
-            )
+            response = admin_api_client.post(self.machines_url, params)
+            assert http.client.OK == response.status_code, response.content
             add_chassis.assert_called_with(
-                self.user.username,
+                admin.username,
                 chassis_type,
                 hostname,
                 username,
@@ -2234,11 +2307,10 @@ class TestMachinesAPI(APITestCase.ForUser):
             )
 
     def test_POST_add_chassis_only_allows_prefix_filter_on_virtual_chassis(
-        self,
+        self, admin, admin_api_client
     ):
-        self.become_admin()
         for chassis_type in ("recs_box", "seamicro15k"):
-            response = self.client.post(
+            response = admin_api_client.post(
                 self.machines_url,
                 {
                     "op": "add_chassis",
@@ -2249,20 +2321,18 @@ class TestMachinesAPI(APITestCase.ForUser):
                     "prefix_filter": factory.make_name("prefix_filter"),
                 },
             )
-            self.assertEqual(
-                http.client.BAD_REQUEST, response.status_code, response.content
+            assert http.client.BAD_REQUEST == response.status_code, (
+                response.content
             )
-            self.assertEqual(
-                (
-                    "prefix_filter is unavailable with the %s chassis type"
-                    % chassis_type
-                ).encode("utf-8"),
-                response.content,
-            )
+            assert (
+                "prefix_filter is unavailable with the %s chassis type"
+                % chassis_type
+            ).encode("utf-8") == response.content
 
-    def test_POST_add_chassis_seamicro_validates_power_control(self):
-        self.become_admin()
-        response = self.client.post(
+    def test_POST_add_chassis_seamicro_validates_power_control(
+        self, admin, admin_api_client
+    ):
+        response = admin_api_client.post(
             self.machines_url,
             {
                 "op": "add_chassis",
@@ -2273,23 +2343,25 @@ class TestMachinesAPI(APITestCase.ForUser):
                 "power_control": factory.make_name("power_control"),
             },
         )
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
 
-    def test_POST_add_chassis_seamicro_allows_acceptable_power_controls(self):
-        self.become_admin()
+    def test_POST_add_chassis_seamicro_allows_acceptable_power_controls(
+        self, admin, admin_api_client, mocker
+    ):
         rack = factory.make_RackController()
-        accessible_by_url = self.patch(
-            machines_module.RackController.objects, "get_accessible_by_url"
+        mocker.patch.object(
+            machines_module.RackController.objects,
+            "get_accessible_by_url",
+            return_value=rack,
         )
-        accessible_by_url.return_value = rack
-        self.patch(rack, "add_chassis")
+        mocker.patch.object(rack, "add_chassis")
         for power_control in ("ipmi", "restapi", "restapi2"):
             hostname = factory.make_url()
             username = factory.make_name("username")
             password = factory.make_name("password")
-            response = self.client.post(
+            response = admin_api_client.post(
                 self.machines_url,
                 {
                     "op": "add_chassis",
@@ -2300,19 +2372,15 @@ class TestMachinesAPI(APITestCase.ForUser):
                     "power_control": power_control,
                 },
             )
-            self.assertEqual(
-                http.client.OK, response.status_code, response.content
-            )
-            self.assertEqual(
-                (
-                    "Asking %s to add machines from chassis %s"
-                    % (rack.hostname, hostname)
-                ).encode("utf-8"),
-                response.content,
-            )
+            assert http.client.OK == response.status_code, response.content
+            assert (
+                "Asking %s to add machines from chassis %s"
+                % (rack.hostname, hostname)
+            ).encode("utf-8") == response.content
 
-    def test_POST_add_chassis_only_allow_power_control_on_seamicro15k(self):
-        self.become_admin()
+    def test_POST_add_chassis_only_allow_power_control_on_seamicro15k(
+        self, admin, admin_api_client
+    ):
         for chassis_type in (
             "virsh",
             "vmware",
@@ -2328,32 +2396,31 @@ class TestMachinesAPI(APITestCase.ForUser):
             }
             if chassis_type not in ("virsh", "powerkvm"):
                 params["username"] = factory.make_name("username")
-            response = self.client.post(self.machines_url, params)
-            self.assertEqual(
-                http.client.BAD_REQUEST, response.status_code, response.content
+            response = admin_api_client.post(self.machines_url, params)
+            assert http.client.BAD_REQUEST == response.status_code, (
+                response.content
             )
-            self.assertEqual(
-                (
-                    "power_control is unavailable with the %s chassis type"
-                    % chassis_type
-                ).encode("utf-8"),
-                response.content,
-            )
+            assert (
+                "power_control is unavailable with the %s chassis type"
+                % chassis_type
+            ).encode("utf-8") == response.content
 
-    def test_POST_add_chassis_sends_port_with_vmware_and_recs_box(self):
-        self.become_admin()
+    def test_POST_add_chassis_sends_port_with_vmware_and_recs_box(
+        self, admin, admin_api_client, mocker
+    ):
         rack = factory.make_RackController()
-        accessible_by_url = self.patch(
-            machines_module.RackController.objects, "get_accessible_by_url"
+        mocker.patch.object(
+            machines_module.RackController.objects,
+            "get_accessible_by_url",
+            return_value=rack,
         )
-        accessible_by_url.return_value = rack
-        add_chassis = self.patch(rack, "add_chassis")
+        add_chassis = mocker.patch.object(rack, "add_chassis")
         hostname = factory.make_url()
         username = factory.make_name("username")
         password = factory.make_name("password")
         port = random.randint(1, 65535)
         for chassis_type in ("recs_box", "vmware"):
-            response = self.client.post(
+            response = admin_api_client.post(
                 self.machines_url,
                 {
                     "op": "add_chassis",
@@ -2364,11 +2431,9 @@ class TestMachinesAPI(APITestCase.ForUser):
                     "port": port,
                 },
             )
-            self.assertEqual(
-                http.client.OK, response.status_code, response.content
-            )
+            assert http.client.OK == response.status_code, response.content
             add_chassis.assert_called_with(
-                self.user.username,
+                admin.username,
                 chassis_type,
                 hostname,
                 username,
@@ -2384,8 +2449,9 @@ class TestMachinesAPI(APITestCase.ForUser):
                 False,
             )
 
-    def test_POST_add_chassis_only_allows_port_with_vmware_and_recs_box(self):
-        self.become_admin()
+    def test_POST_add_chassis_only_allows_port_with_vmware_and_recs_box(
+        self, admin, admin_api_client
+    ):
         for chassis_type in (
             "powerkvm",
             "seamicro15k",
@@ -2400,20 +2466,17 @@ class TestMachinesAPI(APITestCase.ForUser):
             }
             if chassis_type not in ("virsh", "powerkvm"):
                 params["username"] = factory.make_name("username")
-            response = self.client.post(self.machines_url, params)
-            self.assertEqual(
-                http.client.BAD_REQUEST, response.status_code, response.content
+            response = admin_api_client.post(self.machines_url, params)
+            assert http.client.BAD_REQUEST == response.status_code, (
+                response.content
             )
-            self.assertEqual(
-                (
-                    "port is unavailable with the %s chassis type"
-                    % chassis_type
-                ).encode("utf-8"),
-                response.content,
-            )
+            assert (
+                "port is unavailable with the %s chassis type" % chassis_type
+            ).encode("utf-8") == response.content
 
-    def test_POST_add_chassis_checks_port_too_high(self):
-        self.become_admin()
+    def test_POST_add_chassis_checks_port_too_high(
+        self, admin, admin_api_client
+    ):
         for chassis_type in ("recs_box", "vmware"):
             params = {
                 "op": "add_chassis",
@@ -2423,17 +2486,18 @@ class TestMachinesAPI(APITestCase.ForUser):
                 "password": factory.make_name("password"),
                 "port": 65536,
             }
-            response = self.client.post(self.machines_url, params)
-            self.assertEqual(
-                http.client.BAD_REQUEST, response.status_code, response.content
+            response = admin_api_client.post(self.machines_url, params)
+            assert http.client.BAD_REQUEST == response.status_code, (
+                response.content
             )
-            self.assertEqual(
-                b"Invalid port: Please enter a number that is 65535 or smaller",
-                response.content,
+            assert (
+                b"Invalid port: Please enter a number that is 65535 or smaller"
+                == response.content
             )
 
-    def test_POST_add_chassis_checks_port_too_low(self):
-        self.become_admin()
+    def test_POST_add_chassis_checks_port_too_low(
+        self, admin, admin_api_client
+    ):
         for chassis_type in ("recs_box", "vmware"):
             params = {
                 "op": "add_chassis",
@@ -2443,28 +2507,56 @@ class TestMachinesAPI(APITestCase.ForUser):
                 "password": factory.make_name("password"),
                 "port": random.randint(-2, 0),
             }
-            response = self.client.post(self.machines_url, params)
-            self.assertEqual(
-                http.client.BAD_REQUEST, response.status_code, response.content
+            response = admin_api_client.post(self.machines_url, params)
+            assert http.client.BAD_REQUEST == response.status_code, (
+                response.content
             )
-            self.assertEqual(
-                b"Invalid port: Please enter a number that is 1 or greater",
-                response.content,
+            assert (
+                b"Invalid port: Please enter a number that is 1 or greater"
+                == response.content
             )
 
-    def test_POST_add_chassis_sends_protcol_with_vmware(self):
-        self.become_admin()
+    def test_POST_add_chassis_only_allows_protocol_with_vmware(
+        self, admin, admin_api_client
+    ):
+        for chassis_type in (
+            "powerkvm",
+            "seamicro15k",
+            "virsh",
+        ):
+            params = {
+                "op": "add_chassis",
+                "chassis_type": chassis_type,
+                "hostname": factory.make_url(),
+                "password": factory.make_name("password"),
+                "protocol": factory.make_name("protocol"),
+            }
+            if chassis_type not in ("virsh", "powerkvm"):
+                params["username"] = factory.make_name("username")
+            response = admin_api_client.post(self.machines_url, params)
+            assert http.client.BAD_REQUEST == response.status_code, (
+                response.content
+            )
+            assert (
+                "protocol is unavailable with the %s chassis type"
+                % chassis_type
+            ).encode("utf-8") == response.content
+
+    def test_POST_add_chassis_sends_protcol_with_vmware(
+        self, admin, admin_api_client, mocker
+    ):
         rack = factory.make_RackController()
-        accessible_by_url = self.patch(
-            machines_module.RackController.objects, "get_accessible_by_url"
+        mocker.patch.object(
+            machines_module.RackController.objects,
+            "get_accessible_by_url",
+            return_value=rack,
         )
-        accessible_by_url.return_value = rack
-        add_chassis = self.patch(rack, "add_chassis")
+        add_chassis = mocker.patch.object(rack, "add_chassis")
         hostname = factory.make_url()
         username = factory.make_name("username")
         password = factory.make_name("password")
         protocol = factory.make_name("protocol")
-        response = self.client.post(
+        response = admin_api_client.post(
             self.machines_url,
             {
                 "op": "add_chassis",
@@ -2475,11 +2567,9 @@ class TestMachinesAPI(APITestCase.ForUser):
                 "protocol": protocol,
             },
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
-        add_chassis.assert_called_with(
-            self.user.username,
+        assert http.client.OK == response.status_code, response.content
+        add_chassis.assert_called_once_with(
+            admin.username,
             "vmware",
             hostname,
             username,
@@ -2495,45 +2585,19 @@ class TestMachinesAPI(APITestCase.ForUser):
             False,
         )
 
-    def test_POST_add_chassis_only_allows_protocol_with_vmware(self):
-        self.become_admin()
-        for chassis_type in (
-            "powerkvm",
-            "seamicro15k",
-            "virsh",
-        ):
-            params = {
-                "op": "add_chassis",
-                "chassis_type": chassis_type,
-                "hostname": factory.make_url(),
-                "password": factory.make_name("password"),
-                "protocol": factory.make_name("protocol"),
-            }
-            if chassis_type not in ("virsh", "powerkvm"):
-                params["username"] = factory.make_name("username")
-            response = self.client.post(self.machines_url, params)
-            self.assertEqual(
-                http.client.BAD_REQUEST, response.status_code, response.content
-            )
-            self.assertEqual(
-                (
-                    "protocol is unavailable with the %s chassis type"
-                    % chassis_type
-                ).encode("utf-8"),
-                response.content,
-            )
-
-    def test_POST_add_chassis_accept_domain_by_name(self):
-        self.become_admin()
+    def test_POST_add_chassis_accept_domain_by_name(
+        self, admin, admin_api_client, mocker
+    ):
         rack = factory.make_RackController()
-        accessible_by_url = self.patch(
-            machines_module.RackController.objects, "get_accessible_by_url"
+        mocker.patch.object(
+            machines_module.RackController.objects,
+            "get_accessible_by_url",
+            return_value=rack,
         )
-        accessible_by_url.return_value = rack
-        add_chassis = self.patch(rack, "add_chassis")
+        add_chassis = mocker.patch.object(rack, "add_chassis")
         hostname = factory.make_url()
         domain = factory.make_Domain()
-        response = self.client.post(
+        response = admin_api_client.post(
             self.machines_url,
             {
                 "op": "add_chassis",
@@ -2542,11 +2606,9 @@ class TestMachinesAPI(APITestCase.ForUser):
                 "domain": domain.name,
             },
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
-        add_chassis.assert_called_with(
-            self.user.username,
+        assert http.client.OK == response.status_code, response.content
+        add_chassis.assert_called_once_with(
+            admin.username,
             "virsh",
             hostname,
             None,
@@ -2562,17 +2624,19 @@ class TestMachinesAPI(APITestCase.ForUser):
             False,
         )
 
-    def test_POST_add_chassis_accept_domain_by_id(self):
-        self.become_admin()
+    def test_POST_add_chassis_accept_domain_by_id(
+        self, admin, admin_api_client, mocker
+    ):
         rack = factory.make_RackController()
-        accessible_by_url = self.patch(
-            machines_module.RackController.objects, "get_accessible_by_url"
+        mocker.patch.object(
+            machines_module.RackController.objects,
+            "get_accessible_by_url",
+            return_value=rack,
         )
-        accessible_by_url.return_value = rack
-        add_chassis = self.patch(rack, "add_chassis")
+        add_chassis = mocker.patch.object(rack, "add_chassis")
         hostname = factory.make_url()
         domain = factory.make_Domain()
-        response = self.client.post(
+        response = admin_api_client.post(
             self.machines_url,
             {
                 "op": "add_chassis",
@@ -2581,11 +2645,9 @@ class TestMachinesAPI(APITestCase.ForUser):
                 "domain": domain.id,
             },
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
-        add_chassis.assert_called_with(
-            self.user.username,
+        assert http.client.OK == response.status_code, response.content
+        add_chassis.assert_called_once_with(
+            admin.username,
             "virsh",
             hostname,
             None,
@@ -2601,10 +2663,9 @@ class TestMachinesAPI(APITestCase.ForUser):
             False,
         )
 
-    def test_POST_add_chassis_validates_domain(self):
-        self.become_admin()
+    def test_POST_add_chassis_validates_domain(self, admin, admin_api_client):
         domain = factory.make_name("domain")
-        response = self.client.post(
+        response = admin_api_client.post(
             self.machines_url,
             {
                 "op": "add_chassis",
@@ -2613,25 +2674,25 @@ class TestMachinesAPI(APITestCase.ForUser):
                 "domain": domain,
             },
         )
-        self.assertEqual(
-            http.client.NOT_FOUND, response.status_code, response.content
-        )
-        self.assertEqual(
-            ("Unable to find specified domain %s" % domain).encode("utf-8"),
-            response.content,
-        )
+        assert http.client.NOT_FOUND == response.status_code, response.content
+        assert ("Unable to find specified domain %s" % domain).encode(
+            "utf-8"
+        ) == response.content
 
-    def test_POST_add_chassis_accepts_system_id_for_rack_controller(self):
-        self.become_admin()
+    def test_POST_add_chassis_accepts_system_id_for_rack_controller(
+        self, admin, admin_api_client, mocker
+    ):
         subnet = factory.make_Subnet()
         rack = factory.make_RackController(subnet=subnet)
-        add_chassis = self.patch(node_module.RackController, "add_chassis")
+        add_chassis = mocker.patch.object(
+            node_module.RackController, "add_chassis"
+        )
         factory.make_RackController(subnet=subnet)
-        accessible_by_url = self.patch(
+        accessible_by_url = mocker.patch.object(
             machines_module.RackController.objects, "get_accessible_by_url"
         )
         hostname = factory.pick_ip_in_Subnet(subnet)
-        response = self.client.post(
+        response = admin_api_client.post(
             self.machines_url,
             {
                 "op": "add_chassis",
@@ -2640,12 +2701,10 @@ class TestMachinesAPI(APITestCase.ForUser):
                 "rack_controller": rack.system_id,
             },
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         accessible_by_url.assert_not_called()
-        add_chassis.assert_called_with(
-            self.user.username,
+        add_chassis.assert_called_once_with(
+            admin.username,
             "virsh",
             hostname,
             None,
@@ -2661,17 +2720,20 @@ class TestMachinesAPI(APITestCase.ForUser):
             False,
         )
 
-    def test_POST_add_chassis_accepts_hostname_for_rack_controller(self):
-        self.become_admin()
+    def test_POST_add_chassis_accepts_hostname_for_rack_controller(
+        self, admin, admin_api_client, mocker
+    ):
         subnet = factory.make_Subnet()
         rack = factory.make_RackController(subnet=subnet)
-        add_chassis = self.patch(node_module.RackController, "add_chassis")
+        add_chassis = mocker.patch.object(
+            node_module.RackController, "add_chassis"
+        )
         factory.make_RackController(subnet=subnet)
-        accessible_by_url = self.patch(
+        accessible_by_url = mocker.patch.object(
             machines_module.RackController.objects, "get_accessible_by_url"
         )
         hostname = factory.pick_ip_in_Subnet(subnet)
-        response = self.client.post(
+        response = admin_api_client.post(
             self.machines_url,
             {
                 "op": "add_chassis",
@@ -2680,12 +2742,10 @@ class TestMachinesAPI(APITestCase.ForUser):
                 "rack_controller": rack.hostname,
             },
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         accessible_by_url.assert_not_called()
-        add_chassis.assert_called_with(
-            self.user.username,
+        add_chassis.assert_called_once_with(
+            admin.username,
             "virsh",
             hostname,
             None,
@@ -2701,17 +2761,18 @@ class TestMachinesAPI(APITestCase.ForUser):
             False,
         )
 
-    def test_POST_add_chassis_rejects_invalid_rack_controller(self):
-        self.become_admin()
+    def test_POST_add_chassis_rejects_invalid_rack_controller(
+        self, admin, admin_api_client, mocker
+    ):
         subnet = factory.make_Subnet()
         factory.make_RackController(subnet=subnet)
-        self.patch(node_module.RackController, "add_chassis")
-        accessible_by_url = self.patch(
+        mocker.patch.object(node_module.RackController, "add_chassis")
+        accessible_by_url = mocker.patch.object(
             machines_module.RackController.objects, "get_accessible_by_url"
         )
         hostname = factory.pick_ip_in_Subnet(subnet)
         bad_rack = factory.make_name("rack_controller")
-        response = self.client.post(
+        response = admin_api_client.post(
             self.machines_url,
             {
                 "op": "add_chassis",
@@ -2720,29 +2781,31 @@ class TestMachinesAPI(APITestCase.ForUser):
                 "rack_controller": bad_rack,
             },
         )
-        self.assertEqual(
-            http.client.NOT_FOUND, response.status_code, response.content
-        )
-        self.assertEqual(
-            ("Unable to find specified rack %s" % bad_rack).encode("utf-8"),
-            response.content,
-        )
+        assert http.client.NOT_FOUND == response.status_code, response.content
+        assert ("Unable to find specified rack %s" % bad_rack).encode(
+            "utf-8"
+        ) == response.content
         accessible_by_url.assert_not_called()
 
-    def test_POST_add_chassis_all_racks_when_no_racks_avalible(self):
-        self.become_admin()
+    def test_POST_add_chassis_all_racks_when_no_racks_avalible(
+        self, admin, admin_api_client, mocker
+    ):
         rack1 = factory.make_RackController(hostname="rack-a")
         rack2 = factory.make_RackController(hostname="rack-b")
-        add_chassis1 = self.patch(rack1, "add_chassis")
-        add_chassis2 = self.patch(rack2, "add_chassis")
-        all_racks = self.patch(machines_module.RackController.objects, "all")
-        all_racks.return_value = [rack1, rack2]
-        accessible_by_url = self.patch(
-            machines_module.RackController.objects, "get_accessible_by_url"
+        add_chassis1 = mocker.patch.object(rack1, "add_chassis")
+        add_chassis2 = mocker.patch.object(rack2, "add_chassis")
+        mocker.patch.object(
+            machines_module.RackController.objects,
+            "all",
+            return_value=[rack1, rack2],
         )
-        accessible_by_url.return_value = None
+        mocker.patch.object(
+            machines_module.RackController.objects,
+            "get_accessible_by_url",
+            return_value=None,
+        )
         hostname = factory.make_url()
-        response = self.client.post(
+        response = admin_api_client.post(
             self.machines_url,
             {
                 "op": "add_chassis",
@@ -2750,11 +2813,9 @@ class TestMachinesAPI(APITestCase.ForUser):
                 "hostname": hostname,
             },
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
-        add_chassis1.assert_called_with(
-            self.user.username,
+        assert http.client.OK == response.status_code, response.content
+        add_chassis1.assert_called_once_with(
+            admin.username,
             "virsh",
             hostname,
             None,
@@ -2769,8 +2830,8 @@ class TestMachinesAPI(APITestCase.ForUser):
             None,
             False,
         )
-        add_chassis2.assert_called_with(
-            self.user.username,
+        add_chassis2.assert_called_once_with(
+            admin.username,
             "virsh",
             hostname,
             None,
@@ -2786,15 +2847,14 @@ class TestMachinesAPI(APITestCase.ForUser):
             False,
         )
 
-    def test_POST_clone_error(self):
-        self.become_admin()
+    def test_POST_clone_error(self, admin, admin_api_client):
         source = factory.make_Machine(with_boot_disk=False)
         factory.make_Interface(node=source, name="eth0")
         destination = factory.make_Machine(
             status=NODE_STATUS.READY, with_boot_disk=False
         )
         factory.make_Interface(node=destination, name="eth1")
-        response = self.client.post(
+        response = admin_api_client.post(
             self.machines_url,
             {
                 "op": "clone",
@@ -2803,19 +2863,18 @@ class TestMachinesAPI(APITestCase.ForUser):
                 "interfaces": "true",
             },
         )
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
 
-    def test_POST_clone(self):
-        self.become_admin()
+    def test_POST_clone(self, admin, admin_api_client):
         source = factory.make_Machine(with_boot_disk=False)
         factory.make_Interface(node=source, name="eth0")
         destination = factory.make_Machine(
             status=NODE_STATUS.READY, with_boot_disk=False
         )
         factory.make_Interface(node=destination, name="eth0")
-        response = self.client.post(
+        response = admin_api_client.post(
             self.machines_url,
             {
                 "op": "clone",
@@ -2824,49 +2883,66 @@ class TestMachinesAPI(APITestCase.ForUser):
                 "interfaces": "true",
             },
         )
-        self.assertEqual(
-            http.client.NO_CONTENT, response.status_code, response.content
-        )
+        assert http.client.NO_CONTENT == response.status_code, response.content
 
 
-class TestPowerState(APITransactionTestCase.ForUser):
-    def setUp(self):
-        super().setUp()
-        self.useFixture(RegionEventLoopFixture("database-tasks", "rpc"))
-        self.useFixture(RunningEventLoopFixture())
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user=user,client=oauth", id="user=user,client=oauth")],
+)
+@pytest.mark.usefixtures(
+    "maasdb", "maas_region_test", "factory", "transactional_maasdb"
+)
+@pytest.mark.allow_transactions
+class TestPowerState:
+    @pytest.fixture(autouse=True)
+    def _setup_api_identity(
+        self, transactional_maasdb, api_identity, maas_user, api_client
+    ):
+        self.user = maas_user
+        self.client = api_client
+
+    @pytest.fixture(autouse=True)
+    def _setup_event_loop(self, request):
+        region_event_loop = RegionEventLoopFixture("database-tasks", "rpc")
+        region_event_loop.setUp()
+        request.addfinalizer(region_event_loop.cleanUp)
+
+        running_event_loop = RunningEventLoopFixture()
+        running_event_loop.setUp()
+        request.addfinalizer(running_event_loop.cleanUp)
 
     def get_machine_uri(self, machine):
         """Get the API URI for a machine."""
         return reverse("machine_handler", args=[machine.system_id])
 
-    def assertPowerState(self, machine, state):
-        dbtasks = eventloop.services.getServiceNamed("database-tasks")
-        dbtasks.syncTask().wait(
-            timeout=5
-        )  # Wait for all pending tasks to run.
-        self.assertEqual(state, reload_object(machine).power_state)
-
-    def test_returns_actual_state(self):
+    def test_returns_actual_state(self, factory, mocker):
         machine = factory.make_Node_with_Interface_on_Subnet(power_type="ipmi")
         random_state = random.choice(["on", "off", "error"])
 
-        self.patch(Node, "_power_control_node").return_value = succeed(
-            {"state": random_state}
+        mocker.patch.object(
+            Node,
+            "_power_control_node",
+            return_value=succeed({"state": random_state}),
         )
 
         response = self.client.get(
             self.get_machine_uri(machine), {"op": "query_power_state"}
         )
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         response = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertEqual({"state": random_state}, response)
+        assert {"state": random_state} == response
         # The machine's power state is now `random_state`.
-        self.assertPowerState(machine, random_state)
+        dbtasks = eventloop.services.getServiceNamed("database-tasks")
+        dbtasks.syncTask().wait(
+            timeout=5
+        )  # Wait for all pending tasks to run.
+        assert random_state == reload_object(machine).power_state
 
 
-class TestGetAllocationOptions(MAASTestCase):
+class TestGetAllocationOptions:
     def test_defaults(self):
         request = factory.make_fake_request(method="POST", data={})
         options = get_allocation_options(request)
@@ -2880,13 +2956,14 @@ class TestGetAllocationOptions(MAASTestCase):
             ephemeral_deploy=False,
             enable_hw_sync=False,
         )
-        self.assertEqual(expected_options, options)
+        assert expected_options == options
 
     def test_install_kvm_raises_bad_request(self):
         request = factory.make_fake_request(
             method="POST", data=dict(install_kvm="true")
         )
-        self.assertRaises(MAASAPIBadRequest, get_allocation_options, request)
+        with pytest.raises(MAASAPIBadRequest):
+            get_allocation_options(request)
 
     def test_non_defaults(self):
         request = factory.make_fake_request(
@@ -2913,12 +2990,19 @@ class TestGetAllocationOptions(MAASTestCase):
             ephemeral_deploy=True,
             enable_hw_sync=True,
         )
-        self.assertEqual(expected_options, options)
+        assert expected_options == options
 
 
-class TestMachinesAPIOpenFGAIntegration(OpenFGAMockMixin, APITestCase.ForUser):
-    def setUp(self):
-        super().setUp()
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user=user,client=oauth", id="user=user,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestMachinesAPIOpenFGAIntegration(PytestOpenFGAMockMixin):
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maas_user, api_client):
+        self.user = maas_user
+        self.client = api_client
         self.machines_url = reverse("machines_handler")
 
     def test_read_filters_machines(self):
@@ -2935,13 +3019,13 @@ class TestMachinesAPIOpenFGAIntegration(OpenFGAMockMixin, APITestCase.ForUser):
 
         response = self.client.get(self.machines_url)
 
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         response_data = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
         machine_ids = [machine["system_id"] for machine in response_data]
-        self.assertIn(n1.system_id, machine_ids)
-        self.assertIn(n2.system_id, machine_ids)
+        assert n1.system_id in machine_ids
+        assert n2.system_id in machine_ids
 
         self.openfga_client.list_pools_with_view_available_machines_access.assert_called_once_with(
             self.user
@@ -2964,14 +3048,14 @@ class TestMachinesAPIOpenFGAIntegration(OpenFGAMockMixin, APITestCase.ForUser):
 
         response = self.client.get(self.machines_url)
 
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         response_data = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
         machine_ids = [machine["system_id"] for machine in response_data]
-        self.assertIn(n1.system_id, machine_ids)
-        self.assertNotIn(n2.system_id, machine_ids)
-        self.assertNotIn(n3.system_id, machine_ids)
+        assert n1.system_id in machine_ids
+        assert n2.system_id not in machine_ids
+        assert n3.system_id not in machine_ids
 
         self.openfga_client.list_pools_with_view_available_machines_access.assert_called_once_with(
             self.user
@@ -2998,14 +3082,14 @@ class TestMachinesAPIOpenFGAIntegration(OpenFGAMockMixin, APITestCase.ForUser):
 
         response = self.client.get(self.machines_url)
 
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         response_data = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
         machine_ids = [machine["system_id"] for machine in response_data]
-        self.assertIn(n1.system_id, machine_ids)
-        self.assertIn(n2.system_id, machine_ids)
-        self.assertNotIn(n3.system_id, machine_ids)
+        assert n1.system_id in machine_ids
+        assert n2.system_id in machine_ids
+        assert n3.system_id not in machine_ids
 
         self.openfga_client.list_pools_with_view_available_machines_access.assert_called_once_with(
             self.user
@@ -3026,11 +3110,9 @@ class TestMachinesAPIOpenFGAIntegration(OpenFGAMockMixin, APITestCase.ForUser):
             status=available_status, owner=None, with_boot_disk=True, pool=p
         )
         response = self.client.post(self.machines_url, {"op": "allocate"})
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert response.status_code == http.client.OK, response.content
         machine = Machine.objects.get(system_id=machine.system_id)
-        self.assertEqual(self.user, machine.owner)
+        assert machine.owner == self.user
         self.openfga_client.list_pool_with_deploy_machines_access.assert_called_once()
 
     def test_allocate_returns_409_if_not_deployable(self):
@@ -3043,9 +3125,7 @@ class TestMachinesAPIOpenFGAIntegration(OpenFGAMockMixin, APITestCase.ForUser):
             status=available_status, owner=None, with_boot_disk=True, pool=p
         )
         response = self.client.post(self.machines_url, {"op": "allocate"})
-        self.assertEqual(
-            http.client.CONFLICT, response.status_code, response.content
-        )
+        assert response.status_code == http.client.CONFLICT, response.content
         self.openfga_client.list_pool_with_deploy_machines_access.assert_called_once()
 
     def test_release_returns_403_if_owned_by_another_user(self):
@@ -3066,14 +3146,12 @@ class TestMachinesAPIOpenFGAIntegration(OpenFGAMockMixin, APITestCase.ForUser):
             self.machines_url,
             {"op": "release", "machines": [machine.system_id]},
         )
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert response.status_code == http.client.FORBIDDEN, response.content
         self.openfga_client.list_pool_with_deploy_machines_access.assert_called_once()
 
-    def test_release_success_if_can_edit_machines(self):
-        self.patch(Machine, "_stop")
-        self.patch(Machine, "_set_status")
+    def test_release_success_if_can_edit_machines(self, mocker):
+        mocker.patch.object(Machine, "_stop")
+        mocker.patch.object(Machine, "_set_status")
 
         p = factory.make_ResourcePool()
 
@@ -3095,15 +3173,13 @@ class TestMachinesAPIOpenFGAIntegration(OpenFGAMockMixin, APITestCase.ForUser):
             self.machines_url,
             {"op": "release", "machines": {machine.system_id}},
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert response.status_code == http.client.OK, response.content
         self.openfga_client.list_pool_with_deploy_machines_access.assert_called_once()
         self.openfga_client.list_pools_with_edit_machines_access.assert_called_once()
 
-    def test_release_success_if_is_owner(self):
-        self.patch(Machine, "_stop")
-        self.patch(Machine, "_set_status")
+    def test_release_success_if_is_owner(self, mocker):
+        mocker.patch.object(Machine, "_stop")
+        mocker.patch.object(Machine, "_set_status")
 
         p = factory.make_ResourcePool()
 
@@ -3122,35 +3198,39 @@ class TestMachinesAPIOpenFGAIntegration(OpenFGAMockMixin, APITestCase.ForUser):
             self.machines_url,
             {"op": "release", "machines": [machine.system_id]},
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert response.status_code == http.client.OK, response.content
         self.openfga_client.list_pool_with_deploy_machines_access.assert_called_once()
 
     def test_add_chassis_requires_can_edit_machines(self):
         self.openfga_client.can_edit_machines.return_value = True
         response = self.client.post(self.machines_url, {"op": "add_chassis"})
-        self.assertNotEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert response.status_code != http.client.FORBIDDEN, response.content
         self.openfga_client.can_edit_machines.assert_called_once_with(
             self.user
         )
 
 
-class TestMachinesListingMatchesDetails(
-    RenderedNodesMixin, APITestCase.ForUser
-):
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user=user,client=oauth", id="user=user,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestMachinesListingMatchesDetails(RenderedNodesMixin):
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maas_user, api_client, mocker):
+        self.user = maas_user
+        self.client = api_client
+        self.setup_rendered_nodes(mocker)
+
     def test_GET_lists_machines_like_details(self):
         machines = self.make_machines()
 
         listing = self.get_json(reverse("machines_handler"))
 
-        self.assertEqual(
-            [machine.system_id for machine in machines],
-            extract_system_ids(listing),
-        )
-        self.assertListedLikeDetails(listing, "machine_handler")
+        assert [
+            machine.system_id for machine in machines
+        ] == extract_system_ids(listing)
+        self.check_listed_like_details(listing, "machine_handler")
 
     def test_GET_renders_expected_values(self):
         machine = self.make_rich_machine()
@@ -3161,15 +3241,12 @@ class TestMachinesListingMatchesDetails(
             interface["name"]: interface
             for interface in listed["interface_set"]
         }
-        self.assertEqual(
-            {9000},
-            {
-                interfaces[interface.name]["effective_mtu"]
-                for interface in machine.current_config.interface_set.exclude(
-                    type=INTERFACE_TYPE.PHYSICAL
-                )
-            },
-        )
+        assert {9000} == {
+            interfaces[interface.name]["effective_mtu"]
+            for interface in machine.current_config.interface_set.exclude(
+                type=INTERFACE_TYPE.PHYSICAL
+            )
+        }
         discovered_ip = StaticIPAddress.objects.get(
             interface__node_config__node=machine,
             alloc_type=IPADDRESS_TYPE.DISCOVERED,
@@ -3180,54 +3257,49 @@ class TestMachinesListingMatchesDetails(
             for link in interface["links"]
             if link["mode"] == "dhcp"
         ]
-        self.assertEqual(discovered_ip.ip, dhcp_link["ip_address"])
-        self.assertEqual(
-            self.tagged_vlan.id,
-            dhcp_link["subnet"]["vlan"]["relay_vlan"]["id"],
+        assert discovered_ip.ip == dhcp_link["ip_address"]
+        assert (
+            self.tagged_vlan.id
+            == dhcp_link["subnet"]["vlan"]["relay_vlan"]["id"]
         )
-        self.assertEqual(
-            {
-                "gateway_ip": self.tagged_subnet.gateway_ip,
-                "link_id": machine.gateway_link_ipv4_id,
-            },
-            listed["default_gateways"]["ipv4"],
+        assert {
+            "gateway_ip": self.tagged_subnet.gateway_ip,
+            "link_id": machine.gateway_link_ipv4_id,
+        } == listed["default_gateways"]["ipv4"]
+        assert (
+            self.ipv6_subnet.gateway_ip
+            == listed["default_gateways"]["ipv6"]["gateway_ip"]
         )
-        self.assertEqual(
-            self.ipv6_subnet.gateway_ip,
-            listed["default_gateways"]["ipv6"]["gateway_ip"],
-        )
-        self.assertEqual(
-            f"{self.info_event_type.description} - latest",
-            listed["status_message"],
+        assert (
+            f"{self.info_event_type.description} - latest"
+            == listed["status_message"]
         )
         used_for = {
             device["used_for"]
             for block_device in listed["blockdevice_set"]
             for device in [block_device, *block_device["partitions"]]
         }
-        self.assertTrue(
-            {"Cache device for cache0", "Cache device for cache1"} <= used_for
-        )
-        self.assertEqual(
-            {
-                "commissioning_status_name": "Failed",
-                "testing_status_name": "Running",
-                "cpu_test_status_name": "Passed",
-                "memory_test_status_name": "Passed",
-                "storage_test_status_name": "Running",
-                "network_test_status_name": "Failed",
-                "other_test_status_name": "Passed",
-            },
-            {
-                key: listed[key]
-                for key in (
-                    "commissioning_status_name",
-                    "testing_status_name",
-                    "cpu_test_status_name",
-                    "memory_test_status_name",
-                    "storage_test_status_name",
-                    "network_test_status_name",
-                    "other_test_status_name",
-                )
-            },
-        )
+        assert {
+            "Cache device for cache0",
+            "Cache device for cache1",
+        } <= used_for
+        assert {
+            "commissioning_status_name": "Failed",
+            "testing_status_name": "Running",
+            "cpu_test_status_name": "Passed",
+            "memory_test_status_name": "Passed",
+            "storage_test_status_name": "Running",
+            "network_test_status_name": "Failed",
+            "other_test_status_name": "Passed",
+        } == {
+            key: listed[key]
+            for key in (
+                "commissioning_status_name",
+                "testing_status_name",
+                "cpu_test_status_name",
+                "memory_test_status_name",
+                "storage_test_status_name",
+                "network_test_status_name",
+                "other_test_status_name",
+            )
+        }

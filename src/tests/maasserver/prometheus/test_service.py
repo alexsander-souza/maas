@@ -7,6 +7,7 @@ import json
 import random
 
 from django.urls import reverse
+import pytest
 
 from maasserver.models import Config
 from maasserver.prometheus.service import (
@@ -15,26 +16,33 @@ from maasserver.prometheus.service import (
     REGION_PROMETHEUS_PORT,
 )
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
+from maasserver.testing.testclient import MAASSensibleClient
 
 
-class TestPrometheusDiscoveryResource(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestPrometheusDiscoveryResource:
+    @pytest.fixture(autouse=True)
+    def _setup_client(self):
+        self.client = MAASSensibleClient()
+
     def test_prometheus_discover_not_found_when_disabled(self):
         Config.objects.set_config("prometheus_enabled", False)
         response = self.client.get(reverse("metrics_endpoints"))
-        self.assertEqual("text/html; charset=utf-8", response["Content-Type"])
-        self.assertEqual(response.status_code, http.client.NOT_FOUND)
+        assert response["Content-Type"] == "text/html; charset=utf-8"
+        assert response.status_code == http.client.NOT_FOUND
 
     def test_prometheus_discovery_separate_controllers(self):
         Config.objects.set_config("prometheus_enabled", True)
         subnet = factory.make_Subnet()
-        region_controller = factory.make_RegionController()
+        region_controller = self._make_controller(
+            factory.make_RegionController
+        )
         factory.make_Interface(
             node=region_controller,
             subnet=subnet,
             ip=subnet.get_next_ip_for_allocation()[0],
         )
-        rack_controller = factory.make_RackController()
+        rack_controller = self._make_controller(factory.make_RackController)
         factory.make_Interface(
             node=rack_controller,
             subnet=subnet,
@@ -42,46 +50,48 @@ class TestPrometheusDiscoveryResource(MAASServerTestCase):
         )
         discovery_response = self.client.get(reverse("metrics_endpoints"))
         discovered = json.loads(discovery_response.content)
-        self.assertCountEqual(
-            [
-                {
-                    "targets": [
-                        ip + ":" + str(REGION_PROMETHEUS_PORT)
-                        for ip in region_controller.ip_addresses()
-                    ],
-                    "labels": {
-                        "__meta_prometheus_job": "maas",
-                        "maas_az": region_controller.zone.name,
-                        "maas_region": "True",
-                        "maas_rack": "False",
-                    },
+        expected = [
+            {
+                "targets": [
+                    ip + ":" + str(REGION_PROMETHEUS_PORT)
+                    for ip in region_controller.ip_addresses()
+                ],
+                "labels": {
+                    "__meta_prometheus_job": "maas",
+                    "maas_az": region_controller.zone.name,
+                    "maas_region": "True",
+                    "maas_rack": "False",
                 },
-                {
-                    "targets": [
-                        ip + ":" + str(RACK_PROMETHEUS_PORT)
-                        for ip in rack_controller.ip_addresses()
-                    ],
-                    "labels": {
-                        "__meta_prometheus_job": "maas",
-                        "maas_az": rack_controller.zone.name,
-                        "maas_region": "False",
-                        "maas_rack": "True",
-                    },
+            },
+            {
+                "targets": [
+                    ip + ":" + str(RACK_PROMETHEUS_PORT)
+                    for ip in rack_controller.ip_addresses()
+                ],
+                "labels": {
+                    "__meta_prometheus_job": "maas",
+                    "maas_az": rack_controller.zone.name,
+                    "maas_region": "False",
+                    "maas_rack": "True",
                 },
-            ],
-            discovered,
-        )
+            },
+        ]
+        assert sorted(
+            json.dumps(item, sort_keys=True) for item in expected
+        ) == sorted(json.dumps(item, sort_keys=True) for item in discovered)
 
     def test_prometheus_discovery_region_rack_controller(self):
         Config.objects.set_config("prometheus_enabled", True)
         subnet = factory.make_Subnet()
-        region_rack_controller = factory.make_RegionRackController()
+        region_rack_controller = self._make_controller(
+            factory.make_RegionRackController
+        )
         factory.make_Interface(
             node=region_rack_controller,
             subnet=subnet,
             ip=subnet.get_next_ip_for_allocation()[0],
         )
-        rack_controller = factory.make_RackController()
+        rack_controller = self._make_controller(factory.make_RackController)
         factory.make_Interface(
             node=rack_controller,
             subnet=subnet,
@@ -89,34 +99,47 @@ class TestPrometheusDiscoveryResource(MAASServerTestCase):
         )
         discovery_response = self.client.get(reverse("metrics_endpoints"))
         discovered = json.loads(discovery_response.content)
-        self.assertCountEqual(
-            [
-                {
-                    "targets": [
-                        ip + ":" + str(REGION_PROMETHEUS_PORT)
-                        for ip in region_rack_controller.ip_addresses()
-                    ],
-                    "labels": {
-                        "__meta_prometheus_job": "maas",
-                        "maas_az": region_rack_controller.zone.name,
-                        "maas_region": "True",
-                        "maas_rack": "True",
-                    },
+        expected = [
+            {
+                "targets": [
+                    ip + ":" + str(REGION_PROMETHEUS_PORT)
+                    for ip in region_rack_controller.ip_addresses()
+                ],
+                "labels": {
+                    "__meta_prometheus_job": "maas",
+                    "maas_az": region_rack_controller.zone.name,
+                    "maas_region": "True",
+                    "maas_rack": "True",
                 },
-                {
-                    "targets": [
-                        ip + ":" + str(RACK_PROMETHEUS_PORT)
-                        for ip in rack_controller.ip_addresses()
-                    ],
-                    "labels": {
-                        "__meta_prometheus_job": "maas",
-                        "maas_az": rack_controller.zone.name,
-                        "maas_region": "False",
-                        "maas_rack": "True",
-                    },
+            },
+            {
+                "targets": [
+                    ip + ":" + str(RACK_PROMETHEUS_PORT)
+                    for ip in rack_controller.ip_addresses()
+                ],
+                "labels": {
+                    "__meta_prometheus_job": "maas",
+                    "maas_az": rack_controller.zone.name,
+                    "maas_region": "False",
+                    "maas_rack": "True",
                 },
-            ],
-            discovered,
+            },
+        ]
+        assert sorted(
+            json.dumps(item, sort_keys=True) for item in expected
+        ) == sorted(json.dumps(item, sort_keys=True) for item in discovered)
+
+    def _make_controller(self, controller_factory, **kwargs):
+        power_parameters = {
+            "power_address": (
+                f"qemu+ssh://user@{factory.make_ipv4_address()}/system"
+            )
+        }
+        return controller_factory(
+            owner=factory.make_User(),
+            power_type="virsh",
+            power_parameters=power_parameters,
+            **kwargs,
         )
 
     def _test_format(self, controller_factory, is_region, is_rack):
@@ -127,7 +150,7 @@ class TestPrometheusDiscoveryResource(MAASServerTestCase):
             zone = factory.make_Zone()
             subnet = factory.make_Subnet()
             for _ in range(3):
-                controller = controller_factory()
+                controller = self._make_controller(controller_factory)
                 factory.make_Interface(
                     node=controller,
                     subnet=subnet,
@@ -170,7 +193,9 @@ class TestPrometheusDiscoveryResource(MAASServerTestCase):
                     }
                 )
         formated = discovery_resource._format(bucketed_controllers)
-        self.assertCountEqual(expected, formated)
+        assert sorted(
+            json.dumps(item, sort_keys=True) for item in expected
+        ) == sorted(json.dumps(item, sort_keys=True) for item in formated)
 
     def test_format_region_controllers(self):
         self._test_format(factory.make_RegionController, True, False)
@@ -194,7 +219,7 @@ class TestPrometheusDiscoveryResource(MAASServerTestCase):
                         factory.make_RegionRackController,
                     ]
                 )
-                controller = fact(zone=zone)
+                controller = self._make_controller(fact, zone=zone)
                 expected[
                     (
                         zone.name,
@@ -205,4 +230,4 @@ class TestPrometheusDiscoveryResource(MAASServerTestCase):
                 controllers.append(controller)
         discovery_resource = PrometheusDiscoveryResource()
         buckets = discovery_resource._group_controllers_by_az(controllers)
-        self.assertCountEqual(expected, buckets)
+        assert expected == buckets

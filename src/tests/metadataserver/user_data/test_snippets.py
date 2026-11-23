@@ -3,10 +3,7 @@
 
 """Test the snippets-related support routines for commissioning user data."""
 
-import os.path
-
 from maastesting.factory import factory
-from maastesting.testcase import MAASTestCase
 from metadataserver.user_data.snippets import (
     get_snippet_context,
     is_snippet,
@@ -16,21 +13,21 @@ from metadataserver.user_data.snippets import (
 )
 
 
-class TestSnippets(MAASTestCase):
-    def test_read_snippet_reads_snippet_file(self):
+class TestSnippets:
+    def test_read_snippet_reads_snippet_file(self, tmp_path):
         contents = factory.make_string()
-        snippet = self.make_file(contents=contents)
-        self.assertEqual(
-            contents,
-            read_snippet(os.path.dirname(snippet), os.path.basename(snippet)),
-        )
+        snippets_dir = tmp_path / "snippets"
+        snippets_dir.mkdir()
+        snippet = snippets_dir / "snippet"
+        snippet.write_text(contents)
+        assert contents == read_snippet(str(snippet.parent), snippet.name)
 
     def test_strip_name_leaves_simple_names_intact(self):
         simple_name = factory.make_string()
-        self.assertEqual(simple_name, strip_name(simple_name))
+        assert simple_name == strip_name(simple_name)
 
     def test_strip_name_replaces_dots(self):
-        self.assertEqual("_x_y_", strip_name(".x.y."))
+        assert "_x_y_" == strip_name(".x.y.")
 
     def test_is_snippet(self):
         are_snippets = {
@@ -43,27 +40,29 @@ class TestSnippets(MAASTestCase):
             "__init__.pyc": False,
             "tests": False,
         }
-        self.assertEqual(
-            are_snippets, {name: is_snippet(name) for name in are_snippets}
-        )
+        assert are_snippets == {
+            name: is_snippet(name) for name in are_snippets
+        }
 
-    def test_list_snippets(self):
-        snippets_dir = self.make_dir()
-        factory.make_file(snippets_dir, "snippet")
-        factory.make_file(snippets_dir, ".backup.pyc")
-        self.assertEqual(["snippet"], list_snippets(snippets_dir))
+    def test_list_snippets(self, tmp_path):
+        snippets_dir = tmp_path / "snippets"
+        snippets_dir.mkdir()
+        factory.make_file(str(snippets_dir), "snippet")
+        factory.make_file(str(snippets_dir), ".backup.pyc")
+        assert ["snippet"] == list_snippets(str(snippets_dir))
 
-    def test_get_snippet_context(self):
+    def test_get_snippet_context(self, tmp_path):
         contents = factory.make_string()
-        snippets_dir = self.make_dir()
-        factory.make_file(snippets_dir, "snippet.py", contents=contents)
-        snippets = get_snippet_context(snippets_dir=snippets_dir)
-        self.assertEqual({"base_user_data_sh", "snippet_py"}, snippets.keys())
-        self.assertEqual(contents, snippets["snippet_py"])
+        snippets_dir = tmp_path / "snippets"
+        snippets_dir.mkdir()
+        factory.make_file(str(snippets_dir), "snippet.py", contents=contents)
+        snippets = get_snippet_context(snippets_dir=str(snippets_dir))
+        assert {"base_user_data_sh", "snippet_py"} == snippets.keys()
+        assert contents == snippets["snippet_py"]
 
-    def test_get_snippet_always_contains_base_user_data(self):
-        snippets_dir = self.make_dir()
-        self.assertEqual(
-            {"base_user_data_sh"},
-            get_snippet_context(snippets_dir=snippets_dir).keys(),
-        )
+    def test_get_snippet_always_contains_base_user_data(self, tmp_path):
+        snippets_dir = tmp_path / "snippets"
+        snippets_dir.mkdir()
+        assert {"base_user_data_sh"} == get_snippet_context(
+            snippets_dir=str(snippets_dir)
+        ).keys()

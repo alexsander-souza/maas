@@ -14,53 +14,58 @@ from unittest.mock import call, MagicMock, patch
 import urllib
 import urllib.request
 
+import pytest
 import yaml
 
 from maasserver.testing.commissioning import DeviceType, FakeCommissioningData
 from maasserver.testing.factory import factory
-from maastesting.fixtures import TempDirectory
-from maastesting.testcase import MAASTestCase
 from metadataserver.builtin_scripts.commissioning_scripts import bmc_config
 
 
-class TestExitSkipped(MAASTestCase):
-    def test_result_path_defined(self):
+class TestExitSkipped:
+    def test_result_path_defined(self, mocker):
         result_path = factory.make_name("result_path")
-        self.patch(bmc_config.os, "environ", {"RESULT_PATH": result_path})
-        mock_open = self.patch(bmc_config, "open")
+        mocker.patch.object(
+            bmc_config.os, "environ", {"RESULT_PATH": result_path}
+        )
+        mock_open = mocker.patch.object(bmc_config, "open")
         mock_open.return_value = io.StringIO()
-        mock_yaml_safe_dump = self.patch(bmc_config.yaml, "safe_dump")
+        mock_yaml_safe_dump = mocker.patch.object(bmc_config.yaml, "safe_dump")
 
-        self.assertRaises(SystemExit, bmc_config.exit_skipped)
+        with pytest.raises(SystemExit):
+            bmc_config.exit_skipped()
         mock_open.assert_called_once_with(result_path, "w")
         mock_yaml_safe_dump.assert_called_once_with(
             {"status": "skipped"}, mock_open.return_value
         )
 
-    def test_result_path_not_defined(self):
-        mock_open = self.patch(bmc_config, "open")
+    def test_result_path_not_defined(self, mocker):
+        mock_open = mocker.patch.object(bmc_config, "open")
 
-        self.assertRaises(SystemExit, bmc_config.exit_skipped)
+        with pytest.raises(SystemExit):
+            bmc_config.exit_skipped()
         mock_open.assert_not_called()
 
 
-class TestIPMI(MAASTestCase):
-    def setUp(self):
-        super().setUp()
+class TestIPMI:
+    @pytest.fixture(autouse=True)
+    def setUp(self, mocker):
         self.username = factory.make_name("username")
         self.password = factory.make_name("password")
         self.ipmi = bmc_config.IPMI(self.username, self.password)
-        self.mock_check_output = self.patch(bmc_config, "check_output")
-        self.mock_check_call = self.patch(bmc_config, "check_call")
-        self.mock_run = self.patch(bmc_config, "run")
-        self.mock_sleep = self.patch(bmc_config.time, "sleep")
-        self.mock_print = self.patch(bmc_config, "print")
+        self.mock_check_output = mocker.patch.object(
+            bmc_config, "check_output"
+        )
+        self.mock_check_call = mocker.patch.object(bmc_config, "check_call")
+        self.mock_run = mocker.patch.object(bmc_config, "run")
+        self.mock_sleep = mocker.patch.object(bmc_config.time, "sleep")
+        self.mock_print = mocker.patch.object(bmc_config, "print")
 
     def test_power_type(self):
-        self.assertEqual("ipmi", self.ipmi.power_type)
+        assert "ipmi" == self.ipmi.power_type
 
     def test_str(self):
-        self.assertEqual("IPMI", str(self.ipmi))
+        assert "IPMI" == str(self.ipmi)
 
     def test_bmc_get_config(self):
         self.mock_run.return_value.stdout = b"""
@@ -87,7 +92,7 @@ key1         value1
 key2
 """
         self.ipmi._bmc_get_config()
-        self.assertEqual(
+        assert (
             {
                 "Section1": {
                     "Key1": "value1",
@@ -101,9 +106,8 @@ key2
                 },
                 "key1": "value1",
                 "key2": "",
-            },
-            self.ipmi._bmc_config,
-        )
+            }
+        ) == (self.ipmi._bmc_config)
 
     def test_bmc_get_config_section(self):
         self.mock_run.return_value.stdout = b"""
@@ -132,7 +136,7 @@ EndSection
             "key2": "",
         }
         self.ipmi._bmc_get_config("Section1")
-        self.assertEqual(
+        assert (
             {
                 "Section1": {
                     "Key1": "value5",
@@ -146,9 +150,8 @@ EndSection
                 },
                 "key1": "value1",
                 "key2": "",
-            },
-            self.ipmi._bmc_config,
-        )
+            }
+        ) == (self.ipmi._bmc_config)
 
     def test_bmc_set(self):
         section = factory.make_name("section")
@@ -164,7 +167,7 @@ EndSection
             ],
             timeout=bmc_config.COMMAND_TIMEOUT,
         )
-        self.assertEqual({section: {key: value}}, self.ipmi._bmc_config)
+        assert {section: {key: value}} == self.ipmi._bmc_config
 
     def test_bmc_set_keys(self):
         password = factory.make_string()
@@ -196,7 +199,7 @@ EndSection
             timeout=bmc_config.COMMAND_TIMEOUT,
         )
         # Verify cache has been updated
-        self.assertEqual(
+        assert (
             {
                 "User2": {
                     "Username": "maas",
@@ -204,9 +207,8 @@ EndSection
                     "Lan_Enable_Link_Auth": "Yes",
                     "SOL_Payload_Access": "Yes",
                 },
-            },
-            self.ipmi._bmc_config,
-        )
+            }
+        ) == (self.ipmi._bmc_config)
 
     def test_bmc_set_keys_warns_on_no_section(self):
         self.ipmi._bmc_config = {}
@@ -227,8 +229,8 @@ EndSection
         )
         self.mock_print.assert_called_once()
 
-    def test_detected_true(self):
-        mock_get_ipmi_locate_output = self.patch(
+    def test_detected_true(self, mocker):
+        mock_get_ipmi_locate_output = mocker.patch.object(
             bmc_config, "_get_ipmi_locate_output"
         )
         mock_get_ipmi_locate_output.return_value = random.choice(
@@ -238,32 +240,34 @@ EndSection
                 "IPMI Version: 2.0\n",
             ]
         )
-        self.assertTrue(self.ipmi.detected())
+        assert self.ipmi.detected()
 
-    def test_detected_true_dev_ipmi(self):
+    def test_detected_true_dev_ipmi(self, mocker):
         self.mock_check_output.return_value = b""
-        self.patch(bmc_config.glob, "glob").return_value = ["/dev/ipmi0"]
-        self.assertTrue(self.ipmi.detected())
+        mocker.patch.object(bmc_config.glob, "glob").return_value = [
+            "/dev/ipmi0"
+        ]
+        assert self.ipmi.detected()
 
-    def test_detected_false(self):
-        mock_get_ipmi_locate_output = self.patch(
+    def test_detected_false(self, mocker):
+        mock_get_ipmi_locate_output = mocker.patch.object(
             bmc_config, "_get_ipmi_locate_output"
         )
         mock_get_ipmi_locate_output.return_value = factory.make_string()
-        self.assertFalse(self.ipmi.detected())
+        assert not self.ipmi.detected()
         self.mock_print.assert_called_once_with(
             "DEBUG: Could not find IPMI version or an IPMI device in /dev"
         )
 
-    def test_detected_command_exception(self):
-        mock_get_ipmi_locate_output = self.patch(
+    def test_detected_command_exception(self, mocker):
+        mock_get_ipmi_locate_output = mocker.patch.object(
             bmc_config, "_get_ipmi_locate_output"
         )
         mock_get_ipmi_locate_output.side_effect = CalledProcessError(
             cmd=["ipmi-locate"], returncode=1
         )
 
-        self.assertFalse(self.ipmi.detected())
+        assert not self.ipmi.detected()
         self.mock_print.assert_called_once_with(
             "DEBUG: Exception occurred when trying to execute ipmi-locate command: "
             "Command '['ipmi-locate']' returned non-zero exit status 1."
@@ -277,35 +281,35 @@ EndSection
                 max_length=15,
                 extra_constraint=constraint,
             )
-            self.assertTrue(14 <= len(password) <= 15)
-            self.assertTrue(constraint(password))
+            assert 14 <= len(password) <= 15
+            assert constraint(password)
             # No more than 2 consecutive occurrences of the same character.
-            self.assertFalse(re.search(r"(.)\1\1", password))
+            assert not re.search(r"(.)\1\1", password)
 
     def test_bmc_password_constraint_rejects_disallowed_characters(self):
         constraint = bmc_config._build_bmc_password_constraint()
-        self.assertFalse(constraint("Aa1! valid password"))
-        self.assertFalse(constraint("Aa1!backslash\\here"))
+        assert not constraint("Aa1! valid password")
+        assert not constraint("Aa1!backslash\\here")
 
     def test_bmc_password_constraint_rejects_triple_repeats(self):
         constraint = bmc_config._build_bmc_password_constraint()
-        self.assertFalse(constraint("Aa1!aaaBBB"))
-        self.assertTrue(constraint("Aa1!aaBBcc"))
+        assert not constraint("Aa1!aaaBBB")
+        assert constraint("Aa1!aaBBcc")
 
     def test_bmc_password_constraint_rejects_username_match(self):
         constraint = bmc_config._build_bmc_password_constraint(
             username="maasuser"
         )
-        self.assertFalse(constraint("maasuser"))
-        self.assertFalse(constraint("maasuser"[::-1]))
+        assert not constraint("maasuser")
+        assert not constraint("maasuser"[::-1])
 
     def test_bmc_password_constraint_requires_old_password_difference(self):
         constraint = bmc_config._build_bmc_password_constraint(
             old_password="Aa1!bcdefghijk"
         )
-        self.assertFalse(constraint("Aa1!bcdefghijk"))
-        self.assertFalse(constraint("Ab1!bcdefghijk"))
-        self.assertTrue(constraint("Ab2!bcdefghijk"))
+        assert not constraint("Aa1!bcdefghijk")
+        assert not constraint("Ab1!bcdefghijk")
+        assert constraint("Ab2!bcdefghijk")
 
     def test_make_ipmi_user_settings(self):
         username = factory.make_name("username")
@@ -317,7 +321,7 @@ EndSection
                 ("ADMIN", "Administrator"),
             ]
         )
-        self.assertEqual(
+        assert (
             OrderedDict(
                 (
                     ("Username", username),
@@ -326,9 +330,8 @@ EndSection
                     ("Lan_Privilege_Limit", privilege_level),
                     ("Lan_Enable_IPMI_Msgs", "Yes"),
                 )
-            ),
-            self.ipmi._make_ipmi_user_settings(username, password),
-        )
+            )
+        ) == (self.ipmi._make_ipmi_user_settings(username, password))
 
     def test_pick_user_number_finds_empty(self):
         self.ipmi._bmc_config = {
@@ -338,7 +341,7 @@ EndSection
             "User4": {"Username": factory.make_name("username")},
             "User5": random.choice([{}, {"Username": "(Empty User)"}]),
         }
-        self.assertEqual("User3", self.ipmi._pick_user_number("maas"))
+        assert "User3" == self.ipmi._pick_user_number("maas")
 
     def test_pick_user_number_finds_existing(self):
         search_username = factory.make_name("search_username")
@@ -349,11 +352,11 @@ EndSection
             "User4": {"Username": search_username},
             "User5": random.choice([{}, {"Username": "(Empty User)"}]),
         }
-        self.assertEqual("User4", self.ipmi._pick_user_number(search_username))
+        assert "User4" == self.ipmi._pick_user_number(search_username)
 
-    def test_add_bmc_user(self):
-        mock_bmc_set = self.patch(self.ipmi, "_bmc_set")
-        mock_bmc_set_keys = self.patch(self.ipmi, "_bmc_set_keys")
+    def test_add_bmc_user(self, mocker):
+        mock_bmc_set = mocker.patch.object(self.ipmi, "_bmc_set")
+        mock_bmc_set_keys = mocker.patch.object(self.ipmi, "_bmc_set_keys")
         self.ipmi._bmc_config = {
             "User1": {},
             "User2": {
@@ -368,8 +371,8 @@ EndSection
 
         self.ipmi.add_bmc_user()
 
-        self.assertEqual(self.username, self.ipmi.username)
-        self.assertEqual(self.password, self.ipmi.password)
+        assert self.username == self.ipmi.username
+        assert self.password == self.ipmi.password
         # Verify bmc_set is only called for values that have changed
 
         mock_bmc_set.assert_has_calls(
@@ -390,13 +393,15 @@ EndSection
             "Yes",
         )
 
-    def test_add_bmc_user_rand_password(self):
+    def test_add_bmc_user_rand_password(self, mocker):
         self.ipmi.username = None
         self.ipmi.password = None
         password = factory.make_name("password")
-        self.patch(bmc_config, "generate_password").return_value = password
-        mock_bmc_set = self.patch(self.ipmi, "_bmc_set")
-        mock_bmc_set_keys = self.patch(self.ipmi, "_bmc_set_keys")
+        mocker.patch.object(
+            bmc_config, "generate_password"
+        ).return_value = password
+        mock_bmc_set = mocker.patch.object(self.ipmi, "_bmc_set")
+        mock_bmc_set_keys = mocker.patch.object(self.ipmi, "_bmc_set_keys")
         self.ipmi._bmc_config = {
             "User1": {},
             "User2": {
@@ -411,8 +416,8 @@ EndSection
 
         self.ipmi.add_bmc_user()
 
-        self.assertEqual("maas", self.ipmi.username)
-        self.assertEqual(password, self.ipmi.password)
+        assert "maas" == self.ipmi.username
+        assert password == self.ipmi.password
         # Verify bmc_set is only called for values that have changed
         mock_bmc_set.assert_has_calls(
             [
@@ -431,13 +436,14 @@ EndSection
             "Yes",
         )
 
-    def test_add_bmc_user_fails(self):
-        mock_bmc_set = self.patch(self.ipmi, "_bmc_set")
+    def test_add_bmc_user_fails(self, mocker):
+        mock_bmc_set = mocker.patch.object(self.ipmi, "_bmc_set")
         mock_bmc_set.side_effect = factory.make_exception()
 
-        self.assertRaises(SystemExit, self.ipmi.add_bmc_user)
+        with pytest.raises(SystemExit):
+            self.ipmi.add_bmc_user()
 
-    def test_set_ipmi_lan_channel_setting_verifies(self):
+    def test_set_ipmi_lan_channel_setting_verifies(self, mocker):
         for channel in [
             "Lan_Channel",
             "Lan_Channel_Channel_1",
@@ -450,10 +456,10 @@ EndSection
                     "Non_Volatile_Access_Mode": "Always_Available",
                 },
             }
-            mock_bmc_set = self.patch(self.ipmi, "_bmc_set")
-            mock_bmc_set_keys = self.patch(self.ipmi, "_bmc_set_keys")
+            mock_bmc_set = mocker.patch.object(self.ipmi, "_bmc_set")
+            mock_bmc_set_keys = mocker.patch.object(self.ipmi, "_bmc_set_keys")
             self.ipmi._config_ipmi_lan_channel_settings()
-            self.assertFalse(mock_bmc_set.called)
+            assert not mock_bmc_set.called
             mock_bmc_set_keys.assert_called_once_with(
                 channel,
                 [
@@ -468,7 +474,7 @@ EndSection
                 "Yes",
             )
 
-    def test_set_ipmi_lan_channel_setting_enables(self):
+    def test_set_ipmi_lan_channel_setting_enables(self, mocker):
         for channel in [
             "Lan_Channel",
             "Lan_Channel_Channel_1",
@@ -481,8 +487,8 @@ EndSection
                     "Non_Volatile_Access_Mode": "Pre_Boot_only",
                 },
             }
-            mock_bmc_set = self.patch(self.ipmi, "_bmc_set")
-            mock_bmc_set_keys = self.patch(self.ipmi, "_bmc_set_keys")
+            mock_bmc_set = mocker.patch.object(self.ipmi, "_bmc_set")
+            mock_bmc_set_keys = mocker.patch.object(self.ipmi, "_bmc_set_keys")
             self.ipmi._config_ipmi_lan_channel_settings()
             mock_bmc_set.assert_has_calls(
                 (
@@ -508,9 +514,9 @@ EndSection
                 "Yes",
             )
 
-    def test_config_lan_conf_auth(self):
+    def test_config_lan_conf_auth(self, mocker):
         self.ipmi._bmc_config = {"Lan_Channel_Auth": {}}
-        mock_bmc_set_keys = self.patch(self.ipmi, "_bmc_set_keys")
+        mock_bmc_set_keys = mocker.patch.object(self.ipmi, "_bmc_set_keys")
 
         self.ipmi._config_lan_conf_auth()
 
@@ -538,15 +544,15 @@ EndSection
             ]
         )
 
-    def test_config_lan_conf_auth_does_nothing_if_missing(self):
-        mock_bmc_set_keys = self.patch(self.ipmi, "_bmc_set_keys")
+    def test_config_lan_conf_auth_does_nothing_if_missing(self, mocker):
+        mock_bmc_set_keys = mocker.patch.object(self.ipmi, "_bmc_set_keys")
 
         self.ipmi._config_lan_conf_auth()
 
         mock_bmc_set_keys.assert_not_called()
 
-    def test_config_kg_set(self):
-        mock_bmc_set = self.patch(self.ipmi, "_bmc_set")
+    def test_config_kg_set(self, mocker):
+        mock_bmc_set = mocker.patch.object(self.ipmi, "_bmc_set")
         kg = factory.make_name("kg")
         self.ipmi._kg = kg
 
@@ -555,21 +561,21 @@ EndSection
         mock_bmc_set.assert_called_once_with(
             "Lan_Conf_Security_Keys", "K_G", kg
         )
-        self.assertEqual(kg, self.ipmi._kg)
+        assert kg == self.ipmi._kg
 
-    def test_config_kg_set_does_nothing_if_already_set(self):
+    def test_config_kg_set_does_nothing_if_already_set(self, mocker):
         kg = factory.make_name("kg")
         self.ipmi._bmc_config = {"Lan_Conf_Security_Keys": {"K_G": kg}}
-        mock_bmc_set = self.patch(self.ipmi, "_bmc_set")
+        mock_bmc_set = mocker.patch.object(self.ipmi, "_bmc_set")
         self.ipmi._kg = kg
 
         self.ipmi._config_kg()
 
         mock_bmc_set.assert_not_called()
-        self.assertEqual(kg, self.ipmi._kg)
+        assert kg == self.ipmi._kg
 
-    def test_config_kg_set_errors(self):
-        mock_bmc_set = self.patch(self.ipmi, "_bmc_set")
+    def test_config_kg_set_errors(self, mocker):
+        mock_bmc_set = mocker.patch.object(self.ipmi, "_bmc_set")
         cmd = [factory.make_name("cmd")]
         exception = random.choice(
             [
@@ -581,12 +587,13 @@ EndSection
         kg = factory.make_name("kg")
         self.ipmi._kg = kg
 
-        self.assertRaises(type(exception), self.ipmi._config_kg)
+        with pytest.raises(type(exception)):
+            self.ipmi._config_kg()
 
         mock_bmc_set.assert_called_once_with(
             "Lan_Conf_Security_Keys", "K_G", kg
         )
-        self.assertEqual("", self.ipmi._kg)
+        assert "" == self.ipmi._kg
 
     def test_config_kg_detect(self):
         kg = factory.make_name("kg")
@@ -594,7 +601,7 @@ EndSection
 
         self.ipmi._config_kg()
 
-        self.assertEqual(kg, self.ipmi._kg)
+        assert kg == self.ipmi._kg
 
     def test_config_kg_detects_nothing(self):
         self.ipmi._bmc_config = {
@@ -605,19 +612,19 @@ EndSection
 
         self.ipmi._config_kg()
 
-        self.assertEqual("", self.ipmi._kg)
+        assert "" == self.ipmi._kg
 
-    def test_configure(self):
-        mock_bmc_get_config = self.patch(self.ipmi, "_bmc_get_config")
-        mock_config_ipmi_lan_channel_settings = self.patch(
+    def test_configure(self, mocker):
+        mock_bmc_get_config = mocker.patch.object(self.ipmi, "_bmc_get_config")
+        mock_config_ipmi_lan_channel_settings = mocker.patch.object(
             self.ipmi, "_config_ipmi_lan_channel_settings"
         )
-        mock_config_lang_conf_auth = self.patch(
+        mock_config_lang_conf_auth = mocker.patch.object(
             self.ipmi, "_config_lan_conf_auth"
         )
-        mock_config_kg = self.patch(self.ipmi, "_config_kg")
-        mock_bmc_set_keys = self.patch(self.ipmi, "_bmc_set_keys")
-        mock_check_ciphers_enabled = self.patch(
+        mock_config_kg = mocker.patch.object(self.ipmi, "_config_kg")
+        mock_bmc_set_keys = mocker.patch.object(self.ipmi, "_bmc_set_keys")
+        mock_check_ciphers_enabled = mocker.patch.object(
             self.ipmi, "_check_ciphers_enabled"
         )
 
@@ -664,9 +671,7 @@ EndSection
                 "MAC_Address": mac_address,
             }
         }
-        self.assertEqual(
-            ("Lan_Conf", ip, mac_address), self.ipmi._get_bmc_ip()
-        )
+        assert ("Lan_Conf", ip, mac_address) == self.ipmi._get_bmc_ip()
 
     def test_get_bmc_ipv6_static(self):
         ip = factory.make_ipv6_address()
@@ -677,9 +682,7 @@ EndSection
                 "MAC_Address": mac_address,
             }
         }
-        self.assertEqual(
-            ("Lan6_Conf", f"[{ip}]", mac_address), self.ipmi._get_bmc_ip()
-        )
+        assert ("Lan6_Conf", f"[{ip}]", mac_address) == self.ipmi._get_bmc_ip()
 
     def test_get_bmc_ipv6_dynamic(self):
         ip = factory.make_ipv6_address()
@@ -690,9 +693,7 @@ EndSection
                 "MAC_Address": mac_address,
             }
         }
-        self.assertEqual(
-            ("Lan6_Conf", f"[{ip}]", mac_address), self.ipmi._get_bmc_ip()
-        )
+        assert ("Lan6_Conf", f"[{ip}]", mac_address) == self.ipmi._get_bmc_ip()
 
     def test_get_bmc_ipv6_gets_mac_From_ipv4(self):
         ip = factory.make_ipv6_address()
@@ -701,53 +702,53 @@ EndSection
             "Lan_Conf": {"MAC_Address": mac_address},
             "Lan6_Conf": {"IPv6_Dynamic_Addresses": ip},
         }
-        self.assertEqual(
-            ("Lan6_Conf", f"[{ip}]", mac_address), self.ipmi._get_bmc_ip()
-        )
+        assert ("Lan6_Conf", f"[{ip}]", mac_address) == self.ipmi._get_bmc_ip()
 
-    def test_get_bmc_ip_finds_none(self):
-        self.patch(self.ipmi, "_bmc_get").return_value = ""
-        self.assertEqual((None, None, None), self.ipmi._get_bmc_ip())
+    def test_get_bmc_ip_finds_none(self, mocker):
+        mocker.patch.object(
+            self.ipmi, "_bmc_get", create=True
+        ).return_value = ""
+        assert (None, None, None) == self.ipmi._get_bmc_ip()
 
-    def test_get_bmc_ip(self):
+    def test_get_bmc_ip(self, mocker):
         ip = factory.make_ip_address()
         mac_address = factory.make_mac_address()
-        mock_bmc_set = self.patch(self.ipmi, "_bmc_set")
-        mock_get_bmc_ip = self.patch(self.ipmi, "_get_bmc_ip")
+        mock_bmc_set = mocker.patch.object(self.ipmi, "_bmc_set")
+        mock_get_bmc_ip = mocker.patch.object(self.ipmi, "_get_bmc_ip")
         mock_get_bmc_ip.return_value = None, ip, mac_address
 
-        self.assertEqual((ip, mac_address), self.ipmi.get_bmc_ip())
+        assert (ip, mac_address) == self.ipmi.get_bmc_ip()
         mock_bmc_set.assert_not_called()
         mock_get_bmc_ip.assert_called_once_with()
 
-    def test_get_bmc_ip_enables_static(self):
+    def test_get_bmc_ip_enables_static(self, mocker):
         ip = factory.make_ip_address()
         mac_address = factory.make_mac_address()
-        mock_bmc_set = self.patch(self.ipmi, "_bmc_set")
-        mock_get_bmc_ip = self.patch(self.ipmi, "_get_bmc_ip")
+        mock_bmc_set = mocker.patch.object(self.ipmi, "_bmc_set")
+        mock_get_bmc_ip = mocker.patch.object(self.ipmi, "_get_bmc_ip")
         mock_get_bmc_ip.side_effect = (
             ("Lan_Conf", None, mac_address),
             ("Lan_Conf", None, mac_address),
             ("Lan_Conf", ip, mac_address),
         )
 
-        self.assertEqual((ip, mac_address), self.ipmi.get_bmc_ip())
+        assert (ip, mac_address) == self.ipmi.get_bmc_ip()
         mock_bmc_set.assert_called_once_with(
             "Lan_Conf", "IP_Address_Source", "Static"
         )
         mock_get_bmc_ip.assert_has_calls([call(), call(True), call(True)])
 
-    def test_get_bmc_ip_enables_dynamic(self):
+    def test_get_bmc_ip_enables_dynamic(self, mocker):
         ip = factory.make_ip_address()
         mac_address = factory.make_mac_address()
-        mock_bmc_set = self.patch(self.ipmi, "_bmc_set")
-        mock_get_bmc_ip = self.patch(self.ipmi, "_get_bmc_ip")
+        mock_bmc_set = mocker.patch.object(self.ipmi, "_bmc_set")
+        mock_get_bmc_ip = mocker.patch.object(self.ipmi, "_get_bmc_ip")
         mock_get_bmc_ip.side_effect = (
             *[("Lan_Conf", None, mac_address) for _ in range(8)],
             ("Lan_Conf", ip, mac_address),
         )
 
-        self.assertEqual((ip, mac_address), self.ipmi.get_bmc_ip())
+        assert (ip, mac_address) == self.ipmi.get_bmc_ip()
         mock_bmc_set.assert_has_calls(
             [
                 call("Lan_Conf", "IP_Address_Source", "Static"),
@@ -759,12 +760,13 @@ EndSection
             [call(), *[call(True) for _ in range(8)]]
         )
 
-    def test_get_bmc_ip_fails(self):
-        mock_bmc_set = self.patch(self.ipmi, "_bmc_set")
-        mock_get_bmc_ip = self.patch(self.ipmi, "_get_bmc_ip")
+    def test_get_bmc_ip_fails(self, mocker):
+        mock_bmc_set = mocker.patch.object(self.ipmi, "_bmc_set")
+        mock_get_bmc_ip = mocker.patch.object(self.ipmi, "_get_bmc_ip")
         mock_get_bmc_ip.return_value = ("Lan_Conf", None, None)
 
-        self.assertRaises(SystemExit, self.ipmi.get_bmc_ip)
+        with pytest.raises(SystemExit):
+            self.ipmi.get_bmc_ip()
         mock_bmc_set.assert_has_calls(
             [
                 call("Lan_Conf", "IP_Address_Source", "Static"),
@@ -775,19 +777,24 @@ EndSection
             [call(), *[call(True) for _ in range(12)]],
         )
 
-    def test_get_credentials_lan_new(self):
+    def test_get_credentials_lan_new(self, mocker):
         self.ipmi.username = factory.make_name("username")
         self.ipmi.password = factory.make_name("password")
-        self.patch(
+        mocker.patch.object(
             bmc_config, "_get_ipmi_locate_output"
         ).return_value = "IPMI Version: 2.0"
-        self.patch(bmc_config.platform, "machine").return_value = "ppc64le"
-        self.patch(bmc_config.os.path, "isdir").return_value = True
+        mocker.patch.object(
+            bmc_config.platform, "machine"
+        ).return_value = "ppc64le"
+        mocker.patch.object(bmc_config.os.path, "isdir").return_value = True
         ip = factory.make_ip_address()
         mac_address = factory.make_mac_address()
-        self.patch(self.ipmi, "get_bmc_ip").return_value = (ip, mac_address)
+        mocker.patch.object(self.ipmi, "get_bmc_ip").return_value = (
+            ip,
+            mac_address,
+        )
 
-        self.assertEqual(
+        assert (
             {
                 "power_address": ip,
                 "power_pass": self.ipmi.password,
@@ -798,23 +805,27 @@ EndSection
                 "cipher_suite_id": "3",
                 "privilege_level": "",
                 "mac_address": mac_address,
-            },
-            self.ipmi.get_credentials(),
-        )
+            }
+        ) == (self.ipmi.get_credentials())
 
-    def test_get_credentials_lan_old(self):
+    def test_get_credentials_lan_old(self, mocker):
         self.ipmi.username = factory.make_name("username")
         self.ipmi.password = factory.make_name("password")
-        self.patch(
+        mocker.patch.object(
             bmc_config, "_get_ipmi_locate_output"
         ).return_value = "IPMI Version: 1.0"
-        self.patch(bmc_config.platform, "machine").return_value = "x86_64"
-        self.patch(bmc_config.os.path, "isdir").return_value = False
+        mocker.patch.object(
+            bmc_config.platform, "machine"
+        ).return_value = "x86_64"
+        mocker.patch.object(bmc_config.os.path, "isdir").return_value = False
         ip = factory.make_ip_address()
         mac_address = factory.make_mac_address()
-        self.patch(self.ipmi, "get_bmc_ip").return_value = (ip, mac_address)
+        mocker.patch.object(self.ipmi, "get_bmc_ip").return_value = (
+            ip,
+            mac_address,
+        )
 
-        self.assertEqual(
+        assert (
             {
                 "power_address": ip,
                 "power_pass": self.ipmi.password,
@@ -825,24 +836,28 @@ EndSection
                 "cipher_suite_id": "3",
                 "privilege_level": "",
                 "mac_address": mac_address,
-            },
-            self.ipmi.get_credentials(),
-        )
+            }
+        ) == (self.ipmi.get_credentials())
 
-    def test_get_crendentials_cipher_id_set(self):
+    def test_get_crendentials_cipher_id_set(self, mocker):
         self.ipmi.username = factory.make_name("username")
         self.ipmi.password = factory.make_name("password")
         self.ipmi._cipher_suite_id = "17"
-        self.patch(
+        mocker.patch.object(
             bmc_config, "_get_ipmi_locate_output"
         ).return_value = "IPMI Version: 1.0"
-        self.patch(bmc_config.platform, "machine").return_value = "x86_64"
-        self.patch(bmc_config.os.path, "isdir").return_value = False
+        mocker.patch.object(
+            bmc_config.platform, "machine"
+        ).return_value = "x86_64"
+        mocker.patch.object(bmc_config.os.path, "isdir").return_value = False
         ip = factory.make_ip_address()
         mac_address = factory.make_mac_address()
-        self.patch(self.ipmi, "get_bmc_ip").return_value = (ip, mac_address)
+        mocker.patch.object(self.ipmi, "get_bmc_ip").return_value = (
+            ip,
+            mac_address,
+        )
 
-        self.assertEqual(
+        assert (
             {
                 "power_address": ip,
                 "power_pass": self.ipmi.password,
@@ -853,9 +868,8 @@ EndSection
                 "cipher_suite_id": "17",
                 "privilege_level": "",
                 "mac_address": mac_address,
-            },
-            self.ipmi.get_credentials(),
-        )
+            }
+        ) == (self.ipmi.get_credentials())
 
     def test_ciphers_detects_enabled(self):
         self.ipmi._bmc_config = {
@@ -867,17 +881,17 @@ EndSection
                 "Maximum_Privilege_Cipher_Suite_Id_4": "Unused",
             },
         }
-        self.assertTrue(self.ipmi._check_ciphers_enabled())
+        assert self.ipmi._check_ciphers_enabled()
 
     def test_ciphers_empty(self):
         self.ipmi._bmc_config = {
             "Rmcpplus_Conf_Privilege": {},
         }
-        self.assertTrue(self.ipmi._check_ciphers_enabled())
+        assert self.ipmi._check_ciphers_enabled()
 
     def test_ciphers_list_nonexistent(self):
         self.ipmi._bmc_config = {}
-        self.assertTrue(self.ipmi._check_ciphers_enabled())
+        assert self.ipmi._check_ciphers_enabled()
 
     def test_ciphers_not_enable(self):
         self.ipmi._bmc_config = {
@@ -888,15 +902,17 @@ EndSection
                 "Maximum_Privilege_Cipher_Suite_Id_5": "Unused",
             },
         }
-        self.assertFalse(self.ipmi._check_ciphers_enabled())
+        assert not self.ipmi._check_ciphers_enabled()
 
 
-class TestHPMoonshot(MAASTestCase):
-    def setUp(self):
-        super().setUp()
+class TestHPMoonshot:
+    @pytest.fixture(autouse=True)
+    def setUp(self, mocker):
         self.hp_moonshot = bmc_config.HPMoonshot()
-        self.mock_check_output = self.patch(bmc_config, "check_output")
-        self.mock_print = self.patch(bmc_config, "print")
+        self.mock_check_output = mocker.patch.object(
+            bmc_config, "check_output"
+        )
+        self.mock_print = mocker.patch.object(bmc_config, "print")
 
     def make_hex_array(self, size=11):
         return [
@@ -905,16 +921,16 @@ class TestHPMoonshot(MAASTestCase):
         ]
 
     def test_power_type(self):
-        self.assertEqual("moonshot", self.hp_moonshot.power_type)
+        assert "moonshot" == self.hp_moonshot.power_type
 
     def test_str(self):
-        self.assertEqual("HP Moonshot", str(self.hp_moonshot))
+        assert "HP Moonshot" == str(self.hp_moonshot)
 
     def test_detect(self):
         self.mock_check_output.return_value = " ".join(
             ["14"] + self.make_hex_array(10)
         ).encode()
-        self.assertTrue(self.hp_moonshot.detected())
+        assert self.hp_moonshot.detected()
         self.mock_check_output.assert_called_once_with(
             ["ipmitool", "raw", "06", "01"],
             timeout=bmc_config.COMMAND_TIMEOUT,
@@ -923,15 +939,13 @@ class TestHPMoonshot(MAASTestCase):
 
     def test_add_bmc_user(self):
         self.hp_moonshot.add_bmc_user()
-        self.assertEqual("Administrator", self.hp_moonshot.username)
-        self.assertEqual("password", self.hp_moonshot.password)
+        assert "Administrator" == self.hp_moonshot.username
+        assert "password" == self.hp_moonshot.password
 
     def test_get_local_address(self):
         hex_array = self.make_hex_array()
         self.mock_check_output.return_value = " ".join(hex_array).encode()
-        self.assertEqual(
-            f"0x{hex_array[2]}", self.hp_moonshot._get_local_address()
-        )
+        assert f"0x{hex_array[2]}" == self.hp_moonshot._get_local_address()
         self.mock_check_output.assert_called_once_with(
             ["ipmitool", "raw", "0x2c", "1", "0"],
             timeout=bmc_config.COMMAND_TIMEOUT,
@@ -942,7 +956,7 @@ class TestHPMoonshot(MAASTestCase):
         self.mock_check_output.return_value = f"IP Address : {ip}".encode()
         local_address = factory.make_name("local_address")
 
-        self.assertEqual(ip, self.hp_moonshot.get_bmc_ip(local_address))
+        assert ip == self.hp_moonshot.get_bmc_ip(local_address)
         self.mock_check_output.assert_called_once_with(
             [
                 "ipmitool",
@@ -967,7 +981,7 @@ class TestHPMoonshot(MAASTestCase):
         self.mock_check_output.return_value = b"IP Address : "
         local_address = factory.make_name("local_address")
 
-        self.assertIsNone(self.hp_moonshot.get_bmc_ip(local_address))
+        assert self.hp_moonshot.get_bmc_ip(local_address) is None
         self.mock_check_output.assert_called_once_with(
             [
                 "ipmitool",
@@ -988,11 +1002,11 @@ class TestHPMoonshot(MAASTestCase):
             timeout=bmc_config.COMMAND_TIMEOUT,
         )
 
-    def test_get_credentials(self):
+    def test_get_credentials(self, mocker):
         self.hp_moonshot.username = "Administrator"
         self.hp_moonshot.password = "password"
 
-        mock_get_local_address = self.patch(
+        mock_get_local_address = mocker.patch.object(
             self.hp_moonshot, "_get_local_address"
         )
         local_address = factory.make_name("local_address")
@@ -1001,24 +1015,24 @@ class TestHPMoonshot(MAASTestCase):
         output = factory.make_string()
         self.mock_check_output.return_value = output.encode()
 
-        mock_get_cartridge_address = self.patch(
+        mock_get_cartridge_address = mocker.patch.object(
             self.hp_moonshot, "_get_cartridge_address"
         )
         node_address = factory.make_name("node_address")
         mock_get_cartridge_address.return_value = node_address
 
-        mock_get_channel_number = self.patch(
+        mock_get_channel_number = mocker.patch.object(
             self.hp_moonshot, "_get_channel_number"
         )
         local_chan = factory.make_name("local_chan")
         cartridge_chan = factory.make_name("cartridge_chan")
         mock_get_channel_number.side_effect = (local_chan, cartridge_chan)
 
-        mock_get_bmc_ip = self.patch(self.hp_moonshot, "get_bmc_ip")
+        mock_get_bmc_ip = mocker.patch.object(self.hp_moonshot, "get_bmc_ip")
         ip = factory.make_ip_address()
         mock_get_bmc_ip.return_value = ip
 
-        self.assertEqual(
+        assert (
             {
                 "power_address": ip,
                 "power_pass": "password",
@@ -1030,9 +1044,8 @@ class TestHPMoonshot(MAASTestCase):
                     local_chan,
                     local_address,
                 ),
-            },
-            self.hp_moonshot.get_credentials(),
-        )
+            }
+        ) == (self.hp_moonshot.get_credentials())
         mock_get_local_address.assert_called_once()
         mock_get_cartridge_address.assert_called_once_with(local_address)
         self.mock_check_output.assert_called_once_with(
@@ -1062,7 +1075,7 @@ class TestHPMoonshot(MAASTestCase):
             )
         )
 
-        self.assertFalse(self.hp_moonshot.detected())
+        assert not self.hp_moonshot.detected()
 
         self.mock_print.assert_called_once_with(
             "DEBUG: Exception occurred executing ipmitool command: "
@@ -1080,7 +1093,7 @@ class TestHPMoonshot(MAASTestCase):
             ["15"] + self.make_hex_array(10)
         ).encode()
 
-        self.assertFalse(self.hp_moonshot.detected())
+        assert not self.hp_moonshot.detected()
 
         self.mock_print.assert_called_once_with(
             "DEBUG: Detected BMC is not HP Moonshot, has device ID 15"
@@ -1092,7 +1105,7 @@ class TestHPMoonshot(MAASTestCase):
         )
 
 
-class TestRedfish(MAASTestCase):
+class TestRedfish:
     class FakeSocket:
         def __init__(self, response_bytes):
             self._file = io.BytesIO(response_bytes)
@@ -1100,16 +1113,18 @@ class TestRedfish(MAASTestCase):
         def makefile(self, *args, **kwargs):
             return self._file
 
-    def setUp(self):
-        super().setUp()
+    @pytest.fixture(autouse=True)
+    def setUp(self, mocker):
         self.redfish = bmc_config.Redfish()
-        self.mock_check_output = self.patch(bmc_config, "check_output")
-        self.mock_print = self.patch(bmc_config, "print")
+        self.mock_check_output = mocker.patch.object(
+            bmc_config, "check_output"
+        )
+        self.mock_print = mocker.patch.object(bmc_config, "print")
 
     def test_str(self):
-        self.assertEqual("Redfish", str(self.redfish))
+        assert "Redfish" == str(self.redfish)
 
-    def test_get_smbios_data_no_redfish_detected(self):
+    def test_get_smbios_data_no_redfish_detected(self, mocker):
         data = textwrap.dedent(
             """\
             # dmidecode 3.3
@@ -1123,11 +1138,11 @@ class TestRedfish(MAASTestCase):
             Host Interface Type: OEM"""
         ).encode()
 
-        self.patch(bmc_config, "which").return_value = True
+        mocker.patch.object(bmc_config, "which").return_value = True
         self.mock_check_output.return_value = data
-        self.assertIsNone(self.redfish._get_smbios_data())
+        assert self.redfish._get_smbios_data() is None
 
-    def test_get_smbios_data_redfish_detected(self):
+    def test_get_smbios_data_redfish_detected(self, mocker):
         data = textwrap.dedent(
             """\
             # dmidecode 3.3
@@ -1181,11 +1196,13 @@ class TestRedfish(MAASTestCase):
             Redfish Service Hostname:"""
         )
 
-        self.patch(bmc_config, "which").return_value = True
+        mocker.patch.object(bmc_config, "which").return_value = True
         self.mock_check_output.return_value = data
-        self.assertEqual(expected, self.redfish._get_smbios_data())
+        assert expected == self.redfish._get_smbios_data()
 
-    def test_get_smbios_data_redfish_detected_with_two_interfaces(self):
+    def test_get_smbios_data_redfish_detected_with_two_interfaces(
+        self, mocker
+    ):
         data = textwrap.dedent(
             """\
             # dmidecode 3.3
@@ -1253,9 +1270,9 @@ class TestRedfish(MAASTestCase):
             Redfish Service Hostname: garamond"""
         )
 
-        self.patch(bmc_config, "which").return_value = True
+        mocker.patch.object(bmc_config, "which").return_value = True
         self.mock_check_output.return_value = data
-        self.assertEqual(expected, self.redfish._get_smbios_data())
+        assert expected == self.redfish._get_smbios_data()
 
     def test_generate_netplan_config_dhcp_on(self):
         expected_config = textwrap.dedent(
@@ -1269,11 +1286,10 @@ class TestRedfish(MAASTestCase):
             """
         )
 
-        self.assertEqual(
-            yaml.safe_dump((yaml.safe_load(expected_config))),
+        assert (yaml.safe_dump((yaml.safe_load(expected_config)))) == (
             self.redfish._generate_netplan_config(
                 "enx7ed30a5460e7", True, None
-            ),
+            )
         )
 
     def test_generate_netplan_config_dhcp_off(self):
@@ -1288,21 +1304,22 @@ class TestRedfish(MAASTestCase):
             """
         )
 
-        self.assertEqual(
-            yaml.safe_dump((yaml.safe_load(expected_config))),
+        assert (yaml.safe_dump((yaml.safe_load(expected_config)))) == (
             self.redfish._generate_netplan_config(
                 "enx7ed30a5460e7", False, "192.168.1.10/24"
-            ),
+            )
         )
 
-    def test_get_manager_id_missing_token(self):
+    def test_get_manager_id_missing_token(self, mocker):
         self.redfish.username = "maas"
         self.redfish.password = "password"
         self.redfish_ip = "127.0.0.1"
         self.redfish_port = "443"
-        self.patch(self.redfish, "_detect").return_value = True
+        mocker.patch.object(self.redfish, "_detect").return_value = True
 
-        mock_urlopen = self.patch(bmc_config.urllib.request, "urlopen")
+        mock_urlopen = mocker.patch.object(
+            bmc_config.urllib.request, "urlopen"
+        )
         response = textwrap.dedent(
             """\
             HTTP/1.1 201 OK
@@ -1317,16 +1334,18 @@ class TestRedfish(MAASTestCase):
 
         mock_urlopen.return_value = response
 
-        self.assertIsNone(self.redfish.get_manager_id())
+        assert self.redfish.get_manager_id() is None
 
-    def test_get_manager_id_not_200(self):
+    def test_get_manager_id_not_200(self, mocker):
         self.redfish.username = "maas"
         self.redfish.password = "password"
         self.redfish_ip = "127.0.0.1"
         self.redfish_port = "443"
-        self.patch(self.redfish, "_detect").return_value = True
+        mocker.patch.object(self.redfish, "_detect").return_value = True
 
-        mock_urlopen = self.patch(bmc_config.urllib.request, "urlopen")
+        mock_urlopen = mocker.patch.object(
+            bmc_config.urllib.request, "urlopen"
+        )
         response = textwrap.dedent(
             """\
             HTTP/1.1 401 OK
@@ -1341,16 +1360,18 @@ class TestRedfish(MAASTestCase):
 
         mock_urlopen.return_value = response
 
-        self.assertIsNone(self.redfish.get_manager_id())
+        assert self.redfish.get_manager_id() is None
 
-    def test_get_manager_id(self):
+    def test_get_manager_id(self, mocker):
         self.redfish.username = "maas"
         self.redfish.password = "password"
         self.redfish_ip = "127.0.0.1"
         self.redfish_port = "443"
-        self.patch(self.redfish, "_detect").return_value = True
+        mocker.patch.object(self.redfish, "_detect").return_value = True
 
-        mock_urlopen = self.patch(bmc_config.urllib.request, "urlopen")
+        mock_urlopen = mocker.patch.object(
+            bmc_config.urllib.request, "urlopen"
+        )
         token_data = textwrap.dedent(
             """\
             HTTP/1.1 200 OK
@@ -1387,16 +1408,18 @@ class TestRedfish(MAASTestCase):
             response_managers,
         )
 
-        self.assertEqual("1", self.redfish.get_manager_id())
+        assert "1" == self.redfish.get_manager_id()
 
-    def test_get_node_id(self):
+    def test_get_node_id(self, mocker):
         self.redfish.username = "maas"
         self.redfish.password = "password"
         self.redfish_ip = "127.0.0.1"
         self.redfish_port = "443"
-        self.patch(self.redfish, "_detect").return_value = True
+        mocker.patch.object(self.redfish, "_detect").return_value = True
 
-        mock_urlopen = self.patch(bmc_config.urllib.request, "urlopen")
+        mock_urlopen = mocker.patch.object(
+            bmc_config.urllib.request, "urlopen"
+        )
         token_data = textwrap.dedent(
             """\
             HTTP/1.1 200 OK
@@ -1433,16 +1456,18 @@ class TestRedfish(MAASTestCase):
             response_nodes,
         )
 
-        self.assertEqual("1", self.redfish.get_node_id())
+        assert "1" == self.redfish.get_node_id()
 
-    def test_get_node_id_missing_token(self):
+    def test_get_node_id_missing_token(self, mocker):
         self.redfish.username = "maas"
         self.redfish.password = "password"
         self.redfish_ip = "127.0.0.1"
         self.redfish_port = "443"
-        self.patch(self.redfish, "_detect").return_value = True
+        mocker.patch.object(self.redfish, "_detect").return_value = True
 
-        mock_urlopen = self.patch(bmc_config.urllib.request, "urlopen")
+        mock_urlopen = mocker.patch.object(
+            bmc_config.urllib.request, "urlopen"
+        )
         token_data = textwrap.dedent(
             """\
             HTTP/1.1 200 OK
@@ -1459,16 +1484,18 @@ class TestRedfish(MAASTestCase):
 
         mock_urlopen.return_value = response_token
 
-        self.assertIsNone(self.redfish.get_node_id())
+        assert self.redfish.get_node_id() is None
 
-    def test_get_node_id_not_200(self):
+    def test_get_node_id_not_200(self, mocker):
         self.redfish.username = "maas"
         self.redfish.password = "password"
         self.redfish_ip = "127.0.0.1"
         self.redfish_port = "443"
-        self.patch(self.redfish, "_detect").return_value = True
+        mocker.patch.object(self.redfish, "_detect").return_value = True
 
-        mock_urlopen = self.patch(bmc_config.urllib.request, "urlopen")
+        mock_urlopen = mocker.patch.object(
+            bmc_config.urllib.request, "urlopen"
+        )
         token_data = textwrap.dedent(
             """\
             HTTP/1.1 200 OK
@@ -1503,16 +1530,18 @@ class TestRedfish(MAASTestCase):
             response_nodes,
         )
 
-        self.assertIsNone(self.redfish.get_node_id())
+        assert self.redfish.get_node_id() is None
 
-    def test_get_node_id_missing_members(self):
+    def test_get_node_id_missing_members(self, mocker):
         self.redfish.username = "maas"
         self.redfish.password = "password"
         self.redfish_ip = "127.0.0.1"
         self.redfish_port = "443"
-        self.patch(self.redfish, "_detect").return_value = True
+        mocker.patch.object(self.redfish, "_detect").return_value = True
 
-        mock_urlopen = self.patch(bmc_config.urllib.request, "urlopen")
+        mock_urlopen = mocker.patch.object(
+            bmc_config.urllib.request, "urlopen"
+        )
         token_data = textwrap.dedent(
             """\
             HTTP/1.1 200 OK
@@ -1549,16 +1578,18 @@ class TestRedfish(MAASTestCase):
             response_nodes,
         )
 
-        self.assertIsNone(self.redfish.get_node_id())
+        assert self.redfish.get_node_id() is None
 
-    def test_get_node_id_empty_members(self):
+    def test_get_node_id_empty_members(self, mocker):
         self.redfish.username = "maas"
         self.redfish.password = "password"
         self.redfish_ip = "127.0.0.1"
         self.redfish_port = "443"
-        self.patch(self.redfish, "_detect").return_value = True
+        mocker.patch.object(self.redfish, "_detect").return_value = True
 
-        mock_urlopen = self.patch(bmc_config.urllib.request, "urlopen")
+        mock_urlopen = mocker.patch.object(
+            bmc_config.urllib.request, "urlopen"
+        )
         token_data = textwrap.dedent(
             """\
             HTTP/1.1 200 OK
@@ -1595,16 +1626,18 @@ class TestRedfish(MAASTestCase):
             response_nodes,
         )
 
-        self.assertIsNone(self.redfish.get_node_id())
+        assert self.redfish.get_node_id() is None
 
-    def test_get_node_id_missing_odata_id(self):
+    def test_get_node_id_missing_odata_id(self, mocker):
         self.redfish.username = "maas"
         self.redfish.password = "password"
         self.redfish_ip = "127.0.0.1"
         self.redfish_port = "443"
-        self.patch(self.redfish, "_detect").return_value = True
+        mocker.patch.object(self.redfish, "_detect").return_value = True
 
-        mock_urlopen = self.patch(bmc_config.urllib.request, "urlopen")
+        mock_urlopen = mocker.patch.object(
+            bmc_config.urllib.request, "urlopen"
+        )
         token_data = textwrap.dedent(
             """\
             HTTP/1.1 200 OK
@@ -1641,16 +1674,18 @@ class TestRedfish(MAASTestCase):
             response_nodes,
         )
 
-        self.assertIsNone(self.redfish.get_node_id())
+        assert self.redfish.get_node_id() is None
 
-    def test_get_bmc_ip_missing_token(self):
+    def test_get_bmc_ip_missing_token(self, mocker):
         self.redfish.username = "maas"
         self.redfish.password = "password"
         self.redfish_ip = "127.0.0.1"
         self.redfish_port = "443"
-        self.patch(self.redfish, "_detect").return_value = True
+        mocker.patch.object(self.redfish, "_detect").return_value = True
 
-        mock_urlopen = self.patch(bmc_config.urllib.request, "urlopen")
+        mock_urlopen = mocker.patch.object(
+            bmc_config.urllib.request, "urlopen"
+        )
         response = textwrap.dedent(
             """\
             HTTP/1.1 200 OK
@@ -1665,16 +1700,18 @@ class TestRedfish(MAASTestCase):
 
         mock_urlopen.return_value = response
 
-        self.assertIsNone(self.redfish.get_bmc_ip())
+        assert self.redfish.get_bmc_ip() is None
 
-    def test_get_bmc_ip_not_200(self):
+    def test_get_bmc_ip_not_200(self, mocker):
         self.redfish.username = "maas"
         self.redfish.password = "password"
         self.redfish_ip = "127.0.0.1"
         self.redfish_port = "443"
-        self.patch(self.redfish, "_detect").return_value = True
+        mocker.patch.object(self.redfish, "_detect").return_value = True
 
-        mock_urlopen = self.patch(bmc_config.urllib.request, "urlopen")
+        mock_urlopen = mocker.patch.object(
+            bmc_config.urllib.request, "urlopen"
+        )
         response = textwrap.dedent(
             """\
             HTTP/1.1 401 OK
@@ -1689,17 +1726,19 @@ class TestRedfish(MAASTestCase):
 
         mock_urlopen.return_value = response
 
-        self.assertIsNone(self.redfish.get_bmc_ip())
+        assert self.redfish.get_bmc_ip() is None
 
-    def test_get_bmc_ip(self):
+    def test_get_bmc_ip(self, mocker):
         self.redfish.username = "maas"
         self.redfish.password = "password"
         self.redfish_ip = "127.0.0.1"
         self.redfish_port = "443"
-        self.patch(self.redfish, "_detect").return_value = True
-        self.patch(self.redfish, "get_manager_id").return_value = "1"
+        mocker.patch.object(self.redfish, "_detect").return_value = True
+        mocker.patch.object(self.redfish, "get_manager_id").return_value = "1"
 
-        mock_urlopen = self.patch(bmc_config.urllib.request, "urlopen")
+        mock_urlopen = mocker.patch.object(
+            bmc_config.urllib.request, "urlopen"
+        )
         token_data = textwrap.dedent(
             """\
             HTTP/1.1 200 OK
@@ -1753,17 +1792,19 @@ class TestRedfish(MAASTestCase):
             response_address,
         )
 
-        self.assertEqual("127.0.0.1", self.redfish.get_bmc_ip())
+        assert "127.0.0.1" == self.redfish.get_bmc_ip()
 
-    def test_get_no_bmc_ip(self):
+    def test_get_no_bmc_ip(self, mocker):
         self.redfish.username = "maas"
         self.redfish.password = "password"
         self.redfish_ip = "127.0.0.1"
         self.redfish_port = "443"
-        self.patch(self.redfish, "_detect").return_value = True
-        self.patch(self.redfish, "get_manager_id").return_value = "1"
+        mocker.patch.object(self.redfish, "_detect").return_value = True
+        mocker.patch.object(self.redfish, "get_manager_id").return_value = "1"
 
-        mock_urlopen = self.patch(bmc_config.urllib.request, "urlopen")
+        mock_urlopen = mocker.patch.object(
+            bmc_config.urllib.request, "urlopen"
+        )
         token_data = textwrap.dedent(
             """\
             HTTP/1.1 200 OK
@@ -1849,12 +1890,12 @@ class TestRedfish(MAASTestCase):
             response_address_3,
         )
 
-        self.assertIsNone(self.redfish.get_bmc_ip())
+        assert self.redfish.get_bmc_ip() is None
         self.mock_print.assert_called_once_with(
             "WARNING: No valid Redfish IPv4 address found."
         )
 
-    def test_configure_network(self):
+    def test_configure_network(self, mocker):
         data = textwrap.dedent(
             """\
             Device Type: USB
@@ -1889,23 +1930,23 @@ class TestRedfish(MAASTestCase):
         with tempfile.NamedTemporaryFile(
             prefix="redfish-netplan", mode="w+"
         ) as netconfig:
-            mock_check_output = self.patch(bmc_config, "check_output")
+            mock_check_output = mocker.patch.object(bmc_config, "check_output")
             self.redfish._configure_network("eth0", data, netconfig.name)
-            self.assertEqual(
-                yaml.safe_dump((yaml.safe_load(expected_config))),
-                netconfig.read(),
+            assert (
+                yaml.safe_dump((yaml.safe_load(expected_config)))
+                == netconfig.read()
             )
 
             mock_check_output.assert_called_once_with(
                 ["netplan", "apply"], timeout=bmc_config.COMMAND_TIMEOUT
             )
 
-    def test_add_bmc_user(self):
+    def test_add_bmc_user(self, mocker):
         username = factory.make_name("username")
         password = factory.make_name("password")
         self.redfish = bmc_config.Redfish(username, password)
-        mock_bmc_set = self.patch(self.redfish, "_bmc_set")
-        mock_bmc_set_keys = self.patch(self.redfish, "_bmc_set_keys")
+        mock_bmc_set = mocker.patch.object(self.redfish, "_bmc_set")
+        mock_bmc_set_keys = mocker.patch.object(self.redfish, "_bmc_set_keys")
         self.redfish._bmc_config = {
             "User1": {},
             "User2": {
@@ -1920,8 +1961,8 @@ class TestRedfish(MAASTestCase):
 
         self.redfish.add_bmc_user()
 
-        self.assertEqual(username, self.redfish.username)
-        self.assertEqual(password, self.redfish.password)
+        assert username == self.redfish.username
+        assert password == self.redfish.password
         # Verify bmc_set is only called for values that have changed
         mock_bmc_set.assert_has_calls(
             (
@@ -1941,27 +1982,30 @@ class TestRedfish(MAASTestCase):
             "Yes",
         )
 
-    def test_detected_unknown_exception(self):
-        self.patch(
+    def test_detected_unknown_exception(self, mocker):
+        mocker.patch.object(
             self.redfish, "_detect"
         ).side_effect = factory.make_exception_type((ValueError,))
-        self.assertRaises(ValueError, self.redfish.detected)
+        with pytest.raises(ValueError):
+            self.redfish.detected()
 
-    def test_detected_known_exception(self):
-        self.patch(
+    def test_detected_known_exception(self, mocker):
+        mocker.patch.object(
             self.redfish, "_detect"
         ).side_effect = factory.make_exception_type(
             (bmc_config.ConfigurationError,)
         )
-        self.assertFalse(self.redfish.detected())
+        assert not self.redfish.detected()
 
     @patch.dict(os.environ, {}, clear=True)
-    def test_detected_no_resources_file_env_key_set(self):
+    def test_detected_no_resources_file_env_key_set(self, mocker):
         """Catch IO related issue with potentially unset environment key."""
-        self.patch(self.redfish, "_get_smbios_data").return_value = ""
-        self.patch(bmc_config, "get_smbios_value").return_value = "aaa"
+        mocker.patch.object(self.redfish, "_get_smbios_data").return_value = ""
+        mocker.patch.object(
+            bmc_config, "get_smbios_value"
+        ).return_value = "aaa"
 
-        self.assertFalse(self.redfish.detected())
+        assert not self.redfish.detected()
 
         self.mock_print.assert_called_once_with(
             "DEBUG: Redfish detection and configuration failed. Reason: "
@@ -1971,73 +2015,71 @@ class TestRedfish(MAASTestCase):
     @patch.dict(
         os.environ, {"MAAS_RESOURCES_FILE": "/tmp/res_file"}, clear=True
     )
-    def test_detected_no_resources_file(self):
+    def test_detected_no_resources_file(self, mocker):
         """Catch IO related issue with potentially missing resources file."""
 
-        self.patch(self.redfish, "_get_smbios_data").return_value = ""
-        self.patch(bmc_config, "get_smbios_value").return_value = "aaa"
+        mocker.patch.object(self.redfish, "_get_smbios_data").return_value = ""
+        mocker.patch.object(
+            bmc_config, "get_smbios_value"
+        ).return_value = "aaa"
 
-        json_load_mock = self.patch(bmc_config, "json.load")
+        json_load_mock = mocker.patch.object(bmc_config.json, "load")
         json_load_mock.side_effect = factory.make_exception_type(
             (JSONDecodeError,)
         )
 
-        self.assertFalse(self.redfish.detected())
+        assert not self.redfish.detected()
 
         self.mock_print.assert_called_once_with(
             "DEBUG: Redfish detection and configuration failed. Reason: "
             "Failed to get network interface for Redfish"
         )
 
-    def test_get_credentials(self):
+    def test_get_credentials(self, mocker):
         ip = factory.make_ip_address()
-        self.patch(self.redfish, "get_bmc_ip").return_value = ip
+        mocker.patch.object(self.redfish, "get_bmc_ip").return_value = ip
         self.redfish.username = factory.make_name("username")
         self.redfish.password = factory.make_name("password")
-        self.patch(self.redfish, "get_node_id").return_value = "1"
-        self.assertEqual(
+        mocker.patch.object(self.redfish, "get_node_id").return_value = "1"
+        assert (
             {
                 "power_address": ip,
                 "power_user": self.redfish.username,
                 "power_pass": self.redfish.password,
                 "node_id": "1",
-            },
-            self.redfish.get_credentials(),
-        )
+            }
+        ) == (self.redfish.get_credentials())
 
-    def test_missing_dmidecode_exception(self):
-        self.patch(bmc_config, "which").return_value = None
-        self.assertRaises(
-            bmc_config.ConfigurationError, self.redfish._get_smbios_data
-        )
+    def test_missing_dmidecode_exception(self, mocker):
+        mocker.patch.object(bmc_config, "which").return_value = None
+        with pytest.raises(bmc_config.ConfigurationError):
+            self.redfish._get_smbios_data()
 
 
-class TestGetIPMILocateOutput(MAASTestCase):
-    def test_get_ipmi_locate_output(self):
-        mock_check_output = self.patch(bmc_config, "check_output")
+class TestGetIPMILocateOutput:
+    def test_get_ipmi_locate_output(self, mocker):
+        mock_check_output = mocker.patch.object(bmc_config, "check_output")
         ret = factory.make_string()
         mock_check_output.return_value = ret.encode()
         # Make sure we start out with a cleared cache
         bmc_config._get_ipmi_locate_output.cache_clear()
 
-        self.assertEqual(ret, bmc_config._get_ipmi_locate_output())
+        assert ret == bmc_config._get_ipmi_locate_output()
         # Because the value is cached check_output should only be
         # called once.
-        self.assertEqual(ret, bmc_config._get_ipmi_locate_output())
+        assert ret == bmc_config._get_ipmi_locate_output()
         mock_check_output.assert_called_once_with(
             ["ipmi-locate"], timeout=bmc_config.COMMAND_TIMEOUT
         )
 
 
-class TestDetectAndConfigure(MAASTestCase):
-    def setUp(self):
-        super().setUp()
-        self.mock_print = self.patch(bmc_config, "print")
+class TestDetectAndConfigure:
+    @pytest.fixture(autouse=True)
+    def setUp(self, mocker):
+        self.mock_print = mocker.patch.object(bmc_config, "print")
 
-    def test_finds_first(self):
-        bmc_config_path = os.path.join(
-            self.useFixture(TempDirectory()).path, "bmc-config.yaml"
-        )
+    def test_finds_first(self, tmp_path, mocker):
+        bmc_config_path = tmp_path / "bmc-config.yaml"
         creds = {
             factory.make_name("key"): factory.make_name("value")
             for _ in range(6)
@@ -2045,22 +2087,20 @@ class TestDetectAndConfigure(MAASTestCase):
         args = MagicMock()
         args.user = factory.make_name("user")
         args.password = factory.make_name("password")
-        self.patch(bmc_config.HPMoonshot, "detected").return_value = True
-        self.patch(
+        mocker.patch.object(
+            bmc_config.HPMoonshot, "detected"
+        ).return_value = True
+        mocker.patch.object(
             bmc_config.HPMoonshot, "get_credentials"
         ).return_value = creds
 
         bmc_config.detect_and_configure(args, bmc_config_path)
 
         with open(bmc_config_path) as f:
-            self.assertEqual(
-                {"power_type": "moonshot", **creds}, yaml.safe_load(f)
-            )
+            assert {"power_type": "moonshot", **creds} == yaml.safe_load(f)
 
-    def test_finds_third(self):
-        bmc_config_path = os.path.join(
-            self.useFixture(TempDirectory()).path, "bmc-config.yaml"
-        )
+    def test_finds_third(self, tmp_path, mocker):
+        bmc_config_path = tmp_path / "bmc-config.yaml"
         creds = {
             factory.make_name("key"): factory.make_name("value")
             for _ in range(6)
@@ -2068,39 +2108,45 @@ class TestDetectAndConfigure(MAASTestCase):
         args = MagicMock()
         args.user = factory.make_name("user")
         args.password = factory.make_name("password")
-        self.patch(bmc_config.HPMoonshot, "detected").return_value = False
-        self.patch(bmc_config.Redfish, "detected").return_value = False
-        self.patch(bmc_config.IPMI, "detected").return_value = True
-        self.patch(bmc_config.IPMI, "configure")
-        self.patch(bmc_config.IPMI, "add_bmc_user")
-        self.patch(bmc_config.IPMI, "get_credentials").return_value = creds
+        mocker.patch.object(
+            bmc_config.HPMoonshot, "detected"
+        ).return_value = False
+        mocker.patch.object(
+            bmc_config.Redfish, "detected"
+        ).return_value = False
+        mocker.patch.object(bmc_config.IPMI, "detected").return_value = True
+        mocker.patch.object(bmc_config.IPMI, "configure")
+        mocker.patch.object(bmc_config.IPMI, "add_bmc_user")
+        mocker.patch.object(
+            bmc_config.IPMI, "get_credentials"
+        ).return_value = creds
 
         bmc_config.detect_and_configure(args, bmc_config_path)
 
         with open(bmc_config_path) as f:
-            self.assertEqual(
-                {"power_type": "ipmi", **creds}, yaml.safe_load(f)
-            )
+            assert {"power_type": "ipmi", **creds} == yaml.safe_load(f)
 
-    def test_finds_nothing(self):
-        bmc_config_path = os.path.join(
-            self.useFixture(TempDirectory()).path, "bmc-config.yaml"
-        )
+    def test_finds_nothing(self, tmp_path, mocker):
+        bmc_config_path = tmp_path / "bmc-config.yaml"
         args = MagicMock()
         args.user = factory.make_name("user")
         args.password = factory.make_name("password")
-        self.patch(bmc_config.HPMoonshot, "detected").return_value = False
-        self.patch(bmc_config.Redfish, "detected").return_value = False
-        self.patch(bmc_config.IPMI, "detected").return_value = False
+        mocker.patch.object(
+            bmc_config.HPMoonshot, "detected"
+        ).return_value = False
+        mocker.patch.object(
+            bmc_config.Redfish, "detected"
+        ).return_value = False
+        mocker.patch.object(bmc_config.IPMI, "detected").return_value = False
 
         bmc_config.detect_and_configure(args, bmc_config_path)
 
-        self.assertFalse(os.path.exists(bmc_config_path))
+        assert not os.path.exists(bmc_config_path)
         bmc_config.HPMoonshot.detected.assert_called_once()
         bmc_config.Redfish.detected.assert_called_once()
         bmc_config.IPMI.detected.assert_called_once()
 
-        self.assertEqual(
+        assert (
             [
                 call("INFO: Checking for HP Moonshot..."),
                 call("INFO: No HP Moonshot detected. Trying next BMC type..."),
@@ -2109,59 +2155,63 @@ class TestDetectAndConfigure(MAASTestCase):
                 call("INFO: Checking for IPMI..."),
                 call("INFO: No IPMI detected."),
                 call("INFO: No BMC automatically detected!"),
-            ],
-            self.mock_print.call_args_list,
-        )
+            ]
+        ) == (self.mock_print.call_args_list)
 
 
-class TestMain(MAASTestCase):
-    def setUp(self):
-        super().setUp()
-        self.mock_check_call = self.patch(bmc_config, "check_call")
-        self.mock_parse_args = self.patch(
+class TestMain:
+    @pytest.fixture(autouse=True)
+    def setUp(self, mocker):
+        self.mock_check_call = mocker.patch.object(bmc_config, "check_call")
+        self.mock_parse_args = mocker.patch.object(
             bmc_config.argparse.ArgumentParser, "parse_args"
         )
         self.mock_parse_args.return_value.ipmi_k_g = None
-        self.patch(bmc_config, "print")
+        mocker.patch.object(bmc_config, "print")
 
     def test_validates_username_isnt_too_long(self):
         self.mock_parse_args.return_value.username = factory.make_string(21)
-        self.assertRaises(SystemExit, bmc_config.main)
+        with pytest.raises(SystemExit):
+            bmc_config.main()
 
     def test_validates_password_isnt_too_long(self):
         self.mock_parse_args.return_value.password = factory.make_string(21)
-        self.assertRaises(SystemExit, bmc_config.main)
+        with pytest.raises(SystemExit):
+            bmc_config.main()
 
     def test_validates_ipmi_k_g_isnt_too_long(self):
         self.mock_parse_args.return_value.ipmi_k_g = factory.make_string(21)
-        self.assertRaises(SystemExit, bmc_config.main)
+        with pytest.raises(SystemExit):
+            bmc_config.main()
 
     def test_validates_ipmi_k_g_hex_isnt_too_long(self):
         self.mock_parse_args.return_value.ipmi_k_g = (
             "0x" + factory.make_string(41)
         )
-        self.assertRaises(SystemExit, bmc_config.main)
+        with pytest.raises(SystemExit):
+            bmc_config.main()
 
     def test_checks_bmc_config_path_env_var_set(self):
-        self.assertRaises(SystemExit, bmc_config.main)
+        with pytest.raises(SystemExit):
+            bmc_config.main()
 
-    def test_skips_if_bmc_config_exists(self):
-        self.patch(bmc_config.os.environ, "get")
-        self.patch(bmc_config.os.path, "exists").return_value = True
-        mock_exit_skipped = self.patch(bmc_config, "exit_skipped")
+    def test_skips_if_bmc_config_exists(self, mocker):
+        mocker.patch.object(bmc_config.os.environ, "get")
+        mocker.patch.object(bmc_config.os.path, "exists").return_value = True
+        mock_exit_skipped = mocker.patch.object(bmc_config, "exit_skipped")
 
         bmc_config.main()
 
         mock_exit_skipped.assert_called_once()
 
-    def test_runs_if_not_on_vm(self):
-        self.patch(bmc_config.os.environ, "get")
-        self.patch(bmc_config.os.path, "exists").return_value = False
+    def test_runs_if_not_on_vm(self, mocker):
+        mocker.patch.object(bmc_config.os.environ, "get")
+        mocker.patch.object(bmc_config.os.path, "exists").return_value = False
         self.mock_check_call.side_effect = CalledProcessError(
             1, ["systemd-detect-virt", "-q"]
         )
-        mock_run = self.patch(bmc_config, "run")
-        mock_detect_and_configure = self.patch(
+        mock_run = mocker.patch.object(bmc_config, "run")
+        mock_detect_and_configure = mocker.patch.object(
             bmc_config, "detect_and_configure"
         )
 
@@ -2197,13 +2247,13 @@ class TestMain(MAASTestCase):
         )
         mock_detect_and_configure.assert_called_once()
 
-    def test_does_nothing_if_on_vm(self):
-        self.patch(bmc_config.os.environ, "get")
-        self.patch(bmc_config.os.path, "exists").return_value = False
-        mock_detect_and_configure = self.patch(
+    def test_does_nothing_if_on_vm(self, mocker):
+        mocker.patch.object(bmc_config.os.environ, "get")
+        mocker.patch.object(bmc_config.os.path, "exists").return_value = False
+        mock_detect_and_configure = mocker.patch.object(
             bmc_config, "detect_and_configure"
         )
-        mock_exit_skipped = self.patch(bmc_config, "exit_skipped")
+        mock_exit_skipped = mocker.patch.object(bmc_config, "exit_skipped")
 
         bmc_config.main()
 
@@ -2215,11 +2265,10 @@ class TestMain(MAASTestCase):
         card = data.create_network_card(DeviceType.USB)
         network = data.create_physical_network(card=card)
 
-        self.assertEqual(
-            network.name,
+        assert (network.name) == (
             bmc_config.get_network_interface(
                 data.render(), card.vendor_id, card.product_id
-            ),
+            )
         )
 
     def test_get_network_interface_pci(self):
@@ -2227,11 +2276,10 @@ class TestMain(MAASTestCase):
         card = data.create_network_card(DeviceType.PCI)
         network = data.create_physical_network(card=card)
 
-        self.assertEqual(
-            network.name,
+        assert (network.name) == (
             bmc_config.get_network_interface(
                 data.render(), card.vendor_id, card.product_id
-            ),
+            )
         )
 
     def test_get_smbios_value(self):
@@ -2254,10 +2302,9 @@ class TestMain(MAASTestCase):
             "Redfish Service Hostname:"
         )
 
-        self.assertEqual(
-            "Static",
-            bmc_config.get_smbios_value(data, "Host IP Assignment Type"),
+        assert "Static" == bmc_config.get_smbios_value(
+            data, "Host IP Assignment Type"
         )
-        self.assertEqual(
-            "169.254.95.120", bmc_config.get_smbios_value(data, "IPv4 Address")
+        assert "169.254.95.120" == bmc_config.get_smbios_value(
+            data, "IPv4 Address"
         )

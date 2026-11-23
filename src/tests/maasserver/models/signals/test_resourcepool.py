@@ -4,12 +4,13 @@
 """Test the behaviour of resourcepool signals."""
 
 from django.db import connection
+import pytest
 
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 
 
-class TestPostSaveResourcePoolSignal(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestPostSaveResourcePoolSignal:
     def test_save_creates_openfga_tuple(self):
         pool = factory.make_ResourcePool()
 
@@ -20,11 +21,12 @@ class TestPostSaveResourcePoolSignal(MAASServerTestCase):
             )
             openfga_tuple = cursor.fetchone()
 
-        self.assertEqual("maas:0", openfga_tuple[0])
-        self.assertEqual("parent", openfga_tuple[1])
+        assert "maas:0" == openfga_tuple[0]
+        assert "parent" == openfga_tuple[1]
 
 
-class TestPostDeleteResourcePoolSignal(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestPostDeleteResourcePoolSignal:
     def test_delete_removes_openfga_tuple(self):
         pool = factory.make_ResourcePool()
         pool_id = pool.id
@@ -38,4 +40,4 @@ class TestPostDeleteResourcePoolSignal(MAASServerTestCase):
             )
             openfga_tuple = cursor.fetchone()
 
-        self.assertIsNone(openfga_tuple)
+        assert openfga_tuple is None

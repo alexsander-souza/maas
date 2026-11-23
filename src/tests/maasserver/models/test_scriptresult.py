@@ -2,21 +2,22 @@
 # GNU Affero General Public License version 3 (see the file LICENSE).
 
 
+from collections import Counter
 from datetime import timedelta
 import random
 from unittest.mock import MagicMock
 
 from django.core.exceptions import ValidationError
 from django.utils import timezone
+import pytest
 import yaml
 
 from maasserver.enum import NODE_STATUS
 from maasserver.models import Event, EventType, ScriptResult
 from maasserver.models import scriptresult as scriptresult_module
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from maasserver.utils.orm import reload_object
-from maastesting.djangotestcase import CountQueries
+from maastesting.querycounter import CountQueries
 from metadataserver.builtin_scripts.hooks import NODE_INFO_SCRIPTS
 from metadataserver.enum import (
     RESULT_TYPE,
@@ -28,25 +29,26 @@ from metadataserver.enum import (
 from provisioningserver.events import EVENT_TYPES
 
 
-class TestScriptResult(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestScriptResult:
     """Test the ScriptResult model."""
 
     def test_name_returns_script_name(self):
         script_result = factory.make_ScriptResult()
-        self.assertEqual(script_result.script.name, script_result.name)
+        assert script_result.script.name == script_result.name
 
     def test_name_returns_model_script_name_when_no_script(self):
         script_result = factory.make_ScriptResult()
         script_result.script = None
         script_name = factory.make_name("script_name")
         script_result.script_name = script_name
-        self.assertEqual(script_name, script_result.name)
+        assert script_name == script_result.name
 
     def test_name_returns_unknown_when_no_script_or_model_script_name(self):
         script_result = factory.make_ScriptResult()
         script_result.script = None
         script_result.script_name = None
-        self.assertEqual("Unknown", script_result.name)
+        assert "Unknown" == script_result.name
 
     def test_store_result_only_allows_status_running(self):
         # XXX ltrager 2016-12-07 - Only allow SCRIPT_STATUS.RUNNING once
@@ -56,9 +58,9 @@ class TestScriptResult(MAASServerTestCase):
                 SCRIPT_STATUS_CHOICES, SCRIPT_STATUS_RUNNING_OR_PENDING
             )
         )
-        self.assertRaises(
-            AssertionError, script_result.store_result, random.randint(0, 255)
-        )
+
+        with pytest.raises(AssertionError):
+            script_result.store_result(random.randint(0, 255))
 
     def test_store_result_allows_deployed_node_to_overwrite(self):
         node = factory.make_Node(status=NODE_STATUS.DEPLOYED)
@@ -81,29 +83,29 @@ class TestScriptResult(MAASServerTestCase):
         )
         script_result.store_result(exit_status, output, stdout, stderr, result)
 
-        self.assertEqual(exit_status, script_result.exit_status)
-        self.assertEqual(output, script_result.output)
-        self.assertEqual(stdout, script_result.stdout)
-        self.assertEqual(stderr, script_result.stderr)
-        self.assertEqual(result, script_result.result)
+        assert exit_status == script_result.exit_status
+        assert output == script_result.output
+        assert stdout == script_result.stdout
+        assert stderr == script_result.stderr
+        assert result == script_result.result
 
     def test_store_result_sets_status_to_timedout_with_timedout_true(self):
         script_result = factory.make_ScriptResult(status=SCRIPT_STATUS.RUNNING)
         script_result.store_result(random.randint(0, 255), timedout=True)
-        self.assertEqual(SCRIPT_STATUS.TIMEDOUT, script_result.status)
+        assert SCRIPT_STATUS.TIMEDOUT == script_result.status
 
     def test_store_result_sets_status_to_passed_with_exit_code_zero(self):
         script_result = factory.make_ScriptResult(status=SCRIPT_STATUS.RUNNING)
         script_result.store_result(0)
-        self.assertEqual(SCRIPT_STATUS.PASSED, script_result.status)
-        self.assertEqual(0, script_result.exit_status)
+        assert SCRIPT_STATUS.PASSED == script_result.status
+        assert 0 == script_result.exit_status
 
     def test_store_result_sets_status_to_failed_with_exit_code_non_zero(self):
         script_result = factory.make_ScriptResult(status=SCRIPT_STATUS.RUNNING)
         exit_status = random.randint(1, 255)
         script_result.store_result(exit_status)
-        self.assertEqual(SCRIPT_STATUS.FAILED, script_result.status)
-        self.assertEqual(exit_status, script_result.exit_status)
+        assert SCRIPT_STATUS.FAILED == script_result.status
+        assert exit_status == script_result.exit_status
 
     def test_store_result_sets_status_to_install_failed_when_install(self):
         script_result = factory.make_ScriptResult(
@@ -111,8 +113,8 @@ class TestScriptResult(MAASServerTestCase):
         )
         exit_status = random.randint(1, 255)
         script_result.store_result(exit_status)
-        self.assertEqual(SCRIPT_STATUS.FAILED_INSTALLING, script_result.status)
-        self.assertEqual(exit_status, script_result.exit_status)
+        assert SCRIPT_STATUS.FAILED_INSTALLING == script_result.status
+        assert exit_status == script_result.exit_status
 
     def test_store_result_sets_status_to_netconf_failed_when_netconf(self):
         script_result = factory.make_ScriptResult(
@@ -120,10 +122,8 @@ class TestScriptResult(MAASServerTestCase):
         )
         exit_status = random.randint(1, 255)
         script_result.store_result(exit_status)
-        self.assertEqual(
-            SCRIPT_STATUS.FAILED_APPLYING_NETCONF, script_result.status
-        )
-        self.assertEqual(exit_status, script_result.exit_status)
+        assert SCRIPT_STATUS.FAILED_APPLYING_NETCONF == script_result.status
+        assert exit_status == script_result.exit_status
 
     def test_store_result_stores_output(self):
         script_result = factory.make_ScriptResult(status=SCRIPT_STATUS.RUNNING)
@@ -132,8 +132,8 @@ class TestScriptResult(MAASServerTestCase):
 
         script_result.store_result(exit_status, output=output)
 
-        self.assertEqual(exit_status, script_result.exit_status)
-        self.assertEqual(output, script_result.output)
+        assert exit_status == script_result.exit_status
+        assert output == script_result.output
 
     def test_store_result_stores_stdout(self):
         script_result = factory.make_ScriptResult(status=SCRIPT_STATUS.RUNNING)
@@ -142,8 +142,8 @@ class TestScriptResult(MAASServerTestCase):
 
         script_result.store_result(exit_status, stdout=stdout)
 
-        self.assertEqual(exit_status, script_result.exit_status)
-        self.assertEqual(stdout, script_result.stdout)
+        assert exit_status == script_result.exit_status
+        assert stdout == script_result.stdout
 
     def test_store_result_stores_stderr(self):
         script_result = factory.make_ScriptResult(status=SCRIPT_STATUS.RUNNING)
@@ -152,8 +152,8 @@ class TestScriptResult(MAASServerTestCase):
 
         script_result.store_result(exit_status, stderr=stderr)
 
-        self.assertEqual(exit_status, script_result.exit_status)
-        self.assertEqual(stderr, script_result.stderr)
+        assert exit_status == script_result.exit_status
+        assert stderr == script_result.stderr
 
     def test_store_result_stores_result(self):
         script_result = factory.make_ScriptResult(status=SCRIPT_STATUS.RUNNING)
@@ -169,11 +169,11 @@ class TestScriptResult(MAASServerTestCase):
             exit_status, result=yaml.safe_dump(result).encode()
         )
 
-        self.assertEqual(exit_status, script_result.exit_status)
-        self.assertDictEqual(result, script_result.read_results())
+        assert exit_status == script_result.exit_status
+        assert result == script_result.read_results()
 
-    def test_store_result_logs_invalid_result_yaml(self):
-        mock_logger = self.patch(scriptresult_module.logger, "error")
+    def test_store_result_logs_invalid_result_yaml(self, mocker):
+        mock_logger = mocker.patch.object(scriptresult_module.logger, "error")
         script_result = factory.make_ScriptResult(status=SCRIPT_STATUS.RUNNING)
         result = factory.make_name("invalid").encode()
 
@@ -193,10 +193,10 @@ class TestScriptResult(MAASServerTestCase):
         event = Event.objects.get(
             node=script_result.script_set.node, type_id=event_type.id
         )
-        self.assertEqual(expected_msg, event.description)
+        assert expected_msg == event.description
         mock_logger.assert_called_once_with(expected_msg)
-        self.assertEqual(SCRIPT_STATUS.PASSED, script_result.status)
-        self.assertEqual(result, script_result.result)
+        assert SCRIPT_STATUS.PASSED == script_result.status
+        assert result == script_result.result
 
     def test_store_result_yaml_can_set_script_status(self):
         script_result = factory.make_ScriptResult(status=SCRIPT_STATUS.RUNNING)
@@ -215,9 +215,9 @@ class TestScriptResult(MAASServerTestCase):
             exit_status, result=yaml.safe_dump(status_yaml).encode()
         )
 
-        self.assertEqual(status_choices[status], script_result.status)
-        self.assertEqual(exit_status, script_result.exit_status)
-        self.assertDictEqual(status_yaml, script_result.read_results())
+        assert status_choices[status] == script_result.status
+        assert exit_status == script_result.exit_status
+        assert status_yaml == script_result.read_results()
 
     def test_store_result_yaml_can_set_interface_link_connected(self):
         node = factory.make_Node_with_Interface_on_Subnet()
@@ -236,7 +236,7 @@ class TestScriptResult(MAASServerTestCase):
             0, result=yaml.safe_dump({"link_connected": False}).encode()
         )
 
-        self.assertFalse(reload_object(node.boot_interface).link_connected)
+        assert not (reload_object(node.boot_interface).link_connected)
 
     def test_store_result_stores_script_version(self):
         script = factory.make_Script()
@@ -252,8 +252,8 @@ class TestScriptResult(MAASServerTestCase):
             exit_status, script_version_id=old_version.id
         )
 
-        self.assertEqual(exit_status, script_result.exit_status)
-        self.assertEqual(old_version, script_result.script_version)
+        assert exit_status == script_result.exit_status
+        assert old_version == script_result.script_version
 
     def test_store_result_sets_script_version_to_latest_when_not_given(self):
         script = factory.make_Script()
@@ -264,11 +264,11 @@ class TestScriptResult(MAASServerTestCase):
 
         script_result.store_result(exit_status)
 
-        self.assertEqual(exit_status, script_result.exit_status)
-        self.assertEqual(script.script, script_result.script_version)
+        assert exit_status == script_result.exit_status
+        assert script.script == script_result.script_version
 
-    def test_store_result_logs_missing_script_version(self):
-        mock_logger = self.patch(scriptresult_module.logger, "error")
+    def test_store_result_logs_missing_script_version(self, mocker):
+        mock_logger = mocker.patch.object(scriptresult_module.logger, "error")
         script_result = factory.make_ScriptResult(status=SCRIPT_STATUS.RUNNING)
         exit_status = random.randint(0, 255)
 
@@ -290,10 +290,10 @@ class TestScriptResult(MAASServerTestCase):
         event = Event.objects.get(
             node=script_result.script_set.node, type_id=event_type.id
         )
-        self.assertEqual(expected_msg, event.description)
+        assert expected_msg == event.description
         mock_logger.assert_called_once_with(expected_msg)
 
-    def test_store_result_runs_builtin_commissioning_hooks(self):
+    def test_store_result_runs_builtin_commissioning_hooks(self, monkeypatch):
         script_set = factory.make_ScriptSet(
             result_type=RESULT_TYPE.COMMISSIONING
         )
@@ -303,11 +303,10 @@ class TestScriptResult(MAASServerTestCase):
         exit_status = random.randint(0, 255)
         stdout = factory.make_name("stdout").encode()
         mock_hook = MagicMock()
-        scriptresult_module.NODE_INFO_SCRIPTS[script_result.name] = {
-            "hook": mock_hook
-        }
-        self.addCleanup(
-            scriptresult_module.NODE_INFO_SCRIPTS.pop, script_result.name
+        monkeypatch.setitem(
+            scriptresult_module.NODE_INFO_SCRIPTS,
+            script_result.name,
+            {"hook": mock_hook},
         )
 
         script_result.store_result(exit_status, stdout=stdout)
@@ -316,7 +315,7 @@ class TestScriptResult(MAASServerTestCase):
             node=script_set.node, output=stdout, exit_status=exit_status
         )
 
-    def test_store_result_logs_event_upon_hook_failure(self):
+    def test_store_result_logs_event_upon_hook_failure(self, monkeypatch):
         script_set = factory.make_ScriptSet(
             result_type=RESULT_TYPE.COMMISSIONING
         )
@@ -327,20 +326,15 @@ class TestScriptResult(MAASServerTestCase):
         def _raise():
             raise Exception()
 
-        scriptresult_module.NODE_INFO_SCRIPTS[script_result.name] = {
-            "hook": _raise
-        }
-        self.addCleanup(
-            scriptresult_module.NODE_INFO_SCRIPTS.pop, script_result.name
+        monkeypatch.setitem(
+            scriptresult_module.NODE_INFO_SCRIPTS,
+            script_result.name,
+            {"hook": _raise},
         )
         script_result.store_result(0, stdout=b"")
         expected_event = Event.objects.first()
-        self.assertIn(
-            "failed during post-processing.", expected_event.description
-        )
-        self.assertEqual(
-            reload_object(script_result).status, SCRIPT_STATUS.FAILED
-        )
+        assert "failed during post-processing." in expected_event.description
+        assert reload_object(script_result).status == SCRIPT_STATUS.FAILED
 
     def test_store_result_on_recommission_script_resets_builtin_commiss(self):
         script_set = factory.make_ScriptSet(
@@ -363,11 +357,11 @@ class TestScriptResult(MAASServerTestCase):
 
         for script_result in script_set:
             if script_result.name in NODE_INFO_SCRIPTS:
-                self.assertEqual(SCRIPT_STATUS.PENDING, script_result.status)
-                self.assertIsNone(script_result.started)
-                self.assertIsNone(script_result.ended)
+                assert SCRIPT_STATUS.PENDING == script_result.status
+                assert script_result.started is None
+                assert script_result.ended is None
             else:
-                self.assertEqual(SCRIPT_STATUS.PASSED, script_result.status)
+                assert SCRIPT_STATUS.PASSED == script_result.status
 
     def test_store_result_on_recommission_script_failure_does_nothing(self):
         script_set = factory.make_ScriptSet(
@@ -390,11 +384,11 @@ class TestScriptResult(MAASServerTestCase):
 
         for script_result in script_set:
             if script_result.name in NODE_INFO_SCRIPTS:
-                self.assertEqual(SCRIPT_STATUS.PASSED, script_result.status)
-                self.assertIsNotNone(script_result.started)
-                self.assertIsNotNone(script_result.ended)
+                assert SCRIPT_STATUS.PASSED == script_result.status
+                assert script_result.started is not None
+                assert script_result.ended is not None
             else:
-                self.assertEqual(SCRIPT_STATUS.FAILED, script_result.status)
+                assert SCRIPT_STATUS.FAILED == script_result.status
 
     def test_store_result_accepts_runtime(self):
         script_result = factory.make_ScriptResult(status=SCRIPT_STATUS.PENDING)
@@ -402,16 +396,15 @@ class TestScriptResult(MAASServerTestCase):
 
         script_result.store_result(0, runtime=runtime)
 
-        self.assertEqual(
-            script_result.started,
-            script_result.ended - timedelta(seconds=runtime),
+        assert script_result.started == script_result.ended - timedelta(
+            seconds=runtime
         )
 
     def test_save_stores_start_time(self):
         script_result = factory.make_ScriptResult(status=SCRIPT_STATUS.PENDING)
         script_result.status = SCRIPT_STATUS.RUNNING
         script_result.save(update_fields=["status"])
-        self.assertIsNotNone(reload_object(script_result).started)
+        assert reload_object(script_result).started is not None
 
     def test_save_stores_end_time(self):
         script_result = factory.make_ScriptResult(status=SCRIPT_STATUS.PENDING)
@@ -428,7 +421,7 @@ class TestScriptResult(MAASServerTestCase):
             ]
         )
         script_result.save(update_fields=["status"])
-        self.assertIsNotNone(reload_object(script_result).ended)
+        assert reload_object(script_result).ended is not None
 
     def test_save_stores_start_time_with_end_time_when_not_set(self):
         # Regression test for LP:1730799
@@ -447,9 +440,9 @@ class TestScriptResult(MAASServerTestCase):
         )
         script_result.save(update_fields=["status"])
         script_result = reload_object(script_result)
-        self.assertIsNotNone(script_result.started)
-        self.assertIsNotNone(script_result.ended)
-        self.assertEqual(script_result.started, script_result.ended)
+        assert script_result.started is not None
+        assert script_result.ended is not None
+        assert script_result.started == script_result.ended
 
     def test_save_sets_physical_blockdevice_from_parameters(self):
         node = factory.make_Machine()
@@ -471,24 +464,19 @@ class TestScriptResult(MAASServerTestCase):
                 }
             },
         )
-        self.assertEqual(
-            physical_blockdevice, script_result.physical_blockdevice
-        )
-        self.assertDictEqual(
-            {
-                "storage": {
-                    "type": "storage",
-                    "value": {
-                        "id": physical_blockdevice.id,
-                        "name": physical_blockdevice.name,
-                        "id_path": physical_blockdevice.id_path,
-                        "model": physical_blockdevice.model,
-                        "serial": physical_blockdevice.serial,
-                    },
-                }
-            },
-            script_result.parameters,
-        )
+        assert physical_blockdevice == script_result.physical_blockdevice
+        assert {
+            "storage": {
+                "type": "storage",
+                "value": {
+                    "id": physical_blockdevice.id,
+                    "name": physical_blockdevice.name,
+                    "id_path": physical_blockdevice.id_path,
+                    "model": physical_blockdevice.model,
+                    "serial": physical_blockdevice.serial,
+                },
+            }
+        } == script_result.parameters
 
     def test_save_sets_interface_from_parameters(self):
         node = factory.make_Machine()
@@ -510,23 +498,20 @@ class TestScriptResult(MAASServerTestCase):
                 }
             },
         )
-        self.assertEqual(interface, script_result.interface)
-        self.assertIsNone(script_result.physical_blockdevice)
-        self.assertDictEqual(
-            {
-                "interface": {
-                    "type": "interface",
-                    "value": {
-                        "id": interface.id,
-                        "name": interface.name,
-                        "mac_address": str(interface.mac_address),
-                        "vendor": interface.vendor,
-                        "product": interface.product,
-                    },
-                }
-            },
-            script_result.parameters,
-        )
+        assert interface == script_result.interface
+        assert script_result.physical_blockdevice is None
+        assert {
+            "interface": {
+                "type": "interface",
+                "value": {
+                    "id": interface.id,
+                    "name": interface.name,
+                    "mac_address": str(interface.mac_address),
+                    "vendor": interface.vendor,
+                    "product": interface.product,
+                },
+            }
+        } == script_result.parameters
 
     def test_save_purges_orphaned_script_results_storage(self):
         node = factory.make_Machine()
@@ -555,8 +540,8 @@ class TestScriptResult(MAASServerTestCase):
                 }
             },
         )
-        self.assertIsNone(reload_object(old_script_result))
-        self.assertIsNotNone(reload_object(new_script_result))
+        assert reload_object(old_script_result) is None
+        assert reload_object(new_script_result) is not None
 
     def test_save_purges_orphaned_script_results_interface(self):
         node = factory.make_Machine_with_Interface_on_Subnet()
@@ -585,8 +570,8 @@ class TestScriptResult(MAASServerTestCase):
                 }
             },
         )
-        self.assertIsNone(reload_object(old_script_result))
-        self.assertIsNotNone(reload_object(new_script_result))
+        assert reload_object(old_script_result) is None
+        assert reload_object(new_script_result) is not None
 
     def test_get_runtime(self):
         runtime_seconds = random.randint(1, 59)
@@ -600,33 +585,33 @@ class TestScriptResult(MAASServerTestCase):
             text_seconds = "0%d" % runtime_seconds
         else:
             text_seconds = "%d" % runtime_seconds
-        self.assertEqual("0:00:%s" % text_seconds, script_result.runtime)
+        assert "0:00:%s" % text_seconds == script_result.runtime
 
     def test_get_runtime_blank_when_missing(self):
         script_result = factory.make_ScriptResult(status=SCRIPT_STATUS.PENDING)
-        self.assertEqual("", script_result.runtime)
+        assert "" == script_result.runtime
 
     def test_get_starttime(self):
         now = timezone.now()
         script_result = factory.make_ScriptResult(
             status=SCRIPT_STATUS.PASSED, started=now, ended=now
         )
-        self.assertEqual(now.timestamp(), script_result.starttime)
+        assert now.timestamp() == script_result.starttime
 
     def test_get_starttime_None(self):
         script_result = factory.make_ScriptResult(status=SCRIPT_STATUS.PENDING)
-        self.assertEqual("", script_result.starttime)
+        assert "" == script_result.starttime
 
     def test_get_endtime(self):
         now = timezone.now()
         script_result = factory.make_ScriptResult(
             status=SCRIPT_STATUS.PASSED, started=now, ended=now
         )
-        self.assertEqual(now.timestamp(), script_result.endtime)
+        assert now.timestamp() == script_result.endtime
 
     def test_get_endtime_None(self):
         script_result = factory.make_ScriptResult(status=SCRIPT_STATUS.PENDING)
-        self.assertEqual("", script_result.endtime)
+        assert "" == script_result.endtime
 
     def test_estimated_runtime_returns_set_runtime(self):
         now = timezone.now()
@@ -635,9 +620,7 @@ class TestScriptResult(MAASServerTestCase):
             started=now,
             ended=(now + factory.make_timedelta()),
         )
-        self.assertEqual(
-            script_result.runtime, script_result.estimated_runtime
-        )
+        assert script_result.runtime == script_result.estimated_runtime
 
     def test_estimated_runtime_returns_average_of_previous(self):
         script = factory.make_Script()
@@ -668,7 +651,7 @@ class TestScriptResult(MAASServerTestCase):
             average_runtime
             - timedelta(microseconds=average_runtime.microseconds)
         )
-        self.assertEqual(expected, script_result.estimated_runtime)
+        assert expected == script_result.estimated_runtime
 
     def test_estimated_runtime_sets_start_time_when_unavailable(self):
         # Regression test for LP:1730799
@@ -686,7 +669,7 @@ class TestScriptResult(MAASServerTestCase):
             script=script,
             script_set=script_set,
         )
-        self.assertEqual("0:00:00", script_result.estimated_runtime)
+        assert "0:00:00" == script_result.estimated_runtime
 
     def test_estimated_runtime_uses_timeout(self):
         now = timezone.now()
@@ -698,7 +681,7 @@ class TestScriptResult(MAASServerTestCase):
             script_result.script.timeout
             - timedelta(microseconds=script_result.script.timeout.microseconds)
         )
-        self.assertEqual(expected, script_result.estimated_runtime)
+        assert expected == script_result.estimated_runtime
 
     def test_estimated_runtime_returns_Unknown(self):
         now = timezone.now()
@@ -706,7 +689,7 @@ class TestScriptResult(MAASServerTestCase):
         script_result = factory.make_ScriptResult(
             script=script, status=SCRIPT_STATUS.RUNNING, started=now
         )
-        self.assertEqual("Unknown", script_result.estimated_runtime)
+        assert "Unknown" == script_result.estimated_runtime
 
     def test_read_results(self):
         results = {
@@ -727,11 +710,11 @@ class TestScriptResult(MAASServerTestCase):
             result=yaml.safe_dump(results).encode()
         )
 
-        self.assertDictEqual(results, script_result.read_results())
+        assert results == script_result.read_results()
 
     def test_read_results_ignores_empty(self):
         script_result = factory.make_ScriptResult(result=b"")
-        self.assertDictEqual({}, script_result.read_results())
+        assert {} == script_result.read_results()
 
     def test_read_results_does_not_require_results(self):
         result = {
@@ -742,19 +725,20 @@ class TestScriptResult(MAASServerTestCase):
         script_result = factory.make_ScriptResult(
             result=yaml.safe_dump(result).encode()
         )
-        self.assertDictEqual(result, script_result.read_results())
+        assert result == script_result.read_results()
 
     def test_read_results_errors_when_invalid_yaml(self):
         script_result = factory.make_ScriptResult(result=b"{")
 
-        self.assertRaises(ValidationError, script_result.read_results)
+        with pytest.raises(ValidationError):
+            script_result.read_results()
 
     def test_read_results_errors_when_not_dict(self):
         script_result = factory.make_ScriptResult(
             result=factory.make_name("invalid").encode()
         )
-        with self.assertRaisesRegex(
-            ValidationError, "YAML must be a dictionary."
+        with pytest.raises(
+            ValidationError, match="YAML must be a dictionary."
         ):
             script_result.read_results()
 
@@ -763,10 +747,12 @@ class TestScriptResult(MAASServerTestCase):
         script_result = factory.make_ScriptResult(
             result=yaml.safe_dump(result).encode()
         )
-        with self.assertRaisesRegex(
+        with pytest.raises(
             ValidationError,
-            'status must be "passed", "failed", "degraded", '
-            '"timedout", or "skipped".',
+            match=(
+                'status must be "passed", "failed", "degraded", '
+                '"timedout", or "skipped".'
+            ),
         ):
             script_result.read_results()
 
@@ -775,10 +761,12 @@ class TestScriptResult(MAASServerTestCase):
         script_result = factory.make_ScriptResult(
             result=yaml.safe_dump(result).encode()
         )
-        with self.assertRaisesRegex(
+        with pytest.raises(
             ValidationError,
-            "link_connected may only be specified if the Script accepts "
-            "an interface parameter.",
+            match=(
+                "link_connected may only be specified if the Script accepts "
+                "an interface parameter."
+            ),
         ):
             script_result.read_results()
 
@@ -795,8 +783,8 @@ class TestScriptResult(MAASServerTestCase):
             interface=node.boot_interface,
             result=yaml.safe_dump(result).encode(),
         )
-        with self.assertRaisesRegex(
-            ValidationError, "link_connected must be a boolean"
+        with pytest.raises(
+            ValidationError, match="link_connected must be a boolean"
         ):
             script_result.read_results()
 
@@ -807,9 +795,9 @@ class TestScriptResult(MAASServerTestCase):
         script_result = factory.make_ScriptResult(
             result=yaml.safe_dump(result).encode()
         )
-        with self.assertRaisesRegex(
+        with pytest.raises(
             ValidationError,
-            "All keys in the results dictionary must be strings.",
+            match="All keys in the results dictionary must be strings.",
         ):
             script_result.read_results()
 
@@ -818,10 +806,12 @@ class TestScriptResult(MAASServerTestCase):
         script_result = factory.make_ScriptResult(
             result=yaml.safe_dump(result).encode()
         )
-        with self.assertRaisesRegex(
+        with pytest.raises(
             ValidationError,
-            "All values in the results dictionary must be a string, "
-            "float, int, or bool.",
+            match=(
+                "All values in the results dictionary must be a string, "
+                "float, int, or bool."
+            ),
         ):
             script_result.read_results()
 
@@ -830,8 +820,8 @@ class TestScriptResult(MAASServerTestCase):
         script_result = factory.make_ScriptResult(
             result=yaml.safe_dump(result).encode()
         )
-        with self.assertRaisesRegex(
-            ValidationError, "results must be a dictionary."
+        with pytest.raises(
+            ValidationError, match="results must be a dictionary."
         ):
             script_result.read_results()
 
@@ -845,7 +835,7 @@ class TestScriptResult(MAASServerTestCase):
         # Script result from another node
         factory.make_ScriptResult(script=script)
         script_result = script_results[-1]
-        self.assertCountEqual(script_results, script_result.history)
+        assert Counter(script_results) == Counter(script_result.history)
 
     def test_history_without_script(self):
         script_name = factory.make_name("script_name")
@@ -859,7 +849,7 @@ class TestScriptResult(MAASServerTestCase):
         # Script result from another node
         factory.make_ScriptResult(script_name=script_name)
         script_result = script_results[-1]
-        self.assertCountEqual(script_results, script_result.history)
+        assert Counter(script_results) == Counter(script_result.history)
 
     def test_history_query_count(self):
         script_name = factory.make_name("script_name")
@@ -878,8 +868,8 @@ class TestScriptResult(MAASServerTestCase):
         script_result_many = ScriptResult.objects.get(id=script_results[-1].id)
         with queries_many:
             script_result_many.history  # noqa: B018
-        self.assertEqual(1, queries_one.count)
-        self.assertEqual(1, queries_many.count)
+        assert 1 == queries_one.count
+        assert 1 == queries_many.count
 
     def test_history_storage_device(self):
         # Regression test for LP: #1721524
@@ -903,12 +893,12 @@ class TestScriptResult(MAASServerTestCase):
         # Script from another node
         factory.make_ScriptResult(script=script)
         script_result = script_results[-1]
-        self.assertCountEqual(script_results, script_result.history)
+        assert Counter(script_results) == Counter(script_result.history)
 
     def test_not_suppressed_by_default(self):
         script_result = factory.make_ScriptResult()
-        self.assertFalse(script_result.suppressed)
+        assert not (script_result.suppressed)
 
     def test_suppressed(self):
         script_result = factory.make_ScriptResult(suppressed=True)
-        self.assertTrue(script_result.suppressed)
+        assert script_result.suppressed

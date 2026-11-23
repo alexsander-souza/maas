@@ -6,23 +6,58 @@ import http.client
 import json
 
 from django.conf import settings
+from django.contrib.auth.models import AnonymousUser
 from django.urls import reverse
+import pytest
 
 from maasserver.api.version import API_CAPABILITIES_LIST
 from maasserver.models import ControllerInfo
-from maasserver.testing.api import APITestCase
 from maasserver.testing.factory import factory
+from maasserver.testing.testclient import MAASSensibleOAuthClient
 
 
-class TestVersionAPIBasics(APITestCase.ForAnonymousAndUserAndAdmin):
+@pytest.mark.parametrize(
+    "api_identity",
+    [
+        pytest.param("anonymous", id="user=anonymous,client=oauth"),
+        pytest.param("user", id="user=user,client=oauth"),
+        pytest.param("admin", id="user=admin,client=oauth"),
+    ],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestVersionAPIBasics:
     """Basic tests for /version/ API."""
 
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, request):
+        if api_identity == "anonymous":
+            self.client = MAASSensibleOAuthClient(user=AnonymousUser())
+        elif api_identity == "admin":
+            self.client = request.getfixturevalue("admin_api_client")
+        else:
+            self.client = request.getfixturevalue("api_client")
+
     def test_handler_path(self):
-        self.assertEqual("/MAAS/api/2.0/version/", reverse("version_handler"))
+        assert "/MAAS/api/2.0/version/" == reverse("version_handler")
 
 
-class TestVersionAPI(APITestCase.ForAnonymousAndUser):
+@pytest.mark.parametrize(
+    "api_identity",
+    [
+        pytest.param("anonymous", id="user=anonymous,client=oauth"),
+        pytest.param("user", id="user=user,client=oauth"),
+    ],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestVersionAPI:
     """Tests for /version/ API."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, request):
+        if api_identity == "anonymous":
+            self.client = MAASSensibleOAuthClient(user=AnonymousUser())
+        else:
+            self.client = request.getfixturevalue("api_client")
 
     def test_GET_returns_details(self):
         ControllerInfo.objects.set_version(
@@ -30,16 +65,13 @@ class TestVersionAPI(APITestCase.ForAnonymousAndUser):
         )
 
         response = self.client.get(reverse("version_handler"))
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code
 
         parsed_result = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertEqual(
-            {
-                "capabilities": API_CAPABILITIES_LIST,
-                "version": "3.0.0~beta1",
-                "subversion": "",
-            },
-            parsed_result,
-        )
+        assert {
+            "capabilities": API_CAPABILITIES_LIST,
+            "version": "3.0.0~beta1",
+            "subversion": "",
+        } == parsed_result

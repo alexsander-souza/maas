@@ -3,22 +3,25 @@
 
 """Tests for user-creation forms."""
 
+import re
+
 from django.contrib.auth.models import User
+import pytest
 
 from maasserver.forms import EditUserForm, NewUserCreationForm, ProfileForm
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 
 
-class TestUniqueEmailForms(MAASServerTestCase):
-    def assertFormFailsValidationBecauseEmailNotUnique(self, form):
-        self.assertFalse(form.is_valid())
-        self.assertIn("email", form._errors)
-        self.assertEqual(1, len(form._errors["email"]))
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestUniqueEmailForms:
+    def assert_form_fails_validation_because_email_not_unique(self, form):
+        assert not form.is_valid()
+        assert "email" in form._errors
+        assert len(form._errors["email"]) == 1
         # Cope with 'Email' and 'E-mail' in error message.
-        self.assertRegex(
-            form._errors["email"][0],
+        assert re.search(
             r"User with this E-{0,1}mail address already exists.",
+            form._errors["email"][0],
         )
 
     def test_ProfileForm_fails_validation_if_email_taken(self):
@@ -27,13 +30,13 @@ class TestUniqueEmailForms(MAASServerTestCase):
         email = "%s@example.com" % factory.make_string()
         user = factory.make_User(email=email)
         form = ProfileForm(instance=user, data={"email": another_email})
-        self.assertFormFailsValidationBecauseEmailNotUnique(form)
+        self.assert_form_fails_validation_because_email_not_unique(form)
 
     def test_ProfileForm_validates_if_email_unchanged(self):
         email = "%s@example.com" % factory.make_string()
         user = factory.make_User(email=email)
         form = ProfileForm(instance=user, data={"email": email})
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
 
     def test_NewUserCreationForm_fails_validation_if_email_taken(self):
         email = "%s@example.com" % factory.make_string()
@@ -48,7 +51,7 @@ class TestUniqueEmailForms(MAASServerTestCase):
                 "password2": password,
             }
         )
-        self.assertFormFailsValidationBecauseEmailNotUnique(form)
+        self.assert_form_fails_validation_because_email_not_unique(form)
 
     def test_EditUserForm_fails_validation_if_email_taken(self):
         another_email = "%s@example.com" % factory.make_string()
@@ -56,7 +59,7 @@ class TestUniqueEmailForms(MAASServerTestCase):
         email = "%s@example.com" % factory.make_string()
         user = factory.make_User(email=email)
         form = EditUserForm(instance=user, data={"email": another_email})
-        self.assertFormFailsValidationBecauseEmailNotUnique(form)
+        self.assert_form_fails_validation_because_email_not_unique(form)
 
     def test_EditUserForm_validates_if_email_unchanged(self):
         email = "%s@example.com" % factory.make_string()
@@ -65,10 +68,11 @@ class TestUniqueEmailForms(MAASServerTestCase):
             instance=user,
             data={"email": email, "username": factory.make_string()},
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
 
 
-class TestNewUserCreationForm(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestNewUserCreationForm:
     def test_saves_to_db_by_default(self):
         password = factory.make_name("password")
         params = {
@@ -79,7 +83,7 @@ class TestNewUserCreationForm(MAASServerTestCase):
         }
         form = NewUserCreationForm(params)
         form.save()
-        self.assertIsNotNone(User.objects.get(username=params["username"]))
+        assert User.objects.get(username=params["username"]) is not None
 
     def test_email_is_required(self):
         password = factory.make_name("password")
@@ -90,10 +94,9 @@ class TestNewUserCreationForm(MAASServerTestCase):
             "password2": password,
         }
         form = NewUserCreationForm(params)
-        self.assertFalse(form.is_valid())
-        self.assertEqual({"email": ["This field is required."]}, form._errors)
+        assert not form.is_valid()
+        assert {"email": ["This field is required."]} == form._errors
 
-    def test_does_not_save_to_db_if_commit_is_False(self):
         password = factory.make_name("password")
         params = {
             "email": "%s@example.com" % factory.make_string(),
@@ -103,21 +106,16 @@ class TestNewUserCreationForm(MAASServerTestCase):
         }
         form = NewUserCreationForm(params)
         form.save(commit=False)
-        self.assertCountEqual(
-            [], User.objects.filter(username=params["username"])
-        )
+        assert not User.objects.filter(username=params["username"]).exists()
 
     def test_fields_order(self):
         form = NewUserCreationForm()
 
-        self.assertEqual(
-            [
-                "username",
-                "last_name",
-                "email",
-                "password1",
-                "password2",
-                "is_superuser",
-            ],
-            list(form.fields),
-        )
+        assert [
+            "username",
+            "last_name",
+            "email",
+            "password1",
+            "password2",
+            "is_superuser",
+        ] == list(form.fields)

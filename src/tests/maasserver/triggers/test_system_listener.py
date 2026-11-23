@@ -8,11 +8,11 @@ from datetime import timedelta
 
 from django.db import connection as db_connection
 from django.utils import timezone
+import pytest
 from twisted.internet.defer import inlineCallbacks
 
 from maasserver.models.signals.testing import SignalsDisabled
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASTransactionServerTestCase
 from maasserver.triggers.testing import (
     DNSHelpersMixin,
     TransactionalHelpersMixin,
@@ -25,8 +25,22 @@ from provisioningserver.utils.twisted import DeferredValue
 wait_for_reactor = wait_for()
 
 
+@pytest.fixture(autouse=True)
+def _patch_helpers(request, mocker):
+    if request.instance is not None:
+        request.instance.patch = mocker.patch.object
+
+
+def disable_bootsource_signals(request):
+    fixture = SignalsDisabled("bootsources")
+    fixture.setUp()
+    request.addfinalizer(fixture.cleanUp)
+
+
+@pytest.mark.allow_transactions
+@pytest.mark.usefixtures("transactional_maasdb", "maas_region_test", "factory")
 class TestCoreRegionRackRPCConnectionInsertListener(
-    MAASTransactionServerTestCase, TransactionalHelpersMixin, DNSHelpersMixin
+    TransactionalHelpersMixin, DNSHelpersMixin
 ):
     """End-to-end test for the core triggers code."""
 
@@ -59,19 +73,14 @@ class TestCoreRegionRackRPCConnectionInsertListener(
                 },
             )
             yield process_dv.get(timeout=2)
-            self.assertEqual(
-                (
-                    "sys_core_%s" % region_process.id,
-                    "watch_%s" % rack_controller.id,
-                ),
-                process_dv.value,
-            )
+            assert (
+                "sys_core_%s" % region_process.id,
+                "watch_%s" % rack_controller.id,
+            ) == process_dv.value
             rack_controller = yield deferToDatabase(
                 self.reload_object, rack_controller
             )
-            self.assertEqual(
-                region_process.id, rack_controller.managing_process_id
-            )
+            assert region_process.id == rack_controller.managing_process_id
         finally:
             yield listener.stopService()
 
@@ -138,19 +147,16 @@ class TestCoreRegionRackRPCConnectionInsertListener(
                 },
             )
             yield process_dv.get(timeout=2)
-            self.assertEqual(
-                (
-                    "sys_core_%s" % not_managing_region_process.id,
-                    "watch_%s" % not_managed_rack_controller.id,
-                ),
-                process_dv.value,
-            )
+            assert (
+                "sys_core_%s" % not_managing_region_process.id,
+                "watch_%s" % not_managed_rack_controller.id,
+            ) == process_dv.value
             not_managed_rack_controller = yield deferToDatabase(
                 self.reload_object, not_managed_rack_controller
             )
-            self.assertEqual(
-                not_managing_region_process.id,
-                not_managed_rack_controller.managing_process_id,
+            assert (
+                not_managing_region_process.id
+                == not_managed_rack_controller.managing_process_id
             )
         finally:
             yield listener.stopService()
@@ -223,19 +229,16 @@ class TestCoreRegionRackRPCConnectionInsertListener(
                 },
             )
             yield process_dv.get(timeout=2)
-            self.assertEqual(
-                (
-                    "sys_core_%s" % managing_region_process.id,
-                    "watch_%s" % dead_managed_rack_controller.id,
-                ),
-                process_dv.value,
-            )
+            assert (
+                "sys_core_%s" % managing_region_process.id,
+                "watch_%s" % dead_managed_rack_controller.id,
+            ) == process_dv.value
             dead_managed_rack_controller = yield deferToDatabase(
                 self.reload_object, dead_managed_rack_controller
             )
-            self.assertEqual(
-                managing_region_process.id,
-                dead_managed_rack_controller.managing_process_id,
+            assert (
+                managing_region_process.id
+                == dead_managed_rack_controller.managing_process_id
             )
         finally:
             yield listener.stopService()
@@ -307,26 +310,18 @@ class TestCoreRegionRackRPCConnectionInsertListener(
             )
             yield overloaded_dv.get(timeout=2)
             yield process_dv.get(timeout=2)
-            self.assertEqual(
-                (
-                    "sys_core_%s" % overloaded_region_process.id,
-                    "unwatch_%s" % rack_controller.id,
-                ),
-                overloaded_dv.value,
-            )
-            self.assertEqual(
-                (
-                    "sys_core_%s" % region_process.id,
-                    "watch_%s" % rack_controller.id,
-                ),
-                process_dv.value,
-            )
+            assert (
+                "sys_core_%s" % overloaded_region_process.id,
+                "unwatch_%s" % rack_controller.id,
+            ) == overloaded_dv.value
+            assert (
+                "sys_core_%s" % region_process.id,
+                "watch_%s" % rack_controller.id,
+            ) == process_dv.value
             rack_controller = yield deferToDatabase(
                 self.reload_object, rack_controller
             )
-            self.assertEqual(
-                region_process.id, rack_controller.managing_process_id
-            )
+            assert region_process.id == rack_controller.managing_process_id
         finally:
             yield listener.stopService()
 
@@ -391,13 +386,15 @@ class TestCoreRegionRackRPCConnectionInsertListener(
         rack_controller = yield deferToDatabase(
             self.reload_object, rack_controller
         )
-        self.assertEqual(
-            overloaded_region_process.id, rack_controller.managing_process_id
+        assert (
+            overloaded_region_process.id == rack_controller.managing_process_id
         )
 
 
+@pytest.mark.allow_transactions
+@pytest.mark.usefixtures("transactional_maasdb", "maas_region_test", "factory")
 class TestCoreRegionRackRPCConnectionDeleteListener(
-    MAASTransactionServerTestCase, TransactionalHelpersMixin, DNSHelpersMixin
+    TransactionalHelpersMixin, DNSHelpersMixin
 ):
     """End-to-end test for the core triggers code."""
 
@@ -405,10 +402,9 @@ class TestCoreRegionRackRPCConnectionDeleteListener(
     @inlineCallbacks
     def test_picks_new_region_process_when_connection_is_removed(self):
         # This test is very picky and no trigger on the RegionRackRPCConnection
-        # can already exists or it will break the test. We forcibly remove
-        # that trigger, just for this test. MAASTransactionServerTestCase does
-        # not clear the triggeres between test runs. This test will pass
-        # in isolation but will fail otherwise without this initial operation.
+        # can already exist or it will break the test. We forcibly remove that
+        # trigger because database setup does not clear it between runs. This
+        # test passes in isolation but fails without this initial step.
         @transactional
         def drop_sys_core_rpc_insert_trigger():
             with db_connection.cursor() as cursor:
@@ -479,25 +475,19 @@ class TestCoreRegionRackRPCConnectionDeleteListener(
             )
             yield process_dv.get(timeout=2)
             yield other_process_dv.get(timeout=2)
-            self.assertEqual(
-                (
-                    "sys_core_%s" % region_process.id,
-                    "unwatch_%s" % rack_controller.id,
-                ),
-                process_dv.value,
-            )
-            self.assertEqual(
-                (
-                    "sys_core_%s" % other_region_process.id,
-                    "watch_%s" % rack_controller.id,
-                ),
-                other_process_dv.value,
-            )
+            assert (
+                "sys_core_%s" % region_process.id,
+                "unwatch_%s" % rack_controller.id,
+            ) == process_dv.value
+            assert (
+                "sys_core_%s" % other_region_process.id,
+                "watch_%s" % rack_controller.id,
+            ) == other_process_dv.value
             rack_controller = yield deferToDatabase(
                 self.reload_object, rack_controller
             )
-            self.assertEqual(
-                other_region_process.id, rack_controller.managing_process_id
+            assert (
+                other_region_process.id == rack_controller.managing_process_id
             )
         finally:
             yield listener.stopService()
@@ -541,24 +531,21 @@ class TestCoreRegionRackRPCConnectionDeleteListener(
                 self.delete_region_rack_rpc_connection, connection.id
             )
             yield process_dv.get(timeout=2)
-            self.assertEqual(
-                (
-                    "sys_core_%s" % region_process.id,
-                    "unwatch_%s" % rack_controller.id,
-                ),
-                process_dv.value,
-            )
+            assert (
+                "sys_core_%s" % region_process.id,
+                "unwatch_%s" % rack_controller.id,
+            ) == process_dv.value
             rack_controller = yield deferToDatabase(
                 self.reload_object, rack_controller
             )
-            self.assertIsNone(rack_controller.managing_process_id)
+            assert rack_controller.managing_process_id is None
         finally:
             yield listener.stopService()
 
 
-class TestProxyListener(
-    MAASTransactionServerTestCase, TransactionalHelpersMixin
-):
+@pytest.mark.allow_transactions
+@pytest.mark.usefixtures("transactional_maasdb", "maas_region_test", "factory")
+class TestProxyListener(TransactionalHelpersMixin):
     """End-to-end test for the proxy triggers code."""
 
     @wait_for_reactor
@@ -683,8 +670,8 @@ class TestProxyListener(
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_sends_message_for_config_insert_http_proxy(self):
-        self.useFixture(SignalsDisabled("bootsources"))
+    def test_sends_message_for_config_insert_http_proxy(self, request):
+        disable_bootsource_signals(request)
         dv = DeferredValue()
         listener = self.make_listener_without_delay()
         listener.register("sys_proxy", lambda *args: dv.set(args))
@@ -755,8 +742,8 @@ class TestProxyListener(
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_sends_message_for_config_update_http_proxy(self):
-        self.useFixture(SignalsDisabled("bootsources"))
+    def test_sends_message_for_config_update_http_proxy(self, request):
+        disable_bootsource_signals(request)
         yield deferToDatabase(
             self.create_config, "http_proxy", "http://proxy1.example.com"
         )

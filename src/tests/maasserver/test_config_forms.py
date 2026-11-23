@@ -10,13 +10,14 @@ from django.forms import widgets
 from django.http import QueryDict
 from lxml.etree import XPath
 from lxml.html import fromstring
+import pytest
 
 from maasserver.config_forms import DictCharField, DictCharWidget
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 
 
-class TestDictCharField(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "factory")
+class TestDictCharField:
     def test_DictCharField_init(self):
         testField = DictCharField(
             [
@@ -25,10 +26,8 @@ class TestDictCharField(MAASServerTestCase):
                 ("field_c", forms.CharField(label="Field c")),
             ]
         )
-        self.assertEqual(["field_a", "field_b", "field_c"], testField.names)
-        self.assertEqual(
-            ["field_a", "field_b", "field_c"], testField.widget.names
-        )
+        assert ["field_a", "field_b", "field_c"] == testField.names
+        assert ["field_a", "field_b", "field_c"] == testField.widget.names
         # In Django 1.11, widgets are deep-copied in the Field constructor,
         # so instead of comparing directly, we compare their types and names.
         expected_widgets = [
@@ -37,19 +36,19 @@ class TestDictCharField(MAASServerTestCase):
         got_widgets = [
             type(field.widget) for field in testField.field_dict.values()
         ]
-        self.assertEqual(got_widgets, expected_widgets)
+        assert got_widgets == expected_widgets
 
     def test_DictCharField_does_not_allow_subfield_named_skip_check(self):
         # Creating a DictCharField with a subfield named 'skip_check' is not
         # allowed.
-        self.assertRaises(
-            RuntimeError,
-            DictCharField,
-            [("skip_check", forms.CharField(label="Skip Check"))],
-        )
+        with pytest.raises(RuntimeError):
+            DictCharField(
+                [("skip_check", forms.CharField(label="Skip Check"))]
+            )
 
 
-class TestFormWithDictCharField(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "factory")
+class TestFormWithDictCharField:
     def test_DictCharField_processes_QueryDict_into_a_dict(self):
         class FakeForm(forms.Form):
             multi_field = DictCharField(
@@ -77,11 +76,12 @@ class TestFormWithDictCharField(MAASServerTestCase):
 
         form = FakeForm(data)
 
-        self.assertTrue(form.is_valid(), form.errors)
-        self.assertEqual(
-            {"field_a": fielda_value, "field_b": "", "field_c": fieldc_value},
-            form.cleaned_data["multi_field"],
-        )
+        assert form.is_valid(), form.errors
+        assert {
+            "field_a": fielda_value,
+            "field_b": "",
+            "field_c": fieldc_value,
+        } == form.cleaned_data["multi_field"]
 
     def test_DictCharField_honors_field_constraint(self):
         class FakeForm(forms.Form):
@@ -102,17 +102,14 @@ class TestFormWithDictCharField(MAASServerTestCase):
         data = QueryDict("multi_field_field_b=%s" % fielda_value)
         form = FakeForm(data)
 
-        self.assertFalse(form.is_valid())
-        self.assertEqual(
-            {
-                "multi_field": [
-                    "Field a: This field is required.",
-                    "Field b: Ensure this value has at "
-                    "most 3 characters (it has 10).",
-                ]
-            },
-            form.errors,
-        )
+        assert not form.is_valid()
+        assert {
+            "multi_field": [
+                "Field a: This field is required.",
+                "Field b: Ensure this value has at "
+                "most 3 characters (it has 10).",
+            ]
+        } == form.errors
 
     def test_DictCharField_skip_check_true_skips_validation(self):
         # Create a value that will fail validation because it's too long.
@@ -133,10 +130,8 @@ class TestFormWithDictCharField(MAASServerTestCase):
 
         form = FakeFormSkip(data)
 
-        self.assertTrue(form.is_valid(), form.errors)
-        self.assertEqual(
-            {field_name: field_value}, form.cleaned_data["multi_field"]
-        )
+        assert form.is_valid(), form.errors
+        assert {field_name: field_value} == form.cleaned_data["multi_field"]
 
     def test_DictCharField_skip_check_false(self):
         # Create a value that will fail validation because it's too long.
@@ -162,16 +157,13 @@ class TestFormWithDictCharField(MAASServerTestCase):
 
         form = FakeFormSkip(data)
 
-        self.assertFalse(form.is_valid())
-        self.assertEqual(
-            {
-                "multi_field": [
-                    "%s: Ensure this value has at most 3 characters "
-                    "(it has 10)." % field_label
-                ]
-            },
-            form.errors,
-        )
+        assert not form.is_valid()
+        assert {
+            "multi_field": [
+                "%s: Ensure this value has at most 3 characters "
+                "(it has 10)." % field_label
+            ]
+        } == form.errors
 
     def test_DictCharField_accepts_required_false(self):
         # A form where the DictCharField instance is constructed with
@@ -185,10 +177,11 @@ class TestFormWithDictCharField(MAASServerTestCase):
         char_value = factory.make_string(10)
         data = QueryDict("char_field=%s" % char_value)
         form = FakeFormRequiredFalse(data)
-        self.assertTrue(form.is_valid(), form.errors)
-        self.assertEqual(
-            {"char_field": char_value, "multi_field": None}, form.cleaned_data
-        )
+        assert form.is_valid(), form.errors
+        assert {
+            "char_field": char_value,
+            "multi_field": None,
+        } == form.cleaned_data
 
     def test_DictCharField_sets_default_value_for_subfields(self):
         default_value = factory.make_name("default_value")
@@ -201,12 +194,11 @@ class TestFormWithDictCharField(MAASServerTestCase):
             ],
             required=False,
         )
-        self.assertEqual(
-            default_value, multi_field.clean_sub_fields("")["field_a"]
-        )
+        assert default_value == multi_field.clean_sub_fields("")["field_a"]
 
 
-class TestDictCharWidget(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "factory")
+class TestDictCharWidget:
     def test_DictCharWidget_id_for_label_uses_first_fields_name(self):
         names = [factory.make_string()]
         initials = []
@@ -214,7 +206,7 @@ class TestDictCharWidget(MAASServerTestCase):
         widget = DictCharWidget(
             [widgets.TextInput(), widgets.TextInput()], names, initials, labels
         )
-        self.assertEqual(" _%s" % names[0], widget.id_for_label(" "))
+        assert " _%s" % names[0] == widget.id_for_label(" ")
 
     def test_DictCharWidget_renders_fieldset_with_label_and_field_names(self):
         names = [factory.make_string(), factory.make_string()]
@@ -240,16 +232,17 @@ class TestDictCharWidget(MAASServerTestCase):
         widget_labels = XPath("fieldset/label/text()")(html_widget)
         widget_values = XPath("fieldset/input/@value")(html_widget)
         expected_names = [f"{name}_{widget_name}" for widget_name in names]
-        self.assertEqual(
-            [expected_names, labels, values],
-            [widget_names, widget_labels, widget_values],
-        )
+        assert [expected_names, labels, values] == [
+            widget_names,
+            widget_labels,
+            widget_values,
+        ]
 
     def test_empty_DictCharWidget_renders_as_empty_string(self):
         widget = DictCharWidget(
             [widgets.CheckboxInput], [], [], [], skip_check=True
         )
-        self.assertEqual("", widget.render(factory.make_string(), ""))
+        assert "" == widget.render(factory.make_string(), "")
 
     def test_DictCharWidget_value_from_datadict_values_from_data(self):
         # 'value_from_datadict' extracts the values corresponding to the
@@ -269,10 +262,10 @@ class TestDictCharWidget(MAASServerTestCase):
         widget = DictCharWidget(
             [widgets.TextInput(), widgets.TextInput()], names, initials, labels
         )
-        self.assertEqual(
-            {names[0]: field_1_value, names[1]: field_2_value},
-            widget.value_from_datadict(data, None, name),
-        )
+        assert {
+            names[0]: field_1_value,
+            names[1]: field_2_value,
+        } == widget.value_from_datadict(data, None, name)
 
     def test_DictCharWidget_renders_with_empty_string_as_input_data(self):
         names = [factory.make_string(), factory.make_string()]
@@ -296,9 +289,7 @@ class TestDictCharWidget(MAASServerTestCase):
         widget_names = XPath("fieldset/input/@name")(html_widget)
         widget_labels = XPath("fieldset/label/text()")(html_widget)
         expected_names = [f"{name}_{widget_name}" for widget_name in names]
-        self.assertEqual(
-            [expected_names, labels], [widget_names, widget_labels]
-        )
+        assert [expected_names, labels] == [widget_names, widget_labels]
 
     def test_DictCharWidget_renders_with_initial_when_no_value(self):
         """Widgets should use initial value if rendered without value."""
@@ -334,10 +325,6 @@ class TestDictCharWidget(MAASServerTestCase):
             labels=["test-label", "2-label"],
             skip_check=True,
         )
-        self.assertEqual(
-            outputs,
-            [
-                widget.value_from_datadict(data, None, "prefix")
-                for data in inputs
-            ],
-        )
+        assert outputs == [
+            widget.value_from_datadict(data, None, "prefix") for data in inputs
+        ]

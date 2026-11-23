@@ -2,6 +2,7 @@
 # GNU Affero General Public License version 3 (see the file LICENSE).
 
 
+from collections import Counter
 from datetime import datetime, timezone
 import http.client
 import json
@@ -12,6 +13,7 @@ from django.conf import settings
 from django.core.serializers import json as django_json
 from django.urls import reverse
 from netaddr import IPNetwork
+import pytest
 from twisted.python.failure import Failure
 
 from maasserver.api import discoveries as discoveries_module
@@ -24,10 +26,7 @@ from maasserver.api.discoveries import (
 )
 from maasserver.clusterrpc.utils import RPCResults
 from maasserver.models import Subnet
-from maasserver.testing.api import APITestCase
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
-from maastesting.testcase import MAASTestCase
 from provisioningserver.rpc import cluster
 
 
@@ -63,27 +62,37 @@ def make_discoveries(count=3, interface=None):
     ]
 
 
-class TestDiscoveriesAPI(APITestCase.ForUser):
-    def setUp(self):
-        super().setUp()
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user=user,client=oauth", id="user=user,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestDiscoveriesAPI:
+    @pytest.fixture(autouse=True)
+    def _setup(
+        self, api_identity, maas_user, api_client, admin_api_client, mocker
+    ):
+        self.user = maas_user
+        self.client = api_client
+        self.admin_client = admin_api_client
         # Patch to ensure an actual scan is not attempted.
-        scan_all_rack_networks_mock = self.patch(
-            discoveries_module.scan_all_rack_networks
+        scan_all_rack_networks_mock = mocker.patch.object(
+            discoveries_module, "scan_all_rack_networks"
         )
-        user_friendly_scan_results_mock = self.patch(
-            discoveries_module.user_friendly_scan_results
+        user_friendly_scan_results_mock = mocker.patch.object(
+            discoveries_module, "user_friendly_scan_results"
         )
         user_friendly_scan_results_mock.return_value = lambda x: x
         result = {"result": factory.make_name()}
         scan_all_rack_networks_mock.return_value = result
 
     def test_handler_path(self):
-        self.assertEqual("/MAAS/api/2.0/discovery/", get_discoveries_uri())
+        assert "/MAAS/api/2.0/discovery/" == get_discoveries_uri()
 
     def get_api_results(self, *args, **kwargs):
         uri = get_discoveries_uri()
         response = self.client.get(uri, *args, **kwargs)
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         results = json.loads(response.content.decode(settings.DEFAULT_CHARSET))
         return results
 
@@ -94,35 +103,29 @@ class TestDiscoveriesAPI(APITestCase.ForUser):
         results = self.get_api_results()
         expected_ids = [discovery.discovery_id for discovery in discoveries]
         result_ids = [discovery["discovery_id"] for discovery in results]
-        self.assertEqual(len(results), 3)
-        self.assertCountEqual(expected_ids, result_ids)
+        assert len(results) == 3
+        assert Counter(expected_ids) == Counter(result_ids)
 
     def test_read_sorts_by_last_seen(self):
         rack = factory.make_RackController()
         iface = rack.current_config.interface_set.first()
         make_discoveries(interface=iface)
         results = self.get_api_results()
-        self.assertGreaterEqual(
-            results[0]["last_seen"], results[2]["last_seen"]
-        )
-        self.assertGreaterEqual(
-            results[0]["last_seen"], results[1]["last_seen"]
-        )
-        self.assertGreaterEqual(
-            results[1]["last_seen"], results[2]["last_seen"]
-        )
+        assert results[0]["last_seen"] >= results[2]["last_seen"]
+        assert results[0]["last_seen"] >= results[1]["last_seen"]
+        assert results[1]["last_seen"] >= results[2]["last_seen"]
 
     def test_by_unknown_mac(self):
         rack = factory.make_RackController()
         iface = factory.make_Interface(node=rack)
         discovery = factory.make_Discovery(interface=iface)
         results = self.get_api_results({"op": "by_unknown_mac"})
-        self.assertEqual(1, len(results))
+        assert 1 == len(results)
         factory.make_Interface(mac_address=discovery.mac_address)
         # Now that we have a known interface with the same MAC, the discovery
         # should disappear from this query.
         results = self.get_api_results({"op": "by_unknown_mac"})
-        self.assertEqual(0, len(results))
+        assert 0 == len(results)
 
     def test_by_unknown_ip(self):
         subnet = factory.make_Subnet(cidr="10.0.0.0/8")
@@ -130,12 +133,12 @@ class TestDiscoveriesAPI(APITestCase.ForUser):
         iface = rack.current_config.interface_set.first()
         discovery = factory.make_Discovery(interface=iface, ip="10.0.0.1")
         results = self.get_api_results({"op": "by_unknown_ip"})
-        self.assertEqual(1, len(results))
+        assert 1 == len(results)
         factory.make_StaticIPAddress(ip=discovery.ip, subnet=subnet)
         # Now that we have a known IP address that matches, the discovery
         # should disappear from this query.
         results = self.get_api_results({"op": "by_unknown_ip"})
-        self.assertEqual(0, len(results))
+        assert 0 == len(results)
 
     def test_by_unknown_ip_and_mac__known_ip(self):
         subnet = factory.make_Subnet(cidr="10.0.0.0/8")
@@ -143,25 +146,48 @@ class TestDiscoveriesAPI(APITestCase.ForUser):
         iface = rack.current_config.interface_set.first()
         discovery = factory.make_Discovery(interface=iface, ip="10.0.0.1")
         results = self.get_api_results({"op": "by_unknown_ip_and_mac"})
-        self.assertEqual(1, len(results))
+        assert 1 == len(results)
         factory.make_StaticIPAddress(ip=discovery.ip, subnet=subnet)
         # Known IP address, unexpected MAC.
         results = self.get_api_results({"op": "by_unknown_ip_and_mac"})
-        self.assertEqual(0, len(results))
+        assert 0 == len(results)
 
     def test_by_unknown_ip_and_mac__known_mac(self):
         rack = factory.make_RackController()
         iface = factory.make_Interface(node=rack)
         discovery = factory.make_Discovery(interface=iface)
         results = self.get_api_results({"op": "by_unknown_ip_and_mac"})
-        self.assertEqual(1, len(results))
+        assert 1 == len(results)
         # Known MAC, unknown IP.
         factory.make_Interface(mac_address=discovery.mac_address)
         results = self.get_api_results({"op": "by_unknown_ip_and_mac"})
-        self.assertEqual(0, len(results))
+        assert 0 == len(results)
 
 
-class TestDiscoveriesScanAPI(APITestCase.ForUser):
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user=user,client=oauth", id="user=user,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestDiscoveriesScanAPI:
+    @pytest.fixture(autouse=True)
+    def _setup(
+        self, api_identity, maas_user, api_client, admin_api_client, mocker
+    ):
+        self.user = maas_user
+        self.client = api_client
+        self.admin_client = admin_api_client
+        # Patch to ensure an actual scan is not attempted.
+        self.scan_all_rack_networks_mock = mocker.patch.object(
+            discoveries_module, "scan_all_rack_networks"
+        )
+        user_friendly_scan_results_mock = mocker.patch.object(
+            discoveries_module, "user_friendly_scan_results"
+        )
+        user_friendly_scan_results_mock.return_value = lambda x: x
+        result = {"result": factory.make_name()}
+        self.scan_all_rack_networks_mock.return_value = result
+
     def post_api_response(self, *args, **kwargs):
         uri = get_discoveries_uri()
         return self.client.post(uri, *args, **kwargs)
@@ -169,30 +195,17 @@ class TestDiscoveriesScanAPI(APITestCase.ForUser):
     def post_api_results(self, *args, **kwargs):
         uri = get_discoveries_uri()
         response = self.client.post(uri, *args, **kwargs)
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         results = json.loads(response.content.decode(settings.DEFAULT_CHARSET))
         return results
 
-    def setUp(self):
-        super().setUp()
-        # Patch to ensure an actual scan is not attempted.
-        self.scan_all_rack_networks_mock = self.patch(
-            discoveries_module.scan_all_rack_networks
-        )
-        user_friendly_scan_results_mock = self.patch(
-            discoveries_module.user_friendly_scan_results
-        )
-        user_friendly_scan_results_mock.return_value = lambda x: x
-        result = {"result": factory.make_name()}
-        self.scan_all_rack_networks_mock.return_value = result
-
     def test_scan__fails_scan_all_if_not_forced(self):
         response = self.post_api_response({"op": "scan"})
-        self.assertEqual(response.status_code, http.client.BAD_REQUEST)
+        assert response.status_code == http.client.BAD_REQUEST
 
     def test_scan__threads_must_be_number(self):
         response = self.post_api_response({"op": "scan", "threads": "x"})
-        self.assertEqual(response.status_code, http.client.BAD_REQUEST)
+        assert response.status_code == http.client.BAD_REQUEST
 
     def test_scan__calls_scan_all_networks_with_scan_all_if_forced(self):
         self.post_api_results({"op": "scan", "force": "true"})
@@ -244,11 +257,11 @@ class TestDiscoveriesScanAPI(APITestCase.ForUser):
         response = self.post_api_response(
             {"op": "scan", "cidr": ["x.x.x.x/y"]}
         )
-        self.assertEqual(response.status_code, http.client.BAD_REQUEST)
+        assert response.status_code == http.client.BAD_REQUEST
 
     def test_scan__with_no_cidrs_does_not_call_scan_all_networks(self):
         response = self.post_api_response({"op": "scan"})
-        self.assertEqual(response.status_code, http.client.BAD_REQUEST)
+        assert response.status_code == http.client.BAD_REQUEST
 
     def test_clear_not_allowed_for_non_admin(self):
         rack = factory.make_RackController()
@@ -256,50 +269,65 @@ class TestDiscoveriesScanAPI(APITestCase.ForUser):
         make_discoveries(interface=iface, count=3)
         uri = get_discoveries_uri()
         response = self.client.post(uri, {"op": "clear"})
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content
 
     def test_clear_requires_parameters(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         rack = factory.make_RackController()
         iface = rack.current_config.interface_set.first()
         make_discoveries(interface=iface, count=3)
         uri = get_discoveries_uri()
         response = self.client.post(uri, {"op": "clear"})
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
 
     def test_clear_all_allowed_for_admin(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         rack = factory.make_RackController()
         iface = rack.current_config.interface_set.first()
         make_discoveries(interface=iface, count=3)
         uri = get_discoveries_uri()
         response = self.client.post(uri, {"op": "clear", "all": "true"})
-        self.assertEqual(204, response.status_code, response.content)
+        assert 204 == response.status_code, response.content
 
     def test_clear_mdns_allowed_for_admin(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         rack = factory.make_RackController()
         iface = rack.current_config.interface_set.first()
         make_discoveries(interface=iface, count=3)
         uri = get_discoveries_uri()
         response = self.client.post(uri, {"op": "clear", "mdns": "true"})
-        self.assertEqual(204, response.status_code, response.content)
+        assert 204 == response.status_code, response.content
 
     def test_clear_neighbours_allowed_for_admin(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         rack = factory.make_RackController()
         iface = rack.current_config.interface_set.first()
         make_discoveries(interface=iface, count=3)
         uri = get_discoveries_uri()
         response = self.client.post(uri, {"op": "clear", "neighbours": "true"})
-        self.assertEqual(204, response.status_code, response.content)
+        assert 204 == response.status_code, response.content
 
 
-class TestDiscoveriesClearByMACandIP(APITestCase.ForUser):
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user=user,client=oauth", id="user=user,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestDiscoveriesClearByMACandIP:
+    @pytest.fixture(autouse=True)
+    def _setup(
+        self, api_identity, maas_user, api_client, admin_api_client, mocker
+    ):
+        self.user = maas_user
+        self.client = api_client
+        self.admin_client = admin_api_client
+
     def test_clear_by_mac_and_ip_not_allowed_for_non_admin(self):
         rack = factory.make_RackController()
         iface = rack.current_config.interface_set.first()
@@ -313,23 +341,23 @@ class TestDiscoveriesClearByMACandIP(APITestCase.ForUser):
                 "mac": "00:01:02:03:04:05",
             },
         )
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content
 
     def test_clear_by_mac_and_ip_requires_parameters(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         rack = factory.make_RackController()
         iface = rack.current_config.interface_set.first()
         make_discoveries(interface=iface, count=3)
         uri = get_discoveries_uri()
         response = self.client.post(uri, {"op": "clear_by_mac_and_ip"})
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
 
     def test_clear_by_mac_and_ip_allowed_for_admin(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         rack = factory.make_RackController()
         iface = rack.current_config.interface_set.first()
         make_discoveries(interface=iface, count=3)
@@ -343,7 +371,7 @@ class TestDiscoveriesClearByMACandIP(APITestCase.ForUser):
                 "mac": neigh.mac_address,
             },
         )
-        self.assertEqual(204, response.status_code, response.content)
+        assert 204 == response.status_code, response.content
         # The second time, we should get a NOT_HERE result.
         response = self.client.post(
             uri,
@@ -353,15 +381,28 @@ class TestDiscoveriesClearByMACandIP(APITestCase.ForUser):
                 "mac": neigh.mac_address,
             },
         )
-        self.assertEqual(410, response.status_code, response.content)
+        assert 410 == response.status_code, response.content
 
 
-class TestDiscoveryAPI(APITestCase.ForUser):
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user=user,client=oauth", id="user=user,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestDiscoveryAPI:
+    @pytest.fixture(autouse=True)
+    def _setup(
+        self, api_identity, maas_user, api_client, admin_api_client, mocker
+    ):
+        self.user = maas_user
+        self.client = api_client
+        self.admin_client = admin_api_client
+
     def test_handler_path(self):
         discovery = factory.make_Discovery()
-        self.assertEqual(
-            "/MAAS/api/2.0/discovery/%s/" % discovery.discovery_id,
-            get_discovery_uri(discovery),
+        assert (
+            "/MAAS/api/2.0/discovery/%s/" % discovery.discovery_id
+            == get_discovery_uri(discovery)
         )
 
     def test_read(self):
@@ -371,20 +412,18 @@ class TestDiscoveryAPI(APITestCase.ForUser):
         discovery = discoveries[1]
         uri = get_discovery_uri(discovery)
         response = self.client.get(uri)
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         result = json.loads(response.content.decode(settings.DEFAULT_CHARSET))
         # Spot check expected values in the results
-        self.assertEqual(get_discovery_uri(discovery), result["resource_uri"])
-        self.assertEqual(rack.system_id, result["observer"]["system_id"])
-        self.assertEqual(rack.hostname, result["observer"]["hostname"])
-        self.assertEqual(iface.name, result["observer"]["interface_name"])
-        self.assertEqual(iface.id, result["observer"]["interface_id"])
-        self.assertEqual(discovery.ip, result["ip"])
-        self.assertEqual(discovery.mac_address, result["mac_address"])
-        self.assertEqual(discovery.hostname, result["hostname"])
-        self.assertEqual(
-            timestamp_format(discovery.last_seen), result["last_seen"]
-        )
+        assert get_discovery_uri(discovery) == result["resource_uri"]
+        assert rack.system_id == result["observer"]["system_id"]
+        assert rack.hostname == result["observer"]["hostname"]
+        assert iface.name == result["observer"]["interface_name"]
+        assert iface.id == result["observer"]["interface_id"]
+        assert discovery.ip == result["ip"]
+        assert discovery.mac_address == result["mac_address"]
+        assert discovery.hostname == result["hostname"]
+        assert timestamp_format(discovery.last_seen) == result["last_seen"]
 
     def test_read_by_specifiers(self):
         rack = factory.make_RackController()
@@ -392,14 +431,14 @@ class TestDiscoveryAPI(APITestCase.ForUser):
         [discovery] = make_discoveries(interface=iface, count=1)
         uri = get_discovery_uri_by_specifiers("ip:" + str(discovery.ip))
         response = self.client.get(uri)
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         result = json.loads(response.content.decode(settings.DEFAULT_CHARSET))
-        self.assertEqual(discovery.ip, result["ip"])
+        assert discovery.ip == result["ip"]
 
     def test_read_404_when_bad_id(self):
         uri = reverse("discovery_handler", args=[random.randint(10000, 20000)])
         response = self.client.get(uri)
-        self.assertEqual(response.status_code, http.client.NOT_FOUND)
+        assert response.status_code == http.client.NOT_FOUND
 
     def test_update_not_allowed(self):
         rack = factory.make_RackController()
@@ -408,17 +447,18 @@ class TestDiscoveryAPI(APITestCase.ForUser):
         discovery = discoveries[1]
         uri = get_discovery_uri(discovery)
         response = self.client.put(uri, {"ip": factory.make_ip_address()})
-        self.assertEqual(response.status_code, http.client.METHOD_NOT_ALLOWED)
+        assert response.status_code == http.client.METHOD_NOT_ALLOWED
 
     def test_delete_not_allowed_even_for_admin(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         rack = factory.make_RackController()
         iface = rack.current_config.interface_set.first()
         discoveries = make_discoveries(interface=iface, count=3)
         discovery = discoveries[1]
         uri = get_discovery_uri(discovery)
         response = self.client.delete(uri)
-        self.assertEqual(response.status_code, http.client.METHOD_NOT_ALLOWED)
+        assert response.status_code == http.client.METHOD_NOT_ALLOWED
 
 
 def make_RPCResults(
@@ -436,14 +476,12 @@ def make_RPCResults(
     )
 
 
-class TestInterpretsScanAllRackNetworksRPCResults(MAASTestCase):
+class TestInterpretsScanAllRackNetworksRPCResults:
     def test_no_racks_available(self):
         results = make_RPCResults(available=[], failed=[])
         result = get_scan_result_string_for_humans(results)
-        self.assertTrue(
-            result.startswith(
-                "Unable to initiate network scanning on any rack controller"
-            )
+        assert result.startswith(
+            "Unable to initiate network scanning on any rack controller"
         )
 
     def test_scan_not_started_on_at_least_one_rack(self):
@@ -451,45 +489,40 @@ class TestInterpretsScanAllRackNetworksRPCResults(MAASTestCase):
             available=["x"], unavailable=["y", "z"], failed=[]
         )
         result = get_scan_result_string_for_humans(results)
-        self.assertTrue(
-            result.startswith("Scanning could not be started on 2 rack")
-        )
+        assert result.startswith("Scanning could not be started on 2 rack")
 
     def test_scan_in_progress(self):
         results = make_RPCResults(available=["x"], unavailable=[], failed=[])
         result = get_scan_result_string_for_humans(results)
-        self.assertTrue(result.startswith("Scanning is in-progress"))
+        assert result.startswith("Scanning is in-progress")
 
     def test_scan_failed_on_at_least_one_rack(self):
         results = make_RPCResults(
             available=["x"], failed=["v", "w"], unavailable=["y", "z"]
         )
         result = get_scan_result_string_for_humans(results)
-        self.assertTrue(result.startswith("Scanning could not be started"))
-        self.assertIn(
-            "In addition, a scan was already in-progress on 2",
-            result,
-        )
+        assert result.startswith("Scanning could not be started")
+        assert "In addition, a scan was already in-progress on 2" in result
 
     def test_failed_rack(self):
         results = make_RPCResults(
             available=["w"], failed=["w"], unavailable=[]
         )
         result = get_scan_result_string_for_humans(results)
-        self.assertTrue(
-            result.startswith("A scan was already in-progress on 1 rack")
-        )
+        assert result.startswith("A scan was already in-progress on 1 rack")
 
 
-class TestScanAllRackNetworksInterpretsRPCResults(MAASServerTestCase):
-    def setUp(self):
-        super().setUp()
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestScanAllRackNetworksInterpretsRPCResults:
+    @pytest.fixture(autouse=True)
+    def _setup(self, mocker, maasdb, maas_region_test, factory):
         self.result = factory.make_name("result")
-        interpret_result_mock = self.patch(
-            discoveries_module.get_scan_result_string_for_humans
+        mocker.patch.object(
+            discoveries_module,
+            "get_scan_result_string_for_humans",
+            return_value=self.result,
         )
-        interpret_result_mock.return_value = self.result
-        self.call_racks_sync_mock = self.patch(
+        self.call_racks_sync_mock = mocker.patch.object(
             discoveries_module, "call_racks_synchronously"
         )
         r1 = factory.make_RackController()
@@ -514,27 +547,20 @@ class TestScanAllRackNetworksInterpretsRPCResults(MAASServerTestCase):
 
     def test_populates_results_correctly(self):
         result = user_friendly_scan_results(scan_all_rack_networks())
-        self.assertEqual(
-            {
-                "result": self.result,
-                "scan_started_on": get_controller_summary(self.started),
-                "scan_failed_on": get_controller_summary(self.failed),
-                "scan_attempted_on": get_controller_summary(self.available),
-                "failed_to_connect_to": get_controller_summary(
-                    self.unavailable
-                ),
-                "rpc_call_timed_out_on": get_controller_summary(
-                    self.timed_out
-                ),
-                "failures": get_failure_summary(self.failures),
-            },
-            result,
-        )
+        assert result == {
+            "result": self.result,
+            "scan_started_on": get_controller_summary(self.started),
+            "scan_failed_on": get_controller_summary(self.failed),
+            "scan_attempted_on": get_controller_summary(self.available),
+            "failed_to_connect_to": get_controller_summary(self.unavailable),
+            "rpc_call_timed_out_on": get_controller_summary(self.timed_out),
+            "failures": get_failure_summary(self.failures),
+        }
 
     def test_results_can_be_converted_to_json_and_back(self):
         result = user_friendly_scan_results(scan_all_rack_networks())
         json_result = json.dumps(result)
-        self.assertEqual(result, json.loads(json_result))
+        assert result == json.loads(json_result)
 
     def test_calls_racks_synchronously(self):
         scan_all_rack_networks()
@@ -564,7 +590,9 @@ class TestScanAllRackNetworksInterpretsRPCResults(MAASServerTestCase):
         )
         # Check `controllers` separately because its order may vary.
         controllers = self.call_racks_sync_mock.call_args[1]["controllers"]
-        self.assertCountEqual(self.started, controllers)
+        assert Counter(
+            controller.system_id for controller in self.started
+        ) == Counter(controller.system_id for controller in controllers)
 
     def test_calls_racks_synchronously_with_force_ping(self):
         scan_all_rack_networks(ping=True)

@@ -15,10 +15,6 @@ from maasserver.vault import (
     get_region_vault_client_if_enabled,
 )
 
-__all__ = ["mock_openfga"]
-
-from tests.fixtures import mock_openfga
-
 
 @pytest.fixture(autouse=True)
 def clean_globals(clean_globals):

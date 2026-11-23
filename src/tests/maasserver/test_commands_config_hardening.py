@@ -5,33 +5,24 @@
 from io import StringIO
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from maasserver.management.commands.base import BaseCommandWithConnection
 from maasserver.management.commands.config_hardening import Command
-from maastesting.testcase import MAASTestCase
-
-_PATCH_CONFIGURE = patch(
-    "maasserver.management.commands.config_hardening.configure_hardening"
-)
 
 
-class _Base(MAASTestCase):
-    def setUp(self):
-        super().setUp()
-        _PATCH_CONFIGURE.start()
-        self.addCleanup(_PATCH_CONFIGURE.stop)
-
-    def _cmd(self, **kw):
-        cmd = Command(stdout=StringIO(), stderr=StringIO())
-        cmd.handle(**kw)
-        return cmd
+def _cmd(**kw):
+    cmd = Command(stdout=StringIO(), stderr=StringIO())
+    cmd.handle(**kw)
+    return cmd
 
 
-class TestConfigHardeningSet(_Base):
+class TestConfigHardeningSet:
     def test_set_config_key_writes_to_db(self):
         with patch("maasserver.models.Config") as MockConfig:
             mock_mgr = MagicMock()
             MockConfig.objects.db_manager.return_value = mock_mgr
-            self._cmd(command="set", key="hardening_enabled", value="on")
+            _cmd(command="set", key="hardening_enabled", value="on")
         mock_mgr.set_config.assert_called_once_with("hardening_enabled", "on")
 
     def test_set_conf_key_writes_to_regiond_conf(self):
@@ -45,11 +36,9 @@ class TestConfigHardeningSet(_Base):
             MockRegionCfg.open_for_update.return_value.__exit__ = MagicMock(
                 return_value=False
             )
-            cmd = self._cmd(
-                command="set", key="database_sslmode", value="prefer"
-            )
-        self.assertEqual("prefer", mock_cfg.database_sslmode)
-        self.assertIn("database_sslmode", cmd.stdout.getvalue())
+            cmd = _cmd(command="set", key="database_sslmode", value="prefer")
+        assert mock_cfg.database_sslmode == "prefer"
+        assert "database_sslmode" in cmd.stdout.getvalue()
 
     def test_set_conf_key_works_without_db(self):
         with (
@@ -70,7 +59,7 @@ class TestConfigHardeningSet(_Base):
             )
             cmd = Command(stdout=StringIO(), stderr=StringIO())
             cmd.execute(command="set", key="database_sslmode", value="prefer")
-        self.assertIn("database_sslmode", cmd.stdout.getvalue())
+        assert "database_sslmode" in cmd.stdout.getvalue()
 
     def test_set_config_key_requires_db_connection(self):
         with patch.object(
@@ -82,17 +71,17 @@ class TestConfigHardeningSet(_Base):
         mock_execute.assert_called_once()
 
     def test_set_unknown_key_exits_with_error(self):
-        with self.assertRaises(SystemExit) as ctx:
-            self._cmd(command="set", key="nonexistent_key", value="val")
-        self.assertEqual(1, ctx.exception.code)
+        with pytest.raises(SystemExit) as ctx:
+            _cmd(command="set", key="nonexistent_key", value="val")
+        assert ctx.value.code == 1
 
     def test_set_fips_enabled_refused(self):
-        with self.assertRaises(SystemExit) as ctx:
-            self._cmd(command="set", key="fips_enabled", value="true")
-        self.assertEqual(1, ctx.exception.code)
+        with pytest.raises(SystemExit) as ctx:
+            _cmd(command="set", key="fips_enabled", value="true")
+        assert ctx.value.code == 1
 
 
-class TestConfigHardeningDnsBind(_Base):
+class TestConfigHardeningDnsBind:
     def test_set_dns_bind_writes_to_regiond_conf(self):
         with patch(
             "maasserver.management.commands.config_hardening.RegionConfiguration"
@@ -104,8 +93,8 @@ class TestConfigHardeningDnsBind(_Base):
             MockRegionCfg.open_for_update.return_value.__exit__ = MagicMock(
                 return_value=False
             )
-            self._cmd(command="set", key="dns_bind", value="10.0.0.1")
-        self.assertEqual(["10.0.0.1"], mock_cfg.dns_bind)
+            _cmd(command="set", key="dns_bind", value="10.0.0.1")
+        assert mock_cfg.dns_bind == ["10.0.0.1"]
 
     def test_list_includes_dns_bind(self):
         with (
@@ -126,11 +115,11 @@ class TestConfigHardeningDnsBind(_Base):
                 return_value=False
             )
             MockConfig.objects.db_manager.return_value.get_config.return_value = None
-            cmd = self._cmd(command="list")
-        self.assertIn("dns_bind ", cmd.stdout.getvalue())
+            cmd = _cmd(command="list")
+        assert "dns_bind " in cmd.stdout.getvalue()
 
 
-class TestConfigHardeningGet(_Base):
+class TestConfigHardeningGet:
     def test_get_conf_key_reads_from_regiond_conf(self):
         with patch(
             "maasserver.management.commands.config_hardening.RegionConfiguration"
@@ -152,8 +141,8 @@ class TestConfigHardeningGet(_Base):
             MockRegionCfg.open.return_value.__exit__ = MagicMock(
                 return_value=False
             )
-            cmd = self._cmd(command="get", key="api_bind")
-        self.assertIn("10.0.0.1", cmd.stdout.getvalue())
+            cmd = _cmd(command="get", key="api_bind")
+        assert "10.0.0.1" in cmd.stdout.getvalue()
 
     def test_get_conf_key_works_without_db(self):
         with (
@@ -184,7 +173,7 @@ class TestConfigHardeningGet(_Base):
             )
             cmd = Command(stdout=StringIO(), stderr=StringIO())
             cmd.execute(command="get", key="prometheus_bind")
-        self.assertIn("127.0.0.1", cmd.stdout.getvalue())
+        assert "127.0.0.1" in cmd.stdout.getvalue()
 
     def test_get_config_key_requires_db_connection(self):
         with patch.object(
@@ -196,22 +185,7 @@ class TestConfigHardeningGet(_Base):
         mock_execute.assert_called_once()
 
 
-class TestConfigHardeningValidate(_Base):
-    def setUp(self):
-        super().setUp()
-        for target in (
-            "maasserver.models.config.read_hardening_enabled_from_db",
-            "maasserver.certificates.get_maas_certificate",
-        ):
-            patcher = patch(target, return_value=None)
-            patcher.start()
-            self.addCleanup(patcher.stop)
-        patcher = patch.object(
-            Command, "_read_fips_declared", return_value=None
-        )
-        patcher.start()
-        self.addCleanup(patcher.stop)
-
+class TestConfigHardeningValidate:
     @staticmethod
     def _mock_cfg():
         return MagicMock(
@@ -231,6 +205,18 @@ class TestConfigHardeningValidate(_Base):
     def _run_validate(self, violations, hardening_active=True):
         with (
             patch(
+                "maasserver.models.config.read_hardening_enabled_from_db",
+                return_value=None,
+            ),
+            patch(
+                "maasserver.management.commands.config_hardening.configure_hardening"
+            ),
+            patch(
+                "maasserver.certificates.get_maas_certificate",
+                return_value=None,
+            ),
+            patch.object(Command, "_read_fips_declared", return_value=None),
+            patch(
                 "maasserver.management.commands.config_hardening"
                 ".is_hardening_enabled",
                 return_value=hardening_active,
@@ -248,11 +234,11 @@ class TestConfigHardeningValidate(_Base):
                 return_value=self._mock_cfg()
             )
             MockCfg.open.return_value.__exit__ = MagicMock(return_value=False)
-            return self._cmd(command="validate")
+            return _cmd(command="validate")
 
     def test_no_violations_exits_zero(self):
         cmd = self._run_validate([])
-        self.assertIn("OK", cmd.stdout.getvalue())
+        assert "OK" in cmd.stdout.getvalue()
 
     def test_violations_exit_nonzero(self):
         from maasservicelayer.services.hardening import (
@@ -267,60 +253,65 @@ class TestConfigHardeningValidate(_Base):
             resolution="fix it",
             config_key="api_tls_cert",
         )
-        with self.assertRaises(SystemExit) as ctx:
+        with pytest.raises(SystemExit) as ctx:
             self._run_validate([v])
-        self.assertEqual(1, ctx.exception.code)
+        assert ctx.value.code == 1
 
     def test_hardening_inactive_skips_checks(self):
         cmd = self._run_validate([], hardening_active=False)
-        self.assertIn("not active", cmd.stdout.getvalue())
+        assert "not active" in cmd.stdout.getvalue()
 
     def test_fips_host_enables_hardening_automatically(self):
         """On a FIPS host with hardening_enabled=auto, validate must run checks."""
         import maascommon.hardening as _h
 
-        _PATCH_CONFIGURE.stop()
-        orig = (_h._hardening_active, _h._hardening_configured)
-        _h._hardening_active = False
-        _h._hardening_configured = False
-        try:
-            with (
-                patch(
-                    "maascommon.hardening.is_fips_enabled", return_value=True
-                ),
-                patch(
-                    "maasserver.management.commands.config_hardening"
-                    ".configure_and_validate_hardening",
-                    return_value=[],
-                ),
-                patch(
-                    "maasserver.management.commands.config_hardening.RegionConfiguration"
-                ) as MockCfg,
-            ):
+        with (
+            patch(
+                "maasserver.models.config.read_hardening_enabled_from_db",
+                return_value=None,
+            ),
+            patch(
+                "maasserver.certificates.get_maas_certificate",
+                return_value=None,
+            ),
+            patch.object(Command, "_read_fips_declared", return_value=None),
+            patch("maascommon.hardening.is_fips_enabled", return_value=True),
+            patch(
+                "maasserver.management.commands.config_hardening"
+                ".configure_and_validate_hardening",
+                return_value=[],
+            ),
+            patch(
+                "maasserver.management.commands.config_hardening.RegionConfiguration"
+            ) as MockCfg,
+        ):
+            orig = (_h._hardening_active, _h._hardening_configured)
+            _h._hardening_active = False
+            _h._hardening_configured = False
+            try:
                 MockCfg.open.return_value.__enter__ = MagicMock(
                     return_value=self._mock_cfg()
                 )
                 MockCfg.open.return_value.__exit__ = MagicMock(
                     return_value=False
                 )
-                cmd = self._cmd(command="validate")
-            self.assertNotIn("not active", cmd.stdout.getvalue())
-        finally:
-            _h._hardening_active, _h._hardening_configured = orig
-            _PATCH_CONFIGURE.start()
+                cmd = _cmd(command="validate")
+                assert "not active" not in cmd.stdout.getvalue()
+            finally:
+                _h._hardening_active, _h._hardening_configured = orig
 
 
-class TestConfigHardeningDisable(_Base):
+class TestConfigHardeningDisable:
     def test_refused_on_fips_host(self):
         with patch(
             "maasserver.management.commands.config_hardening.is_fips_enabled",
             return_value=True,
         ):
             cmd = Command(stdout=StringIO(), stderr=StringIO())
-            with self.assertRaises(SystemExit) as ctx:
+            with pytest.raises(SystemExit) as ctx:
                 cmd.handle(command="disable")
-        self.assertEqual(1, ctx.exception.code)
-        self.assertIn("FIPS", cmd.stderr.getvalue())
+        assert ctx.value.code == 1
+        assert "FIPS" in cmd.stderr.getvalue()
 
     def test_sets_config_on_non_fips(self):
         with (
@@ -332,19 +323,19 @@ class TestConfigHardeningDisable(_Base):
         ):
             mock_mgr = MagicMock()
             MockConfig.objects.db_manager.return_value = mock_mgr
-            self._cmd(command="disable")
+            _cmd(command="disable")
         mock_mgr.set_config.assert_called_once_with("hardening_enabled", "off")
 
 
-class TestConfigHardeningEnable(_Base):
+class TestConfigHardeningEnable:
     def test_sets_hardening_enabled_in_db(self):
         with patch("maasserver.models.Config") as MockConfig:
             mock_mgr = MagicMock()
             MockConfig.objects.db_manager.return_value = mock_mgr
-            cmd = self._cmd(command="enable")
+            cmd = _cmd(command="enable")
 
         mock_mgr.set_config.assert_called_once_with("hardening_enabled", "on")
-        self.assertIn("Hardening enabled", cmd.stdout.getvalue())
+        assert "Hardening enabled" in cmd.stdout.getvalue()
 
     def test_enable_does_not_touch_regiond_conf(self):
         # `enable` is a pure DB operation; it must never open regiond.conf
@@ -355,13 +346,13 @@ class TestConfigHardeningEnable(_Base):
                 "maasserver.management.commands.config_hardening.RegionConfiguration"
             ) as MockRegionCfg,
         ):
-            self._cmd(command="enable")
+            _cmd(command="enable")
 
         MockRegionCfg.open_for_update.assert_not_called()
         MockRegionCfg.open.assert_not_called()
 
 
-class TestConfigHardeningListEffectiveBinds(_Base):
+class TestConfigHardeningListEffectiveBinds:
     @staticmethod
     def _mock_cfg(**overrides):
         defaults = dict(
@@ -407,7 +398,7 @@ class TestConfigHardeningListEffectiveBinds(_Base):
                 return_value=False
             )
             MockConfig.objects.db_manager.return_value.get_config.return_value = None
-            cmd = self._cmd(command="list")
+            cmd = _cmd(command="list")
         return cmd.stdout.getvalue()
 
     @staticmethod
@@ -438,7 +429,7 @@ class TestConfigHardeningListEffectiveBinds(_Base):
             "syslog_bind",
             "temporal_bind",
         ):
-            self.assertNotIn("effective", self._line_for(output, key))
+            assert "effective" not in self._line_for(output, key)
 
     def test_temporal_bind_shows_effective_value_under_hardening(self):
         import provisioningserver.utils.network as network_module
@@ -449,9 +440,8 @@ class TestConfigHardeningListEffectiveBinds(_Base):
             return_value="10.0.0.9",
         ):
             output = self._run_list(self._mock_cfg(), hardening_active=True)
-        self.assertIn(
-            "(effective: 10.0.0.9)",
-            self._line_for(output, "temporal_bind"),
+        assert "(effective: 10.0.0.9)" in self._line_for(
+            output, "temporal_bind"
         )
 
     def test_api_bind_shows_effective_value_under_hardening(self):
@@ -468,9 +458,8 @@ class TestConfigHardeningListEffectiveBinds(_Base):
             side_effect=fake_source,
         ):
             output = self._run_list(self._mock_cfg(), hardening_active=True)
-        self.assertIn(
-            "(effective: 10.0.0.9,fd00::9)",
-            self._line_for(output, "api_bind"),
+        assert "(effective: 10.0.0.9,fd00::9)" in self._line_for(
+            output, "api_bind"
         )
 
     def test_explicit_bind_not_annotated_as_effective(self):
@@ -484,7 +473,7 @@ class TestConfigHardeningListEffectiveBinds(_Base):
             output = self._run_list(
                 self._mock_cfg(api_bind=["10.0.0.5"]), hardening_active=True
             )
-        self.assertNotIn("effective", self._line_for(output, "api_bind"))
+        assert "effective" not in self._line_for(output, "api_bind")
 
     def test_rpc_bind_shows_effective_value_regardless_of_hardening(self):
         with patch(
@@ -492,19 +481,14 @@ class TestConfigHardeningListEffectiveBinds(_Base):
             return_value=["10.0.0.9"],
         ):
             output = self._run_list(self._mock_cfg(), hardening_active=False)
-        self.assertIn(
-            "(effective: 10.0.0.9)", self._line_for(output, "rpc_bind")
-        )
+        assert "(effective: 10.0.0.9)" in self._line_for(output, "rpc_bind")
 
     def test_prometheus_bind_shows_loopback_effective_under_hardening(self):
         output = self._run_list(self._mock_cfg(), hardening_active=True)
-        self.assertIn(
-            "(effective: 127.0.0.1)",
-            self._line_for(output, "prometheus_bind"),
+        assert "(effective: 127.0.0.1)" in self._line_for(
+            output, "prometheus_bind"
         )
 
     def test_prometheus_bind_no_effective_value_outside_hardening(self):
         output = self._run_list(self._mock_cfg(), hardening_active=False)
-        self.assertNotIn(
-            "effective", self._line_for(output, "prometheus_bind")
-        )
+        assert "effective" not in self._line_for(output, "prometheus_bind")

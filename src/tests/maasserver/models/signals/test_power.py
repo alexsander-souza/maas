@@ -1,10 +1,8 @@
-# Copyright 2014-2016 Canonical Ltd.  This software is licensed under the
-# GNU Affero General Public License version 3 (see the file LICENSE).
-
 """Tests for node power status query when state changes."""
 
 from unittest.mock import ANY, Mock
 
+import pytest
 from twisted.internet import defer
 from twisted.internet.task import Clock
 
@@ -13,10 +11,6 @@ from maasserver.models.node import Node
 from maasserver.models.signals import power
 from maasserver.node_status import get_failed_status, NODE_STATUS
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import (
-    MAASServerTestCase,
-    MAASTransactionServerTestCase,
-)
 from maasserver.utils.orm import post_commit_hooks, transactional
 from maasserver.utils.threads import deferToDatabase
 from maastesting.crochet import wait_for
@@ -26,9 +20,13 @@ from provisioningserver.rpc.exceptions import UnknownPowerType
 wait_for_reactor = wait_for()
 
 
-class TestStatusQueryEvent(MAASServerTestCase):
-    def test_changing_status_of_node_emits_event(self):
-        self.patch_autospec(power, "update_power_state_of_node_soon")
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestStatusQueryEvent:
+    @pytest.mark.real_post_commit_hooks
+    def test_changing_status_of_node_emits_event(self, mocker):
+        update_power_state = mocker.patch.object(
+            power, "update_power_state_of_node_soon", autospec=True
+        )
         old_status = NODE_STATUS.COMMISSIONING
         node = factory.make_Node(status=old_status, power_type="virsh")
         node.update_status(get_failed_status(old_status))
@@ -37,16 +35,17 @@ class TestStatusQueryEvent(MAASServerTestCase):
             node.save()
             # update_power_state_of_node_soon is registered as a post-commit
             # task, so it's not called immediately.
-            power.update_power_state_of_node_soon.assert_not_called()
+            update_power_state.assert_not_called()
 
         # One post-commit hooks have been fired, then it's called.
         post_commit_hooks.fire()
-        power.update_power_state_of_node_soon.assert_called_once_with(
-            node.system_id
-        )
+        update_power_state.assert_called_once_with(node.system_id)
 
-    def test_commissioning_to_new_emits_query_event(self):
-        self.patch_autospec(power, "update_power_state_of_node_soon")
+    @pytest.mark.real_post_commit_hooks
+    def test_commissioning_to_new_emits_query_event(self, mocker):
+        update_power_state = mocker.patch.object(
+            power, "update_power_state_of_node_soon", autospec=True
+        )
         node = factory.make_Node(
             status=NODE_STATUS.COMMISSIONING, power_type="virsh"
         )
@@ -54,75 +53,81 @@ class TestStatusQueryEvent(MAASServerTestCase):
 
         with post_commit_hooks:
             node.save()
-            power.update_power_state_of_node_soon.assert_not_called()
+            update_power_state.assert_not_called()
 
         post_commit_hooks.fire()
-        power.update_power_state_of_node_soon.assert_called_once_with(
-            node.system_id
-        )
+        update_power_state.assert_called_once_with(node.system_id)
 
-    def test_changing_not_tracked_status_of_node_doesnt_emit_event(self):
-        self.patch_autospec(power, "update_power_state_of_node_soon")
+    def test_changing_not_tracked_status_of_node_doesnt_emit_event(
+        self, mocker
+    ):
+        update_power_state = mocker.patch.object(
+            power, "update_power_state_of_node_soon", autospec=True
+        )
         old_status = NODE_STATUS.ALLOCATED
         node = factory.make_Node(status=old_status, power_type="virsh")
         node.update_status(NODE_STATUS.DEPLOYING)
         node.save()
-        power.update_power_state_of_node_soon.assert_not_called()
+        update_power_state.assert_not_called()
 
 
-class TestUpdatePowerStateOfNodeSoon(MAASServerTestCase):
-    def test_calls_update_power_state_of_node_after_wait_time(self):
-        self.patch_autospec(power, "update_power_state_of_node")
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestUpdatePowerStateOfNodeSoon:
+    def test_calls_update_power_state_of_node_after_wait_time(self, mocker):
+        update_power_state = mocker.patch.object(
+            power, "update_power_state_of_node", autospec=True
+        )
         node = factory.make_Node(power_type="virsh")
         clock = Clock()
         power.update_power_state_of_node_soon(node.system_id, clock=clock)
-        power.update_power_state_of_node.assert_not_called()
+        update_power_state.assert_not_called()
         clock.advance(power.WAIT_TO_QUERY.total_seconds())
-        power.update_power_state_of_node.assert_called_once_with(
-            node.system_id
-        )
+        update_power_state.assert_called_once_with(node.system_id)
 
 
-class TestUpdatePowerStateOfNode(MAASTransactionServerTestCase):
+@pytest.mark.allow_transactions
+@pytest.mark.usefixtures("transactional_maasdb", "maas_region_test", "factory")
+class TestUpdatePowerStateOfNode:
     @wait_for_reactor
     @defer.inlineCallbacks
-    def test_retrieves_power_state(self):
+    def test_retrieves_power_state(self, mocker):
         node = yield deferToDatabase(transactional(factory.make_Node))
-        mock_power_query = self.patch(Node, "power_query")
+        mock_power_query = mocker.patch.object(Node, "power_query")
         mock_power_query.return_value = POWER_STATE.ON
         power_state = yield power.update_power_state_of_node(node.system_id)
-        self.assertEqual(power_state, POWER_STATE.ON)
+        assert power_state == POWER_STATE.ON
 
     def test_traps_failure_for_Node_DoesNotExist(self):
-        self.assertIsNone(
+        assert (
             power.update_power_state_of_node(factory.make_name("system_id"))
+            is None
         )
 
     @wait_for_reactor
     @defer.inlineCallbacks
-    def test_traps_failure_for_UnknownPowerType(self):
+    def test_traps_failure_for_UnknownPowerType(self, mocker):
         node = yield deferToDatabase(transactional(factory.make_Node))
-        mock_power_query = self.patch(Node, "power_query")
+        mock_power_query = mocker.patch.object(Node, "power_query")
         mock_power_query.side_effect = UnknownPowerType()
         power_state = yield power.update_power_state_of_node(node.system_id)
-        self.assertIsNone(power_state)
+        assert power_state is None
 
     @wait_for_reactor
     @defer.inlineCallbacks
-    def test_traps_failure_for_PowerProblem(self):
+    def test_traps_failure_for_PowerProblem(self, mocker):
         node = yield deferToDatabase(transactional(factory.make_Node))
-        mock_power_query = self.patch(Node, "power_query")
+        mock_power_query = mocker.patch.object(Node, "power_query")
         mock_power_query.side_effect = PowerProblem()
         power_state = yield power.update_power_state_of_node(node.system_id)
-        self.assertIsNone(power_state)
+        assert power_state is None
 
     @wait_for_reactor
     @defer.inlineCallbacks
-    def test_logs_other_errors(self):
+    def test_logs_other_errors(self, mocker):
         node = yield deferToDatabase(transactional(factory.make_Node))
-        mock_power_query = self.patch(Node, "power_query")
+        mock_power_query = mocker.patch.object(Node, "power_query")
         mock_power_query.side_effect = factory.make_exception("Error")
-        mock_log_err = self.patch(power.log, "err")
+        mock_log_err = mocker.patch.object(power.log, "err")
         yield power.update_power_state_of_node(node.system_id)
         mock_log_err.assert_called_once_with(
             ANY,
@@ -130,29 +135,38 @@ class TestUpdatePowerStateOfNode(MAASTransactionServerTestCase):
         )
 
 
-class TestUpdatePowerStateOfDeployedNode(MAASTransactionServerTestCase):
+@pytest.mark.allow_transactions
+@pytest.mark.usefixtures("transactional_maasdb", "maas_region_test", "factory")
+class TestUpdatePowerStateOfDeployedNode:
+    @pytest.fixture(autouse=True)
+    def _mock_power_methods(self, mocker):
+        self.mock_power_query = mocker.patch.object(Node, "power_query")
+        self.power_info = mocker.patch.object(Node, "get_effective_power_info")
+
     def prepare(self, power_state, can_set_boot_order, status=None):
         node = factory.make_Node(
             status=NODE_STATUS.DEPLOYED if status is None else status
         )
-        self.patch(Node, "power_query").return_value = power_state
-        self.power_info = self.patch(Node, "get_effective_power_info")
+        self.mock_power_query.return_value = power_state
         self.power_info.return_value = Mock(
             can_set_boot_order=can_set_boot_order
         )
         return node
 
-    def assertRecheckScheduled(
+    def assert_recheck_scheduled(
         self, clock, system_id, attempts_left, consecutive_on
     ):
         [recheck] = clock.calls
-        self.assertEqual(
-            recheck.getTime(), power.DEPLOYED_RECHECK_INTERVAL.total_seconds()
+        assert (
+            recheck.getTime()
+            == power.DEPLOYED_RECHECK_INTERVAL.total_seconds()
         )
-        self.assertEqual(recheck.func, power.update_power_state_of_node)
-        self.assertEqual(
-            recheck.args,
-            (system_id, attempts_left, consecutive_on, clock),
+        assert recheck.func == power.update_power_state_of_node
+        assert recheck.args == (
+            system_id,
+            attempts_left,
+            consecutive_on,
+            clock,
         )
 
     @wait_for_reactor
@@ -163,7 +177,7 @@ class TestUpdatePowerStateOfDeployedNode(MAASTransactionServerTestCase):
         )
         clock = Clock()
         yield power.update_power_state_of_node(node.system_id, clock=clock)
-        self.assertRecheckScheduled(
+        self.assert_recheck_scheduled(
             clock,
             node.system_id,
             power.DEPLOYED_RECHECK_MAX_ATTEMPTS - 1,
@@ -178,7 +192,7 @@ class TestUpdatePowerStateOfDeployedNode(MAASTransactionServerTestCase):
         )
         clock = Clock()
         yield power.update_power_state_of_node(node.system_id, clock=clock)
-        self.assertRecheckScheduled(
+        self.assert_recheck_scheduled(
             clock,
             node.system_id,
             power.DEPLOYED_RECHECK_MAX_ATTEMPTS - 1,
@@ -197,8 +211,8 @@ class TestUpdatePowerStateOfDeployedNode(MAASTransactionServerTestCase):
             consecutive_on_seen=power.REQUIRED_CONSECUTIVE_ON_READINGS - 1,
             clock=clock,
         )
-        self.assertEqual(power_state, POWER_STATE.ON)
-        self.assertEqual(clock.calls, [])
+        assert power_state == POWER_STATE.ON
+        assert clock.calls == []
 
     @wait_for_reactor
     @defer.inlineCallbacks
@@ -208,7 +222,7 @@ class TestUpdatePowerStateOfDeployedNode(MAASTransactionServerTestCase):
         )
         clock = Clock()
         yield power.update_power_state_of_node(node.system_id, clock=clock)
-        self.assertEqual(clock.calls, [])
+        assert clock.calls == []
 
     @wait_for_reactor
     @defer.inlineCallbacks
@@ -220,7 +234,7 @@ class TestUpdatePowerStateOfDeployedNode(MAASTransactionServerTestCase):
         yield power.update_power_state_of_node(
             node.system_id, recheck_attempts_left=0, clock=clock
         )
-        self.assertEqual(clock.calls, [])
+        assert clock.calls == []
 
     @wait_for_reactor
     @defer.inlineCallbacks
@@ -233,5 +247,5 @@ class TestUpdatePowerStateOfDeployedNode(MAASTransactionServerTestCase):
         )
         clock = Clock()
         yield power.update_power_state_of_node(node.system_id, clock=clock)
-        self.assertEqual(clock.calls, [])
+        assert clock.calls == []
         self.power_info.assert_not_called()

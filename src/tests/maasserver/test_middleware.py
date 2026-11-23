@@ -10,6 +10,7 @@ from django.conf import settings
 from django.contrib.auth.models import AnonymousUser
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.http import HttpResponse
+import pytest
 
 from maascommon.logging.security import AUTHZ_FAIL, SECURITY
 from maascommon.tracing import set_trace_id
@@ -18,7 +19,6 @@ from maasserver.exceptions import MAASAPIException, MAASAPINotFound
 from maasserver.middleware import (
     AccessMiddleware,
     APIRPCErrorsMiddleware,
-    AuthorizationCacheMiddleware,
     CSRFHelperMiddleware,
     DebuggingLoggerMiddleware,
     ExceptionMiddleware,
@@ -28,7 +28,6 @@ from maasserver.middleware import (
 )
 from maasserver.testing import extract_redirect
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from maasserver.utils.orm import (
     make_deadlock_failure,
     make_serialization_failure,
@@ -38,17 +37,24 @@ from provisioningserver.rpc.exceptions import NoConnectionsAvailable
 from provisioningserver.utils.shell import ExternalProcessError
 
 
-class TestIsPublicPath(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb")
+class TestIsPublicPath:
     def test_public_path(self):
-        self.assertTrue(is_public_path("/MAAS/accounts/login/"))
-        self.assertTrue(is_public_path("/MAAS/rpc/someurl"))
+        assert is_public_path("/MAAS/accounts/login/")
+        assert is_public_path("/MAAS/rpc/someurl")
 
     def test_path_not_public(self):
-        self.assertFalse(is_public_path("/"))
-        self.assertFalse(is_public_path("/MAAS/"))
+        assert not (is_public_path("/"))
+        assert not (is_public_path("/MAAS/"))
 
 
-class TestTracingMiddleware(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "factory")
+class TestTracingMiddleware:
+    @pytest.fixture(autouse=True)
+    def _reset_trace_id(self):
+        yield
+        set_trace_id("")
+
     def process_request(self, request, response=None):
         def get_response(_):
             if response:
@@ -60,26 +66,25 @@ class TestTracingMiddleware(MAASServerTestCase):
         return middleware(request)
 
     def test_trace_id_is_taken_from_request(self):
-        self.addCleanup(set_trace_id, "")
         request = factory.make_fake_request(
             "/", headers={"MAAS-trace-id": "my-trace-id"}
         )
-        self.assertEqual(
-            "my-trace-id",
-            self.process_request(request).headers["MAAS-trace-id"],
+        assert (
+            self.process_request(request).headers["MAAS-trace-id"]
+            == "my-trace-id"
         )
 
     def test_trace_id_is_taken_from_context(self):
-        self.addCleanup(set_trace_id, "")
         set_trace_id("existing-trace-id")
         request = factory.make_fake_request("/")
-        self.assertEqual(
-            "existing-trace-id",
-            self.process_request(request).headers["MAAS-trace-id"],
+        assert (
+            self.process_request(request).headers["MAAS-trace-id"]
+            == "existing-trace-id"
         )
 
 
-class TestAccessMiddleware(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "factory")
+class TestAccessMiddleware:
     def process_request(self, request, response=None):
         def get_response(request):
             if response:
@@ -92,19 +97,16 @@ class TestAccessMiddleware(MAASServerTestCase):
 
     def test_return_request_on_public_path(self):
         request = factory.make_fake_request("/MAAS/accounts/login/")
-        self.assertEqual(
-            http.client.OK, self.process_request(request).status_code
-        )
+        assert self.process_request(request).status_code == http.client.OK
 
     def test_return_redirect_index(self):
         request = factory.make_fake_request("/MAAS/")
         request.user = AnonymousUser()
-        self.assertEqual(
-            "/MAAS/", extract_redirect(self.process_request(request))
-        )
+        assert extract_redirect(self.process_request(request)) == "/MAAS/"
 
 
-class TestExceptionMiddleware(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "factory")
+class TestExceptionMiddleware:
     def make_base_path(self):
         """Return a path to handle exceptions for."""
         return "/%s" % factory.make_string()
@@ -122,16 +124,14 @@ class TestExceptionMiddleware(MAASServerTestCase):
     def test_ignores_serialization_failures(self):
         request = self.make_fake_request()
         exception = make_serialization_failure()
-        self.assertRaises(
-            type(exception), self.process_exception, request, exception
-        )
+        with pytest.raises(type(exception)):
+            self.process_exception(request, exception)
 
     def test_ignores_deadlock_failures(self):
         request = self.make_fake_request()
         exception = make_deadlock_failure()
-        self.assertRaises(
-            type(exception), self.process_exception, request, exception
-        )
+        with pytest.raises(type(exception)):
+            self.process_exception(request, exception)
 
     def test_unknown_exception_generates_internal_server_error(self):
         # An unknown exception generates an internal server error with the
@@ -139,14 +139,11 @@ class TestExceptionMiddleware(MAASServerTestCase):
         request = self.make_fake_request()
         error_message = factory.make_string()
         response = self.process_exception(request, RuntimeError(error_message))
-        self.assertIsInstance(response.content, bytes)
-        self.assertEqual(
-            (http.client.INTERNAL_SERVER_ERROR, error_message),
-            (
-                response.status_code,
-                response.content.decode(settings.DEFAULT_CHARSET),
-            ),
-        )
+        assert isinstance(response.content, bytes)
+        assert (
+            response.status_code,
+            response.content.decode(settings.DEFAULT_CHARSET),
+        ) == (http.client.INTERNAL_SERVER_ERROR, error_message)
 
     def test_reports_MAASAPIException_with_appropriate_api_error(self):
         class MyException(MAASAPIException):
@@ -156,14 +153,11 @@ class TestExceptionMiddleware(MAASServerTestCase):
         exception = MyException(error_message)
         request = self.make_fake_request()
         response = self.process_exception(request, exception)
-        self.assertIsInstance(response.content, bytes)
-        self.assertEqual(
-            (http.client.UNAUTHORIZED, error_message),
-            (
-                response.status_code,
-                response.content.decode(settings.DEFAULT_CHARSET),
-            ),
-        )
+        assert isinstance(response.content, bytes)
+        assert (
+            response.status_code,
+            response.content.decode(settings.DEFAULT_CHARSET),
+        ) == (http.client.UNAUTHORIZED, error_message)
 
     def test_renders_MAASAPIException_as_unicode(self):
         class MyException(MAASAPIException):
@@ -173,56 +167,47 @@ class TestExceptionMiddleware(MAASServerTestCase):
         exception = MyException(error_message)
         request = self.make_fake_request()
         response = self.process_exception(request, exception)
-        self.assertEqual(
-            (http.client.UNAUTHORIZED, error_message),
-            (
-                response.status_code,
-                response.content.decode(settings.DEFAULT_CHARSET),
-            ),
-        )
+        assert (
+            response.status_code,
+            response.content.decode(settings.DEFAULT_CHARSET),
+        ) == (http.client.UNAUTHORIZED, error_message)
 
     def test_reports_ValidationError_as_Bad_Request(self):
         error_message = factory.make_string()
         exception = ValidationError(error_message)
         request = self.make_fake_request()
         response = self.process_exception(request, exception)
-        self.assertIsInstance(response.content, bytes)
-        self.assertEqual(
-            (http.client.BAD_REQUEST, error_message),
-            (
-                response.status_code,
-                response.content.decode(settings.DEFAULT_CHARSET),
-            ),
-        )
+        assert isinstance(response.content, bytes)
+        assert (
+            response.status_code,
+            response.content.decode(settings.DEFAULT_CHARSET),
+        ) == (http.client.BAD_REQUEST, error_message)
 
     def test_returns_ValidationError_message_dict_as_json(self):
         exception_dict = {"hostname": ["invalid"]}
         exception = ValidationError(exception_dict)
         request = self.make_fake_request()
         response = self.process_exception(request, exception)
-        self.assertIsInstance(response.content, bytes)
-        self.assertEqual(
-            exception_dict,
-            json.loads(response.content.decode(settings.DEFAULT_CHARSET)),
+        assert isinstance(response.content, bytes)
+        assert (
+            json.loads(response.content.decode(settings.DEFAULT_CHARSET))
+            == exception_dict
         )
-        self.assertIn("application/json", response["Content-Type"])
+        assert "application/json" in response["Content-Type"]
 
     def test_reports_PermissionDenied_as_Forbidden(self):
         error_message = factory.make_string()
         exception = PermissionDenied(error_message)
         request = self.make_fake_request()
         response = self.process_exception(request, exception)
-        self.assertIsInstance(response.content, bytes)
-        self.assertEqual(
-            (http.client.FORBIDDEN, error_message),
-            (
-                response.status_code,
-                response.content.decode(settings.DEFAULT_CHARSET),
-            ),
-        )
+        assert isinstance(response.content, bytes)
+        assert (
+            response.status_code,
+            response.content.decode(settings.DEFAULT_CHARSET),
+        ) == (http.client.FORBIDDEN, error_message)
 
-    def test_PermissionDenied_creates_log(self):
-        logger = self.patch(middleware_module, "logger")
+    def test_PermissionDenied_creates_log(self, mocker):
+        logger = mocker.patch.object(middleware_module, "logger")
         error_message = factory.make_string()
         exception = PermissionDenied(error_message)
         request = self.make_fake_request()
@@ -241,70 +226,64 @@ class TestExceptionMiddleware(MAASServerTestCase):
             request_method=request.method,
         )
 
-    def test_api_500_error_is_logged(self):
-        logger = self.patch(middleware_module, "logger")
+    def test_api_500_error_is_logged(self, mocker):
+        logger = mocker.patch.object(middleware_module, "logger")
         error_text = factory.make_string()
         exception = MAASAPIException(error_text)
         request = self.make_fake_request()
         self.process_exception(request, exception)
         logger.error.assert_called()
         args, _ = logger.error.call_args
-        self.assertIn(error_text, args[0])
+        assert error_text in args[0]
 
-    def test_generic_500_error_is_logged(self):
-        logger = self.patch(middleware_module, "logger")
+    def test_generic_500_error_is_logged(self, mocker):
+        logger = mocker.patch.object(middleware_module, "logger")
         error_text = factory.make_string()
         exception = Exception(error_text)
         request = self.make_fake_request()
         self.process_exception(request, exception)
         logger.error.assert_called()
         args, _ = logger.error.call_args
-        self.assertIn(error_text, args[0])
+        assert error_text in args[0]
 
-    def test_reports_ExternalProcessError_as_ServiceUnavailable(self):
+    def test_reports_ExternalProcessError_as_ServiceUnavailable(self, mocker):
         error_text = factory.make_string()
         exception = ExternalProcessError(1, ["cmd"], error_text)
         retry_after = random.randint(0, 10)
-        self.patch(
+        mocker.patch.object(
             middleware_module, "RETRY_AFTER_SERVICE_UNAVAILABLE", retry_after
         )
         request = self.make_fake_request()
         response = self.process_exception(request, exception)
-        self.assertEqual(response.status_code, http.client.SERVICE_UNAVAILABLE)
-        self.assertEqual(
-            response.content.decode(settings.DEFAULT_CHARSET),
-            str(exception),
+        assert http.client.SERVICE_UNAVAILABLE == response.status_code
+        assert str(exception) == response.content.decode(
+            settings.DEFAULT_CHARSET
         )
-        self.assertEqual(response["Retry-After"], str(retry_after))
+        assert str(retry_after) == response["Retry-After"]
 
     def test_handles_error_on_API(self):
         error_message = factory.make_string()
         exception = MAASAPINotFound(error_message)
         request = self.make_fake_request()
         response = self.process_exception(request, exception)
-        self.assertIsInstance(response.content, bytes)
-        self.assertEqual(
-            (http.client.NOT_FOUND, error_message),
-            (
-                response.status_code,
-                response.content.decode(settings.DEFAULT_CHARSET),
-            ),
-        )
+        assert isinstance(response.content, bytes)
+        assert (
+            response.status_code,
+            response.content.decode(settings.DEFAULT_CHARSET),
+        ) == (http.client.NOT_FOUND, error_message)
 
     def test_503_response_includes_retry_after_header(self):
         error = ExternalProcessError(returncode=-1, cmd="foo-bar")
         request = self.make_fake_request()
         response = self.process_exception(request, error)
-        self.assertEqual(
-            (
-                http.client.SERVICE_UNAVAILABLE,
-                "%s" % middleware_module.RETRY_AFTER_SERVICE_UNAVAILABLE,
-            ),
-            (response.status_code, response["Retry-after"]),
+        assert (response.status_code, response["Retry-after"]) == (
+            http.client.SERVICE_UNAVAILABLE,
+            "%s" % middleware_module.RETRY_AFTER_SERVICE_UNAVAILABLE,
         )
 
 
-class TestDebuggingLoggerMiddleware(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "factory")
+class TestDebuggingLoggerMiddleware:
     def process_request(self, request, response=None):
         def get_response(request):
             if response:
@@ -315,8 +294,10 @@ class TestDebuggingLoggerMiddleware(MAASServerTestCase):
         middleware = DebuggingLoggerMiddleware(get_response)
         return middleware(request)
 
-    def test_debugging_logger_does_not_log_response_if_no_debug_http(self):
-        logger = self.patch(middleware_module, "logger")
+    def test_debugging_logger_does_not_log_response_if_no_debug_http(
+        self, mocker
+    ):
+        logger = mocker.patch.object(middleware_module, "logger")
         request = factory.make_fake_request("/MAAS/api/2.0/nodes/")
         response = HttpResponse(
             content="test content", content_type=b"text/plain; charset=utf-8"
@@ -325,33 +306,32 @@ class TestDebuggingLoggerMiddleware(MAASServerTestCase):
         logger.debug.assert_not_called()
         logger.info.assert_not_called()
 
-    def test_debugging_logger_logs_request(self):
-        self.patch(settings, "DEBUG_HTTP", True)
-        logger = self.patch(middleware_module, "logger")
+    def test_debugging_logger_logs_request(self, mocker):
+        mocker.patch.object(settings, "DEBUG_HTTP", True)
+        logger = mocker.patch.object(middleware_module, "logger")
         request = factory.make_fake_request("/MAAS/api/2.0/nodes/")
         request.content = "test content"
         self.process_request(request)
         debug_output = DebuggingLoggerMiddleware._build_request_repr(request)
         calls = logger.debug.call_args_list
-        self.assertIn(debug_output, calls[0][0][0])
+        assert debug_output in calls[0][0][0]
 
-    def test_debugging_logger_logs_response(self):
-        self.patch(settings, "DEBUG_HTTP", True)
-        logger = self.patch(middleware_module, "logger")
+    def test_debugging_logger_logs_response(self, mocker):
+        mocker.patch.object(settings, "DEBUG_HTTP", True)
+        logger = mocker.patch.object(middleware_module, "logger")
         request = factory.make_fake_request("foo")
         response = HttpResponse(
             content="test content", content_type=b"text/plain; charset=utf-8"
         )
         self.process_request(request, response)
         calls = logger.debug.call_args_list
-        self.assertIn(
-            response.content.decode(settings.DEFAULT_CHARSET),
-            calls[1][0][0],
+        assert (
+            response.content.decode(settings.DEFAULT_CHARSET) in calls[1][0][0]
         )
 
-    def test_debugging_logger_logs_binary_response(self):
-        self.patch(settings, "DEBUG_HTTP", True)
-        logger = self.patch(middleware_module, "logger")
+    def test_debugging_logger_logs_binary_response(self, mocker):
+        mocker.patch.object(settings, "DEBUG_HTTP", True)
+        logger = mocker.patch.object(middleware_module, "logger")
         request = factory.make_fake_request("foo")
         response = HttpResponse(
             content=sample_binary_data,
@@ -359,10 +339,11 @@ class TestDebuggingLoggerMiddleware(MAASServerTestCase):
         )
         self.process_request(request, response)
         calls = logger.debug.call_args_list
-        self.assertIn("non-utf-8 (binary?) content", calls[1][0][0])
+        assert "non-utf-8 (binary?) content" in calls[1][0][0]
 
 
-class TestRPCErrorsMiddleware(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "factory")
+class TestRPCErrorsMiddleware:
     def process_request(self, request, exception=None):
         def get_response(request):
             if exception:
@@ -383,7 +364,7 @@ class TestRPCErrorsMiddleware(MAASServerTestCase):
         response = self.process_request(request, error)
 
         # The response is a redirect.
-        self.assertEqual(request.path, extract_redirect(response))
+        assert extract_redirect(response) == request.path
 
     def test_handles_TimeoutError(self):
         request = factory.make_fake_request(factory.make_string(), "POST")
@@ -392,7 +373,7 @@ class TestRPCErrorsMiddleware(MAASServerTestCase):
         response = self.process_request(request, error)
 
         # The response is a redirect.
-        self.assertEqual(request.path, extract_redirect(response))
+        assert extract_redirect(response) == request.path
 
     def test_ignores_non_rpc_errors(self):
         request = factory.make_fake_request(factory.make_string(), "POST")
@@ -400,17 +381,15 @@ class TestRPCErrorsMiddleware(MAASServerTestCase):
             "You may think it's a long walk down the street to the chemist "
             "but that's just peanuts to space!"
         )
-        self.assertRaises(
-            ZeroDivisionError, self.process_request, request, exception
-        )
+        with pytest.raises(ZeroDivisionError):
+            self.process_request(request, exception)
 
     def test_ignores_error_on_API(self):
         non_api_request = factory.make_fake_request("/MAAS/api/2.0/ohai")
         exception_class = NoConnectionsAvailable
         exception = exception_class(factory.make_string())
-        self.assertRaises(
-            exception_class, self.process_request, non_api_request, exception
-        )
+        with pytest.raises(exception_class):
+            self.process_request(non_api_request, exception)
 
     def test_no_connections_available_has_usable_cluster_name_in_msg(self):
         # If a NoConnectionsAvailable exception carries a reference to
@@ -425,7 +404,8 @@ class TestRPCErrorsMiddleware(MAASServerTestCase):
         self.process_request(request, error)
 
 
-class TestAPIRPCErrorsMiddleware(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "factory")
+class TestAPIRPCErrorsMiddleware:
     def process_request(self, request, exception=None):
         def get_response(request):
             if exception:
@@ -443,13 +423,10 @@ class TestAPIRPCErrorsMiddleware(MAASServerTestCase):
         exception_class = NoConnectionsAvailable
         exception = exception_class(error_message)
         response = self.process_request(api_request, exception)
-        self.assertEqual(
-            (middleware.handled_exceptions[exception_class], error_message),
-            (
-                response.status_code,
-                response.content.decode(settings.DEFAULT_CHARSET),
-            ),
-        )
+        assert (
+            response.status_code,
+            response.content.decode(settings.DEFAULT_CHARSET),
+        ) == (middleware.handled_exceptions[exception_class], error_message)
 
     def test_ignores_error_outside_API(self):
         non_api_request = factory.make_fake_request(
@@ -457,9 +434,8 @@ class TestAPIRPCErrorsMiddleware(MAASServerTestCase):
         )
         exception_class = NoConnectionsAvailable
         exception = exception_class(factory.make_string())
-        self.assertRaises(
-            exception_class, self.process_request, non_api_request, exception
-        )
+        with pytest.raises(exception_class):
+            self.process_request(non_api_request, exception)
 
     def test_no_connections_available_returned_as_503(self):
         request = factory.make_fake_request(
@@ -472,13 +448,10 @@ class TestAPIRPCErrorsMiddleware(MAASServerTestCase):
         error = NoConnectionsAvailable(error_message)
         response = self.process_request(request, error)
 
-        self.assertEqual(
-            (http.client.SERVICE_UNAVAILABLE, error_message),
-            (
-                response.status_code,
-                response.content.decode(settings.DEFAULT_CHARSET),
-            ),
-        )
+        assert (
+            response.status_code,
+            response.content.decode(settings.DEFAULT_CHARSET),
+        ) == (http.client.SERVICE_UNAVAILABLE, error_message)
 
     def test_503_response_includes_retry_after_header_by_default(self):
         request = factory.make_fake_request(
@@ -487,12 +460,9 @@ class TestAPIRPCErrorsMiddleware(MAASServerTestCase):
         error = NoConnectionsAvailable(factory.make_name())
         response = self.process_request(request, error)
 
-        self.assertEqual(
-            (
-                http.client.SERVICE_UNAVAILABLE,
-                "%s" % middleware_module.RETRY_AFTER_SERVICE_UNAVAILABLE,
-            ),
-            (response.status_code, response["Retry-after"]),
+        assert (response.status_code, response["Retry-after"]) == (
+            http.client.SERVICE_UNAVAILABLE,
+            "%s" % middleware_module.RETRY_AFTER_SERVICE_UNAVAILABLE,
         )
 
     def test_handles_TimeoutError(self):
@@ -503,13 +473,10 @@ class TestAPIRPCErrorsMiddleware(MAASServerTestCase):
         error = TimeoutError(error_message)
         response = self.process_request(request, error)
 
-        self.assertEqual(
-            (http.client.GATEWAY_TIMEOUT, error_message),
-            (
-                response.status_code,
-                response.content.decode(settings.DEFAULT_CHARSET),
-            ),
-        )
+        assert (
+            response.status_code,
+            response.content.decode(settings.DEFAULT_CHARSET),
+        ) == (http.client.GATEWAY_TIMEOUT, error_message)
 
     def test_ignores_non_rpc_errors(self):
         request = factory.make_fake_request(
@@ -519,12 +486,12 @@ class TestAPIRPCErrorsMiddleware(MAASServerTestCase):
             "You may think it's a long walk down the street to the chemist "
             "but that's just peanuts to space!"
         )
-        self.assertRaises(
-            ZeroDivisionError, self.process_request, request, exception
-        )
+        with pytest.raises(ZeroDivisionError):
+            self.process_request(request, exception)
 
 
-class TestCSRFHelperMiddleware(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb")
+class TestCSRFHelperMiddleware:
     def process_request(self, request):
         def get_response(request):
             return None
@@ -538,7 +505,7 @@ class TestCSRFHelperMiddleware(MAASServerTestCase):
             factory.make_string(), "GET", cookies=cookies
         )
         self.process_request(request)
-        self.assertTrue(getattr(request, "csrf_processing_done", None))
+        assert getattr(request, "csrf_processing_done", None)
 
     def test_doesnt_set_csrf_exception_if_session_cookie(self):
         cookies = {settings.SESSION_COOKIE_NAME: factory.make_name("session")}
@@ -546,13 +513,4 @@ class TestCSRFHelperMiddleware(MAASServerTestCase):
             factory.make_string(), "GET", cookies=cookies
         )
         self.process_request(request)
-        self.assertIsNone(getattr(request, "csrf_processing_done", None))
-
-
-class TestAuthorizationCacheMiddleware(MAASServerTestCase):
-    def process_request(self, request):
-        def get_response(request):
-            return None
-
-        middleware = AuthorizationCacheMiddleware(get_response)
-        return middleware(request)
+        assert getattr(request, "csrf_processing_done", None) is None

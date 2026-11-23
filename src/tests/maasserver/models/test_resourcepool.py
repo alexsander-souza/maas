@@ -3,7 +3,10 @@
 
 """Test ResourcePool objects."""
 
+from collections import Counter
+
 from django.core.exceptions import PermissionDenied, ValidationError
+import pytest
 
 from maasserver.models.resourcepool import (
     DEFAULT_RESOURCEPOOL_DESCRIPTION,
@@ -12,110 +15,100 @@ from maasserver.models.resourcepool import (
 )
 from maasserver.permissions import ResourcePoolPermission
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from maasserver.utils.orm import reload_object
 
 
-class TestResourcePoolManager(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "mock_openfga")
+class TestResourcePoolManager:
     """Tests for `ResourcePool` manager."""
 
     def test_get_default_resource_pool_returns_default_pool(self):
         pool = ResourcePool.objects.get_default_resource_pool()
-        self.assertEqual(pool.id, 0)
-        self.assertEqual(pool.name, DEFAULT_RESOURCEPOOL_NAME)
-        self.assertEqual(pool.description, DEFAULT_RESOURCEPOOL_DESCRIPTION)
-        self.assertIsNotNone(pool.created)
-        self.assertIsNotNone(pool.updated)
+        assert pool.id == 0
+        assert pool.name == DEFAULT_RESOURCEPOOL_NAME
+        assert pool.description == DEFAULT_RESOURCEPOOL_DESCRIPTION
+        assert pool.created is not None
+        assert pool.updated is not None
 
     def test_get_default_resource_pool_ignores_other_pools(self):
         factory.make_ResourcePool()
-        self.assertEqual(
-            ResourcePool.objects.get_default_resource_pool().name,
-            DEFAULT_RESOURCEPOOL_NAME,
+        assert (
+            ResourcePool.objects.get_default_resource_pool().name
+            == DEFAULT_RESOURCEPOOL_NAME
         )
 
 
-class TestResourcePool(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "mock_openfga")
+class TestResourcePool:
     def test_init(self):
         name = factory.make_name("name")
         description = factory.make_name("description")
         pool = ResourcePool(name=name, description=description)
         pool.save()
         pool = reload_object(pool)
-        self.assertEqual(pool.name, name)
-        self.assertEqual(pool.description, description)
+        assert pool.name == name
+        assert pool.description == description
 
     def test_is_default_true(self):
-        self.assertTrue(
-            ResourcePool.objects.get_default_resource_pool().is_default()
-        )
+        assert ResourcePool.objects.get_default_resource_pool().is_default()
 
     def test_is_default_false(self):
-        self.assertFalse(factory.make_ResourcePool().is_default())
+        assert not factory.make_ResourcePool().is_default()
 
     def test_delete(self):
         pool = factory.make_ResourcePool()
         pool.delete()
-        self.assertIsNone(reload_object(pool))
+        assert reload_object(pool) is None
 
     def test_delete_default_fails(self):
         pool = ResourcePool.objects.get_default_resource_pool()
-        self.assertRaises(ValidationError, pool.delete)
+        with pytest.raises(ValidationError):
+            pool.delete()
 
     def test_delete_pool_with_machines_fails(self):
         pool = ResourcePool.objects.get_default_resource_pool()
         factory.make_Node(pool=pool)
-        self.assertRaises(ValidationError, pool.delete)
+        with pytest.raises(ValidationError):
+            pool.delete()
 
 
-class TestResourcePoolManagerGetResourcePoolOr404(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "mock_openfga")
+class TestResourcePoolManagerGetResourcePoolOr404:
     def test_user_view_returns_resource_pool(self):
         user = factory.make_User()
         pool = factory.make_ResourcePool()
-        self.assertEqual(
-            pool,
-            ResourcePool.objects.get_resource_pool_or_404(
-                pool.id, user, ResourcePoolPermission.view
-            ),
+        assert pool == ResourcePool.objects.get_resource_pool_or_404(
+            pool.id, user, ResourcePoolPermission.view
         )
 
     def test_user_edit_raises_PermissionError(self):
         user = factory.make_User()
         pool = factory.make_ResourcePool()
-        self.assertRaises(
-            PermissionDenied,
-            ResourcePool.objects.get_resource_pool_or_404,
-            pool.id,
-            user,
-            ResourcePoolPermission.edit,
-        )
+        with pytest.raises(PermissionDenied):
+            ResourcePool.objects.get_resource_pool_or_404(
+                pool.id, user, ResourcePoolPermission.edit
+            )
 
     def test_admin_view_returns_resource_pool(self):
         admin = factory.make_admin()
         pool = factory.make_ResourcePool()
-        self.assertEqual(
-            pool,
-            ResourcePool.objects.get_resource_pool_or_404(
-                pool.id, admin, ResourcePoolPermission.view
-            ),
+        assert pool == ResourcePool.objects.get_resource_pool_or_404(
+            pool.id, admin, ResourcePoolPermission.view
         )
 
     def test_admin_edit_returns_resource_pool(self):
         admin = factory.make_admin()
         pool = factory.make_ResourcePool()
-        self.assertEqual(
-            pool,
-            ResourcePool.objects.get_resource_pool_or_404(
-                pool.id, admin, ResourcePoolPermission.edit
-            ),
+        assert pool == ResourcePool.objects.get_resource_pool_or_404(
+            pool.id, admin, ResourcePoolPermission.edit
         )
 
 
-class TestResourcePoolManagerGetResourcePools(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "mock_openfga")
+class TestResourcePoolManagerGetResourcePools:
     def test_user_returns_all(self):
         user = factory.make_User()
         factory.make_ResourcePool()
-        self.assertCountEqual(
-            ResourcePool.objects.all(),
-            ResourcePool.objects.get_resource_pools(user),
+        assert Counter(ResourcePool.objects.all()) == Counter(
+            ResourcePool.objects.get_resource_pools(user)
         )

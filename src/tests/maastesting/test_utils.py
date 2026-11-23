@@ -3,11 +3,10 @@
 
 """Tests for testing helpers."""
 
-from maastesting.testcase import MAASTestCase
 from maastesting.utils import extract_word_list
 
 
-class TestFunctions(MAASTestCase):
+class TestFunctions:
     def test_extract_word_list(self):
         expected = {
             "one 2": ["one", "2"],
@@ -18,4 +17,4 @@ class TestFunctions(MAASTestCase):
             "\none-two\t 3;": ["one-two", "3"],
         }
         observed = {string: extract_word_list(string) for string in expected}
-        self.assertEqual(expected, observed)
+        assert expected == observed

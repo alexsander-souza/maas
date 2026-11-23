@@ -14,8 +14,9 @@ from tempfile import NamedTemporaryFile
 import time
 from unittest.mock import Mock
 
+import pytest
+
 from maastesting.factory import factory
-from maastesting.testcase import MAASTestCase
 from provisioningserver.security import fernet_encrypt_psk, MissingSharedSecret
 from provisioningserver.utils import beaconing as beaconing_module
 from provisioningserver.utils.beaconing import (
@@ -34,10 +35,9 @@ from provisioningserver.utils.beaconing import (
 )
 from provisioningserver.utils.env import MAAS_SECRET
 from provisioningserver.utils.script import ActionScriptError
-from tests.provisioningserver.test_security import SharedSecretTestCase
 
 
-class TestULIDToTimestamp(MAASTestCase):
+class TestULIDToTimestamp:
     def test_round_trip_preserves_timestamp(self):
         from ulid import ULID
 
@@ -46,11 +46,11 @@ class TestULIDToTimestamp(MAASTestCase):
         after = time.time()
         extracted = ulid_to_timestamp(ulid_str)
         # ULID timestamp must be bracketed by the before/after wall-clock values.
-        self.assertGreaterEqual(extracted, before - 0.001)
-        self.assertLessEqual(extracted, after + 0.001)
+        assert extracted >= before - 0.001
+        assert extracted <= after + 0.001
 
 
-class TestBeaconToJSON(MAASTestCase):
+class TestBeaconToJSON:
     """Tests for `beacon_to_json()` function."""
 
     def test_preserves_version_type_and_payload__discards_bytes(self):
@@ -62,36 +62,37 @@ class TestBeaconToJSON(MAASTestCase):
             test_bytes, test_version, test_type, test_payload
         )
         beacon_json = beacon_to_json(beacon)
-        self.assertEqual(test_version, beacon_json["version"])
-        self.assertEqual(test_type, beacon_json["type"])
-        self.assertEqual(test_payload, beacon_json["payload"])
-        self.assertNotIn("bytes", beacon_json)
-        self.assertEqual(len(beacon_json), 3)
+        assert test_version == beacon_json["version"]
+        assert test_type == beacon_json["type"]
+        assert test_payload == beacon_json["payload"]
+        assert "bytes" not in beacon_json
+        assert len(beacon_json) == 3
 
 
-class TestCreateBeaconPayload(SharedSecretTestCase):
-    def setUp(self):
-        super().setUp()
+class TestCreateBeaconPayload:
+    @pytest.fixture(autouse=True)
+    def _setup(self):
         MAAS_SECRET.set(factory.make_bytes())
+        yield
 
     def test_requires_maas_shared_secret_for_inner_data_payload(self):
         MAAS_SECRET.set(None)
-        with self.assertRaisesRegex(
-            MissingSharedSecret, ".*shared secret not found.*"
+        with pytest.raises(
+            MissingSharedSecret, match=".*shared secret not found.*"
         ):
             create_beacon_payload("solicitation", payload={})
 
     def test_returns_beaconpayload_namedtuple(self):
         beacon = create_beacon_payload("solicitation")
-        self.assertIsInstance(beacon.bytes, bytes)
-        self.assertIsNone(beacon.payload)
-        self.assertEqual("solicitation", beacon.type)
-        self.assertEqual(2, beacon.version)
+        assert isinstance(beacon.bytes, bytes)
+        assert beacon.payload is None
+        assert "solicitation" == beacon.type
+        assert beacon.version == 2
 
     def test_succeeds_when_shared_secret_present(self):
         beacon = create_beacon_payload("solicitation", payload={})
-        self.assertEqual("solicitation", beacon.type)
-        self.assertEqual(BEACON_TYPES["solicitation"], beacon.payload["type"])
+        assert "solicitation" == beacon.type
+        assert BEACON_TYPES["solicitation"] == beacon.payload["type"]
 
     def test_supplements_data_and_returns_complete_data(self):
         random_type = random.choice(list(BEACON_TYPES.keys()))
@@ -102,14 +103,12 @@ class TestCreateBeaconPayload(SharedSecretTestCase):
         )
         # Ensure a valid ULID was added.
         ulid_str = beacon.payload["ulid"]
-        self.assertEqual(len(ulid_str), 26)
-        self.assertTrue(
-            all(c in "0123456789ABCDEFGHJKMNPQRSTVWXYZ" for c in ulid_str)
-        )
-        self.assertEqual(random_type, beacon.type)
+        assert len(ulid_str) == 26
+        assert all(c in "0123456789ABCDEFGHJKMNPQRSTVWXYZ" for c in ulid_str)
+        assert random_type == beacon.type
         # The type is replicated here for authentication purposes.
-        self.assertEqual(BEACON_TYPES[random_type], beacon.payload["type"])
-        self.assertEqual(random_value, beacon.payload[random_key])
+        assert BEACON_TYPES[random_type] == beacon.payload["type"]
+        assert random_value == beacon.payload[random_key]
 
     def test_creates_packet_that_can_decode(self):
         random_type = random.choice(list(BEACON_TYPES.keys()))
@@ -119,8 +118,8 @@ class TestCreateBeaconPayload(SharedSecretTestCase):
             random_type, payload={random_key: random_value}
         )
         decrypted = read_beacon_payload(packet_bytes)
-        self.assertEqual(random_type, decrypted.type)
-        self.assertEqual(random_value, decrypted.payload[random_key])
+        assert random_type == decrypted.type
+        assert random_value == decrypted.payload[random_key]
 
 
 def _make_beacon_payload(version=1, type_code=1, length=None, payload=None):
@@ -132,35 +131,36 @@ def _make_beacon_payload(version=1, type_code=1, length=None, payload=None):
     return packet + payload
 
 
-class TestReadBeaconPayload(SharedSecretTestCase):
-    def setUp(self):
-        super().setUp()
+class TestReadBeaconPayload:
+    @pytest.fixture(autouse=True)
+    def _setup(self):
         MAAS_SECRET.set(factory.make_bytes())
+        yield
 
     def test_raises_if_packet_too_small(self):
-        with self.assertRaisesRegex(
-            InvalidBeaconingPacket, ".*packet must be at least 4 bytes.*"
+        with pytest.raises(
+            InvalidBeaconingPacket, match=".*packet must be at least 4 bytes.*"
         ):
             read_beacon_payload(b"")
 
     def test_raises_if_payload_too_small(self):
         packet = _make_beacon_payload(payload=b"1234")[:6]
-        with self.assertRaisesRegex(
-            InvalidBeaconingPacket, ".*expected 4 bytes, got 2 bytes.*"
+        with pytest.raises(
+            InvalidBeaconingPacket, match=".*expected 4 bytes, got 2 bytes.*"
         ):
             read_beacon_payload(packet)
 
     def test_raises_when_version_incorrect(self):
         packet = _make_beacon_payload(version=0xFE)
-        with self.assertRaisesRegex(
-            InvalidBeaconingPacket, ".*Unknown beacon version.*"
+        with pytest.raises(
+            InvalidBeaconingPacket, match=".*Unknown beacon version.*"
         ):
             read_beacon_payload(packet)
 
     def test_raises_when_inner_payload_does_not_decrypt(self):
         packet = _make_beacon_payload(payload=b"\xfe")
-        with self.assertRaisesRegex(
-            InvalidBeaconingPacket, ".*Failed to decrypt.*"
+        with pytest.raises(
+            InvalidBeaconingPacket, match=".*Failed to decrypt.*"
         ):
             read_beacon_payload(packet)
 
@@ -168,54 +168,55 @@ class TestReadBeaconPayload(SharedSecretTestCase):
         packet = _make_beacon_payload(
             payload=fernet_encrypt_psk("\n\n", raw=True)
         )
-        with self.assertRaisesRegex(
-            InvalidBeaconingPacket, ".*Failed to decompress.*"
+        with pytest.raises(
+            InvalidBeaconingPacket, match=".*Failed to decompress.*"
         ):
             read_beacon_payload(packet)
 
     def test_raises_when_inner_encapsulation_is_not_bson(self):
         payload = fernet_encrypt_psk(compress(b"\n\n"), raw=True)
         packet = _make_beacon_payload(payload=payload)
-        with self.assertRaisesRegex(
-            InvalidBeaconingPacket, ".*beacon payload is not BSON.*"
+        with pytest.raises(
+            InvalidBeaconingPacket, match=".*beacon payload is not BSON.*"
         ):
             read_beacon_payload(packet)
 
 
-class TestReadBeaconPayloadVersions(SharedSecretTestCase):
-    def setUp(self):
-        super().setUp()
+class TestReadBeaconPayloadVersions:
+    @pytest.fixture(autouse=True)
+    def _setup(self):
         MAAS_SECRET.set(factory.make_bytes())
+        yield
 
     def test_accepts_version_1_packet(self):
         # v1 is decoded cleanly — dropping is the caller's responsibility.
         beacon = create_beacon_payload("solicitation", payload={}, version=1)
         result = read_beacon_payload(beacon.bytes)
-        self.assertEqual(result.version, 1)
+        assert result.version == 1
 
     def test_accepts_version_2_packet(self):
         beacon = create_beacon_payload("solicitation", payload={})
-        self.assertEqual(beacon.version, 2)
+        assert beacon.version == 2
         result = read_beacon_payload(beacon.bytes)
-        self.assertEqual(result.version, 2)
+        assert result.version == 2
 
     def test_raises_for_unknown_version(self):
         packet = _make_beacon_payload(version=0xFE)
-        with self.assertRaisesRegex(
-            InvalidBeaconingPacket, ".*Unknown beacon version.*"
+        with pytest.raises(
+            InvalidBeaconingPacket, match=".*Unknown beacon version.*"
         ):
             read_beacon_payload(packet)
 
 
-class TestBeaconingPacket(MAASTestCase):
+class TestBeaconingPacket:
     def test_is_valid__succeeds_for_valid_payload(self):
         beacon = create_beacon_payload("solicitation")
         beacon_packet = BeaconingPacket(beacon.bytes)
-        self.assertTrue(beacon_packet.valid)
+        assert beacon_packet.valid
 
     def test_is_valid__fails_for_invalid_payload(self):
         beacon = BeaconingPacket(b"\n\n\n\n")
-        self.assertFalse(beacon.valid)
+        assert not beacon.valid
 
 
 BEACON_PCAP = (
@@ -227,23 +228,23 @@ BEACON_PCAP = (
 )
 
 
-class TestObserveBeaconsCommand(MAASTestCase):
+class TestObserveBeaconsCommand:
     """Tests for `maas-rack observe-beacons`."""
 
     def test_requires_input_file(self):
         parser = ArgumentParser()
         add_arguments(parser)
         args = parser.parse_args([])
-        with self.assertRaisesRegex(
-            ActionScriptError, ".*Required argument: interface.*"
+        with pytest.raises(
+            ActionScriptError, match=".*Required argument: interface.*"
         ):
             run(args)
 
-    def test_calls_subprocess_for_interface(self):
+    def test_calls_subprocess_for_interface(self, mocker):
         parser = ArgumentParser()
         add_arguments(parser)
         args = parser.parse_args(["eth0"])
-        popen = self.patch(beaconing_module.subprocess, "Popen")
+        popen = mocker.patch.object(beaconing_module.subprocess, "Popen")
         popen.return_value.poll = Mock()
         popen.return_value.poll.return_value = None
         popen.return_value.stdout = io.BytesIO(BEACON_PCAP)
@@ -255,30 +256,30 @@ class TestObserveBeaconsCommand(MAASTestCase):
             stdout=subprocess.PIPE,
         )
 
-    def test_checks_for_pipe(self):
+    def test_checks_for_pipe(self, mocker):
         parser = ArgumentParser()
         add_arguments(parser)
         args = parser.parse_args(["--input-file", "-"])
         output = io.StringIO()
         stdin = Mock()
-        fstat = self.patch(beaconing_module.os, "fstat")
+        fstat = mocker.patch.object(beaconing_module.os, "fstat")
         fstat.return_value.st_mode = None
-        stat = self.patch(beaconing_module.stat, "S_ISFIFO")
+        stat = mocker.patch.object(beaconing_module.stat, "S_ISFIFO")
         stat.return_value = False
-        with self.assertRaisesRegex(
-            ActionScriptError, "Expected stdin to be a pipe"
+        with pytest.raises(
+            ActionScriptError, match="Expected stdin to be a pipe"
         ):
             run(args, output=output, stdin=stdin)
 
-    def test_allows_pipe_input(self):
+    def test_allows_pipe_input(self, mocker):
         parser = ArgumentParser()
         add_arguments(parser)
         args = parser.parse_args(["--input-file", "-"])
         output = io.StringIO()
         stdin = Mock()
-        fstat = self.patch(beaconing_module.os, "fstat")
+        fstat = mocker.patch.object(beaconing_module.os, "fstat")
         fstat.return_value.st_mode = None
-        stat = self.patch(beaconing_module.stat, "S_ISFIFO")
+        stat = mocker.patch.object(beaconing_module.stat, "S_ISFIFO")
         stat.return_value = True
         stdin_buffer = io.BytesIO(BEACON_PCAP)
         run(args, output=output, stdin=stdin, stdin_buffer=stdin_buffer)
@@ -293,76 +294,77 @@ class TestObserveBeaconsCommand(MAASTestCase):
             output = io.StringIO()
             run(args, output=output)
 
-    def test_raises_systemexit_observe_beaconing_return_code(self):
+    def test_raises_systemexit_observe_beaconing_return_code(self, mocker):
         parser = ArgumentParser()
         add_arguments(parser)
         args = parser.parse_args(["eth0"])
-        popen = self.patch(beaconing_module.subprocess, "Popen")
+        popen = mocker.patch.object(beaconing_module.subprocess, "Popen")
         popen.return_value.poll = Mock()
         popen.return_value.poll.return_value = None
         popen.return_value.stdout = io.BytesIO(BEACON_PCAP)
         output = io.StringIO()
-        observe_beaconing_packets = self.patch(
+        observe_beaconing_packets = mocker.patch.object(
             beaconing_module, "observe_beaconing_packets"
         )
         observe_beaconing_packets.return_value = 37
-        with self.assertRaisesRegex(SystemExit, ".*37.*"):
+        with pytest.raises(SystemExit, match=".*37.*"):
             run(args, output=output)
 
-    def test_raises_systemexit_poll_result(self):
+    def test_raises_systemexit_poll_result(self, mocker):
         parser = ArgumentParser()
         add_arguments(parser)
         args = parser.parse_args(["eth0"])
-        popen = self.patch(beaconing_module.subprocess, "Popen")
+        popen = mocker.patch.object(beaconing_module.subprocess, "Popen")
         popen.return_value.poll = Mock()
         popen.return_value.poll.return_value = None
         popen.return_value.stdout = io.BytesIO(BEACON_PCAP)
         output = io.StringIO()
-        observe_beaconing_packets = self.patch(
+        observe_beaconing_packets = mocker.patch.object(
             beaconing_module, "observe_beaconing_packets"
         )
         observe_beaconing_packets.return_value = None
         popen.return_value.poll = Mock()
         popen.return_value.poll.return_value = 42
-        with self.assertRaisesRegex(SystemExit, ".*42.*"):
+        with pytest.raises(SystemExit, match=".*42.*"):
             run(args, output=output)
 
-    def test_sets_self_as_process_group_leader(self):
+    def test_sets_self_as_process_group_leader(self, mocker):
         exception_type = factory.make_exception_type()
-        os = self.patch(beaconing_module, "os")
+        os = mocker.patch.object(beaconing_module, "os")
         os.setpgrp.side_effect = exception_type
-        self.assertRaises(exception_type, run, [])
+        with pytest.raises(exception_type):
+            run([])
         os.setpgrp.assert_called_once_with()
 
 
-class TestAgeOutULIDQueue(MAASTestCase):
+class TestAgeOutULIDQueue:
     """Tests for `age_out_ulid_queue()` function."""
 
     def test_does_not_remove_fresh_entries(self):
         ulid_now = factory.make_ULID_with_timestamp(time.time())
         queue = OrderedDict()
         queue[ulid_now] = {}
-        self.assertEqual(len(queue), 1)
+        assert len(queue) == 1
         age_out_ulid_queue(queue)
-        self.assertEqual(len(queue), 1)
+        assert len(queue) == 1
 
     def test_keeps_entries_from_the_reasonable_past(self):
         ulid = factory.make_ULID_with_timestamp(time.time() - 60.0)
         queue = OrderedDict()
         queue[ulid] = {}
         age_out_ulid_queue(queue)
-        self.assertEqual(len(queue), 1)
+        assert len(queue) == 1
 
     def test_removes_entries_from_the_past(self):
         ulid = factory.make_ULID_with_timestamp(time.time() - 123.0)
         queue = OrderedDict()
         queue[ulid] = {}
         age_out_ulid_queue(queue)
-        self.assertEqual(queue, {})
+        assert queue == {}
 
     def test_removes_entries_from_the_future(self):
         ulid = factory.make_ULID_with_timestamp(time.time() + 123.0)
         queue = OrderedDict()
         queue[ulid] = {}
         age_out_ulid_queue(queue)
-        self.assertEqual(queue, {})
+        assert queue == {}
