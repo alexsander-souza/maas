@@ -14,6 +14,7 @@ from django.core.exceptions import ValidationError
 from django.http import HttpRequest
 from django.utils import timezone
 from lxml import etree
+import pytest
 from testtools.content import text_content
 from twisted.internet.defer import inlineCallbacks
 
@@ -4798,62 +4799,103 @@ class TestMachineHandlerMountSpecial(MAASServerTestCase):
         )
 
 
-class TestMachineHandlerMountSpecialScenarios(MAASServerTestCase):
+@pytest.mark.usefixtures("factory", "mock_openfga")
+class TestMachineHandlerMountSpecialScenarios:
     """Scenario tests for MachineHandler.mount_special."""
 
-    scenarios = [
-        (displayname, {"fstype": name})
-        for name, displayname in FILESYSTEM_FORMAT_TYPE_CHOICES
-        if name not in Filesystem.TYPES_REQUIRING_STORAGE
-    ]
-
-    def assertCanMountFilesystem(self, user, machine):
+    def assertCanMountFilesystem(self, user, machine, fstype):
         handler = MachineHandler(user, {}, None)
         mount_point = factory.make_absolute_path()
         mount_options = factory.make_name("options")
         params = {
             "system_id": machine.system_id,
-            "fstype": self.fstype,
+            "fstype": fstype,
             "mount_point": mount_point,
             "mount_options": mount_options,
         }
-        self.assertIsNone(handler.mount_special(params))
+        assert handler.mount_special(params) is None
         special_fss = list(machine.current_config.special_filesystems)
-        self.assertEqual(len(special_fss), 1)
+        assert len(special_fss) == 1
         fs = special_fss[0]
-        self.assertEqual(fs.fstype, self.fstype)
-        self.assertEqual(fs.mount_point, mount_point)
-        self.assertEqual(fs.mount_options, mount_options)
-        self.assertEqual(fs.node_config, machine.current_config)
+        assert fs.fstype == fstype
+        assert fs.mount_point == mount_point
+        assert fs.mount_options == mount_options
+        assert fs.node_config == machine.current_config
 
-    def test_user_mounts_non_storage_filesystem_on_allocated_machine(self):
+    @pytest.mark.parametrize(
+        "fstype",
+        [
+            name
+            for name, displayname in FILESYSTEM_FORMAT_TYPE_CHOICES
+            if name not in Filesystem.TYPES_REQUIRING_STORAGE
+        ],
+    )
+    def test_user_mounts_non_storage_filesystem_on_allocated_machine(
+        self, fstype
+    ):
         user = factory.make_User()
         self.assertCanMountFilesystem(
-            user, factory.make_Node(status=NODE_STATUS.ALLOCATED, owner=user)
+            user,
+            factory.make_Node(status=NODE_STATUS.ALLOCATED, owner=user),
+            fstype,
         )
 
-    def test_admin_mounts_non_storage_filesystem_on_allocated_machine(self):
+    @pytest.mark.parametrize(
+        "fstype",
+        [
+            name
+            for name, displayname in FILESYSTEM_FORMAT_TYPE_CHOICES
+            if name not in Filesystem.TYPES_REQUIRING_STORAGE
+        ],
+    )
+    def test_admin_mounts_non_storage_filesystem_on_allocated_machine(
+        self, fstype
+    ):
         admin = factory.make_admin()
         self.assertCanMountFilesystem(
-            admin, factory.make_Node(status=NODE_STATUS.ALLOCATED, owner=admin)
+            admin,
+            factory.make_Node(status=NODE_STATUS.ALLOCATED, owner=admin),
+            fstype,
         )
 
-    def test_admin_mounts_non_storage_filesystem_on_ready_machine(self):
+    @pytest.mark.parametrize(
+        "fstype",
+        [
+            name
+            for name, displayname in FILESYSTEM_FORMAT_TYPE_CHOICES
+            if name not in Filesystem.TYPES_REQUIRING_STORAGE
+        ],
+    )
+    def test_admin_mounts_non_storage_filesystem_on_ready_machine(
+        self, fstype
+    ):
         admin = factory.make_admin()
         self.assertCanMountFilesystem(
-            admin, factory.make_Node(status=NODE_STATUS.READY)
+            admin, factory.make_Node(status=NODE_STATUS.READY), fstype
         )
 
-    def test_admin_cannot_mount_on_non_ready_or_allocated_machine(self):
+    @pytest.mark.parametrize(
+        "fstype",
+        [
+            name
+            for name, displayname in FILESYSTEM_FORMAT_TYPE_CHOICES
+            if name not in Filesystem.TYPES_REQUIRING_STORAGE
+        ],
+    )
+    def test_admin_cannot_mount_on_non_ready_or_allocated_machine(
+        self, fstype, mocker
+    ):
         admin = factory.make_admin()
         handler = MachineHandler(admin, {}, None)
         statuses = {name for name, _ in NODE_STATUS_CHOICES}
         statuses -= {NODE_STATUS.READY, NODE_STATUS.ALLOCATED}
         status_iter = iter(statuses)
         machine = factory.make_Node(status=next(status_iter))
-        self.patch(
-            MachineHandler, "_get_node_or_permission_error"
-        ).return_value = machine
+        mocker.patch.object(
+            MachineHandler,
+            "_get_node_or_permission_error",
+            return_value=machine,
+        )
         err_msg_regex = re.escape(
             "Cannot mount the filesystem because the "
             "machine is not Allocated or Ready."
@@ -4862,15 +4904,11 @@ class TestMachineHandlerMountSpecialScenarios(MAASServerTestCase):
             machine.status = status
             params = {
                 "system_id": machine.system_id,
-                "fstype": self.fstype,
+                "fstype": fstype,
                 "mount_point": factory.make_absolute_path(),
                 "mount_options": factory.make_name("options"),
             }
-            with self.assertRaisesRegex(
-                NodeStateViolation,
-                err_msg_regex,
-                msg=f"using status {status} on {self.fstype}",
-            ):
+            with pytest.raises(NodeStateViolation, match=err_msg_regex):
                 handler.mount_special(params)
 
 
@@ -4905,57 +4943,98 @@ class TestMachineHandlerUnmountSpecial(MAASServerTestCase):
         self.assertEqual(dict(error)["mount_point"], ["Enter a valid value."])
 
 
-class TestMachineHandlerUnmountSpecialScenarios(MAASServerTestCase):
+@pytest.mark.usefixtures("factory", "mock_openfga")
+class TestMachineHandlerUnmountSpecialScenarios:
     """Scenario tests for MachineHandler.unmount_special."""
 
-    scenarios = [
-        (displayname, {"fstype": name})
-        for name, displayname in FILESYSTEM_FORMAT_TYPE_CHOICES
-        if name not in Filesystem.TYPES_REQUIRING_STORAGE
-    ]
-
-    def assertCanUnmountFilesystem(self, user, machine):
+    def assertCanUnmountFilesystem(self, user, machine, fstype):
         handler = MachineHandler(user, {}, None)
         filesystem = factory.make_Filesystem(
             node_config=machine.current_config,
-            fstype=self.fstype,
+            fstype=fstype,
             mount_point=factory.make_absolute_path(),
         )
         params = {
             "system_id": machine.system_id,
             "mount_point": filesystem.mount_point,
         }
-        self.assertIsNone(handler.unmount_special(params))
-        self.assertFalse(machine.current_config.special_filesystems.exists())
+        assert handler.unmount_special(params) is None
+        assert not machine.current_config.special_filesystems.exists()
 
-    def test_user_unmounts_non_storage_filesystem_on_allocated_machine(self):
+    @pytest.mark.parametrize(
+        "fstype",
+        [
+            name
+            for name, displayname in FILESYSTEM_FORMAT_TYPE_CHOICES
+            if name not in Filesystem.TYPES_REQUIRING_STORAGE
+        ],
+    )
+    def test_user_unmounts_non_storage_filesystem_on_allocated_machine(
+        self, fstype
+    ):
         user = factory.make_User()
         self.assertCanUnmountFilesystem(
-            user, factory.make_Node(status=NODE_STATUS.ALLOCATED, owner=user)
+            user,
+            factory.make_Node(status=NODE_STATUS.ALLOCATED, owner=user),
+            fstype,
         )
 
-    def test_admin_unmounts_non_storage_filesystem_on_allocated_machine(self):
+    @pytest.mark.parametrize(
+        "fstype",
+        [
+            name
+            for name, displayname in FILESYSTEM_FORMAT_TYPE_CHOICES
+            if name not in Filesystem.TYPES_REQUIRING_STORAGE
+        ],
+    )
+    def test_admin_unmounts_non_storage_filesystem_on_allocated_machine(
+        self, fstype
+    ):
         admin = factory.make_admin()
         self.assertCanUnmountFilesystem(
-            admin, factory.make_Node(status=NODE_STATUS.ALLOCATED, owner=admin)
+            admin,
+            factory.make_Node(status=NODE_STATUS.ALLOCATED, owner=admin),
+            fstype,
         )
 
-    def test_admin_unmounts_non_storage_filesystem_on_ready_machine(self):
+    @pytest.mark.parametrize(
+        "fstype",
+        [
+            name
+            for name, displayname in FILESYSTEM_FORMAT_TYPE_CHOICES
+            if name not in Filesystem.TYPES_REQUIRING_STORAGE
+        ],
+    )
+    def test_admin_unmounts_non_storage_filesystem_on_ready_machine(
+        self, fstype
+    ):
         admin = factory.make_admin()
         self.assertCanUnmountFilesystem(
-            admin, factory.make_Node(status=NODE_STATUS.READY)
+            admin, factory.make_Node(status=NODE_STATUS.READY), fstype
         )
 
-    def test_admin_cannot_unmount_on_non_ready_or_allocated_machine(self):
+    @pytest.mark.parametrize(
+        "fstype",
+        [
+            name
+            for name, displayname in FILESYSTEM_FORMAT_TYPE_CHOICES
+            if name not in Filesystem.TYPES_REQUIRING_STORAGE
+        ],
+    )
+    def test_admin_cannot_unmount_on_non_ready_or_allocated_machine(
+        self, fstype, mocker
+    ):
         admin = factory.make_admin()
         handler = MachineHandler(admin, {}, None)
         statuses = {name for name, _ in NODE_STATUS_CHOICES}
         statuses -= {NODE_STATUS.READY, NODE_STATUS.ALLOCATED}
         status_iter = iter(statuses)
         machine = factory.make_Node(status=next(status_iter))
-        self.patch(
-            MachineHandler, "_get_node_or_permission_error"
-        ).return_value = machine
+        mocker.patch.object(
+            MachineHandler,
+            "_get_node_or_permission_error",
+            return_value=machine,
+        )
         err_msg_regex = re.escape(
             "Cannot unmount the filesystem because the machine is not Allocated or Ready."
         )
@@ -4963,26 +5042,30 @@ class TestMachineHandlerUnmountSpecialScenarios(MAASServerTestCase):
             machine.status = status
             filesystem = factory.make_Filesystem(
                 node_config=machine.current_config,
-                fstype=self.fstype,
+                fstype=fstype,
                 mount_point=factory.make_absolute_path(),
             )
             params = {
                 "system_id": machine.system_id,
                 "mount_point": filesystem.mount_point,
             }
-            with self.assertRaisesRegex(
-                NodeStateViolation,
-                err_msg_regex,
-                msg=f"using status {status} on {self.fstype}",
-            ):
+            with pytest.raises(NodeStateViolation, match=err_msg_regex):
                 handler.unmount_special(params)
 
-    def test_locked_raises_permission_error(self):
+    @pytest.mark.parametrize(
+        "fstype",
+        [
+            name
+            for name, displayname in FILESYSTEM_FORMAT_TYPE_CHOICES
+            if name not in Filesystem.TYPES_REQUIRING_STORAGE
+        ],
+    )
+    def test_locked_raises_permission_error(self, fstype):
         admin = factory.make_admin()
         node = factory.make_Node(locked=True, owner=admin)
         filesystem = factory.make_Filesystem(
             node_config=node.current_config,
-            fstype=self.fstype,
+            fstype=fstype,
             mount_point=factory.make_absolute_path(),
         )
         handler = MachineHandler(admin, {}, None)
@@ -4990,9 +5073,8 @@ class TestMachineHandlerUnmountSpecialScenarios(MAASServerTestCase):
             "system_id": node.system_id,
             "mount_point": filesystem.mount_point,
         }
-        self.assertRaises(
-            HandlerPermissionError, handler.unmount_special, params
-        )
+        with pytest.raises(HandlerPermissionError):
+            handler.unmount_special(params)
 
 
 class TestMachineHandlerUpdateFilesystem(MAASServerTestCase):

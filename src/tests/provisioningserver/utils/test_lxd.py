@@ -3,7 +3,6 @@
 
 """Tests for lxd utilities."""
 
-from maastesting.testcase import MAASTestCase
 from provisioningserver.utils.lxd import (
     lxd_cpu_speed,
     NUMANode,
@@ -407,64 +406,58 @@ SAMPLE_LXD_NETWORKS = {
 }
 
 
-class TestLXDUtils(MAASTestCase):
+class TestLXDUtils:
     def test_lxd_cpu_speed(self):
-        self.assertEqual(2400, lxd_cpu_speed(SAMPLE_LXD_RESOURCES))
+        assert 2400 == lxd_cpu_speed(SAMPLE_LXD_RESOURCES)
 
 
-class TestParseLXDCPUInfo(MAASTestCase):
+class TestParseLXDCPUInfo:
     def test_cpuinfo(self):
         cpu_count, cpu_speed, cpu_model, numa_nodes = parse_lxd_cpuinfo(
             SAMPLE_LXD_RESOURCES
         )
-        self.assertEqual(cpu_count, 8)
-        self.assertEqual(cpu_speed, 2400)
-        self.assertEqual(cpu_model, "Intel(R) Core(TM) i7-4700MQ CPU")
-        self.assertEqual(
-            numa_nodes,
-            {
-                0: NUMANode(memory=0, cores=[0, 1, 2, 3], hugepages=0),
-                1: NUMANode(memory=0, cores=[4, 5, 6, 7], hugepages=0),
-            },
-        )
+        assert cpu_count == 8
+        assert cpu_speed == 2400
+        assert cpu_model == "Intel(R) Core(TM) i7-4700MQ CPU"
+        assert numa_nodes == {
+            0: NUMANode(memory=0, cores=[0, 1, 2, 3], hugepages=0),
+            1: NUMANode(memory=0, cores=[4, 5, 6, 7], hugepages=0),
+        }
 
 
-class TestParseLXDNetworks(MAASTestCase):
+class TestParseLXDNetworks:
     def test_networks(self):
         networks = parse_lxd_networks(SAMPLE_LXD_NETWORKS)
-        self.assertEqual(
-            networks,
-            {
-                "eth0": {
-                    "type": "broadcast",
-                    "enabled": True,
-                    "addresses": ["192.168.0.3/24", "2001:db8:a::123/64"],
-                    "mac": "00:00:00:00:00:01",
-                    "parents": [],
-                },
-                "eth1": {
-                    "type": "broadcast",
-                    "enabled": False,
-                    "addresses": ["172.17.42.1/16"],
-                    "mac": "00:00:00:00:00:02",
-                    "parents": [],
-                },
-                "eth2": {
-                    "type": "broadcast",
-                    "enabled": False,
-                    "addresses": ["172.17.12.1/16"],
-                    "mac": "00:00:00:00:00:03",
-                    "parents": [],
-                },
-                "lo": {
-                    "type": "loopback",
-                    "enabled": True,
-                    "addresses": ["127.0.0.1/8", "::1/128"],
-                    "mac": "",
-                    "parents": [],
-                },
+        assert networks == {
+            "eth0": {
+                "type": "broadcast",
+                "enabled": True,
+                "addresses": ["192.168.0.3/24", "2001:db8:a::123/64"],
+                "mac": "00:00:00:00:00:01",
+                "parents": [],
             },
-        )
+            "eth1": {
+                "type": "broadcast",
+                "enabled": False,
+                "addresses": ["172.17.42.1/16"],
+                "mac": "00:00:00:00:00:02",
+                "parents": [],
+            },
+            "eth2": {
+                "type": "broadcast",
+                "enabled": False,
+                "addresses": ["172.17.12.1/16"],
+                "mac": "00:00:00:00:00:03",
+                "parents": [],
+            },
+            "lo": {
+                "type": "loopback",
+                "enabled": True,
+                "addresses": ["127.0.0.1/8", "::1/128"],
+                "mac": "",
+                "parents": [],
+            },
+        }
 
     def test_networks_vlan(self):
         network_details = {
@@ -482,19 +475,16 @@ class TestParseLXDNetworks(MAASTestCase):
             },
         }
         networks = parse_lxd_networks(network_details)
-        self.assertEqual(
-            networks,
-            {
-                "vlan100": {
-                    "type": "vlan",
-                    "enabled": True,
-                    "addresses": [],
-                    "mac": "00:00:00:00:00:01",
-                    "parents": ["eth0"],
-                    "vid": 100,
-                },
+        assert networks == {
+            "vlan100": {
+                "type": "vlan",
+                "enabled": True,
+                "addresses": [],
+                "mac": "00:00:00:00:00:01",
+                "parents": ["eth0"],
+                "vid": 100,
             },
-        )
+        }
 
     def test_networks_bond(self):
         network_details = {
@@ -511,18 +501,15 @@ class TestParseLXDNetworks(MAASTestCase):
             },
         }
         networks = parse_lxd_networks(network_details)
-        self.assertEqual(
-            networks,
-            {
-                "bond0": {
-                    "type": "bond",
-                    "enabled": True,
-                    "addresses": [],
-                    "mac": "00:00:00:00:00:01",
-                    "parents": ["eth0", "eth1"],
-                },
+        assert networks == {
+            "bond0": {
+                "type": "bond",
+                "enabled": True,
+                "addresses": [],
+                "mac": "00:00:00:00:00:01",
+                "parents": ["eth0", "eth1"],
             },
-        )
+        }
 
     def test_networks_bond_null_lower_devices(self):
         network_details = {
@@ -539,18 +526,15 @@ class TestParseLXDNetworks(MAASTestCase):
             },
         }
         networks = parse_lxd_networks(network_details)
-        self.assertEqual(
-            networks,
-            {
-                "bond0": {
-                    "type": "bond",
-                    "enabled": True,
-                    "addresses": [],
-                    "mac": "00:00:00:00:00:01",
-                    "parents": [],
-                },
+        assert networks == {
+            "bond0": {
+                "type": "bond",
+                "enabled": True,
+                "addresses": [],
+                "mac": "00:00:00:00:00:01",
+                "parents": [],
             },
-        )
+        }
 
     def test_networks_bridge(self):
         network_details = {
@@ -567,18 +551,15 @@ class TestParseLXDNetworks(MAASTestCase):
             },
         }
         networks = parse_lxd_networks(network_details)
-        self.assertEqual(
-            networks,
-            {
-                "br0": {
-                    "type": "bridge",
-                    "enabled": True,
-                    "addresses": [],
-                    "mac": "00:00:00:00:00:01",
-                    "parents": ["eth0", "eth1"],
-                },
+        assert networks == {
+            "br0": {
+                "type": "bridge",
+                "enabled": True,
+                "addresses": [],
+                "mac": "00:00:00:00:00:01",
+                "parents": ["eth0", "eth1"],
             },
-        )
+        }
 
     def test_networks_bridge_null_upper_devices(self):
         network_details = {
@@ -595,18 +576,15 @@ class TestParseLXDNetworks(MAASTestCase):
             },
         }
         networks = parse_lxd_networks(network_details)
-        self.assertEqual(
-            networks,
-            {
-                "br0": {
-                    "type": "bridge",
-                    "enabled": True,
-                    "addresses": [],
-                    "mac": "00:00:00:00:00:01",
-                    "parents": [],
-                },
+        assert networks == {
+            "br0": {
+                "type": "bridge",
+                "enabled": True,
+                "addresses": [],
+                "mac": "00:00:00:00:00:01",
+                "parents": [],
             },
-        )
+        }
 
     def test_networks_missing_vlan_key(self):
         network_details = {
@@ -620,15 +598,12 @@ class TestParseLXDNetworks(MAASTestCase):
             },
         }
         networks = parse_lxd_networks(network_details)
-        self.assertEqual(
-            networks,
-            {
-                "if0": {
-                    "type": "broadcast",
-                    "enabled": True,
-                    "addresses": [],
-                    "mac": "00:00:00:00:00:01",
-                    "parents": [],
-                },
+        assert networks == {
+            "if0": {
+                "type": "broadcast",
+                "enabled": True,
+                "addresses": [],
+                "mac": "00:00:00:00:00:01",
+                "parents": [],
             },
-        )
+        }

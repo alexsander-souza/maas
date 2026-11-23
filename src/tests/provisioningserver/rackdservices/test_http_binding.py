@@ -7,7 +7,6 @@ from contextlib import contextmanager
 import os
 from unittest.mock import MagicMock
 
-from maastesting.testcase import MAASTestCase
 from provisioningserver.config import ClusterConfiguration
 import provisioningserver.rackdservices.http as http_module
 from provisioningserver.rackdservices.http import RackHTTPService
@@ -20,11 +19,11 @@ def _make_service():
     return svc
 
 
-class TestNginxHardeningVarsPassthrough(MAASTestCase):
+class TestNginxHardeningVarsPassthrough:
     """Verify _configure forwards binding/hardening context to the template."""
 
     def _run_configure(
-        self, hardening_active, api_bind=None, maas_url="", **extra
+        self, mocker, hardening_active, api_bind=None, maas_url="", **extra
     ):
         """Run _configure and return the dict passed to template.substitute."""
         captured = {}
@@ -48,35 +47,38 @@ class TestNginxHardeningVarsPassthrough(MAASTestCase):
             m.api_conn_limit = extra.get("api_conn_limit", 0)
             yield m
 
-        self.patch(http_module, "load_template", lambda *_: mock_template)
-        self.patch(http_module, "get_root_path", MagicMock)
-        self.patch(http_module, "get_maas_run_path", MagicMock)
-        self.patch(
+        mocker.patch.object(
+            http_module, "load_template", lambda *_: mock_template
+        )
+        mocker.patch.object(http_module, "get_root_path", MagicMock)
+        mocker.patch.object(http_module, "get_maas_run_path", MagicMock)
+        mocker.patch.object(
             http_module,
             "get_maas_data_path",
             lambda *_: "/var/lib/maas/image-storage",
         )
-        self.patch(
+        mocker.patch.object(
             http_module,
             "compose_http_config_path",
             lambda *_: "/tmp/rackd.nginx.conf",
         )
-        self.patch(http_module, "atomic_write")
-        self.patch(os, "makedirs")
-        self.patch(ClusterConfiguration, "open", fake_cluster_open)
-        self.patch(
+        mocker.patch.object(http_module, "atomic_write")
+        mocker.patch.object(os, "makedirs")
+        mocker.patch.object(ClusterConfiguration, "open", fake_cluster_open)
+        mocker.patch.object(
             http_module, "is_hardening_enabled", lambda: hardening_active
         )
 
         _make_service()._configure([])
         return captured
 
-    def test_non_hardening_passes_hardening_false(self):
-        captured = self._run_configure(hardening_active=False)
+    def test_non_hardening_passes_hardening_false(self, mocker):
+        captured = self._run_configure(mocker, hardening_active=False)
         assert captured.get("hardening") is False
 
-    def test_hardening_on_passes_hardening_true_and_binds(self):
+    def test_hardening_on_passes_hardening_true_and_binds(self, mocker):
         captured = self._run_configure(
+            mocker,
             hardening_active=True,
             api_bind=["127.0.0.1", "fd00::5"],
         )
@@ -84,11 +86,14 @@ class TestNginxHardeningVarsPassthrough(MAASTestCase):
         assert "127.0.0.1:5248" in captured.get("api_listen")
         assert "[fd00::5]:5248" in captured.get("api_listen")
 
-    def test_hardening_on_ipv4_only_backfills_ipv6(self):
-        self.patch(
-            network_module, "get_source_address_for_url"
-        ).return_value = "fd00::9"
+    def test_hardening_on_ipv4_only_backfills_ipv6(self, mocker):
+        mocker.patch.object(
+            network_module,
+            "get_source_address_for_url",
+            return_value="fd00::9",
+        )
         captured = self._run_configure(
+            mocker,
             hardening_active=True,
             api_bind=["10.0.0.5"],
             maas_url="http://10.0.0.1:5240/MAAS",
@@ -96,29 +101,36 @@ class TestNginxHardeningVarsPassthrough(MAASTestCase):
         assert "10.0.0.5:5248" in captured.get("api_listen")
         assert "[fd00::9]:5248" in captured.get("api_listen")
 
-    def test_hardening_off_unset_stays_wildcard(self):
+    def test_hardening_off_unset_stays_wildcard(self, mocker):
         captured = self._run_configure(
-            hardening_active=False, maas_url="http://10.0.0.9:5240/MAAS"
+            mocker,
+            hardening_active=False,
+            maas_url="http://10.0.0.9:5240/MAAS",
         )
         assert captured.get("api_listen") == ["[::]:5248", "5248"]
 
-    def test_hardening_on_unset_derives_from_maas_url(self):
-        self.patch(
-            network_module, "get_source_address_for_url"
-        ).return_value = "10.0.0.9"
+    def test_hardening_on_unset_derives_from_maas_url(self, mocker):
+        mocker.patch.object(
+            network_module,
+            "get_source_address_for_url",
+            return_value="10.0.0.9",
+        )
         captured = self._run_configure(
-            hardening_active=True, maas_url="http://10.0.0.9:5240/MAAS"
+            mocker,
+            hardening_active=True,
+            maas_url="http://10.0.0.9:5240/MAAS",
         )
         assert "10.0.0.9:5248" in captured.get("api_listen")
 
-    def test_upstream_port_forwarded(self):
+    def test_upstream_port_forwarded(self, mocker):
         captured = self._run_configure(
-            hardening_active=False, api_upstream_port=6240
+            mocker, hardening_active=False, api_upstream_port=6240
         )
         assert captured.get("api_upstream_port") == 6240
 
-    def test_rate_limit_and_conn_vars_forwarded(self):
+    def test_rate_limit_and_conn_vars_forwarded(self, mocker):
         captured = self._run_configure(
+            mocker,
             hardening_active=True,
             api_rate_limit_rate="5r/s",
             api_rate_limit_burst=10,
@@ -128,30 +140,36 @@ class TestNginxHardeningVarsPassthrough(MAASTestCase):
         assert captured.get("api_rate_limit_burst") == 10
         assert captured.get("api_conn_limit") == 50
 
-    def test_no_rate_limiting_when_hardening_off_and_unset(self):
-        captured = self._run_configure(hardening_active=False)
+    def test_no_rate_limiting_when_hardening_off_and_unset(self, mocker):
+        captured = self._run_configure(mocker, hardening_active=False)
         assert captured.get("api_rate_limit_rate") == ""
 
-    def test_rate_limit_defaults_applied_when_hardening_on(self):
-        captured = self._run_configure(hardening_active=True)
+    def test_rate_limit_defaults_applied_when_hardening_on(self, mocker):
+        captured = self._run_configure(mocker, hardening_active=True)
         assert captured.get("api_rate_limit_rate") == "20r/s"
         assert captured.get("api_rate_limit_burst") == 60
         assert captured.get("api_conn_limit") == 100
 
-    def test_explicit_rate_limit_applied_without_hardening(self):
+    def test_explicit_rate_limit_applied_without_hardening(self, mocker):
         captured = self._run_configure(
-            hardening_active=False, api_rate_limit_rate="5r/s"
+            mocker,
+            hardening_active=False,
+            api_rate_limit_rate="5r/s",
         )
         assert captured.get("api_rate_limit_rate") == "5r/s"
         assert captured.get("api_rate_limit_burst") == 60
         assert captured.get("api_conn_limit") == 100
 
-    def test_explicit_zero_burst_is_not_overridden_by_default(self):
+    def test_explicit_zero_burst_is_not_overridden_by_default(self, mocker):
         captured = self._run_configure(
-            hardening_active=True, api_rate_limit_burst=0
+            mocker,
+            hardening_active=True,
+            api_rate_limit_burst=0,
         )
         assert captured.get("api_rate_limit_burst") == 0
 
-    def test_zero_conn_limit_falls_back_to_default(self):
-        captured = self._run_configure(hardening_active=True, api_conn_limit=0)
+    def test_zero_conn_limit_falls_back_to_default(self, mocker):
+        captured = self._run_configure(
+            mocker, hardening_active=True, api_conn_limit=0
+        )
         assert captured.get("api_conn_limit") == 100

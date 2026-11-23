@@ -8,12 +8,12 @@ import json
 import threading
 import time
 
+import pytest
 from twisted import logger
 from twisted.python.failure import Failure
 
 from maascommon.tracing import set_trace_id
 from maastesting.factory import factory
-from maastesting.testcase import MAASTestCase
 from maastesting.twisted import TwistedLoggerFixture
 from provisioningserver.logger import _twisted
 from provisioningserver.logger._twisted import (
@@ -38,7 +38,7 @@ def formatTimeStatic(when):
     return "<when>"
 
 
-class TestLegacyLogger(MAASTestCase):
+class TestLegacyLogger:
     def test_logs_messages(self):
         events = []
         namespace = factory.make_name("namespace")
@@ -62,14 +62,14 @@ class TestLegacyLogger(MAASTestCase):
             "_message_0": message,
         }
         expected.update(keywords)
-        self.assertEqual(1, len(events))
+        assert len(events) == 1
         event = events[0]
         for key, value in expected.items():
-            self.assertEqual(event.get(key), value)
-        self.assertAlmostEqual(event.get("log_time"), t1, delta=(t1 - t0))
-        self.assertEqual(
-            f"<when> [{namespace}#info] {message}\n",
-            logger.formatEventAsClassicLogText(events[0], formatTimeStatic),
+            assert event.get(key) == value
+        assert abs(event.get("log_time") - t1) <= (t1 - t0)
+        assert (
+            f"<when> [{namespace}#info] {message}\n"
+            == logger.formatEventAsClassicLogText(events[0], formatTimeStatic)
         )
 
     def test_logs_multiple_messages(self):
@@ -89,14 +89,13 @@ class TestLegacyLogger(MAASTestCase):
             "_message_2": messages[2],
             "log_format": "{_message_0} {_message_1} {_message_2}",
         }
-        self.assertEqual(1, len(events))
+        assert len(events) == 1
         event = events[0]
         for key, value in expected.items():
-            self.assertEqual(event.get(key), value)
-        self.assertEqual(
-            "<when> [{}#info] {}\n".format(__name__, " ".join(messages)),
-            logger.formatEventAsClassicLogText(events[0], formatTimeStatic),
-        )
+            assert event.get(key) == value
+        assert "<when> [{}#info] {}\n".format(
+            __name__, " ".join(messages)
+        ) == logger.formatEventAsClassicLogText(events[0], formatTimeStatic)
 
     def test_logs_errors(self):
         events = []
@@ -116,10 +115,6 @@ class TestLegacyLogger(MAASTestCase):
             legacy_logger.err(None, message, **keywords)
             t1 = time.time()
 
-        def failures_are_equal(failureA, failureB, msg=None):
-            return self.assertEqual(failureA.value, failureB.value, msg)
-
-        self.addTypeEqualityFunc(Failure, failures_are_equal)
         expected = {
             "log_failure": Failure(exc_instance),
             "log_format": "{_why}",
@@ -130,22 +125,25 @@ class TestLegacyLogger(MAASTestCase):
             "_why": message,
         }
         expected.update(keywords)
-        self.assertEqual(1, len(events))
+        assert len(events) == 1
         event = events[0]
         for key, value in expected.items():
-            self.assertEqual(event.get(key), value)
-        self.assertAlmostEqual(event.get("log_time"), t1, delta=(t1 - t0))
+            if key == "log_failure":
+                # Compare failure values directly; Failure.__eq__
+                # compares both value and traceback, which may differ.
+                assert event.get(key).value == value.value
+            else:
+                assert event.get(key) == value
+        assert abs(event.get("log_time") - t1) <= (t1 - t0)
 
         # Twisted 16.6.0 (see issue #8858) now includes a traceback,
         # so we only match on the beginning of the string.
-        self.assertTrue(
-            logger.formatEventAsClassicLogText(
-                event, formatTimeStatic
-            ).startswith(f"<when> [{namespace}#critical] {message}\n")
-        )
+        assert logger.formatEventAsClassicLogText(
+            event, formatTimeStatic
+        ).startswith(f"<when> [{namespace}#critical] {message}\n")
 
 
-class TestObserveTwistedInternetTCP(MAASTestCase):
+class TestObserveTwistedInternetTCP:
     """Tests for `observe_twisted_internet_tcp`."""
 
     def test_ignores_port_closed_events(self):
@@ -155,7 +153,7 @@ class TestObserveTwistedInternetTCP(MAASTestCase):
         )
         with TwistedLoggerFixture() as logger:
             observe_twisted_internet_tcp(event)
-        self.assertEqual(0, len(logger.events))
+        assert len(logger.events) == 0
 
     def test_ignores_protocol_starting_on_events(self):
         event = make_event(
@@ -164,16 +162,16 @@ class TestObserveTwistedInternetTCP(MAASTestCase):
         )
         with TwistedLoggerFixture() as logger:
             observe_twisted_internet_tcp(event)
-        self.assertEqual(0, len(logger.events))
+        assert len(logger.events) == 0
 
     def test_propagates_other_events(self):
         event = make_event(factory.make_name("something"))
         with TwistedLoggerFixture() as logger:
             observe_twisted_internet_tcp(event)
-        self.assertIn(event, logger.events)
+        assert event in logger.events
 
 
-class TestObserveTwistedInternetUDP(MAASTestCase):
+class TestObserveTwistedInternetUDP:
     """Tests for `observe_twisted_internet_udp`."""
 
     def test_ignores_port_closed_events(self):
@@ -183,7 +181,7 @@ class TestObserveTwistedInternetUDP(MAASTestCase):
         )
         with TwistedLoggerFixture() as logger:
             observe_twisted_internet_udp(event)
-        self.assertEqual(0, len(logger.events))
+        assert len(logger.events) == 0
 
     def test_ignores_protocol_starting_on_events(self):
         event = make_event(
@@ -192,16 +190,16 @@ class TestObserveTwistedInternetUDP(MAASTestCase):
         )
         with TwistedLoggerFixture() as logger:
             observe_twisted_internet_udp(event)
-        self.assertEqual(0, len(logger.events))
+        assert len(logger.events) == 0
 
     def test_propagates_other_events(self):
         event = make_event(factory.make_name("something"))
         with TwistedLoggerFixture() as logger:
             observe_twisted_internet_udp(event)
-        self.assertIn(event, logger.events)
+        assert event in logger.events
 
 
-class TestObserveTwistedInternetUNIX(MAASTestCase):
+class TestObserveTwistedInternetUNIX:
     """Tests for `observe_twisted_internet_unix`."""
 
     def test_ignores_port_closed_events(self):
@@ -211,7 +209,7 @@ class TestObserveTwistedInternetUNIX(MAASTestCase):
         )
         with TwistedLoggerFixture() as logger:
             observe_twisted_internet_unix(event)
-        self.assertEqual(0, len(logger.events))
+        assert len(logger.events) == 0
 
     def test_ignores_protocol_starting_on_events(self):
         event = make_event(
@@ -220,117 +218,131 @@ class TestObserveTwistedInternetUNIX(MAASTestCase):
         )
         with TwistedLoggerFixture() as logger:
             observe_twisted_internet_unix(event)
-        self.assertEqual(0, len(logger.events))
+        assert len(logger.events) == 0
 
     def test_propagates_other_events(self):
         event = make_event(factory.make_name("something"))
         with TwistedLoggerFixture() as logger:
             observe_twisted_internet_unix(event)
-        self.assertIn(event, logger.events)
+        assert event in logger.events
 
 
-class TestGetSystemName(MAASTestCase):
+@pytest.mark.parametrize(
+    "string_in,string_out",
+    [
+        ("foo.bar.baz", "foo.bar.baz"),
+        ("f_o.bar.baz", "f_o.bar.baz"),
+        ("foo.b_r.baz", "foo.b_r.baz"),
+        ("foo.bar.b_z", "foo.bar.b_z"),
+        ("foo.bar._az", "foo.bar"),
+        ("foo._ar.baz", "foo"),
+        ("foo._ar._az", "foo"),
+        ("_oo.bar.baz", None),
+        ("_", None),
+        ("", None),
+        (None, None),
+    ],
+    ids=[
+        "foo.bar.baz => foo.bar.baz",
+        "f_o.bar.baz => f_o.bar.baz",
+        "foo.b_r.baz => foo.b_r.baz",
+        "foo.bar.b_z => foo.bar.b_z",
+        "foo.bar._az => foo.bar",
+        "foo._ar.baz => foo",
+        "foo._ar._az => foo",
+        "_oo.bar.baz => None",
+        "_ => None",
+        " => None",
+        "None => None",
+    ],
+)
+class TestGetSystemName:
     """Tests for `_getSystemName`."""
 
-    expectations = {
-        "foo.bar.baz": "foo.bar.baz",
-        "f_o.bar.baz": "f_o.bar.baz",
-        "foo.b_r.baz": "foo.b_r.baz",
-        "foo.bar.b_z": "foo.bar.b_z",
-        "foo.bar._az": "foo.bar",
-        "foo._ar.baz": "foo",
-        "foo._ar._az": "foo",
-        "_oo.bar.baz": None,
-        "_": None,
-        "": None,
-        None: None,
-    }
+    def test(self, string_in, string_out):
+        assert string_out == _getSystemName(string_in)
 
-    scenarios = tuple(
+
+@pytest.mark.parametrize(
+    "argv,expected",
+    [
         (
-            "%s => %s"
-            % (string_in or repr(string_in), string_out or repr(string_out)),
-            {"string_in": string_in, "string_out": string_out},
-        )
-        for string_in, string_out in expectations.items()
-    )
-
-    def test(self):
-        self.assertEqual(self.string_out, _getSystemName(self.string_in))
-
-
-class TestGetCommandName(MAASTestCase):
+            (
+                "/usr/bin/twistd3",
+                "--nodaemon",
+                "--pidfile=",
+                "--logger=provisioningserver.logger.EventLogger",
+                "maas-rackd",
+            ),
+            "rackd",
+        ),
+        (
+            (
+                "twistd3",
+                "--nodaemon",
+                "--pidfile=",
+                "--logger=provisioningserver.logger.EventLogger",
+                "maas-regiond",
+            ),
+            "regiond",
+        ),
+        (("twistd3", "--an-option", "something-else"), "daemon"),
+        (("some-command",), "some-command"),
+        (("some-command-with-suffix.py",), "some-command-with-suffix"),
+        (("python", "py-command"), "py-command"),
+        (
+            ("python", "py-command-with-suffix.py"),
+            "py-command-with-suffix",
+        ),
+        (("python", "-c", "print('woo')"), "command"),
+    ],
+    ids=[
+        "rackd",
+        "regiond",
+        "daemon",
+        "some-command",
+        "some-command-with-suffix",
+        "py-command",
+        "py-command-with-suffix",
+        "command",
+    ],
+)
+class TestGetCommandName:
     """Tests for `_getCommandName`."""
 
-    expectations = {
-        # maas-rackd
-        (
-            "/usr/bin/twistd3",
-            "--nodaemon",
-            "--pidfile=",
-            "--logger=provisioningserver.logger.EventLogger",
-            "maas-rackd",
-        ): "rackd",
-        # maas-regiond
-        (
-            "twistd3",
-            "--nodaemon",
-            "--pidfile=",
-            "--logger=provisioningserver.logger.EventLogger",
-            "maas-regiond",
-        ): "regiond",
-        # twistd running ...
-        ("twistd3", "--an-option", "something-else"): "daemon",
-        # command
-        ("some-command",): "some-command",
-        # command with .py suffix
-        ("some-command-with-suffix.py",): "some-command-with-suffix",
-        # command running under python
-        ("python", "py-command"): "py-command",
-        # command running under python with .py suffix
-        ("python", "py-command-with-suffix.py"): "py-command-with-suffix",
-        # something else
-        ("python", "-c", "print('woo')"): "command",
-    }
-
-    scenarios = tuple(
-        (expected, {"argv": argv, "expected": expected})
-        for argv, expected in expectations.items()
-    )
-
-    def test(self):
-        self.assertEqual(self.expected, _getCommandName(self.argv))
+    def test(self, argv, expected):
+        assert expected == _getCommandName(argv)
 
 
-class TestLogFormatter(MAASTestCase):
+_LOG_LEVELS = list(logger.LogLevel.iterconstants())
+_LOG_LEVEL_NAMES = [level.name for level in _LOG_LEVELS]
+
+
+@pytest.mark.parametrize("log_level", _LOG_LEVELS, ids=_LOG_LEVEL_NAMES)
+class TestLogFormatter:
     """Tests for `_formatModernEvent`."""
 
-    scenarios = tuple(
-        (level.name, {"log_level": level})
-        for level in logger.LogLevel.iterconstants()
-    )
-
-    def test_format_basics(self):
+    def test_format_basics(self, log_level):
         thing1 = factory.make_name("thing")
         thing2 = factory.make_name("thing")
         log_system = factory.make_name("system")
         log_format = ">{thing1}< >{thing2}<"
         log_time = pick_log_time()
-        self.assertEqual(
-            f"{log_system}: [{self.log_level.name}] >{thing1}< >{thing2}<\n",
-            LogFormatter(use_json_logging=False)(
+        assert (
+            f"{log_system}: [{log_level.name}] >{thing1}< >{thing2}<\n"
+            == LogFormatter(use_json_logging=False)(
                 {
                     "log_time": log_time,
                     "log_format": log_format,
                     "log_system": log_system,
-                    "log_level": self.log_level,
+                    "log_level": log_level,
                     "thing1": thing1,
                     "thing2": thing2,
                 }
-            ),
+            )
         )
 
-    def test_format_failure(self):
+    def test_format_failure(self, log_level):
         try:
             1 / 0  # noqa: B018
         except ZeroDivisionError:
@@ -338,126 +350,103 @@ class TestLogFormatter(MAASTestCase):
         else:
             raise RuntimeError("should have raised ZeroDivisionError")
         log_system = factory.make_name("system")
-        self.assertEqual(
-            "%s: [%s] \n\t%s\n"
-            % (
-                log_system,
-                self.log_level.name,
-                failure.getTraceback().replace("\n", "\n\t"),
-            ),
-            LogFormatter(use_json_logging=False)(
-                {
-                    "log_system": log_system,
-                    "log_level": self.log_level,
-                    "log_failure": failure,
-                }
-            ),
+        assert "%s: [%s] \n\t%s\n" % (
+            log_system,
+            log_level.name,
+            failure.getTraceback().replace("\n", "\n\t"),
+        ) == LogFormatter(use_json_logging=False)(
+            {
+                "log_system": log_system,
+                "log_level": log_level,
+                "log_failure": failure,
+            }
         )
 
-    def test_formats_without_format(self):
-        self.assertEqual(
-            "-: [%s] \n" % self.log_level.name,
-            LogFormatter(use_json_logging=False)(
-                {"log_level": self.log_level}
-            ),
-        )
+    def test_formats_without_format(self, log_level):
+        assert "-: [%s] \n" % log_level.name == LogFormatter(
+            use_json_logging=False
+        )({"log_level": log_level})
 
-    def test_formats_with_null_format(self):
-        self.assertEqual(
-            f"-: [{self.log_level.name}] \n",
-            LogFormatter(use_json_logging=False)(
-                {"log_format": None, "log_level": self.log_level}
-            ),
-        )
+    def test_formats_with_null_format(self, log_level):
+        assert f"-: [{log_level.name}] \n" == LogFormatter(
+            use_json_logging=False
+        )({"log_format": None, "log_level": log_level})
 
-    def test_uses_namespace_if_system_missing(self):
+    def test_uses_namespace_if_system_missing(self, log_level):
         log_namespace = factory.make_name("namespace")
-        self.assertEqual(
-            f"{log_namespace}: [{self.log_level.name}] \n",
-            LogFormatter(use_json_logging=False)(
-                {"log_level": self.log_level, "log_namespace": log_namespace}
-            ),
-        )
+        assert f"{log_namespace}: [{log_level.name}] \n" == LogFormatter(
+            use_json_logging=False
+        )({"log_level": log_level, "log_namespace": log_namespace})
 
-    def test_uses_namespace_if_system_null(self):
+    def test_uses_namespace_if_system_null(self, log_level):
         log_namespace = factory.make_name("namespace")
-        self.assertEqual(
-            f"{log_namespace}: [{self.log_level.name}] \n",
-            LogFormatter(use_json_logging=False)(
-                {
-                    "log_level": self.log_level,
-                    "log_namespace": log_namespace,
-                    "log_system": None,
-                }
-            ),
+        assert f"{log_namespace}: [{log_level.name}] \n" == LogFormatter(
+            use_json_logging=False
+        )(
+            {
+                "log_level": log_level,
+                "log_namespace": log_namespace,
+                "log_system": None,
+            }
         )
 
-    def test_json_formatting(self):
+    def test_json_formatting(self, log_level):
         thing1 = factory.make_name("thing")
         thing2 = factory.make_name("thing")
         log_system = factory.make_name("system")
         log_format = ">{thing1}< >{thing2}<"
         log_time = pick_log_time()
-        self.assertEqual(
-            {
-                "level": self.log_level.name,
-                "message": f">{thing1}< >{thing2}<",
-                "name": log_system,
-                "trace_id": "",
-                "thread": f"{threading.current_thread().name}:{threading.current_thread().ident}",
-            },
-            json.loads(
-                LogFormatter(use_json_logging=True)(
-                    {
-                        "log_time": log_time,
-                        "log_format": log_format,
-                        "log_system": log_system,
-                        "log_level": self.log_level,
-                        "thing1": thing1,
-                        "thing2": thing2,
-                    }
-                )
-            ),
+        assert {
+            "level": log_level.name,
+            "message": f">{thing1}< >{thing2}<",
+            "name": log_system,
+            "trace_id": "",
+            "thread": f"{threading.current_thread().name}:{threading.current_thread().ident}",
+        } == json.loads(
+            LogFormatter(use_json_logging=True)(
+                {
+                    "log_time": log_time,
+                    "log_format": log_format,
+                    "log_system": log_system,
+                    "log_level": log_level,
+                    "thing1": thing1,
+                    "thing2": thing2,
+                }
+            )
         )
 
-    def test_json_formatting_includes_trace_id(self):
-        self.addCleanup(set_trace_id, "")
+    def test_json_formatting_includes_trace_id(self, log_level, request):
+        request.addfinalizer(lambda: set_trace_id(""))
         set_trace_id("test_trace_id")
         log_system = factory.make_name("system")
         log_format = "{test}"
         log_time = pick_log_time()
-        self.assertEqual(
-            {
-                "level": self.log_level.name,
-                "message": "test",
-                "name": log_system,
-                "thread": f"{threading.current_thread().name}:{threading.current_thread().ident}",
-                "trace_id": "test_trace_id",
-            },
-            json.loads(
-                LogFormatter(use_json_logging=True)(
-                    {
-                        "log_time": log_time,
-                        "log_format": log_format,
-                        "log_system": log_system,
-                        "log_level": self.log_level,
-                        "test": "test",
-                    }
-                )
-            ),
+        assert {
+            "level": log_level.name,
+            "message": "test",
+            "name": log_system,
+            "thread": f"{threading.current_thread().name}:{threading.current_thread().ident}",
+            "trace_id": "test_trace_id",
+        } == json.loads(
+            LogFormatter(use_json_logging=True)(
+                {
+                    "log_time": log_time,
+                    "log_format": log_format,
+                    "log_system": log_system,
+                    "log_level": log_level,
+                    "test": "test",
+                }
+            )
         )
 
 
-class TestEventLogger(MAASTestCase):
+@pytest.mark.parametrize("log_level", _LOG_LEVELS, ids=_LOG_LEVEL_NAMES)
+class TestEventLogger:
     """Tests for `EventLogger`."""
 
-    scenarios = tuple(
-        (level.name, {"log_level": level})
-        for level in logger.LogLevel.iterconstants()
-    )
-
-    def setUp(self):
-        super().setUp()
+    @pytest.fixture(autouse=True)
+    def _setup(self, mocker):
+        self._mocker = mocker
         self.output = io.StringIO()
         self._disable_json_logging()
         self.log = EventLogger(self.output)
@@ -475,34 +464,32 @@ class TestEventLogger(MAASTestCase):
 
         This is not a minimum level, it is an absolute level.
         """
-        self.patch(_twisted, "_filterByLevels", {self.log_level})
+        self._mocker.patch.object(_twisted, "_filterByLevels", {log_level})
 
-    def test_basics(self):
-        self.setLogLevel(self.log_level)
-        event = make_event(log_level=self.log_level)
+    def test_basics(self, log_level):
+        self.setLogLevel(log_level)
+        event = make_event(log_level=log_level)
         event["log_system"] = factory.make_name("system")
         self.log(event)
-        self.assertSequenceEqual(
-            [(event["log_system"], self.log_level.name, event["log_text"])],
-            self.get_logs(),
-        )
+        assert [
+            (event["log_system"], log_level.name, event["log_text"])
+        ] == self.get_logs()
 
-    def test_filters_by_level(self):
-        self.setLogLevel(self.log_level)
+    def test_filters_by_level(self, log_level):
+        self.setLogLevel(log_level)
         events = {
-            log_level: make_event(log_level=log_level)
-            for log_level in logger.LogLevel.iterconstants()
+            level: make_event(log_level=level)
+            for level in logger.LogLevel.iterconstants()
         }
         for event in events.values():
             self.log(event)
         # Only the log at the current level will get through.
-        self.assertSequenceEqual(
-            [("-", self.log_level.name, events[self.log_level]["log_text"])],
-            self.get_logs(),
-        )
+        assert [
+            ("-", log_level.name, events[log_level]["log_text"])
+        ] == self.get_logs()
 
-    def test_filters_by_noise(self):
-        self.setLogLevel(self.log_level)
+    def test_filters_by_noise(self, log_level):
+        self.setLogLevel(log_level)
         common = dict(log_namespace="log_legacy", log_system="-")
         noisy = [
             make_event("Log opened.", **common),
@@ -510,11 +497,9 @@ class TestEventLogger(MAASTestCase):
         ]
         for event in noisy:
             self.log(event)
-        okay = [make_event(log_level=self.log_level, **common)]
+        okay = [make_event(log_level=log_level, **common)]
         for event in okay:
             self.log(event)
         # Only the `okay` logs will get through.
-        expected = [
-            ("-", self.log_level.name, event["log_text"]) for event in okay
-        ]
-        self.assertSequenceEqual(expected, self.get_logs())
+        expected = [("-", log_level.name, event["log_text"]) for event in okay]
+        assert expected == self.get_logs()

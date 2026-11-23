@@ -4,6 +4,7 @@
 import random
 
 from django.core.exceptions import ValidationError
+import pytest
 
 from maasserver.enum import BRIDGE_TYPE_CHOICES, INTERFACE_TYPE, IPADDRESS_TYPE
 from maasserver.forms.interface import (
@@ -25,20 +26,18 @@ from maasserver.utils.forms import compose_invalid_choice_text
 from maasserver.utils.orm import post_commit_hooks
 
 
-class TestGetInterfaceForm(MAASServerTestCase):
-    scenarios = [
-        (
-            "physical",
-            {"type": INTERFACE_TYPE.PHYSICAL, "form": PhysicalInterfaceForm},
-        ),
-        ("bond", {"type": INTERFACE_TYPE.BOND, "form": BondInterfaceForm}),
-        ("vlan", {"type": INTERFACE_TYPE.VLAN, "form": VLANInterfaceForm}),
-    ]
-
-    def test_get_interface_form_returns_form(self):
-        self.assertEqual(
-            self.form, InterfaceForm.get_interface_form(self.type)
-        )
+@pytest.mark.parametrize(
+    "iface_type,form",
+    [
+        (INTERFACE_TYPE.PHYSICAL, PhysicalInterfaceForm),
+        (INTERFACE_TYPE.BOND, BondInterfaceForm),
+        (INTERFACE_TYPE.VLAN, VLANInterfaceForm),
+    ],
+    ids=["physical", "bond", "vlan"],
+)
+class TestGetInterfaceForm:
+    def test_get_interface_form_returns_form(self, iface_type, form):
+        assert form is InterfaceForm.get_interface_form(iface_type)
 
 
 class TestGetInterfaceFormError(MAASServerTestCase):
@@ -50,15 +49,21 @@ class TestGetInterfaceFormError(MAASServerTestCase):
         )
 
 
-class TestControllerInterfaceForm(MAASServerTestCase):
-    scenarios = (
-        ("region", {"maker": factory.make_RegionController}),
-        ("rack", {"maker": factory.make_RackController}),
-        ("region_rack", {"maker": factory.make_RegionRackController}),
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "factory"
+)
+class TestControllerInterfaceForm:
+    @pytest.mark.parametrize(
+        "maker",
+        [
+            factory.make_RegionController,
+            factory.make_RackController,
+            factory.make_RegionRackController,
+        ],
+        ids=["region", "rack", "region_rack"],
     )
-
-    def test_edits_interface(self):
-        node = self.maker()
+    def test_edits_interface(self, maker):
+        node = maker()
         original_interface = factory.make_Interface(
             INTERFACE_TYPE.PHYSICAL, node=node
         )
@@ -66,27 +71,45 @@ class TestControllerInterfaceForm(MAASServerTestCase):
         form = ControllerInterfaceForm(
             instance=original_interface, data={"vlan": new_vlan.id}
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
         interface = form.save()
-        self.assertEqual(interface.name, original_interface.name)
-        self.assertEqual(interface.vlan, new_vlan)
-        self.assertEqual(interface.enabled, original_interface.enabled)
+        assert interface.name == original_interface.name
+        assert interface.vlan == new_vlan
+        assert interface.enabled == original_interface.enabled
 
-    def test_allows_no_vlan(self):
-        node = self.maker()
+    @pytest.mark.parametrize(
+        "maker",
+        [
+            factory.make_RegionController,
+            factory.make_RackController,
+            factory.make_RegionRackController,
+        ],
+        ids=["region", "rack", "region_rack"],
+    )
+    def test_allows_no_vlan(self, maker):
+        node = maker()
         original_interface = factory.make_Interface(
             INTERFACE_TYPE.PHYSICAL, node=node
         )
         form = ControllerInterfaceForm(
             instance=original_interface, data={"vlan": None}
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
         interface = form.save()
-        self.assertEqual(interface.name, original_interface.name)
-        self.assertIsNone(interface.vlan)
-        self.assertEqual(interface.enabled, original_interface.enabled)
+        assert interface.name == original_interface.name
+        assert interface.vlan is None
+        assert interface.enabled == original_interface.enabled
 
-    def test_updates_interface_links(self):
+    @pytest.mark.parametrize(
+        "maker",
+        [
+            factory.make_RegionController,
+            factory.make_RackController,
+            factory.make_RegionRackController,
+        ],
+        ids=["region", "rack", "region_rack"],
+    )
+    def test_updates_interface_links(self, maker):
         interface = factory.make_Interface(
             INTERFACE_TYPE.PHYSICAL, name="eth0", link_connected=False
         )
@@ -101,11 +124,11 @@ class TestControllerInterfaceForm(MAASServerTestCase):
                 "interface_speed": new_interface_speed,
             },
         )
-        self.assertTrue(form.is_valid(), dict(form.errors))
+        assert form.is_valid(), dict(form.errors)
         interface = form.save()
-        self.assertEqual(interface.interface_speed, new_interface_speed)
-        self.assertEqual(interface.link_connected, new_link_connected)
-        self.assertEqual(interface.link_speed, new_link_speed)
+        assert interface.interface_speed == new_interface_speed
+        assert interface.link_connected == new_link_connected
+        assert interface.link_speed == new_link_speed
 
     def test_updates_interface_errors_for_not_link_connected_and_speed(self):
         interface = factory.make_Interface(
@@ -117,10 +140,10 @@ class TestControllerInterfaceForm(MAASServerTestCase):
             instance=interface,
             data={"mac_address": new_mac, "link_speed": new_link_speed},
         )
-        self.assertFalse(form.is_valid(), dict(form.errors))
-        self.assertEqual(
-            "link_speed cannot be set when link_connected is false.",
-            form.errors["__all__"][0],
+        assert not form.is_valid(), dict(form.errors)
+        assert (
+            "link_speed cannot be set when link_connected is false."
+            == form.errors["__all__"][0]
         )
 
 

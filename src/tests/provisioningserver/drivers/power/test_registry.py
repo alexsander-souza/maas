@@ -5,7 +5,8 @@
 
 from unittest.mock import sentinel
 
-from maastesting.testcase import MAASTestCase
+import pytest
+
 from provisioningserver.drivers.power.registry import PowerDriverRegistry
 from provisioningserver.drivers.power.tests.test_base import (
     make_power_driver_base,
@@ -13,7 +14,7 @@ from provisioningserver.drivers.power.tests.test_base import (
 from provisioningserver.utils.testing import RegistryFixture
 
 
-class TestRegisteredPowerDrivers(MAASTestCase):
+class TestRegisteredPowerDrivers:
     def test_removed_drivers_are_not_available(self):
         driver_names = {
             driver["name"]
@@ -31,22 +32,23 @@ class TestRegisteredPowerDrivers(MAASTestCase):
             "ucsm",
             "wedge",
         ):
-            self.assertIsNone(PowerDriverRegistry.get_item(power_type))
-            self.assertNotIn(power_type, driver_names)
+            assert PowerDriverRegistry.get_item(power_type) is None
+            assert power_type not in driver_names
 
 
-class TestPowerDriverRegistry(MAASTestCase):
-    def setUp(self):
-        super().setUp()
+class TestPowerDriverRegistry:
+    @pytest.fixture(autouse=True)
+    def _setup(self):
         # Ensure the global registry is empty for each test run.
-        self.useFixture(RegistryFixture())
+        self._fixture = RegistryFixture()
+        self._fixture.setUp()
+        yield
+        self._fixture.cleanUp()
 
     def test_registry(self):
-        self.assertEqual([], list(PowerDriverRegistry))
+        assert [] == list(PowerDriverRegistry)
         PowerDriverRegistry.register_item("driver", sentinel.driver)
-        self.assertIn(
-            sentinel.driver, (item for name, item in PowerDriverRegistry)
-        )
+        assert sentinel.driver in (item for name, item in PowerDriverRegistry)
 
     def test_get_schema(self):
         fake_driver_one = make_power_driver_base()
@@ -57,28 +59,25 @@ class TestPowerDriverRegistry(MAASTestCase):
         PowerDriverRegistry.register_item(
             fake_driver_two.name, fake_driver_two
         )
-        self.assertEqual(
-            [
-                {
-                    "driver_type": "power",
-                    "name": fake_driver_one.name,
-                    "description": fake_driver_one.description,
-                    "chassis": fake_driver_one.chassis,
-                    "can_probe": fake_driver_one.can_probe,
-                    "fields": [],
-                    "queryable": fake_driver_one.queryable,
-                    "missing_packages": fake_driver_one.detect_missing_packages(),
-                },
-                {
-                    "driver_type": "power",
-                    "name": fake_driver_two.name,
-                    "description": fake_driver_two.description,
-                    "chassis": fake_driver_two.chassis,
-                    "can_probe": fake_driver_two.can_probe,
-                    "fields": [],
-                    "queryable": fake_driver_two.queryable,
-                    "missing_packages": fake_driver_two.detect_missing_packages(),
-                },
-            ],
-            PowerDriverRegistry.get_schema(),
-        )
+        assert [
+            {
+                "driver_type": "power",
+                "name": fake_driver_one.name,
+                "description": fake_driver_one.description,
+                "chassis": fake_driver_one.chassis,
+                "can_probe": fake_driver_one.can_probe,
+                "fields": [],
+                "queryable": fake_driver_one.queryable,
+                "missing_packages": fake_driver_one.detect_missing_packages(),
+            },
+            {
+                "driver_type": "power",
+                "name": fake_driver_two.name,
+                "description": fake_driver_two.description,
+                "chassis": fake_driver_two.chassis,
+                "can_probe": fake_driver_two.can_probe,
+                "fields": [],
+                "queryable": fake_driver_two.queryable,
+                "missing_packages": fake_driver_two.detect_missing_packages(),
+            },
+        ] == PowerDriverRegistry.get_schema()

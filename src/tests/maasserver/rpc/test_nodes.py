@@ -560,32 +560,36 @@ class TestGetControllerType_Scenarios(MAASServerTestCase):
 
     scenarios = (
         (
-            "rack",
-            dict(
-                node_type=NODE_TYPE.RACK_CONTROLLER,
-                is_region=False,
-                is_rack=True,
-            ),
+            "2-False-True",
+            {
+                "node_type": NODE_TYPE.RACK_CONTROLLER,
+                "is_region": False,
+                "is_rack": True,
+            },
         ),
         (
-            "region",
-            dict(
-                node_type=NODE_TYPE.REGION_CONTROLLER,
-                is_region=True,
-                is_rack=False,
-            ),
+            "3-True-False",
+            {
+                "node_type": NODE_TYPE.REGION_CONTROLLER,
+                "is_region": True,
+                "is_rack": False,
+            },
         ),
         (
-            "region+rack",
-            dict(
-                node_type=NODE_TYPE.REGION_AND_RACK_CONTROLLER,
-                is_region=True,
-                is_rack=True,
-            ),
+            "4-True-True",
+            {
+                "node_type": NODE_TYPE.REGION_AND_RACK_CONTROLLER,
+                "is_region": True,
+                "is_rack": True,
+            },
         ),
         (
-            "machine",
-            dict(node_type=NODE_TYPE.MACHINE, is_region=False, is_rack=False),
+            "0-False-False",
+            {
+                "node_type": NODE_TYPE.MACHINE,
+                "is_region": False,
+                "is_rack": False,
+            },
         ),
     )
 
@@ -609,12 +613,15 @@ class TestGetTimeConfiguration(MAASServerTestCase):
 class TestGetTimeConfiguration_Scenarios(MAASServerTestCase):
     """Scenario tests for `get_time_configuration`."""
 
-    scenarios = (
-        ("rack", dict(node_type=NODE_TYPE.RACK_CONTROLLER)),
-        ("region", dict(node_type=NODE_TYPE.REGION_CONTROLLER)),
-        ("region+rack", dict(node_type=NODE_TYPE.REGION_AND_RACK_CONTROLLER)),
-        ("machine", dict(node_type=NODE_TYPE.MACHINE)),
-        ("device", dict(node_type=NODE_TYPE.DEVICE)),
+    scenarios = tuple(
+        (str(node_type), {"node_type": node_type})
+        for node_type in (
+            NODE_TYPE.RACK_CONTROLLER,
+            NODE_TYPE.REGION_CONTROLLER,
+            NODE_TYPE.REGION_AND_RACK_CONTROLLER,
+            NODE_TYPE.MACHINE,
+            NODE_TYPE.DEVICE,
+        )
     )
 
     def test_calls_through_to_ntp_module_returns_servers_and_peers(self):

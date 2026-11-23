@@ -14,10 +14,9 @@ from maasserver.api.doc_oapi import (
 from maasserver.models.config import Config
 from maasserver.testing.factory import factory
 from maasserver.testing.testcase import MAASServerTestCase
-from maastesting.testcase import MAASTestCase
 
 
-class TestLandingPage(MAASTestCase):
+class TestLandingPage:
     def test_links(self):
         request = factory.make_fake_request()
         page = landing_page(request)
@@ -26,8 +25,8 @@ class TestLandingPage(MAASTestCase):
         host = request.get_host()
         for link in resources:
             href = f"http://{host}{link['path']}"
-            self.assertEqual(link["href"], href)
-        self.assertEqual(resources[0]["type"], page["content-type"])
+            assert link["href"] == href
+        assert resources[0]["type"] == page["content-type"]
 
 
 class TestApiEndpoint(MAASServerTestCase):
@@ -125,9 +124,7 @@ class TestOAPISpec(MAASServerTestCase):
                 self.assertIn(v, self.oapi_types)
 
 
-class TestPrettify(MAASTestCase):
-    maxDiff = None
-
+class TestPrettify:
     def test_cleans_newlines(self):
         before = """\
 Returns system details -- for example, LLDP and
@@ -155,4 +152,4 @@ Returns system details - for example, LLDP and `lshw` XML dumps.
 Returns a `{detail_type: xml, .}` map, where `detail_type` is something like "lldp" or "lshw".
 Note that this is returned as BSON and not JSON. This is for efficiency, but mainly because JSON can't do binary content without applying additional encoding like base-64. The example output below is represented in ASCII using `bsondump example.bson` and is for demonstrative purposes."""
 
-        self.assertEqual(_prettify(before), after)
+        assert _prettify(before) == after

@@ -473,80 +473,82 @@ class TestMAASAuthorizationBackendInterface(MAASServerTestCase):
 
 
 class TestMAASAuthorizationBackendForUnrestrictedRead(MAASServerTestCase):
-    scenarios = (
-        ("dnsdata", {"factory": factory.make_DNSData}),
-        ("dnsresource", {"factory": factory.make_DNSResource}),
-        ("domain", {"factory": factory.make_Domain}),
-        ("fabric", {"factory": factory.make_Fabric}),
-        (
-            "interface",
-            {
-                "factory": partial(
-                    factory.make_Interface, INTERFACE_TYPE.PHYSICAL
-                )
-            },
-        ),
-        ("subnet", {"factory": factory.make_Subnet}),
-        ("space", {"factory": factory.make_Space}),
-        ("staticroute", {"factory": factory.make_StaticRoute}),
-        ("vlan", {"factory": factory.make_VLAN}),
+    scenarios = tuple(
+        (name, {"_factory": maker})
+        for name, maker in [
+            ("dnsdata", factory.make_DNSData),
+            ("dnsresource", factory.make_DNSResource),
+            ("domain", factory.make_Domain),
+            ("fabric", factory.make_Fabric),
+            (
+                "interface",
+                partial(factory.make_Interface, INTERFACE_TYPE.PHYSICAL),
+            ),
+            ("subnet", factory.make_Subnet),
+            ("space", factory.make_Space),
+            ("staticroute", factory.make_StaticRoute),
+            ("vlan", factory.make_VLAN),
+        ]
     )
 
     def test_user_can_view(self):
         backend = MAASAuthorizationBackend()
         user = factory.make_User()
         self.assertTrue(
-            backend.has_perm(user, NodePermission.view, self.factory())
+            backend.has_perm(user, NodePermission.view, self._factory())
         )
 
     def test_user_cannot_edit(self):
         backend = MAASAuthorizationBackend()
         user = factory.make_User()
         self.assertFalse(
-            backend.has_perm(user, NodePermission.edit, self.factory())
+            backend.has_perm(user, NodePermission.edit, self._factory())
         )
 
     def test_user_not_admin(self):
         backend = MAASAuthorizationBackend()
         user = factory.make_User()
         self.assertFalse(
-            backend.has_perm(user, NodePermission.admin, self.factory())
+            backend.has_perm(user, NodePermission.admin, self._factory())
         )
 
     def test_admin_can_view(self):
         backend = MAASAuthorizationBackend()
         admin = factory.make_admin()
         self.assertTrue(
-            backend.has_perm(admin, NodePermission.view, self.factory())
+            backend.has_perm(admin, NodePermission.view, self._factory())
         )
 
     def test_admin_can_edit(self):
         backend = MAASAuthorizationBackend()
         admin = factory.make_admin()
         self.assertTrue(
-            backend.has_perm(admin, NodePermission.edit, self.factory())
+            backend.has_perm(admin, NodePermission.edit, self._factory())
         )
 
     def test_admin_is_admin(self):
         backend = MAASAuthorizationBackend()
         admin = factory.make_admin()
         self.assertTrue(
-            backend.has_perm(admin, NodePermission.admin, self.factory())
+            backend.has_perm(admin, NodePermission.admin, self._factory())
         )
 
 
 class TestMAASAuthorizationBackendForUnrestrictedReadOpenFGAIntegration(
     OpenFGAMockMixin, MAASServerTestCase
 ):
-    scenarios = (
-        ("dnsdata", {"factory": factory.make_DNSData}),
-        ("dnsresource", {"factory": factory.make_DNSResource}),
-        ("domain", {"factory": factory.make_Domain}),
-        ("fabric", {"factory": factory.make_Fabric}),
-        ("subnet", {"factory": factory.make_Subnet}),
-        ("space", {"factory": factory.make_Space}),
-        ("staticroute", {"factory": factory.make_StaticRoute}),
-        ("vlan", {"factory": factory.make_VLAN}),
+    scenarios = tuple(
+        (name, {"_factory": maker})
+        for name, maker in [
+            ("dnsdata", factory.make_DNSData),
+            ("dnsresource", factory.make_DNSResource),
+            ("domain", factory.make_Domain),
+            ("fabric", factory.make_Fabric),
+            ("subnet", factory.make_Subnet),
+            ("space", factory.make_Space),
+            ("staticroute", factory.make_StaticRoute),
+            ("vlan", factory.make_VLAN),
+        ]
     )
 
     def test_user_can_view(self):
@@ -555,7 +557,7 @@ class TestMAASAuthorizationBackendForUnrestrictedReadOpenFGAIntegration(
         backend = MAASAuthorizationBackend()
         user = factory.make_User()
         self.assertTrue(
-            backend.has_perm(user, NodePermission.view, self.factory())
+            backend.has_perm(user, NodePermission.view, self._factory())
         )
         self.openfga_client.can_view_global_entities.assert_called_once_with(
             user
@@ -567,7 +569,7 @@ class TestMAASAuthorizationBackendForUnrestrictedReadOpenFGAIntegration(
         backend = MAASAuthorizationBackend()
         user = factory.make_User()
         self.assertTrue(
-            backend.has_perm(user, NodePermission.edit, self.factory())
+            backend.has_perm(user, NodePermission.edit, self._factory())
         )
         self.openfga_client.can_edit_global_entities.assert_called_once_with(
             user
@@ -579,7 +581,7 @@ class TestMAASAuthorizationBackendForUnrestrictedReadOpenFGAIntegration(
         backend = MAASAuthorizationBackend()
         user = factory.make_User()
         self.assertTrue(
-            backend.has_perm(user, NodePermission.admin, self.factory())
+            backend.has_perm(user, NodePermission.admin, self._factory())
         )
         self.openfga_client.can_edit_global_entities.assert_called_once_with(
             user
@@ -587,48 +589,48 @@ class TestMAASAuthorizationBackendForUnrestrictedReadOpenFGAIntegration(
 
 
 class TestMAASAuthorizationBackendForAdminRestricted(MAASServerTestCase):
-    scenarios = (("discovery", {"factory": factory.make_Discovery}),)
+    scenarios = (("discovery", {"_factory": factory.make_Discovery}),)
 
     def test_user_cannot_view(self):
         backend = MAASAuthorizationBackend()
         user = factory.make_User()
         self.assertFalse(
-            backend.has_perm(user, NodePermission.view, self.factory())
+            backend.has_perm(user, NodePermission.view, self._factory())
         )
 
     def test_user_cannot_edit(self):
         backend = MAASAuthorizationBackend()
         user = factory.make_User()
         self.assertFalse(
-            backend.has_perm(user, NodePermission.edit, self.factory())
+            backend.has_perm(user, NodePermission.edit, self._factory())
         )
 
     def test_user_not_admin(self):
         backend = MAASAuthorizationBackend()
         user = factory.make_User()
         self.assertFalse(
-            backend.has_perm(user, NodePermission.admin, self.factory())
+            backend.has_perm(user, NodePermission.admin, self._factory())
         )
 
     def test_admin_can_view(self):
         backend = MAASAuthorizationBackend()
         admin = factory.make_admin()
         self.assertTrue(
-            backend.has_perm(admin, NodePermission.view, self.factory())
+            backend.has_perm(admin, NodePermission.view, self._factory())
         )
 
     def test_admin_can_edit(self):
         backend = MAASAuthorizationBackend()
         admin = factory.make_admin()
         self.assertTrue(
-            backend.has_perm(admin, NodePermission.edit, self.factory())
+            backend.has_perm(admin, NodePermission.edit, self._factory())
         )
 
     def test_admin_is_admin(self):
         backend = MAASAuthorizationBackend()
         admin = factory.make_admin()
         self.assertTrue(
-            backend.has_perm(admin, NodePermission.admin, self.factory())
+            backend.has_perm(admin, NodePermission.admin, self._factory())
         )
 
 

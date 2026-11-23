@@ -775,6 +775,13 @@ parameters = sorted(events_module.EventsHandler.all_params)
 parameters.remove("op")
 
 
+scenarios = tuple(
+    ("-".join(params) or "no-params", {"params": params})
+    for count in range(len(parameters) + 1)
+    for params in combinations(parameters, count)
+)
+
+
 class TestEventsURIsWithoutEvents(APITestCase.ForUser):
     """Tests for next_uri and prev_uri in responses from /api/2.0/events/.
 
@@ -782,36 +789,27 @@ class TestEventsURIsWithoutEvents(APITestCase.ForUser):
     without any events in the database.
     """
 
-    # Try all cardinalities of combinations of query parameters.
-    scenarios = [
-        ("+".join(sorted(params)), {"params": params})
-        for count in range(len(parameters) + 1)
-        for params in combinations(parameters, count)
-    ]
-
-    # Factories for creating query parameters.
-    factories = {
-        "after": lambda: str(randint(1, 6)),
-        "agent_name": factory.make_string,
-        "domain": factory.make_string,
-        "hostname": factory.make_string,
-        "id": factory.make_string,
-        "level": lambda: random.choice(
-            ("CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG")
-        ),
-        "limit": lambda: str(randint(1, 6)),
-        "mac_address": factory.make_mac_address,
-        "zone": factory.make_string,
-        "owner": factory.make_string,
-    }
+    scenarios = scenarios
 
     def test_GET_query_prev_next_URIs_preserve_query_params(self):
         expected_uri_path = reverse("events_handler")
 
         # Build a query dict for the given combination of params.
-        request_params = {
-            param: self.factories[param]() for param in self.params
+        factories = {
+            "after": lambda: str(randint(1, 6)),
+            "agent_name": factory.make_string,
+            "domain": factory.make_string,
+            "hostname": factory.make_string,
+            "id": factory.make_string,
+            "level": lambda: random.choice(
+                ("CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG")
+            ),
+            "limit": lambda: str(randint(1, 6)),
+            "mac_address": factory.make_mac_address,
+            "zone": factory.make_string,
+            "owner": factory.make_string,
         }
+        request_params = {param: factories[param]() for param in self.params}
 
         # Ensure that op is always included.
         request_params["op"] = "query"

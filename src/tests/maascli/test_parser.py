@@ -3,7 +3,7 @@
 
 import sys
 
-from fixtures import EnvironmentVariableFixture
+import pytest
 
 from maascli.parser import (
     ArgumentParser,
@@ -11,48 +11,47 @@ from maascli.parser import (
     prepare_parser,
 )
 from maastesting.factory import factory
-from maastesting.testcase import MAASTestCase
 
 
-class TestArgumentParser(MAASTestCase):
+class TestArgumentParser:
     """Tests for `ArgumentParser`."""
 
-    def setUp(self):
-        new_home = self.make_dir()
-        self.useFixture(EnvironmentVariableFixture("HOME", new_home))
-        return super().setUp()
+    @pytest.fixture(autouse=True)
+    def _setup(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HOME", str(tmp_path))
 
     def test_add_subparsers_single_only(self):
         parser = ArgumentParser()
         parser.add_subparsers()
-        self.assertRaises(AssertionError, parser.add_subparsers)
+        with pytest.raises(AssertionError):
+            parser.add_subparsers()
 
     def test_add_subparsers_returns_subparsers(self):
         parser = ArgumentParser()
         added_subparsers = parser.add_subparsers()
-        self.assertIs(added_subparsers, parser.subparsers)
+        assert added_subparsers is parser.subparsers
 
     def test_subparsers_property(self):
         parser = ArgumentParser()
         # argparse.ArgumentParser.add_subparsers populates a _subparsers
         # attribute when called. Its contents are not the same as the return
         # value from add_subparsers, so we just use it an indicator here.
-        self.assertIsNone(parser._subparsers)
+        assert parser._subparsers is None
         # Reference the subparsers property.
         subparsers = parser.subparsers
         # _subparsers is populated, meaning add_subparsers has been called on
         # the superclass.
-        self.assertIsNotNone(parser._subparsers)
+        assert parser._subparsers is not None
         # The subparsers property, once populated, always returns the same
         # object.
-        self.assertIs(subparsers, parser.subparsers)
+        assert subparsers is parser.subparsers
 
-    def test_bad_arguments_prints_help_to_stderr(self):
+    def test_bad_arguments_prints_help_to_stderr(self, mocker):
         argv = ["maas", factory.make_name(prefix="profile"), "nodes"]
         parser = prepare_parser(argv)
-        mock_print_help = self.patch(ArgumentParser, "print_help")
-        self.patch(sys.exit)
-        self.patch(ArgumentParser, "_print_error")
+        mock_print_help = mocker.patch.object(ArgumentParser, "print_help")
+        mocker.patch.object(sys, "exit")
+        mocker.patch.object(ArgumentParser, "_print_error")
         # We need to catch this TypeError, because after our overridden error()
         # method is called, argparse expects the system to exit. Without
         # catching it, when we mock sys.exit() it will continue unexpectedly
@@ -63,12 +62,12 @@ class TestArgumentParser(MAASTestCase):
             pass
         mock_print_help.assert_called_with(sys.stderr)
 
-    def test_bad_arguments_calls_sys_exit_2(self):
+    def test_bad_arguments_calls_sys_exit_2(self, mocker):
         argv = ["maas", factory.make_name(prefix="profile"), "nodes"]
         parser = prepare_parser(argv)
-        self.patch(ArgumentParser, "print_help")
-        mock_exit = self.patch(sys.exit)
-        self.patch(ArgumentParser, "_print_error")
+        mocker.patch.object(ArgumentParser, "print_help")
+        mock_exit = mocker.patch.object(sys, "exit")
+        mocker.patch.object(ArgumentParser, "_print_error")
         # We need to catch this TypeError, because after our overridden error()
         # method is called, argparse expects the system to exit. Without
         # catching it, when we mock sys.exit() it will continue unexpectedly
@@ -80,7 +79,7 @@ class TestArgumentParser(MAASTestCase):
         mock_exit.assert_called_with(2)
 
 
-class TestGetDeepestSubparser(MAASTestCase):
+class TestGetDeepestSubparser:
     def test_no_argv(self):
         parser = ArgumentParser()
         assert get_deepest_subparser(parser, []) is parser

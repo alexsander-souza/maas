@@ -8,7 +8,6 @@ import http.client
 import json
 from pathlib import Path
 import sys
-import tempfile
 from textwrap import dedent
 from unittest.mock import Mock, sentinel
 from urllib.parse import parse_qs, urlparse
@@ -25,17 +24,21 @@ from maascli.parser import ArgumentParser, get_deepest_subparser
 from maascli.testing.config import FakeConfig, make_configs, make_profile
 from maascli.utils import handler_command_name, safe_name
 from maastesting.factory import factory
-from maastesting.fixtures import CaptureStandardIO
-from maastesting.testcase import MAASTestCase
 from provisioningserver.testing.certificates import get_sample_cert
 
 
-class TestRegisterAPICommands(MAASTestCase):
+class TestRegisterAPICommands:
     """Tests for `register_api_commands`."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, mocker):
+        self.mocker = mocker
 
     def make_profile(self):
         """Fake a profile."""
-        self.patch(ProfileConfig, "open").return_value = make_configs()
+        self.mocker.patch.object(
+            ProfileConfig, "open"
+        ).return_value = make_configs()
         return ProfileConfig.open.return_value
 
     def make_sshkeys_profile(self):
@@ -60,16 +63,18 @@ class TestRegisterAPICommands(MAASTestCase):
         }
         results = {}
         results[name] = FakeConfig(profile)
-        self.patch(ProfileConfig, "open").return_value = FakeConfig(results)
+        self.mocker.patch.object(
+            ProfileConfig, "open"
+        ).return_value = FakeConfig(results)
         return ProfileConfig.open.return_value
 
     def test_registers_subparsers(self):
         profile_name = list(self.make_profile().keys())[0]
         parser = ArgumentParser()
-        self.assertIsNone(parser._subparsers)
+        assert parser._subparsers is None
         api.register_api_commands(parser)
-        self.assertIsNotNone(parser._subparsers)
-        self.assertIsNotNone(parser.subparsers.choices[profile_name])
+        assert parser._subparsers is not None
+        assert parser.subparsers.choices[profile_name] is not None
 
     def test_handlers_registered_using_correct_names(self):
         profile = self.make_profile()
@@ -91,7 +96,7 @@ class TestRegisterAPICommands(MAASTestCase):
                 options = parser.parse_args(
                     (profile_name, handler_name, action_name)
                 )
-                self.assertIsInstance(options.execute, api.Action)
+                assert isinstance(options.execute, api.Action)
 
     def test_parser_includes_data_arg(self):
         profile = self.make_profile()
@@ -112,7 +117,7 @@ class TestRegisterAPICommands(MAASTestCase):
         positional_action_names = [
             x.dest for x in subparser._get_positional_actions()
         ]
-        self.assertIn("data", positional_action_names)
+        assert "data" in positional_action_names
 
     def test_parser_omits_data_arg(self):
         profile = self.make_profile()
@@ -133,7 +138,7 @@ class TestRegisterAPICommands(MAASTestCase):
         positional_action_names = [
             x.dest for x in subparser._get_positional_actions()
         ]
-        self.assertNotIn("data", positional_action_names)
+        assert "data" not in positional_action_names
 
     def test_parser_sshkeys_keysource_name_value_pair_function(self):
         profile = self.make_sshkeys_profile()
@@ -150,23 +155,21 @@ class TestRegisterAPICommands(MAASTestCase):
         positional_action_type = [
             x.type for x in subparser._get_positional_actions()
         ]
-        self.assertIn(
-            SSHKeysImportAction.name_value_pair, positional_action_type
-        )
+        assert SSHKeysImportAction.name_value_pair in positional_action_type
 
 
-class TestFunctions(MAASTestCase):
+class TestFunctions:
     """Test for miscellaneous functions in `maascli.api`."""
 
-    def test_fetch_api_description(self):
+    def test_fetch_api_description(self, mocker):
         content = factory.make_name("content")
-        request = self.patch(httplib2.Http, "request")
+        request = mocker.patch.object(httplib2.Http, "request")
         response = httplib2.Response({})
         response.status = http.client.OK
         response["content-type"] = "application/json"
         request.return_value = response, bytes(json.dumps(content), "utf-8")
-        self.assertEqual(
-            content, api.fetch_api_description("http://example.com/api/2.0/")
+        assert content == api.fetch_api_description(
+            "http://example.com/api/2.0/"
         )
         request.assert_called_once_with(
             "http://example.com/api/2.0/describe/",
@@ -175,46 +178,40 @@ class TestFunctions(MAASTestCase):
             headers=None,
         )
 
-    def test_fetch_api_description_not_okay(self):
+    def test_fetch_api_description_not_okay(self, mocker):
         # If the response is not 200 OK, fetch_api_description throws toys.
         content = factory.make_name("content")
-        request = self.patch(httplib2.Http, "request")
+        request = mocker.patch.object(httplib2.Http, "request")
         response = httplib2.Response({})
         response.status = http.client.BAD_REQUEST
         response.reason = http.client.responses[http.client.BAD_REQUEST]
         request.return_value = response, json.dumps(content)
-        error = self.assertRaises(
-            CommandError,
-            api.fetch_api_description,
-            "http://example.com/api/2.0/",
-        )
+        with pytest.raises(CommandError) as exc_info:
+            api.fetch_api_description("http://example.com/api/2.0/")
         error_expected = "%d %s:\n%s" % (
             http.client.BAD_REQUEST,
             http.client.responses[http.client.BAD_REQUEST],
             json.dumps(content),
         )
-        self.assertEqual(error_expected, "%s" % error)
+        assert error_expected == "%s" % exc_info.value
 
-    def test_fetch_api_description_wrong_content_type(self):
+    def test_fetch_api_description_wrong_content_type(self, mocker):
         # If the response's content type is not application/json,
         # fetch_api_description throws toys again.
         content = factory.make_name("content")
-        request = self.patch(httplib2.Http, "request")
+        request = mocker.patch.object(httplib2.Http, "request")
         response = httplib2.Response({})
         response.status = http.client.OK
         response["content-type"] = "text/css"
         request.return_value = response, json.dumps(content)
-        error = self.assertRaises(
-            CommandError,
-            api.fetch_api_description,
-            "http://example.com/api/2.0/",
-        )
-        self.assertEqual(
-            "Expected application/json, got: text/css", "%s" % error
+        with pytest.raises(CommandError) as exc_info:
+            api.fetch_api_description("http://example.com/api/2.0/")
+        assert (
+            "Expected application/json, got: text/css" == "%s" % exc_info.value
         )
 
-    def test_http_request_raises_error_if_cert_verify_fails(self):
-        self.patch(
+    def test_http_request_raises_error_if_cert_verify_fails(self, mocker):
+        mocker.patch.object(
             httplib2.Http,
             "request",
             Mock(
@@ -224,18 +221,17 @@ class TestFunctions(MAASTestCase):
                 )
             ),
         )
-        error = self.assertRaises(
-            CommandError,
-            api.http_request,
-            factory.make_name("fake_url"),
-            factory.make_name("fake_method"),
-        )
+        with pytest.raises(CommandError) as exc_info:
+            api.http_request(
+                factory.make_name("fake_url"),
+                factory.make_name("fake_method"),
+            )
         error_expected = (
             "Certificate verification failed, use --insecure/-k to "
             "disable the certificate check.\n"
             "ssl.SSLCertVerificationError: [SSL: CERTIFICATE_VERIFY_FAILED]"
         )
-        self.assertEqual(error_expected, "%s" % error)
+        assert error_expected == "%s" % exc_info.value
 
     def test_get_action_class_returns_None_for_unknown_handler(self):
         handler = {
@@ -243,7 +239,7 @@ class TestFunctions(MAASTestCase):
             "handler_name": factory.make_name("handler"),
         }
         action = {"name": "create"}
-        self.assertIsNone(api.get_action_class(handler, action))
+        assert api.get_action_class(handler, action) is None
 
     def test_get_action_class_returns_BootResourcesCreateAction_class(self):
         # Test uses BootResourcesCreateAction as its know to exist.
@@ -252,17 +248,15 @@ class TestFunctions(MAASTestCase):
             "handler_name": "boot-resources",
         }
         action = {"name": "create"}
-        self.assertEqual(
-            BootResourcesCreateAction, api.get_action_class(handler, action)
+        assert BootResourcesCreateAction == api.get_action_class(
+            handler, action
         )
 
     def test_get_action_class_returns_SSHKeysImportAction_class(self):
         # Test uses SSHKeysImportAction as its know to exist.
         handler = {"name": "SSHKeysHandler", "handler_name": "sshkeys"}
         action = {"name": "import"}
-        self.assertEqual(
-            SSHKeysImportAction, api.get_action_class(handler, action)
-        )
+        assert SSHKeysImportAction == api.get_action_class(handler, action)
 
     def test_get_action_class_bases_returns_Action(self):
         handler = {
@@ -270,9 +264,7 @@ class TestFunctions(MAASTestCase):
             "handler_name": factory.make_name("handler"),
         }
         action = {"name": "create"}
-        self.assertEqual(
-            (api.Action,), api.get_action_class_bases(handler, action)
-        )
+        assert (api.Action,) == api.get_action_class_bases(handler, action)
 
     def test_get_action_class_bases_returns_BootResourcesCreateAction(self):
         # Test uses BootResourcesCreateAction as its know to exist.
@@ -281,52 +273,48 @@ class TestFunctions(MAASTestCase):
             "handler_name": "boot-resources",
         }
         action = {"name": "create"}
-        self.assertEqual(
-            (BootResourcesCreateAction,),
-            api.get_action_class_bases(handler, action),
+        assert (BootResourcesCreateAction,) == api.get_action_class_bases(
+            handler, action
         )
 
     def test_get_action_class_bases_returns_SSHKeysImportAction(self):
         # Test uses SSHKeysImportAction as its know to exist.
         handler = {"name": "SSHKeysHandler", "handler_name": "sshkeys"}
         action = {"name": "import"}
-        self.assertEqual(
-            (SSHKeysImportAction,), api.get_action_class_bases(handler, action)
+        assert (SSHKeysImportAction,) == api.get_action_class_bases(
+            handler, action
         )
 
     def test_materialize_certificate_profile_no_cacerts(self):
         profile = make_profile()
-        self.assertIsNone(api.materialize_certificate(profile))
+        assert api.materialize_certificate(profile) is None
 
     def test_materialize_certificate_profile_cacerts_is_none(self):
         profile = make_profile()
         profile["cacerts"] = None
-        self.assertIsNone(api.materialize_certificate(profile))
+        assert api.materialize_certificate(profile) is None
 
-    def test_materialize_certificate_creates_cacert_file(self):
+    def test_materialize_certificate_creates_cacert_file(self, tmp_path):
         profile = make_profile()
         sample_cert = get_sample_cert()
         cert = sample_cert.certificate_pem()
         profile["cacerts"] = cert
-        with tempfile.TemporaryDirectory() as tmp:
-            temp_dir = Path(tmp)
-            api.materialize_certificate(profile, tmp)
-            cert_path = temp_dir = temp_dir / (profile["name"] + ".pem")
-            self.assertEqual(cert, cert_path.open().read())
+        api.materialize_certificate(profile, tmp_path)
+        cert_path = tmp_path / (profile["name"] + ".pem")
+        assert cert == cert_path.open().read()
 
-    def test_materialize_certificate_should_return_existing_cert(self):
-        mock_write_cert = self.patch(Path, "write_text")
+    def test_materialize_certificate_should_return_existing_cert(
+        self, mocker, tmp_path
+    ):
+        mock_write_cert = mocker.patch.object(Path, "write_text")
         profile = make_profile()
-        with tempfile.TemporaryDirectory() as tmp:
-            cert_file = Path(tmp) / (profile["name"] + ".pem")
-            cert_file.touch()
-            self.assertEqual(
-                cert_file, api.materialize_certificate(profile, tmp)
-            )
-            mock_write_cert.assert_not_called()
+        cert_file = tmp_path / (profile["name"] + ".pem")
+        cert_file.touch()
+        assert cert_file == api.materialize_certificate(profile, tmp_path)
+        mock_write_cert.assert_not_called()
 
 
-class TestAction(MAASTestCase):
+class TestAction:
     """Tests for :class:`maascli.api.Action`."""
 
     def test_name_value_pair_returns_2_tuple(self):
@@ -336,75 +324,74 @@ class TestAction(MAASTestCase):
         # sequence is a tuple. Of any size. It does this in the name of
         # avoiding *string* input.
         result = api.Action.name_value_pair("foo=bar")
-        self.assertEqual(result, ("foo", "bar"))
+        assert result == ("foo", "bar")
 
     def test_name_value_pair_demands_two_parts(self):
-        self.assertRaises(CommandError, api.Action.name_value_pair, "foo bar")
+        with pytest.raises(CommandError):
+            api.Action.name_value_pair("foo bar")
 
     def test_name_value_pair_does_not_strip_whitespace(self):
-        self.assertEqual(
-            (" foo ", " bar "), api.Action.name_value_pair(" foo = bar ")
-        )
+        assert (" foo ", " bar ") == api.Action.name_value_pair(" foo = bar ")
 
-    def test_compare_api_hashes_prints_nothing_if_hashes_match(self):
+    def test_compare_api_hashes_prints_nothing_if_hashes_match(self, capsys):
         example_hash = factory.make_name("hash")
         profile = {"description": {"hash": example_hash}}
         response = {"x-maas-api-hash": example_hash}
-        with CaptureStandardIO() as stdio:
-            api.Action.compare_api_hashes(profile, response)
-        self.assertEqual(stdio.getOutput(), "")
-        self.assertEqual(stdio.getError(), "")
+        api.Action.compare_api_hashes(profile, response)
+        out, err = capsys.readouterr()
+        assert out == ""
+        assert err == ""
 
-    def test_compare_api_hashes_prints_nothing_if_remote_has_no_hash(self):
+    def test_compare_api_hashes_prints_nothing_if_remote_has_no_hash(
+        self, capsys
+    ):
         example_hash = factory.make_name("hash")
         profile = {"description": {"hash": example_hash}}
         response = {}
-        with CaptureStandardIO() as stdio:
-            api.Action.compare_api_hashes(profile, response)
-        self.assertEqual(stdio.getOutput(), "")
-        self.assertEqual(stdio.getError(), "")
+        api.Action.compare_api_hashes(profile, response)
+        out, err = capsys.readouterr()
+        assert out == ""
+        assert err == ""
 
-    def test_compare_api_hashes_prints_warning_if_local_has_no_hash(self):
+    def test_compare_api_hashes_prints_warning_if_local_has_no_hash(
+        self, capsys
+    ):
         example_hash = factory.make_name("hash")
         profile = {"description": {}}
         response = {"x-maas-api-hash": example_hash}
-        with CaptureStandardIO() as stdio:
-            api.Action.compare_api_hashes(profile, response)
-        self.assertEqual(stdio.getOutput(), "")
-        self.assertEqual(
-            stdio.getError(),
-            dedent(
-                """\
+        api.Action.compare_api_hashes(profile, response)
+        out, err = capsys.readouterr()
+        assert out == ""
+        assert err == dedent(
+            """\
         **********************************************************************
         *** WARNING! The API on the server differs from the description that
         *** is cached locally. This may result in failed API calls. Refresh
         *** the local API description with `maas refresh`.
         **********************************************************************
         """
-            ),
         )
 
-    def test_compare_api_hashes_prints_warning_if_hashes_dont_match(self):
+    def test_compare_api_hashes_prints_warning_if_hashes_dont_match(
+        self, capsys
+    ):
         example_hash = factory.make_name("hash")
         profile = {"description": {"hash": example_hash + "foo"}}
         response = {"x-maas-api-hash": example_hash + "bar"}
-        with CaptureStandardIO() as stdio:
-            api.Action.compare_api_hashes(profile, response)
-        self.assertEqual(stdio.getOutput(), "")
-        self.assertEqual(
-            stdio.getError(),
-            dedent(
-                """\
+        api.Action.compare_api_hashes(profile, response)
+        out, err = capsys.readouterr()
+        assert out == ""
+        assert err == dedent(
+            """\
         **********************************************************************
         *** WARNING! The API on the server differs from the description that
         *** is cached locally. This may result in failed API calls. Refresh
         *** the local API description with `maas refresh`.
         **********************************************************************
                 """
-            ),
         )
 
-    def test_action_call_materialize_certificate(self):
+    def test_action_call_materialize_certificate(self, mocker):
         handler = {
             "name": factory.make_name("handler"),
             "handler_name": factory.make_name("handler"),
@@ -439,12 +426,14 @@ class TestAction(MAASTestCase):
             }
         )
 
-        self.patch(api, "http_request").return_value = (response, {})
-        mock_materializer = self.patch(api, "materialize_certificate")
+        mocker.patch.object(api, "http_request").return_value = (response, {})
+        mock_materializer = mocker.patch.object(api, "materialize_certificate")
         mock_materializer.return_value = None
 
-        self.patch(action_parser, "compare_api_hashes").return_value = None
-        self.patch(utils, "print_response_content")
+        mocker.patch.object(
+            action_parser, "compare_api_hashes"
+        ).return_value = None
+        mocker.patch.object(utils, "print_response_content")
         action_parser(options)
         mock_materializer.assert_called_once()
 
@@ -467,12 +456,12 @@ class TestAction(MAASTestCase):
         parser = ArgumentParser()
         action_parser = action_class(parser)
 
-        self.assertEqual(
-            "http://localhost:5240/MAAS/api/2.0/resource", action_parser.uri
+        assert (
+            "http://localhost:5240/MAAS/api/2.0/resource" == action_parser.uri
         )
 
 
-class TestActionHelp(MAASTestCase):
+class TestActionHelp:
     def make_help(self):
         """Create an `ActionHelp` object."""
         option_strings = []
@@ -492,46 +481,41 @@ class TestActionHelp(MAASTestCase):
         return ""
 
     def test_get_positional_args_returns_empty_list_if_no_args(self):
-        self.assertEqual(
-            [], api.ActionHelp.get_positional_args(ArgumentParser())
-        )
+        assert [] == api.ActionHelp.get_positional_args(ArgumentParser())
 
     def test_get_positional_args_lists_arguments(self):
         option = factory.make_name("opt", sep="_")
         parser = ArgumentParser()
         parser.add_argument(option)
-        self.assertEqual([option], api.ActionHelp.get_positional_args(parser))
+        assert [option] == api.ActionHelp.get_positional_args(parser)
 
     def test_get_positional_args_omits_final_data_arg(self):
         parser = ArgumentParser()
         option = factory.make_name("opt", sep="_")
         parser.add_argument(option)
         parser.add_argument("data")
-        self.assertEqual([option], api.ActionHelp.get_positional_args(parser))
+        assert [option] == api.ActionHelp.get_positional_args(parser)
 
     def test_get_positional_args_includes_other_arg(self):
         parser = ArgumentParser()
         parser.add_argument("data")
         option = factory.make_name("opt", sep="_")
         parser.add_argument(option)
-        self.assertEqual(
-            ["data", option], api.ActionHelp.get_positional_args(parser)
-        )
+        assert ["data", option] == api.ActionHelp.get_positional_args(parser)
 
     def test_get_positional_args_returns_empty_if_data_is_only_arg(self):
         parser = ArgumentParser()
         parser.add_argument("data")
-        self.assertEqual([], api.ActionHelp.get_positional_args(parser))
+        assert [] == api.ActionHelp.get_positional_args(parser)
 
     def test_get_positional_args_ignores_optional_args(self):
         parser = ArgumentParser()
         parser.add_argument("--option")
-        self.assertEqual([], api.ActionHelp.get_positional_args(parser))
+        assert [] == api.ActionHelp.get_positional_args(parser)
 
     def test_get_optional_args_returns_empty_if_no_args(self):
-        self.assertEqual(
-            [],
-            api.ActionHelp.get_optional_args(ArgumentParser(add_help=False)),
+        assert [] == api.ActionHelp.get_optional_args(
+            ArgumentParser(add_help=False)
         )
 
     def test_get_optional_args_returns_optional_args(self):
@@ -539,20 +523,16 @@ class TestActionHelp(MAASTestCase):
         parser = ArgumentParser(add_help=False)
         parser.add_argument(option)
         args = api.ActionHelp.get_optional_args(parser)
-        self.assertEqual(
-            [[option]], [action.option_strings for action in args]
-        )
+        assert [[option]] == [action.option_strings for action in args]
 
     def test_compose_positional_args_returns_empty_if_no_args(self):
-        self.assertEqual(
-            [], api.ActionHelp.compose_positional_args(ArgumentParser())
-        )
+        assert [] == api.ActionHelp.compose_positional_args(ArgumentParser())
 
     def test_compose_positional_args_describes_positional_args(self):
         arg = factory.make_name("arg", sep="_")
         parser = ArgumentParser()
         parser.add_argument(arg)
-        self.assertEqual(
+        assert (
             dedent(
                 """\
 
@@ -561,67 +541,52 @@ class TestActionHelp(MAASTestCase):
                 \t%s
                 """.rstrip()
             )
-            % arg,
-            "\n".join(api.ActionHelp.compose_positional_args(parser)),
-        )
+            % arg
+        ) == "\n".join(api.ActionHelp.compose_positional_args(parser))
 
     def test_compose_positional_args_does_not_end_with_newline(self):
         arg = factory.make_name("arg", sep="_")
         parser = ArgumentParser()
         parser.add_argument(arg)
-        self.assertFalse(
-            "\n".join(api.ActionHelp.compose_positional_args(parser)).endswith(
-                "\n"
-            )
-        )
+        assert not "\n".join(
+            api.ActionHelp.compose_positional_args(parser)
+        ).endswith("\n")
 
     def test_compose_epilog_returns_empty_if_no_epilog(self):
-        self.assertEqual([], api.ActionHelp.compose_epilog(ArgumentParser()))
+        assert [] == api.ActionHelp.compose_epilog(ArgumentParser())
 
     def test_compose_epilog_returns_empty_if_epilog_is_empty(self):
-        self.assertEqual(
-            [], api.ActionHelp.compose_epilog(ArgumentParser(epilog=""))
-        )
+        assert [] == api.ActionHelp.compose_epilog(ArgumentParser(epilog=""))
 
     def test_compose_epilog_returns_empty_if_epilog_is_whitespace(self):
-        self.assertEqual(
-            [], api.ActionHelp.compose_epilog(ArgumentParser(epilog="  \n"))
+        assert [] == api.ActionHelp.compose_epilog(
+            ArgumentParser(epilog="  \n")
         )
 
     def test_compose_epilog_returns_epilog(self):
         epilog = factory.make_name("epi")
-        self.assertEqual(
-            "\n\n%s" % epilog,
-            "\n".join(
-                api.ActionHelp.compose_epilog(ArgumentParser(epilog=epilog))
-            ),
+        assert ("\n\n%s" % epilog) == "\n".join(
+            api.ActionHelp.compose_epilog(ArgumentParser(epilog=epilog))
         )
 
     def test_compose_epilog_preserves_indentation(self):
         indent = " " * 8
         epilog = indent + factory.make_name("epi")
-        self.assertEqual(
-            "\n\n%s" % epilog,
-            "\n".join(
-                api.ActionHelp.compose_epilog(ArgumentParser(epilog=epilog))
-            ),
+        assert ("\n\n%s" % epilog) == "\n".join(
+            api.ActionHelp.compose_epilog(ArgumentParser(epilog=epilog))
         )
 
     def test_compose_epilog_explains_documented_keyword_args(self):
         epilog = ":param foo: The amount of foo."
-        self.assertEqual(
-            f"\n\n{api.ActionHelp.keyword_args_help}\n{epilog}",
-            "\n".join(
-                api.ActionHelp.compose_epilog(ArgumentParser(epilog=epilog))
-            ),
+        assert (
+            f"\n\n{api.ActionHelp.keyword_args_help}\n{epilog}"
+        ) == "\n".join(
+            api.ActionHelp.compose_epilog(ArgumentParser(epilog=epilog))
         )
 
     def test_compose_optional_args_returns_empty_if_none_defined(self):
-        self.assertEqual(
-            [],
-            api.ActionHelp.compose_optional_args(
-                ArgumentParser(add_help=False)
-            ),
+        assert [] == api.ActionHelp.compose_optional_args(
+            ArgumentParser(add_help=False)
         )
 
     def test_compose_optional_args_describes_optional_args(self):
@@ -639,9 +604,8 @@ class TestActionHelp(MAASTestCase):
             \t%s
             """
         ) % (", ".join([long_option, short_option]), option_help)
-        self.assertEqual(
-            expected_text.rstrip(),
-            "\n".join(api.ActionHelp.compose_optional_args(parser)),
+        assert expected_text.rstrip() == "\n".join(
+            api.ActionHelp.compose_optional_args(parser)
         )
 
     def test_compose_shows_at_least_usage_and_description(self):
@@ -650,7 +614,7 @@ class TestActionHelp(MAASTestCase):
         parser = ArgumentParser(
             usage=usage, description=description, add_help=False
         )
-        self.assertEqual(
+        assert (
             dedent(
                 """\
                 usage: %s
@@ -658,15 +622,14 @@ class TestActionHelp(MAASTestCase):
                 %s
                 """
             ).rstrip()
-            % (usage, description),
-            api.ActionHelp.compose(parser),
-        )
+            % (usage, description)
+        ) == api.ActionHelp.compose(parser)
 
-    def test_call_exits(self):
+    def test_call_exits(self, mocker):
         parser = ArgumentParser(description=factory.make_string())
         action_help = self.make_help()
-        self.patch(sys, "exit")
-        self.patch(api, "print")
+        mocker.patch.object(sys, "exit")
+        mocker.patch.object(api, "print")
         action_help(
             parser,
             self.make_namespace(),
@@ -675,7 +638,7 @@ class TestActionHelp(MAASTestCase):
         )
         sys.exit.assert_called_once_with(0)
 
-    def test_call_shows_full_enchilada(self):
+    def test_call_shows_full_enchilada(self, mocker):
         usage = factory.make_name("usage")
         description = factory.make_name("description")
         epilog = dedent(
@@ -727,8 +690,8 @@ class TestActionHelp(MAASTestCase):
             % params
         )
         action_help = self.make_help()
-        self.patch(sys, "exit")
-        self.patch(api, "print")
+        mocker.patch.object(sys, "exit")
+        mocker.patch.object(api, "print")
 
         # Invoke ActionHelp.__call__, so we can see what it prints.
         action_help(

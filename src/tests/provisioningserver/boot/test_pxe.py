@@ -6,10 +6,10 @@
 from collections import OrderedDict
 import re
 
+import pytest
 from twisted.python.filepath import FilePath
 
 from maastesting.factory import factory
-from maastesting.testcase import MAASTestCase
 from provisioningserver import kernel_opts
 from provisioningserver.boot import BytesReader
 from provisioningserver.boot.pxe import (
@@ -43,12 +43,22 @@ def compose_config_path(mac: str) -> TFTPPath:
     ).encode("ascii")
 
 
-class TestPXEBootMethod(MAASTestCase):
+class TestPXEBootMethod:
+    @pytest.fixture(autouse=True)
+    def _setup(self, tmp_path):
+        tftproot = tmp_path / "tftp"
+        tftproot.mkdir()
+        self._tftp_root = FilePath(str(tftproot))
+        self._config_fixture = ClusterConfigurationFixture(
+            tftp_root=str(tftproot)
+        )
+        self._config_fixture.setUp()
+        yield
+        self._config_fixture.cleanUp()
+
     def make_tftp_root(self):
-        """Set, and return, a temporary TFTP root directory."""
-        tftproot = self.make_dir()
-        self.useFixture(ClusterConfigurationFixture(tftp_root=tftproot))
-        return FilePath(tftproot)
+        """Return the TFTP root directory set up by _setup."""
+        return self._tftp_root
 
     def make_dummy_bootloader_sources(self, destination, loader_names):
         """install_bootloader requires real files to exist, this method
@@ -64,37 +74,37 @@ class TestPXEBootMethod(MAASTestCase):
 
     def test_compose_config_path_follows_maas_pxe_directory_layout(self):
         mac = factory.make_mac_address("-")
-        self.assertEqual(
-            f"pxelinux.cfg/{ARP_HTYPE.ETHERNET:02x}-{mac}",
-            compose_config_path(mac).decode("ascii"),
+        assert (
+            f"pxelinux.cfg/{ARP_HTYPE.ETHERNET:02x}-{mac}"
+            == compose_config_path(mac).decode("ascii")
         )
 
     def test_compose_config_path_does_not_include_tftp_root(self):
         tftproot = self.make_tftp_root().asBytesMode()
         mac = factory.make_mac_address("-")
         config_path = compose_config_path(mac)
-        self.assertFalse(config_path.startswith(tftproot.path))
+        assert not config_path.startswith(tftproot.path)
 
     def test_bootloader_path(self):
         method = PXEBootMethod()
-        self.assertEqual("lpxelinux.0", method.bootloader_path)
+        assert "lpxelinux.0" == method.bootloader_path
 
     def test_bootloader_path_does_not_include_tftp_root(self):
         tftproot = self.make_tftp_root()
         method = PXEBootMethod()
-        self.assertFalse(method.bootloader_path.startswith(tftproot.path))
+        assert not method.bootloader_path.startswith(tftproot.path)
 
     def test_name(self):
         method = PXEBootMethod()
-        self.assertEqual("pxe", method.name)
+        assert "pxe" == method.name
 
     def test_template_subdir(self):
         method = PXEBootMethod()
-        self.assertEqual("pxe", method.template_subdir)
+        assert "pxe" == method.template_subdir
 
     def test_arch_octet(self):
         method = PXEBootMethod()
-        self.assertEqual("00:00", method.arch_octet)
+        assert "00:00" == method.arch_octet
 
 
 def parse_pxe_config(text):
@@ -127,45 +137,45 @@ def parse_pxe_config(text):
     return result
 
 
-class TestParsePXEConfig(MAASTestCase):
+class TestParsePXEConfig:
     """Tests for `parse_pxe_config`."""
 
     def test_parse_with_no_header(self):
         config = parse_pxe_config("LABEL foo\nOPTION setting")
-        self.assertEqual({"foo": {"OPTION": "setting"}}, config)
-        self.assertEqual({}, config.header)
+        assert {"foo": {"OPTION": "setting"}} == config
+        assert {} == config.header
 
     def test_parse_with_no_labels(self):
         config = parse_pxe_config("OPTION setting")
-        self.assertEqual({"OPTION": "setting"}, config.header)
-        self.assertEqual({}, config)
+        assert {"OPTION": "setting"} == config.header
+        assert {} == config
 
 
-class TestPXEBootMethodRender(MAASTestCase):
+class TestPXEBootMethodRender:
     """Tests for `provisioningserver.boot.pxe.PXEBootMethod.render`."""
 
     def test_get_reader_install(self):
         # Given the right configuration options, the PXE configuration is
         # correctly rendered.
         method = PXEBootMethod()
-        params = make_kernel_parameters(self, purpose="xinstall")
+        params = make_kernel_parameters(purpose="xinstall")
         fs_host = re.escape(
             f"http://{convert_host_to_uri_str(params.fs_host)}:5248/images"
         )
         output = method.get_reader(backend=None, kernel_params=params)
         # The output is a BytesReader.
-        self.assertIsInstance(output, BytesReader)
+        assert isinstance(output, BytesReader)
         output = output.read(10000).decode("utf-8")
         # The template has rendered without error. PXELINUX configurations
         # typically start with a DEFAULT line.
-        self.assertTrue(output.startswith("DEFAULT "))
+        assert output.startswith("DEFAULT ")
         # The PXE parameters are all set according to the options.
         for regex in [
             rf"(?ms).*^\s+KERNEL {fs_host}/{params.kernel}$",
             rf"(?ms).*^\s+INITRD {fs_host}/{params.initrd}$",
             r"(?ms).*^\s+APPEND .+?$",
         ]:
-            self.assertRegex(output, regex)
+            assert re.search(regex, output)
 
     def test_get_reader_install_mustang_dtb(self):
         # Architecture specific test.
@@ -173,7 +183,6 @@ class TestPXEBootMethodRender(MAASTestCase):
         # correctly rendered for Mustang.
         method = PXEBootMethod()
         params = make_kernel_parameters(
-            testcase=self,
             osystem="ubuntu",
             arch="arm64",
             subarch="xgene-uboot-mustang",
@@ -181,11 +190,11 @@ class TestPXEBootMethodRender(MAASTestCase):
         )
         output = method.get_reader(backend=None, kernel_params=params)
         # The output is a BytesReader.
-        self.assertIsInstance(output, BytesReader)
+        assert isinstance(output, BytesReader)
         output = output.read(10000).decode("utf-8")
         # The template has rendered without error. PXELINUX configurations
         # typically start with a DEFAULT line.
-        self.assertTrue(output.startswith("DEFAULT "))
+        assert output.startswith("DEFAULT ")
         # The PXE parameters are all set according to the options.
         for regex in [
             rf"(?ms).*^\s+KERNEL {params.kernel}$",
@@ -193,7 +202,7 @@ class TestPXEBootMethodRender(MAASTestCase):
             rf"(?ms).*^\s+FDT {params.boot_dtb}$",
             r"(?ms).*^\s+APPEND .+?$",
         ]:
-            self.assertRegex(output, regex)
+            assert re.search(regex, output)
 
     def test_get_reader_xinstall_mustang_dtb(self):
         # Architecture specific test.
@@ -201,7 +210,6 @@ class TestPXEBootMethodRender(MAASTestCase):
         # correctly rendered for Mustang.
         method = PXEBootMethod()
         params = make_kernel_parameters(
-            testcase=self,
             osystem="ubuntu",
             arch="arm64",
             subarch="xgene-uboot-mustang",
@@ -209,11 +217,11 @@ class TestPXEBootMethodRender(MAASTestCase):
         )
         output = method.get_reader(backend=None, kernel_params=params)
         # The output is a BytesReader.
-        self.assertIsInstance(output, BytesReader)
+        assert isinstance(output, BytesReader)
         output = output.read(10000).decode("utf-8")
         # The template has rendered without error. PXELINUX configurations
         # typically start with a DEFAULT line.
-        self.assertTrue(output.startswith("DEFAULT "))
+        assert output.startswith("DEFAULT ")
         # The PXE parameters are all set according to the options.
         for regex in [
             rf"(?ms).*^\s+KERNEL {params.kernel}$",
@@ -221,14 +229,14 @@ class TestPXEBootMethodRender(MAASTestCase):
             rf"(?ms).*^\s+FDT {params.boot_dtb}$",
             r"(?ms).*^\s+APPEND .+?$",
         ]:
-            self.assertRegex(output, regex)
+            assert re.search(regex, output)
 
     def test_get_reader_with_extra_arguments_does_not_affect_output(self):
         # get_reader() allows any keyword arguments as a safety valve.
         method = PXEBootMethod()
         options = {
             "backend": None,
-            "kernel_params": make_kernel_parameters(self, purpose="install"),
+            "kernel_params": make_kernel_parameters(purpose="install"),
         }
         # Capture the output before sprinking in some random options.
         output_before = method.get_reader(**options).read(10000)
@@ -240,7 +248,7 @@ class TestPXEBootMethodRender(MAASTestCase):
         # Capture the output after sprinking in some random options.
         output_after = method.get_reader(**options).read(10000)
         # The generated template is the same.
-        self.assertEqual(output_before, output_after)
+        assert output_before == output_after
 
     def test_get_reader_with_local_purpose(self):
         # If purpose is "local", the config.localboot.template should be
@@ -251,7 +259,7 @@ class TestPXEBootMethodRender(MAASTestCase):
             "kernel_params": make_kernel_parameters(purpose="local"),
         }
         output = method.get_reader(**options).read(10000)
-        self.assertIn(b"LOCALBOOT 0", output)
+        assert b"LOCALBOOT 0" in output
 
     def test_get_reader_with_local_purpose_i386_arch(self):
         # Intel i386 is a special case and needs to use the chain.c32
@@ -264,8 +272,8 @@ class TestPXEBootMethodRender(MAASTestCase):
             ),
         }
         output = method.get_reader(**options).read(10000)
-        self.assertIn(b"chain.c32", output)
-        self.assertNotIn(b"LOCALBOOT", output)
+        assert b"chain.c32" in output
+        assert b"LOCALBOOT" not in output
 
     def test_get_reader_with_local_purpose_amd64_arch(self):
         # Intel amd64 is a special case and needs to use the chain.c32
@@ -278,21 +286,24 @@ class TestPXEBootMethodRender(MAASTestCase):
             ),
         }
         output = method.get_reader(**options).read(10000)
-        self.assertIn(b"chain.c32", output)
-        self.assertNotIn(b"LOCALBOOT", output)
+        assert b"chain.c32" in output
+        assert b"LOCALBOOT" not in output
 
 
-class TestPXEBootMethodRenderConfigScenarios(MAASTestCase):
+class TestPXEBootMethodRenderConfigScenarios:
     """Tests for `provisioningserver.boot.pxe.PXEBootMethod.render_config`."""
 
-    scenarios = [
-        ("commissioning", dict(purpose="commissioning")),
-        ("xinstall", dict(purpose="xinstall")),
-    ]
-
-    def test_get_reader_scenarios(self):
+    @pytest.mark.parametrize(
+        "purpose",
+        ["commissioning", "xinstall"],
+        ids=["commissioning", "xinstall"],
+    )
+    def test_get_reader_scenarios(self, purpose, mocker):
         method = PXEBootMethod()
-        get_ephemeral_name = self.patch(kernel_opts, "get_ephemeral_name")
+        get_ephemeral_name = mocker.patch(
+            "provisioningserver.kernel_opts.get_ephemeral_name",
+            create=True,
+        )
         get_ephemeral_name.return_value = factory.make_name("ephemeral")
         osystem = factory.make_name("osystem")
         arch = factory.make_name("arch")
@@ -300,12 +311,11 @@ class TestPXEBootMethodRenderConfigScenarios(MAASTestCase):
         options = {
             "backend": None,
             "kernel_params": make_kernel_parameters(
-                testcase=self,
                 osystem=osystem,
                 kernel_osystem=osystem,
                 subarch=subarch,
                 arch=arch,
-                purpose=self.purpose,
+                purpose=purpose,
             ),
         }
         fs_host = f"http://{convert_host_to_uri_str(options['kernel_params'].fs_host)}:5248/images"
@@ -313,26 +323,28 @@ class TestPXEBootMethodRenderConfigScenarios(MAASTestCase):
         config = parse_pxe_config(output)
         # The default section is defined.
         default_section_label = config.header["DEFAULT"]
-        self.assertIn(default_section_label, config)
+        assert default_section_label in config
         default_section = dict(config[default_section_label])
 
-        self.assertEqual(
-            f"{fs_host}/{options['kernel_params'].kernel}",
-            default_section["KERNEL"],
+        assert (
+            f"{fs_host}/{options['kernel_params'].kernel}"
+            == default_section["KERNEL"]
         )
-        self.assertEqual(
-            f"{fs_host}/{options['kernel_params'].initrd}",
-            default_section["INITRD"],
+        assert (
+            f"{fs_host}/{options['kernel_params'].initrd}"
+            == default_section["INITRD"]
         )
-        self.assertEqual("2", default_section["IPAPPEND"])
+        assert "2" == default_section["IPAPPEND"]
 
 
-class TestPXEBootMethodRenderConfigScenariosEnlist(MAASTestCase):
-    def test_get_reader_scenarios(self):
+class TestPXEBootMethodRenderConfigScenariosEnlist:
+    def test_get_reader_scenarios(self, mocker):
         # The commissioning config uses an extra PXELINUX module to auto
         # select between i386 and amd64.
         method = PXEBootMethod()
-        get_ephemeral_name = self.patch(kernel_opts, "get_ephemeral_name")
+        get_ephemeral_name = mocker.patch.object(
+            kernel_opts, "get_ephemeral_name", create=True
+        )
         get_ephemeral_name.return_value = factory.make_name("ephemeral")
         osystem = factory.make_name("osystem")
         release = factory.make_name("release")
@@ -340,7 +352,6 @@ class TestPXEBootMethodRenderConfigScenariosEnlist(MAASTestCase):
         options = {
             "backend": None,
             "kernel_params": make_kernel_parameters(
-                testcase=self,
                 osystem=osystem,
                 release=release,
                 label=label,
@@ -356,38 +367,34 @@ class TestPXEBootMethodRenderConfigScenariosEnlist(MAASTestCase):
         config = parse_pxe_config(output)
         # The default section is defined.
         default_section_label = config.header["DEFAULT"]
-        self.assertIn(default_section_label, config)
+        assert default_section_label in config
         default_section = config[default_section_label]
         # The default section uses the ifcpu64 module, branching to the "i386"
         # or "amd64" labels accordingly.
-        self.assertEqual("ifcpu64.c32", default_section["KERNEL"])
-        self.assertEqual(
-            ["amd64", "--", "i386"], default_section["APPEND"].split()
-        )
+        assert "ifcpu64.c32" == default_section["KERNEL"]
+        assert ["amd64", "--", "i386"] == default_section["APPEND"].split()
         # Both "i386" and "amd64" sections exist.
-        self.assertIn("i386", config)
-        self.assertIn("amd64", config)
+        assert "i386" in config
+        assert "amd64" in config
 
         # Each section defines KERNEL, INITRD, and APPEND settings.  The
         # KERNEL and INITRD ones contain paths referring to their
         # architectures.
         for section_label in ("i386", "amd64"):
             section = config[section_label]
-            self.assertGreaterEqual(
-                section.keys(), {"KERNEL", "INITRD", "APPEND"}
+            assert section.keys() >= {"KERNEL", "INITRD", "APPEND"}
+            assert (
+                f"{fs_host}/{options['kernel_params'].kernel}"
+                == section["KERNEL"]
             )
-            self.assertEqual(
-                f"{fs_host}/{options['kernel_params'].kernel}",
-                section["KERNEL"],
+            assert (
+                f"{fs_host}/{options['kernel_params'].initrd}"
+                == section["INITRD"]
             )
-            self.assertEqual(
-                f"{fs_host}/{options['kernel_params'].initrd}",
-                section["INITRD"],
-            )
-            self.assertIn("APPEND", section)
+            assert "APPEND" in section
 
 
-class TestPXEBootMethodRegex(MAASTestCase):
+class TestPXEBootMethodRegex:
     """Tests for `provisioningserver.boot.pxe.PXEBootMethod.re_config_file`."""
 
     @staticmethod
@@ -413,8 +420,8 @@ class TestPXEBootMethodRegex(MAASTestCase):
         for iteration in range(10):  # noqa: B007
             config_path, args = self.get_example_path_and_components()
             match = re_config_file.match(config_path)
-            self.assertIsNotNone(match, config_path)
-            self.assertEqual(args, match.groupdict())
+            assert match is not None, config_path
+            assert args == match.groupdict()
 
     def test_re_config_file_with_leading_slash(self):
         # The regular expression for extracting components of the file path
@@ -424,8 +431,8 @@ class TestPXEBootMethodRegex(MAASTestCase):
         # Ensure there's a leading slash.
         config_path = b"/" + config_path.lstrip(b"/")
         match = re_config_file.match(config_path)
-        self.assertIsNotNone(match, config_path)
-        self.assertEqual(args, match.groupdict())
+        assert match is not None, config_path
+        assert args == match.groupdict()
 
     def test_re_config_file_without_leading_slash(self):
         # The regular expression for extracting components of the file path
@@ -435,78 +442,73 @@ class TestPXEBootMethodRegex(MAASTestCase):
         # Ensure there's no leading slash.
         config_path = config_path.lstrip(b"/")
         match = re_config_file.match(config_path)
-        self.assertIsNotNone(match, config_path)
-        self.assertEqual(args, match.groupdict())
+        assert match is not None, config_path
+        assert args == match.groupdict()
 
     def test_re_config_file_matches_classic_pxelinux_cfg(self):
         # The default config path is simply "pxelinux.cfg" (without
         # leading slash).  The regex matches this.
         mac = b"aa-bb-cc-dd-ee-ff"
         match = re_config_file.match(b"pxelinux.cfg/01-%s" % mac)
-        self.assertIsNotNone(match)
-        self.assertDictEqual(
-            {"mac": mac, "hardware_uuid": None, "arch": None, "subarch": None},
-            match.groupdict(),
-        )
+        assert match is not None
+        assert {
+            "mac": mac,
+            "hardware_uuid": None,
+            "arch": None,
+            "subarch": None,
+        } == match.groupdict()
 
     def test_re_config_file_matches_pxelinux_cfg_with_leading_slash(self):
         mac = b"aa-bb-cc-dd-ee-ff"
         match = re_config_file.match(b"/pxelinux.cfg/01-%s" % mac)
-        self.assertIsNotNone(match)
-        self.assertDictEqual(
-            {"mac": mac, "hardware_uuid": None, "arch": None, "subarch": None},
-            match.groupdict(),
-        )
+        assert match is not None
+        assert {
+            "mac": mac,
+            "hardware_uuid": None,
+            "arch": None,
+            "subarch": None,
+        } == match.groupdict()
 
     def test_re_config_file_matches_pxelinux_cfg_with_hardware_uuid(self):
         hardware_uuid = factory.make_UUID().encode()
         match = re_config_file.match(b"pxelinux.cfg/%s" % hardware_uuid)
-        self.assertIsNotNone(match)
-        self.assertDictEqual(
-            {
-                "mac": None,
-                "hardware_uuid": hardware_uuid,
-                "arch": None,
-                "subarch": None,
-            },
-            match.groupdict(),
-        )
+        assert match is not None
+        assert {
+            "mac": None,
+            "hardware_uuid": hardware_uuid,
+            "arch": None,
+            "subarch": None,
+        } == match.groupdict()
 
     def test_re_config_file_does_not_match_non_config_file(self):
-        self.assertIsNone(re_config_file.match(b"pxelinux.cfg/kernel"))
+        assert re_config_file.match(b"pxelinux.cfg/kernel") is None
 
     def test_re_config_file_does_not_match_file_in_root(self):
-        self.assertIsNone(re_config_file.match(b"01-aa-bb-cc-dd-ee-ff"))
+        assert re_config_file.match(b"01-aa-bb-cc-dd-ee-ff") is None
 
     def test_re_config_file_does_not_match_file_not_in_pxelinux_cfg(self):
-        self.assertIsNone(re_config_file.match(b"foo/01-aa-bb-cc-dd-ee-ff"))
+        assert re_config_file.match(b"foo/01-aa-bb-cc-dd-ee-ff") is None
 
     def test_re_config_file_with_default(self):
         match = re_config_file.match(b"pxelinux.cfg/default")
-        self.assertIsNotNone(match)
-        self.assertDictEqual(
-            {
-                "mac": None,
-                "hardware_uuid": None,
-                "arch": None,
-                "subarch": None,
-            },
-            match.groupdict(),
-        )
+        assert match is not None
+        assert {
+            "mac": None,
+            "hardware_uuid": None,
+            "arch": None,
+            "subarch": None,
+        } == match.groupdict()
 
     def test_re_config_file_with_default_arch(self):
         arch = factory.make_name("arch", sep="").encode("ascii")
         match = re_config_file.match(b"pxelinux.cfg/default.%s" % arch)
-        self.assertIsNotNone(match)
-        self.assertDictEqual(
-            {
-                "mac": None,
-                "hardware_uuid": None,
-                "arch": arch,
-                "subarch": None,
-            },
-            match.groupdict(),
-        )
+        assert match is not None
+        assert {
+            "mac": None,
+            "hardware_uuid": None,
+            "arch": arch,
+            "subarch": None,
+        } == match.groupdict()
 
     def test_re_config_file_with_default_arch_and_subarch(self):
         arch = factory.make_name("arch", sep="").encode("ascii")
@@ -514,13 +516,10 @@ class TestPXEBootMethodRegex(MAASTestCase):
         match = re_config_file.match(
             b"pxelinux.cfg/default.%s-%s" % (arch, subarch)
         )
-        self.assertIsNotNone(match)
-        self.assertDictEqual(
-            {
-                "mac": None,
-                "hardware_uuid": None,
-                "arch": arch,
-                "subarch": subarch,
-            },
-            match.groupdict(),
-        )
+        assert match is not None
+        assert {
+            "mac": None,
+            "hardware_uuid": None,
+            "arch": arch,
+            "subarch": subarch,
+        } == match.groupdict()

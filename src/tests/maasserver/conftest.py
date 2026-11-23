@@ -15,9 +15,9 @@ from maasserver.vault import (
     get_region_vault_client_if_enabled,
 )
 
-__all__ = ["mock_openfga"]
+__all__ = ["mock_openfga", "mock_start_workflows"]
 
-from tests.fixtures import mock_openfga
+from tests.fixtures import mock_openfga, mock_start_workflows
 
 
 @pytest.fixture(autouse=True)

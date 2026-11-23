@@ -1,3 +1,5 @@
+import pytest
+
 from maasserver.enum import FILESYSTEM_TYPE, PARTITION_TABLE_TYPE
 from maasserver.models.partition import PARTITION_ALIGNMENT_SIZE
 from maasserver.storage_custom import (
@@ -16,10 +18,8 @@ from maasserver.storage_custom import (
     UnappliableLayout,
 )
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from maasserver.utils.converters import round_size_to_nearest_block
 from maasserver.utils.orm import reload_object
-from maastesting.testcase import MAASTestCase
 
 MB = 1000**2
 GB = 1000**3
@@ -30,7 +30,7 @@ def rounded_size(size):
     return round_size_to_nearest_block(size, PARTITION_ALIGNMENT_SIZE, False)
 
 
-class TestGetStorageLayout(MAASTestCase):
+class TestGetStorageLayout:
     def test_simple(self):
         config = {
             "layout": {
@@ -77,20 +77,15 @@ class TestGetStorageLayout(MAASTestCase):
             mount_options="noatime",
         )
         layout = get_storage_layout(config)
-        self.assertEqual(
-            layout.entries,
-            {
-                "sda": sda,
-                "sda1": sda1,
-                "sda1[fs]": sda1_fs,
-                "sda2": sda2,
-                "sda2[fs]": sda2_fs,
-            },
-        )
-        self.assertEqual(
-            layout.sorted_entries, [sda, sda1, sda1_fs, sda2, sda2_fs]
-        )
-        self.assertEqual(layout.disk_names(), {"sda"})
+        assert layout.entries == {
+            "sda": sda,
+            "sda1": sda1,
+            "sda1[fs]": sda1_fs,
+            "sda2": sda2,
+            "sda2[fs]": sda2_fs,
+        }
+        assert layout.sorted_entries == [sda, sda1, sda1_fs, sda2, sda2_fs]
+        assert layout.disk_names() == {"sda"}
 
     def test_special_filesystem(self):
         config = {
@@ -128,19 +123,18 @@ class TestGetStorageLayout(MAASTestCase):
             mount="/temp2",
         )
         layout = get_storage_layout(config)
-        self.assertEqual(
-            layout.entries,
-            {
-                "special1": special1,
-                "special1[fs]": special1_fs,
-                "special2": special2,
-                "special2[fs]": special2_fs,
-            },
-        )
-        self.assertEqual(
-            layout.sorted_entries,
-            [special1, special1_fs, special2, special2_fs],
-        )
+        assert layout.entries == {
+            "special1": special1,
+            "special1[fs]": special1_fs,
+            "special2": special2,
+            "special2[fs]": special2_fs,
+        }
+        assert layout.sorted_entries == [
+            special1,
+            special1_fs,
+            special2,
+            special2_fs,
+        ]
 
     def test_raid(self):
         config = {
@@ -209,25 +203,29 @@ class TestGetStorageLayout(MAASTestCase):
             mount_options="noatime",
         )
         layout = get_storage_layout(config)
-        self.assertEqual(
-            layout.entries,
-            {
-                "raid0": raid,
-                "sda": sda,
-                "sda1": sda1,
-                "sda1[fs]": sda1_fs,
-                "sda2": sda2,
-                "sdb": sdb,
-                "sdb1": sdb1,
-                "sdb2": sdb2,
-                "raid0[fs]": raid_fs,
-            },
-        )
-        self.assertEqual(
-            layout.sorted_entries,
-            [sda, sda1, sda1_fs, sda2, sdb, sdb1, sdb2, raid, raid_fs],
-        )
-        self.assertEqual(layout.disk_names(), {"sda", "sdb"})
+        assert layout.entries == {
+            "raid0": raid,
+            "sda": sda,
+            "sda1": sda1,
+            "sda1[fs]": sda1_fs,
+            "sda2": sda2,
+            "sdb": sdb,
+            "sdb1": sdb1,
+            "sdb2": sdb2,
+            "raid0[fs]": raid_fs,
+        }
+        assert layout.sorted_entries == [
+            sda,
+            sda1,
+            sda1_fs,
+            sda2,
+            sdb,
+            sdb1,
+            sdb2,
+            raid,
+            raid_fs,
+        ]
+        assert layout.disk_names() == {"sda", "sdb"}
 
     def test_raid_with_spares(self):
         config = {
@@ -259,21 +257,15 @@ class TestGetStorageLayout(MAASTestCase):
             mount="/data",
         )
         layout = get_storage_layout(config)
-        self.assertEqual(
-            layout.entries,
-            {
-                "md0": raid,
-                "sda": sda,
-                "sdb": sdb,
-                "sdc": sdc,
-                "md0[fs]": raid_fs,
-            },
-        )
-        self.assertEqual(
-            layout.sorted_entries,
-            [sda, sdb, sdc, raid, raid_fs],
-        )
-        self.assertEqual(layout.disk_names(), {"sda", "sdb", "sdc"})
+        assert layout.entries == {
+            "md0": raid,
+            "sda": sda,
+            "sdb": sdb,
+            "sdc": sdc,
+            "md0[fs]": raid_fs,
+        }
+        assert layout.sorted_entries == [sda, sdb, sdc, raid, raid_fs]
+        assert layout.disk_names() == {"sda", "sdb", "sdc"}
 
     def test_lvm(self):
         config = {
@@ -363,41 +355,35 @@ class TestGetStorageLayout(MAASTestCase):
             mount="/data",
         )
         layout = get_storage_layout(config)
-        self.assertEqual(
-            layout.entries,
-            {
-                "sda": sda,
-                "sda1": sda1,
-                "sda1[fs]": sda1_fs,
-                "sda2": sda2,
-                "sdb": sdb,
-                "sdb1": sdb1,
-                "sdb2": sdb2,
-                "storage": lvm,
-                "root": root_vol,
-                "root[fs]": root_fs,
-                "data": data_vol,
-                "data[fs]": data_fs,
-            },
-        )
-        self.assertEqual(
-            layout.sorted_entries,
-            [
-                sda,
-                sda1,
-                sda1_fs,
-                sda2,
-                sdb,
-                sdb1,
-                sdb2,
-                lvm,
-                root_vol,
-                root_fs,
-                data_vol,
-                data_fs,
-            ],
-        )
-        self.assertEqual(layout.disk_names(), {"sda", "sdb"})
+        assert layout.entries == {
+            "sda": sda,
+            "sda1": sda1,
+            "sda1[fs]": sda1_fs,
+            "sda2": sda2,
+            "sdb": sdb,
+            "sdb1": sdb1,
+            "sdb2": sdb2,
+            "storage": lvm,
+            "root": root_vol,
+            "root[fs]": root_fs,
+            "data": data_vol,
+            "data[fs]": data_fs,
+        }
+        assert layout.sorted_entries == [
+            sda,
+            sda1,
+            sda1_fs,
+            sda2,
+            sdb,
+            sdb1,
+            sdb2,
+            lvm,
+            root_vol,
+            root_fs,
+            data_vol,
+            data_fs,
+        ]
+        assert layout.disk_names() == {"sda", "sdb"}
 
     def test_bcache(self):
         config = {
@@ -456,23 +442,25 @@ class TestGetStorageLayout(MAASTestCase):
             mount_options="noatime",
         )
         layout = get_storage_layout(config)
-        self.assertEqual(
-            layout.entries,
-            {
-                "sda": sda,
-                "sda1": sda1,
-                "sda1[fs]": sda1_fs,
-                "sda2": sda2,
-                "sdb": sdb,
-                "fast-root": bcache,
-                "fast-root[fs]": root_fs,
-            },
-        )
-        self.assertEqual(
-            layout.sorted_entries,
-            [sda, sda1, sda1_fs, sda2, sdb, bcache, root_fs],
-        )
-        self.assertEqual(layout.disk_names(), {"sda", "sdb"})
+        assert layout.entries == {
+            "sda": sda,
+            "sda1": sda1,
+            "sda1[fs]": sda1_fs,
+            "sda2": sda2,
+            "sdb": sdb,
+            "fast-root": bcache,
+            "fast-root[fs]": root_fs,
+        }
+        assert layout.sorted_entries == [
+            sda,
+            sda1,
+            sda1_fs,
+            sda2,
+            sdb,
+            bcache,
+            root_fs,
+        ]
+        assert layout.disk_names() == {"sda", "sdb"}
 
     def test_nested(self):
         config = {
@@ -537,41 +525,33 @@ class TestGetStorageLayout(MAASTestCase):
             mount="/storage",
         )
         layout = get_storage_layout(config)
-        self.assertEqual(
-            layout.entries,
-            {
-                "sda": sda,
-                "sdb": sdb,
-                "sdc": sdc,
-                "sdd": sdd,
-                "sde": sde,
-                "raid0": raid,
-                "lvm0": lvm,
-                "root": root_vol,
-                "root[fs]": root_fs,
-                "storage": storage_vol,
-                "storage[fs]": storage_fs,
-            },
-        )
-        self.assertEqual(
-            layout.sorted_entries,
-            [
-                sda,
-                sdb,
-                sdc,
-                sdd,
-                sde,
-                raid,
-                lvm,
-                root_vol,
-                root_fs,
-                storage_vol,
-                storage_fs,
-            ],
-        )
-        self.assertEqual(
-            layout.disk_names(), {"sda", "sdb", "sdc", "sdd", "sde"}
-        )
+        assert layout.entries == {
+            "sda": sda,
+            "sdb": sdb,
+            "sdc": sdc,
+            "sdd": sdd,
+            "sde": sde,
+            "raid0": raid,
+            "lvm0": lvm,
+            "root": root_vol,
+            "root[fs]": root_fs,
+            "storage": storage_vol,
+            "storage[fs]": storage_fs,
+        }
+        assert layout.sorted_entries == [
+            sda,
+            sdb,
+            sdc,
+            sdd,
+            sde,
+            raid,
+            lvm,
+            root_vol,
+            root_fs,
+            storage_vol,
+            storage_fs,
+        ]
+        assert layout.disk_names() == {"sda", "sdb", "sdc", "sdd", "sde"}
 
     def test_invalid_device_type(self):
         config = {
@@ -582,12 +562,9 @@ class TestGetStorageLayout(MAASTestCase):
             },
             "mounts": {},
         }
-        err = self.assertRaises(
-            ConfigError,
-            get_storage_layout,
-            config,
-        )
-        self.assertEqual(str(err), "Unsupported device type 'unknown'")
+        with pytest.raises(ConfigError) as exc_info:
+            get_storage_layout(config)
+        assert str(exc_info.value) == "Unsupported device type 'unknown'"
 
     def test_invalid_partition_table_type(self):
         config = {
@@ -599,14 +576,11 @@ class TestGetStorageLayout(MAASTestCase):
             },
             "mounts": {},
         }
-        err = self.assertRaises(
-            ConfigError,
-            get_storage_layout,
-            config,
-        )
-        self.assertEqual(
-            str(err),
-            "Invalid config at layout/sda/ptable: 'foo' is not one of ['gpt', 'mbr']",
+        with pytest.raises(ConfigError) as exc_info:
+            get_storage_layout(config)
+        assert (
+            str(exc_info.value) == "Invalid config at layout/sda/ptable: "
+            "'foo' is not one of ['gpt', 'mbr']"
         )
 
     def test_missing_partition_table_type(self):
@@ -625,12 +599,9 @@ class TestGetStorageLayout(MAASTestCase):
             },
             "mounts": {},
         }
-        err = self.assertRaises(
-            ConfigError,
-            get_storage_layout,
-            config,
-        )
-        self.assertEqual(str(err), "Partition table not specified for 'sda'")
+        with pytest.raises(ConfigError) as exc_info:
+            get_storage_layout(config)
+        assert str(exc_info.value) == "Partition table not specified for 'sda'"
 
     def test_invalid_filesytem_type(self):
         config = {
@@ -649,12 +620,9 @@ class TestGetStorageLayout(MAASTestCase):
             },
             "mounts": {},
         }
-        err = self.assertRaises(
-            ConfigError,
-            get_storage_layout,
-            config,
-        )
-        self.assertEqual(str(err), "Unknown filesystem type 'foo'")
+        with pytest.raises(ConfigError) as exc_info:
+            get_storage_layout(config)
+        assert str(exc_info.value) == "Unknown filesystem type 'foo'"
 
     def test_invalid_bcache_cache_type(self):
         config = {
@@ -668,15 +636,12 @@ class TestGetStorageLayout(MAASTestCase):
             },
             "mounts": {},
         }
-        err = self.assertRaises(
-            ConfigError,
-            get_storage_layout,
-            config,
-        )
-        self.assertEqual(
-            str(err),
-            "Invalid config at layout/bcache0/cache-mode: "
-            "'foo' is not one of ['writeback', 'writethrough', 'writearound']",
+        with pytest.raises(ConfigError) as exc_info:
+            get_storage_layout(config)
+        assert (
+            str(exc_info.value)
+            == "Invalid config at layout/bcache0/cache-mode: "
+            "'foo' is not one of ['writeback', 'writethrough', 'writearound']"
         )
 
     def test_invalid_raid_level(self):
@@ -690,14 +655,11 @@ class TestGetStorageLayout(MAASTestCase):
             },
             "mounts": {},
         }
-        err = self.assertRaises(
-            ConfigError,
-            get_storage_layout,
-            config,
-        )
-        self.assertEqual(
-            str(err),
-            "Invalid config at layout/md0/level: 123 is not one of [0, 1, 5, 6, 10]",
+        with pytest.raises(ConfigError) as exc_info:
+            get_storage_layout(config)
+        assert (
+            str(exc_info.value) == "Invalid config at layout/md0/level: "
+            "123 is not one of [0, 1, 5, 6, 10]"
         )
 
     def test_invalid_raid_zero_with_spares(self):
@@ -712,12 +674,9 @@ class TestGetStorageLayout(MAASTestCase):
             },
             "mounts": {},
         }
-        err = self.assertRaises(
-            ConfigError,
-            get_storage_layout,
-            config,
-        )
-        self.assertEqual(str(err), "RAID level 0 doesn't support spares")
+        with pytest.raises(ConfigError) as exc_info:
+            get_storage_layout(config)
+        assert str(exc_info.value) == "RAID level 0 doesn't support spares"
 
     def test_invalid_raid_same_devices_as_members_and_spares(self):
         config = {
@@ -731,13 +690,11 @@ class TestGetStorageLayout(MAASTestCase):
             },
             "mounts": {},
         }
-        err = self.assertRaises(
-            ConfigError,
-            get_storage_layout,
-            config,
-        )
-        self.assertEqual(
-            str(err), "RAID 'md0' has duplicated devices in members and spares"
+        with pytest.raises(ConfigError) as exc_info:
+            get_storage_layout(config)
+        assert (
+            str(exc_info.value)
+            == "RAID 'md0' has duplicated devices in members and spares"
         )
 
     def test_invalid_special_invalid_filesystem(self):
@@ -754,12 +711,9 @@ class TestGetStorageLayout(MAASTestCase):
                 },
             },
         }
-        err = self.assertRaises(
-            ConfigError,
-            get_storage_layout,
-            config,
-        )
-        self.assertEqual(str(err), "Invalid special filesystem 'ext4'")
+        with pytest.raises(ConfigError) as exc_info:
+            get_storage_layout(config)
+        assert str(exc_info.value) == "Invalid special filesystem 'ext4'"
 
     def test_invalid_special_missing_mounts(self):
         config = {
@@ -783,14 +737,11 @@ class TestGetStorageLayout(MAASTestCase):
                 }
             },
         }
-        err = self.assertRaises(
-            ConfigError,
-            get_storage_layout,
-            config,
-        )
-        self.assertEqual(
-            str(err),
-            "Special device(s) missing mountpoint: special1, special3",
+        with pytest.raises(ConfigError) as exc_info:
+            get_storage_layout(config)
+        assert (
+            str(exc_info.value)
+            == "Special device(s) missing mountpoint: special1, special3"
         )
 
     def test_missing_required_attributes(self):
@@ -802,14 +753,11 @@ class TestGetStorageLayout(MAASTestCase):
             },
             "mounts": {},
         }
-        err = self.assertRaises(
-            ConfigError,
-            get_storage_layout,
-            config,
-        )
-        self.assertEqual(
-            str(err),
-            "Invalid config at layout/lvm0: 'members' is a required property",
+        with pytest.raises(ConfigError) as exc_info:
+            get_storage_layout(config)
+        assert (
+            str(exc_info.value)
+            == "Invalid config at layout/lvm0: 'members' is a required property"
         )
 
     def test_missing_filesystem_for_mountpoint(self):
@@ -825,23 +773,17 @@ class TestGetStorageLayout(MAASTestCase):
                 },
             },
         }
-        err = self.assertRaises(
-            ConfigError,
-            get_storage_layout,
-            config,
-        )
-        self.assertEqual(str(err), "Filesystem not found for device 'sda'")
+        with pytest.raises(ConfigError) as exc_info:
+            get_storage_layout(config)
+        assert str(exc_info.value) == "Filesystem not found for device 'sda'"
 
     def test_missing_layout(self):
         config = {}
-        err = self.assertRaises(
-            ConfigError,
-            get_storage_layout,
-            config,
-        )
-        self.assertEqual(
-            str(err),
-            "Invalid config at top level: 'layout' is a required property",
+        with pytest.raises(ConfigError) as exc_info:
+            get_storage_layout(config)
+        assert (
+            str(exc_info.value)
+            == "Invalid config at top level: 'layout' is a required property"
         )
 
     def test_missing_mounts(self):
@@ -852,41 +794,42 @@ class TestGetStorageLayout(MAASTestCase):
                 },
             },
         }
-        err = self.assertRaises(
-            ConfigError,
-            get_storage_layout,
-            config,
-        )
-        self.assertEqual(
-            str(err),
-            "Invalid config at top level: 'mounts' is a required property",
+        with pytest.raises(ConfigError) as exc_info:
+            get_storage_layout(config)
+        assert (
+            str(exc_info.value)
+            == "Invalid config at top level: 'mounts' is a required property"
         )
 
 
-class TestGetSize(MAASTestCase):
+class TestGetSize:
     def test_return_size(self):
-        self.assertEqual(_get_size("500M"), 500000000)
-        self.assertEqual(_get_size("20G"), 20000000000)
-        self.assertEqual(_get_size("3T"), 3000000000000)
+        assert _get_size("500M") == 500000000
+        assert _get_size("20G") == 20000000000
+        assert _get_size("3T") == 3000000000000
 
     def test_float_value(self):
-        self.assertEqual(_get_size("0.2M"), 200000)
-        self.assertEqual(_get_size("0.5G"), 500000000)
+        assert _get_size("0.2M") == 200000
+        assert _get_size("0.5G") == 500000000
 
     def test_invalid_suffix(self):
-        err = self.assertRaises(ConfigError, _get_size, "10W")
-        self.assertEqual(str(err), "Invalid size '10W'")
+        with pytest.raises(ConfigError) as exc_info:
+            _get_size("10W")
+        assert str(exc_info.value) == "Invalid size '10W'"
 
     def test_invalid_value(self):
-        err = self.assertRaises(ConfigError, _get_size, "tenG")
-        self.assertEqual(str(err), "Invalid size 'tenG'")
+        with pytest.raises(ConfigError) as exc_info:
+            _get_size("tenG")
+        assert str(exc_info.value) == "Invalid size 'tenG'"
 
     def test_negative_value(self):
-        err = self.assertRaises(ConfigError, _get_size, "-10G")
-        self.assertEqual(str(err), "Invalid negative size '-10G'")
+        with pytest.raises(ConfigError) as exc_info:
+            _get_size("-10G")
+        assert str(exc_info.value) == "Invalid negative size '-10G'"
 
 
-class TestApplyLayoutToMachine(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "mock_openfga")
+class TestApplyLayoutToMachine:
     def test_missing_disk(self):
         config = {
             "layout": {
@@ -904,10 +847,9 @@ class TestApplyLayoutToMachine(MAASServerTestCase):
         layout = get_storage_layout(config)
         machine = factory.make_Node()
         factory.make_PhysicalBlockDevice(node=machine, name="sda")
-        err = self.assertRaises(
-            UnappliableLayout, apply_layout_to_machine, layout, machine
-        )
-        self.assertEqual(str(err), "Unknown machine disk(s): sdb")
+        with pytest.raises(UnappliableLayout) as exc_info:
+            apply_layout_to_machine(layout, machine)
+        assert str(exc_info.value) == "Unknown machine disk(s): sdb"
 
     def test_simple(self):
         config = {
@@ -948,20 +890,20 @@ class TestApplyLayoutToMachine(MAASServerTestCase):
         )
         apply_layout_to_machine(layout, machine)
         ptable = disk.get_partitiontable()
-        self.assertEqual(ptable.table_type, PARTITION_TABLE_TYPE.GPT)
+        assert ptable.table_type == PARTITION_TABLE_TYPE.GPT
         part1, part2 = ptable.partitions.order_by("id")
-        self.assertEqual(part1.size, rounded_size(100 * MB))
-        self.assertTrue(part1.bootable)
-        self.assertEqual(part2.size, rounded_size(20 * GB))
-        self.assertFalse(part2.bootable)
+        assert part1.size == rounded_size(100 * MB)
+        assert part1.bootable
+        assert part2.size == rounded_size(20 * GB)
+        assert not part2.bootable
         fs1 = part1.get_effective_filesystem()
         fs2 = part2.get_effective_filesystem()
-        self.assertEqual(fs1.fstype, FILESYSTEM_TYPE.VFAT)
-        self.assertEqual(fs1.mount_point, "/boot/efi")
-        self.assertEqual(fs1.mount_options, "")
-        self.assertEqual(fs2.fstype, FILESYSTEM_TYPE.EXT4)
-        self.assertEqual(fs2.mount_point, "/")
-        self.assertEqual(fs2.mount_options, "noatime")
+        assert fs1.fstype == FILESYSTEM_TYPE.VFAT
+        assert fs1.mount_point == "/boot/efi"
+        assert fs1.mount_options == ""
+        assert fs2.fstype == FILESYSTEM_TYPE.EXT4
+        assert fs2.mount_point == "/"
+        assert fs2.mount_options == "noatime"
 
     def test_remove_previous_config(self):
         config = {
@@ -1011,7 +953,7 @@ class TestApplyLayoutToMachine(MAASServerTestCase):
 
         apply_layout_to_machine(layout, machine)
         for obj in (ptable, part1, fs1, part2, fs2):
-            self.assertIsNone(reload_object(obj))
+            assert reload_object(obj) is None
 
     def test_set_boot_disk(self):
         config = {
@@ -1033,7 +975,7 @@ class TestApplyLayoutToMachine(MAASServerTestCase):
         factory.make_PhysicalBlockDevice(node=machine, name="sda")
         sdb = factory.make_PhysicalBlockDevice(node=machine, name="sdb")
         apply_layout_to_machine(layout, machine)
-        self.assertEqual(machine.boot_disk, sdb)
+        assert machine.boot_disk == sdb
 
     def test_bcache(self):
         config = {
@@ -1088,22 +1030,22 @@ class TestApplyLayoutToMachine(MAASServerTestCase):
         )
         apply_layout_to_machine(layout, machine)
         ptable = sda.get_partitiontable()
-        self.assertEqual(ptable.table_type, PARTITION_TABLE_TYPE.GPT)
+        assert ptable.table_type == PARTITION_TABLE_TYPE.GPT
         part1, part2, part3 = ptable.partitions.order_by("id")
-        self.assertEqual(part1.size, rounded_size(100 * MB))
-        self.assertTrue(part1.bootable)
-        self.assertEqual(part2.size, rounded_size(500 * MB))
-        self.assertFalse(part2.bootable)
-        self.assertEqual(part3.size, rounded_size(800 * GB))
-        self.assertFalse(part3.bootable)
+        assert part1.size == rounded_size(100 * MB)
+        assert part1.bootable
+        assert part2.size == rounded_size(500 * MB)
+        assert not part2.bootable
+        assert part3.size == rounded_size(800 * GB)
+        assert not part3.bootable
         fs3 = part3.get_effective_filesystem()
-        self.assertEqual(fs3.fstype, FILESYSTEM_TYPE.BCACHE_BACKING)
+        assert fs3.fstype == FILESYSTEM_TYPE.BCACHE_BACKING
         cache_fs = sdb.get_effective_filesystem()
-        self.assertEqual(cache_fs.fstype, FILESYSTEM_TYPE.BCACHE_CACHE)
+        assert cache_fs.fstype == FILESYSTEM_TYPE.BCACHE_CACHE
         bcache = machine.current_config.blockdevice_set.get(name="cached-root")
         root_fs = bcache.get_effective_filesystem()
-        self.assertEqual(root_fs.fstype, FILESYSTEM_TYPE.EXT4)
-        self.assertEqual(root_fs.mount_point, "/")
+        assert root_fs.fstype == FILESYSTEM_TYPE.EXT4
+        assert root_fs.mount_point == "/"
 
     def test_bcache_same_cacheset(self):
         config = {
@@ -1128,11 +1070,11 @@ class TestApplyLayoutToMachine(MAASServerTestCase):
         sdc = factory.make_PhysicalBlockDevice(node=machine, name="sdc")
         apply_layout_to_machine(layout, machine)
         fs1 = sda.get_effective_filesystem()
-        self.assertEqual(fs1.fstype, FILESYSTEM_TYPE.BCACHE_CACHE)
+        assert fs1.fstype == FILESYSTEM_TYPE.BCACHE_CACHE
         fs2 = sdb.get_effective_filesystem()
-        self.assertEqual(fs2.fstype, FILESYSTEM_TYPE.BCACHE_BACKING)
+        assert fs2.fstype == FILESYSTEM_TYPE.BCACHE_BACKING
         fs3 = sdc.get_effective_filesystem()
-        self.assertEqual(fs3.fstype, FILESYSTEM_TYPE.BCACHE_BACKING)
+        assert fs3.fstype == FILESYSTEM_TYPE.BCACHE_BACKING
 
     def test_bcache_cache_partition(self):
         config = {
@@ -1197,26 +1139,26 @@ class TestApplyLayoutToMachine(MAASServerTestCase):
         )
         apply_layout_to_machine(layout, machine)
         ptable1 = sda.get_partitiontable()
-        self.assertEqual(ptable1.table_type, PARTITION_TABLE_TYPE.GPT)
+        assert ptable1.table_type == PARTITION_TABLE_TYPE.GPT
         part1, part2, part3 = ptable1.partitions.order_by("id")
-        self.assertEqual(part1.size, rounded_size(100 * MB))
-        self.assertTrue(part1.bootable)
-        self.assertEqual(part2.size, rounded_size(500 * MB))
-        self.assertFalse(part2.bootable)
-        self.assertEqual(part3.size, rounded_size(800 * GB))
-        self.assertFalse(part3.bootable)
+        assert part1.size == rounded_size(100 * MB)
+        assert part1.bootable
+        assert part2.size == rounded_size(500 * MB)
+        assert not part2.bootable
+        assert part3.size == rounded_size(800 * GB)
+        assert not part3.bootable
         fs3 = part3.get_effective_filesystem()
-        self.assertEqual(fs3.fstype, FILESYSTEM_TYPE.BCACHE_BACKING)
+        assert fs3.fstype == FILESYSTEM_TYPE.BCACHE_BACKING
 
         ptable2 = sdb.get_partitiontable()
-        self.assertEqual(ptable2.table_type, PARTITION_TABLE_TYPE.GPT)
+        assert ptable2.table_type == PARTITION_TABLE_TYPE.GPT
         cache_part = ptable2.partitions.first()
         cache_fs = cache_part.get_effective_filesystem()
-        self.assertEqual(cache_fs.fstype, FILESYSTEM_TYPE.BCACHE_CACHE)
+        assert cache_fs.fstype == FILESYSTEM_TYPE.BCACHE_CACHE
         bcache = machine.current_config.blockdevice_set.get(name="bcache0")
         root_fs = bcache.get_effective_filesystem()
-        self.assertEqual(root_fs.fstype, FILESYSTEM_TYPE.EXT4)
-        self.assertEqual(root_fs.mount_point, "/")
+        assert root_fs.fstype == FILESYSTEM_TYPE.EXT4
+        assert root_fs.mount_point == "/"
 
     def test_lvm(self):
         config = {
@@ -1260,15 +1202,15 @@ class TestApplyLayoutToMachine(MAASServerTestCase):
         apply_layout_to_machine(layout, machine)
         for disk in disks:
             fs = disk.get_effective_filesystem()
-            self.assertEqual(fs.fstype, FILESYSTEM_TYPE.LVM_PV)
+            assert fs.fstype == FILESYSTEM_TYPE.LVM_PV
         data1 = machine.current_config.blockdevice_set.get(name="data1")
-        self.assertEqual(data1.size, rounded_size(100 * GB))
+        assert data1.size == rounded_size(100 * GB)
         fs1 = data1.get_effective_filesystem()
-        self.assertEqual(fs1.fstype, FILESYSTEM_TYPE.EXT4)
+        assert fs1.fstype == FILESYSTEM_TYPE.EXT4
         data2 = machine.current_config.blockdevice_set.get(name="data2")
-        self.assertEqual(data2.size, rounded_size(150 * GB))
+        assert data2.size == rounded_size(150 * GB)
         fs2 = data2.get_effective_filesystem()
-        self.assertEqual(fs2.fstype, FILESYSTEM_TYPE.BTRFS)
+        assert fs2.fstype == FILESYSTEM_TYPE.BTRFS
 
     def test_raid(self):
         config = {
@@ -1299,12 +1241,12 @@ class TestApplyLayoutToMachine(MAASServerTestCase):
         apply_layout_to_machine(layout, machine)
         for disk in disks:
             fs = disk.get_effective_filesystem()
-            self.assertEqual(fs.fstype, FILESYSTEM_TYPE.RAID)
-            self.assertIsNone(fs.mount_point)
+            assert fs.fstype == FILESYSTEM_TYPE.RAID
+            assert fs.mount_point is None
         raid = machine.current_config.blockdevice_set.get(name="storage")
         raid_fs = raid.get_effective_filesystem()
-        self.assertEqual(raid_fs.fstype, FILESYSTEM_TYPE.EXT4)
-        self.assertEqual(raid_fs.mount_point, "/data")
+        assert raid_fs.fstype == FILESYSTEM_TYPE.EXT4
+        assert raid_fs.mount_point == "/data"
 
     def test_raid_with_spares(self):
         config = {
@@ -1344,16 +1286,16 @@ class TestApplyLayoutToMachine(MAASServerTestCase):
         apply_layout_to_machine(layout, machine)
         for disk in disks:
             fs = disk.get_effective_filesystem()
-            self.assertEqual(fs.fstype, FILESYSTEM_TYPE.RAID)
-            self.assertIsNone(fs.mount_point)
+            assert fs.fstype == FILESYSTEM_TYPE.RAID
+            assert fs.mount_point is None
         for disk in spare_disks:
             fs = disk.get_effective_filesystem()
-            self.assertEqual(fs.fstype, FILESYSTEM_TYPE.RAID_SPARE)
-            self.assertIsNone(fs.mount_point)
+            assert fs.fstype == FILESYSTEM_TYPE.RAID_SPARE
+            assert fs.mount_point is None
         raid = machine.current_config.blockdevice_set.get(name="storage")
         raid_fs = raid.get_effective_filesystem()
-        self.assertEqual(raid_fs.fstype, FILESYSTEM_TYPE.EXT4)
-        self.assertEqual(raid_fs.mount_point, "/data")
+        assert raid_fs.fstype == FILESYSTEM_TYPE.EXT4
+        assert raid_fs.mount_point == "/data"
 
     def test_special_filesystems(self):
         config = {
@@ -1382,7 +1324,7 @@ class TestApplyLayoutToMachine(MAASServerTestCase):
         fs1, fs2 = machine.current_config.special_filesystems.order_by(
             "mount_point"
         )
-        self.assertEqual(fs1.fstype, FILESYSTEM_TYPE.TMPFS)
-        self.assertEqual(fs1.mount_point, "/temp1")
-        self.assertEqual(fs2.fstype, FILESYSTEM_TYPE.RAMFS)
-        self.assertEqual(fs2.mount_point, "/temp2")
+        assert fs1.fstype == FILESYSTEM_TYPE.TMPFS
+        assert fs1.mount_point == "/temp1"
+        assert fs2.fstype == FILESYSTEM_TYPE.RAMFS
+        assert fs2.mount_point == "/temp2"

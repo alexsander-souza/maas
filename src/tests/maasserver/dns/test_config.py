@@ -8,6 +8,7 @@ import time
 from django.conf import settings
 import dns.resolver
 from netaddr import IPAddress
+import pytest
 
 from maasserver.config import RegionConfiguration
 from maasserver.dns import config as dns_config_module
@@ -738,7 +739,7 @@ class TestGetInternalDomain(MAASServerTestCase):
 class TestGetResourceNameForSubnet(MAASServerTestCase):
     """Test for maasserver/dns/config.py:get_resource_name_for_subnet()"""
 
-    scenarios = (
+    scenarios = [
         ("10.0.0.0/8", {"cidr": "10.0.0.0/8", "result": "10-0-0-0--8"}),
         (
             "192.168.1.0/24",
@@ -748,7 +749,7 @@ class TestGetResourceNameForSubnet(MAASServerTestCase):
             "2001:db8:0::/64",
             {"cidr": "2001:db8:0::/64", "result": "2001-db8----64"},
         ),
-    )
+    ]
 
     def test_returns_valid(self):
         subnet = factory.make_Subnet(cidr=self.cidr)

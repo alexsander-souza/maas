@@ -6,16 +6,14 @@
 from datetime import timedelta
 
 from django.utils import timezone
+import pytest
 from twisted.internet.defer import fail, inlineCallbacks
 from twisted.internet.task import Clock
 
 from maasserver.dns import publication
 from maasserver.models.dnspublication import DNSPublication
-from maasserver.testing.testcase import MAASTransactionServerTestCase
 from maastesting.crochet import wait_for
 from maastesting.factory import factory
-from maastesting.runtest import MAASCrochetRunTest
-from maastesting.testcase import MAASTestCase
 from maastesting.twisted import TwistedLoggerFixture
 from provisioningserver.utils.twisted import pause
 
@@ -24,43 +22,41 @@ def _is_expected_interval(interval):
     return 3 * 60 * 60 <= interval <= 6 * 60 * 60
 
 
-def patch_utcnow(test):
-    utcnow = test.patch(publication, "timezone").now
+def patch_utcnow(mocker):
+    utcnow = mocker.patch.object(publication, "timezone").now
     ref = utcnow.return_value = timezone.now()
     return ref
 
 
-class TestDNSPublicationGarbageService(MAASTestCase):
+class TestDNSPublicationGarbageService:
     """Tests for `DNSPublicationGarbageService`."""
 
-    run_tests_with = MAASCrochetRunTest
+    def test_starting_and_stopping(self, mocker):
+        deferToDatabase = mocker.patch.object(publication, "deferToDatabase")
 
-    def test_starting_and_stopping(self):
-        deferToDatabase = self.patch(publication, "deferToDatabase")
-
-        utcnow = patch_utcnow(self)
+        utcnow = patch_utcnow(mocker)
         cutoff = utcnow - timedelta(days=7)
 
         dnsgc = publication.DNSPublicationGarbageService()
         dnsgc.clock = clock = Clock()
 
         dnsgc.startService()
-        self.assertTrue(dnsgc.running)
-        self.assertTrue(dnsgc._loop.running)
+        assert dnsgc.running
+        assert dnsgc._loop.running
         deferToDatabase.assert_not_called()
-        self.assertTrue(_is_expected_interval(dnsgc._loop.interval))
+        assert _is_expected_interval(dnsgc._loop.interval)
 
         clock.advance(dnsgc._loop.interval)
         deferToDatabase.assert_called_once_with(dnsgc._collectGarbage, cutoff)
-        self.assertTrue(_is_expected_interval(dnsgc._loop.interval))
+        assert _is_expected_interval(dnsgc._loop.interval)
 
         dnsgc.stopService()
-        self.assertFalse(dnsgc.running)
-        self.assertFalse(dnsgc._loop.running)
+        assert not dnsgc.running
+        assert not dnsgc._loop.running
 
-    def test_failures_are_logged(self):
+    def test_failures_are_logged(self, mocker):
         exception = factory.make_exception()
-        deferToDatabase = self.patch(publication, "deferToDatabase")
+        deferToDatabase = mocker.patch.object(publication, "deferToDatabase")
         deferToDatabase.return_value = fail(exception)
 
         dnsgc = publication.DNSPublicationGarbageService()
@@ -71,33 +67,29 @@ class TestDNSPublicationGarbageService(MAASTestCase):
             clock.advance(dnsgc._loop.interval)
             dnsgc.stopService()
 
-        self.assertEqual(
-            logger.output,
+        assert logger.output == (
             "Failure when removing old DNS publications.\n"
             "Traceback (most recent call last):\n"
-            f"Failure: maastesting.factory.{type(exception).__name__}: \n",
+            f"Failure: maastesting.factory.{type(exception).__name__}: \n"
         )
 
-        self.assertFalse(dnsgc.running)
+        assert not dnsgc.running
 
 
-class TestDNSPublicationGarbageServiceWithDatabase(
-    MAASTransactionServerTestCase
-):
+@pytest.mark.usefixtures("maasdb")
+class TestDNSPublicationGarbageServiceWithDatabase:
     """Tests for `DNSPublicationGarbageService` with the database."""
-
-    run_tests_with = MAASCrochetRunTest
 
     @wait_for()
     @inlineCallbacks
-    def test_garbage_is_collected(self):
+    def test_garbage_is_collected(self, mocker):
         dnsgc = publication.DNSPublicationGarbageService()
 
-        utcnow = patch_utcnow(self)
+        utcnow = patch_utcnow(mocker)
         cutoff = utcnow - timedelta(days=7)
 
-        self.patch(dnsgc, "_getInterval").side_effect = [0, 999]
-        self.patch(DNSPublication.objects, "collect_garbage")
+        mocker.patch.object(dnsgc, "_getInterval").side_effect = [0, 999]
+        mocker.patch.object(DNSPublication.objects, "collect_garbage")
 
         yield dnsgc.startService()
         yield pause(0.0)  # Let the reactor tick.

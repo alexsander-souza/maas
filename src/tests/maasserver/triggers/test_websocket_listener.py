@@ -4,10 +4,10 @@
 from contextlib import contextmanager
 import logging
 import random
-from unittest import skip
 
-from django.db import connection
+from django.db import connection, transaction
 from netaddr import IPAddress
+import pytest
 from twisted.internet.defer import DeferredList, DeferredQueue, inlineCallbacks
 
 from maasserver.enum import IPADDRESS_TYPE, IPRANGE_TYPE, NODE_TYPE
@@ -17,7 +17,6 @@ from maasserver.models.blockdevice import MIN_BLOCK_DEVICE_SIZE
 from maasserver.models.partition import MIN_PARTITION_SIZE
 from maasserver.storage_layouts import MIN_BOOT_PARTITION_SIZE
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASTransactionServerTestCase
 from maasserver.triggers.testing import TransactionalHelpersMixin
 from maasserver.utils.threads import deferToDatabase
 from maastesting.crochet import wait_for
@@ -33,6 +32,19 @@ from provisioningserver.utils.twisted import (
 )
 
 wait_for_reactor = wait_for()
+
+
+@pytest.fixture
+def transactional_maasdb(maasdb):
+    """Provide the database as `MAASTransactionServerTestCase` did: real commits.
+
+    `maasdb` leaves autocommit disabled, under which `transaction.atomic()`
+    only creates savepoints and commits are not real, so the listener would
+    never see any notifications. Autocommit is restored here.
+    """
+    transaction.rollback()
+    transaction.set_autocommit(True)
+    yield
 
 
 @synchronous
@@ -77,71 +89,70 @@ def listenFor(channel):
         stop()
 
 
-class TestNodeListener(
-    MAASTransactionServerTestCase, TransactionalHelpersMixin
-):
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "transactional_maasdb"
+)
+@pytest.mark.allow_transactions
+@pytest.mark.parametrize(
+    "params, listener_channel",
+    [
+        pytest.param(
+            {
+                "node_type": NODE_TYPE.MACHINE,
+                # This is needed to avoid updating the node after creating it
+                "with_boot_disk": False,
+            },
+            "machine",
+            id="machine",
+        ),
+        pytest.param({"node_type": NODE_TYPE.DEVICE}, "device", id="device"),
+        pytest.param(
+            {"node_type": NODE_TYPE.RACK_CONTROLLER}, "controller", id="rack"
+        ),
+        pytest.param(
+            {"node_type": NODE_TYPE.REGION_AND_RACK_CONTROLLER},
+            "controller",
+            id="region_and_rack",
+        ),
+        pytest.param(
+            {"node_type": NODE_TYPE.REGION_CONTROLLER},
+            "controller",
+            id="region",
+        ),
+    ],
+)
+class TestNodeListener(TransactionalHelpersMixin):
     """End-to-end test of both the listeners code and the triggers code."""
 
-    scenarios = (
-        (
-            "machine",
-            {
-                "params": {
-                    "node_type": NODE_TYPE.MACHINE,
-                    # This is needed to avoid updating the node after creating it
-                    "with_boot_disk": False,
-                },
-                "listener": "machine",
-            },
-        ),
-        (
-            "device",
-            {"params": {"node_type": NODE_TYPE.DEVICE}, "listener": "device"},
-        ),
-        (
-            "rack",
-            {
-                "params": {"node_type": NODE_TYPE.RACK_CONTROLLER},
-                "listener": "controller",
-            },
-        ),
-        (
-            "region_and_rack",
-            {
-                "params": {"node_type": NODE_TYPE.REGION_AND_RACK_CONTROLLER},
-                "listener": "controller",
-            },
-        ),
-        (
-            "region",
-            {
-                "params": {"node_type": NODE_TYPE.REGION_CONTROLLER},
-                "listener": "controller",
-            },
-        ),
-    )
+    @pytest.fixture(autouse=True)
+    def _mocker_patch(self, mocker):
+        self.patch = mocker.patch.object
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_handler_on_create_notification(self):
+    def test_calls_handler_on_create_notification(
+        self, params, listener_channel
+    ):
         listener = self.make_listener_without_delay()
         dv = DeferredValue()
-        listener.register(self.listener, lambda *args: dv.set(args))
+        listener.register(listener_channel, lambda *args: dv.set(args))
         yield listener.startService()
         try:
-            node = yield deferToDatabase(self.create_node, self.params)
+            node = yield deferToDatabase(self.create_node, params)
             yield dv.get(timeout=2)
-            self.assertEqual(("create", node.system_id), dv.value)
+            assert (("create", node.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_handler_on_update_notification(self):
+    def test_calls_handler_on_update_notification(
+        self, params, listener_channel
+    ):
         listener = self.make_listener_without_delay()
         dv = DeferredValue()
-        listener.register(self.listener, lambda *args: dv.set(args))
-        node = yield deferToDatabase(self.create_node, self.params)
+        listener.register(listener_channel, lambda *args: dv.set(args))
+        node = yield deferToDatabase(self.create_node, params)
         yield listener.startService()
         try:
             yield deferToDatabase(
@@ -150,17 +161,19 @@ class TestNodeListener(
                 {"hostname": factory.make_name("hostname")},
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", node.system_id), dv.value)
+            assert (("update", node.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_handler_on_description_update(self):
+    def test_calls_handler_on_description_update(
+        self, params, listener_channel
+    ):
         listener = self.make_listener_without_delay()
         dv = DeferredValue()
-        listener.register(self.listener, lambda *args: dv.set(args))
-        node = yield deferToDatabase(self.create_node, self.params)
+        listener.register(listener_channel, lambda *args: dv.set(args))
+        node = yield deferToDatabase(self.create_node, params)
         yield listener.startService()
         try:
             yield deferToDatabase(
@@ -169,35 +182,39 @@ class TestNodeListener(
                 {"description": factory.make_name("hostname")},
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", node.system_id), dv.value)
+            assert (("update", node.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_handler_on_delete_notification(self):
+    def test_calls_handler_on_delete_notification(
+        self, params, listener_channel
+    ):
         listener = self.make_listener_without_delay()
         dv = DeferredValue()
-        listener.register(self.listener, lambda *args: dv.set(args))
-        node = yield deferToDatabase(self.create_node, self.params)
+        listener.register(listener_channel, lambda *args: dv.set(args))
+        node = yield deferToDatabase(self.create_node, params)
         yield listener.startService()
         try:
             yield deferToDatabase(self.delete_node, node.system_id)
             yield dv.get(timeout=2)
-            self.assertEqual(("delete", node.system_id), dv.value)
+            assert (("delete", node.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_handler_on_domain_name_change(self):
+    def test_calls_handler_on_domain_name_change(
+        self, params, listener_channel
+    ):
         listener = self.make_listener_without_delay()
         dv = DeferredValue()
         domain = yield deferToDatabase(self.create_domain, {})
-        params = self.params.copy()
+        params = params.copy()
         params["domain"] = domain
         yield deferToDatabase(self.create_node, params)
-        listener.register(self.listener, lambda *args: dv.set(args))
+        listener.register(listener_channel, lambda *args: dv.set(args))
         yield listener.startService()
         try:
             yield deferToDatabase(
@@ -211,11 +228,13 @@ class TestNodeListener(
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_all_handler_on_domain_name_change(self):
+    def test_calls_all_handler_on_domain_name_change(
+        self, params, listener_channel
+    ):
         listener = self.make_listener_without_delay()
         dvs = DeferredValue()
         domain = yield deferToDatabase(self.create_domain, {})
-        params = self.params.copy()
+        params = params.copy()
         params["domain"] = domain
         dvs = []
         nodes = set()
@@ -224,7 +243,7 @@ class TestNodeListener(
             nodes.add(node)
             dvs.append(DeferredValue())
         save_dvs = dvs[:]
-        listener.register(self.listener, lambda *args: dvs.pop().set(args))
+        listener.register(listener_channel, lambda *args: dvs.pop().set(args))
         yield listener.startService()
         try:
             yield deferToDatabase(
@@ -233,14 +252,13 @@ class TestNodeListener(
                 {"name": factory.make_name("name")},
             )
             results = yield DeferredList(dv.get(timeout=2) for dv in save_dvs)
-            self.assertCountEqual(
-                {("update", node.system_id) for node in nodes},
-                {res for (suc, res) in results},
-            )
+            assert sorted(
+                {("update", node.system_id) for node in nodes}
+            ) == sorted({res for (suc, res) in results})
         finally:
             yield listener.stopService()
 
-    def test_expected_number_of_fields_watched(self):
+    def test_expected_number_of_fields_watched(self, params, listener_channel):
         triggers = [
             "node_region_controller_update_notify",
             "node_machine_update_notify",
@@ -264,52 +282,48 @@ class TestNodeListener(
                 )
                 row = cursor.fetchone()
 
-            self.assertIsNotNone(
-                row, f"Trigger {trigger_name} not found on table {table_name}"
-            )
+            assert (row) is not None
 
             trigger_def = row[0]
 
             count = trigger_def.count("IS DISTINCT FROM")
 
-            self.assertEqual(
-                26,
-                count,
+            assert (26) == (count), (
                 "Any field listed here will be monitored for changes causing "
                 "the UI on all clients to refresh this node object. This is "
                 "costly! Only fields which are visible in the UI, and not listed "
-                f"in other handlers should be listed here. Please check the trigger {trigger_name}.",
+                f"in other handlers should be listed here. Please check the trigger {trigger_name}."
             )
 
 
-class TestControllerListener(
-    MAASTransactionServerTestCase, TransactionalHelpersMixin
-):
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "transactional_maasdb"
+)
+@pytest.mark.allow_transactions
+@pytest.mark.parametrize(
+    "params, listener_channel",
+    [
+        pytest.param(
+            {"node_type": NODE_TYPE.RACK_CONTROLLER}, "controller", id="rack"
+        ),
+        pytest.param(
+            {"node_type": NODE_TYPE.REGION_AND_RACK_CONTROLLER},
+            "controller",
+            id="region_and_rack",
+        ),
+        pytest.param(
+            {"node_type": NODE_TYPE.REGION_CONTROLLER},
+            "controller",
+            id="region",
+        ),
+    ],
+)
+class TestControllerListener(TransactionalHelpersMixin):
     """End-to-end test of both the listeners code and the triggers code."""
 
-    scenarios = (
-        (
-            "rack",
-            {
-                "params": {"node_type": NODE_TYPE.RACK_CONTROLLER},
-                "listener": "controller",
-            },
-        ),
-        (
-            "region_and_rack",
-            {
-                "params": {"node_type": NODE_TYPE.REGION_AND_RACK_CONTROLLER},
-                "listener": "controller",
-            },
-        ),
-        (
-            "region",
-            {
-                "params": {"node_type": NODE_TYPE.REGION_CONTROLLER},
-                "listener": "controller",
-            },
-        ),
-    )
+    @pytest.fixture(autouse=True)
+    def _mocker_patch(self, mocker):
+        self.patch = mocker.patch.object
 
     def set_version(self, controller, version):
         ControllerInfo.objects.set_version(controller, version)
@@ -319,44 +333,50 @@ class TestControllerListener(
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_handler_on_controllerinfo_insert(self):
+    def test_calls_handler_on_controllerinfo_insert(
+        self, params, listener_channel
+    ):
         listener = self.make_listener_without_delay()
         dv = DeferredValue()
-        controller = yield deferToDatabase(self.create_node, self.params)
-        listener.register(self.listener, lambda *args: dv.set(args))
+        controller = yield deferToDatabase(self.create_node, params)
+        listener.register(listener_channel, lambda *args: dv.set(args))
         yield listener.startService()
         try:
             yield deferToDatabase(self.set_version, controller, "2.10.0")
             yield dv.get(timeout=2)
-            self.assertEqual(("update", controller.system_id), dv.value)
+            assert (("update", controller.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_handler_on_controllerinfo_version_update(self):
+    def test_calls_handler_on_controllerinfo_version_update(
+        self, params, listener_channel
+    ):
         listener = self.make_listener_without_delay()
         dv = DeferredValue()
-        controller = yield deferToDatabase(self.create_node, self.params)
+        controller = yield deferToDatabase(self.create_node, params)
         yield deferToDatabase(self.set_version, controller, "2.10.0")
-        listener.register(self.listener, lambda *args: dv.set(args))
+        listener.register(listener_channel, lambda *args: dv.set(args))
         yield listener.startService()
         try:
             yield deferToDatabase(self.set_version, controller, "2.10.1")
             yield dv.get(timeout=2)
-            self.assertEqual(("update", controller.system_id), dv.value)
+            assert (("update", controller.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_handler_on_controllerinfo_versionsinfo_update(self):
+    def test_calls_handler_on_controllerinfo_versionsinfo_update(
+        self, params, listener_channel
+    ):
         listener = self.make_listener_without_delay()
         dv = DeferredValue()
-        controller = yield deferToDatabase(self.create_node, self.params)
+        controller = yield deferToDatabase(self.create_node, params)
         # first set the version
         yield deferToDatabase(self.set_version, controller, "3.0.0")
-        listener.register(self.listener, lambda *args: dv.set(args))
+        listener.register(listener_channel, lambda *args: dv.set(args))
         yield listener.startService()
         try:
             # update other fields but keep the same version
@@ -368,31 +388,39 @@ class TestControllerListener(
                 ),
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", controller.system_id), dv.value)
+            assert (("update", controller.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_handler_on_controllerinfo_delete(self):
+    def test_calls_handler_on_controllerinfo_delete(
+        self, params, listener_channel
+    ):
         listener = self.make_listener_without_delay()
         dv = DeferredValue()
-        controller = yield deferToDatabase(self.create_node, self.params)
+        controller = yield deferToDatabase(self.create_node, params)
         yield deferToDatabase(self.set_version, controller, "2.10.0")
-        listener.register(self.listener, lambda *args: dv.set(args))
+        listener.register(listener_channel, lambda *args: dv.set(args))
         yield listener.startService()
         try:
             yield deferToDatabase(controller.controllerinfo.delete)
             yield dv.get(timeout=2)
-            self.assertEqual(("update", controller.system_id), dv.value)
+            assert (("update", controller.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
 
-class TestDeviceWithParentListener(
-    MAASTransactionServerTestCase, TransactionalHelpersMixin
-):
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "transactional_maasdb"
+)
+@pytest.mark.allow_transactions
+class TestDeviceWithParentListener(TransactionalHelpersMixin):
     """End-to-end test of both the listeners code and the triggers code."""
+
+    @pytest.fixture(autouse=True)
+    def _mocker_patch(self, mocker):
+        self.patch = mocker.patch.object
 
     @wait_for_reactor
     @inlineCallbacks
@@ -408,7 +436,7 @@ class TestDeviceWithParentListener(
                 {"node_type": NODE_TYPE.DEVICE, "parent": parent},
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", parent.system_id), dv.value)
+            assert (("update", parent.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -427,7 +455,7 @@ class TestDeviceWithParentListener(
                 {"hostname": factory.make_name("hostname")},
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", parent.system_id), dv.value)
+            assert (("update", parent.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -442,16 +470,22 @@ class TestDeviceWithParentListener(
         try:
             yield deferToDatabase(self.delete_node, device.system_id)
             yield dv.get(timeout=2)
-            self.assertEqual(("update", parent.system_id), dv.value)
+            assert (("update", parent.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
 
-class TestTagListener(
-    MAASTransactionServerTestCase, TransactionalHelpersMixin
-):
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "transactional_maasdb"
+)
+@pytest.mark.allow_transactions
+class TestTagListener(TransactionalHelpersMixin):
     """End-to-end test of both the listeners code and the tag
     triggers code."""
+
+    @pytest.fixture(autouse=True)
+    def _mocker_patch(self, mocker):
+        self.patch = mocker.patch.object
 
     @wait_for_reactor
     @inlineCallbacks
@@ -463,7 +497,7 @@ class TestTagListener(
         try:
             tag = yield deferToDatabase(self.create_tag)
             yield dv.get(timeout=2)
-            self.assertEqual(("create", str(tag.id)), dv.value)
+            assert (("create", str(tag.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -481,7 +515,7 @@ class TestTagListener(
                 self.update_tag, tag.id, {"name": factory.make_name("tag")}
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", str(tag.id)), dv.value)
+            assert (("update", str(tag.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -496,77 +530,74 @@ class TestTagListener(
         try:
             yield deferToDatabase(self.delete_tag, tag.id)
             yield dv.get(timeout=2)
-            self.assertEqual(("delete", str(tag.id)), dv.value)
+            assert (("delete", str(tag.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
 
-class TestNodeTagListener(
-    MAASTransactionServerTestCase, TransactionalHelpersMixin
-):
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "transactional_maasdb"
+)
+@pytest.mark.allow_transactions
+@pytest.mark.parametrize(
+    "params, listener_channel",
+    [
+        pytest.param(
+            {"node_type": NODE_TYPE.MACHINE}, "machine", id="machine"
+        ),
+        pytest.param({"node_type": NODE_TYPE.DEVICE}, "device", id="device"),
+        pytest.param(
+            {"node_type": NODE_TYPE.RACK_CONTROLLER}, "controller", id="rack"
+        ),
+        pytest.param(
+            {"node_type": NODE_TYPE.REGION_AND_RACK_CONTROLLER},
+            "controller",
+            id="region_and_rack",
+        ),
+        pytest.param(
+            {"node_type": NODE_TYPE.REGION_CONTROLLER},
+            "controller",
+            id="region",
+        ),
+    ],
+)
+class TestNodeTagListener(TransactionalHelpersMixin):
     """End-to-end test of both the listeners code and the triggers on
     maasserver_node_tags table."""
 
-    scenarios = (
-        (
-            "machine",
-            {
-                "params": {"node_type": NODE_TYPE.MACHINE},
-                "listener": "machine",
-            },
-        ),
-        (
-            "device",
-            {"params": {"node_type": NODE_TYPE.DEVICE}, "listener": "device"},
-        ),
-        (
-            "rack",
-            {
-                "params": {"node_type": NODE_TYPE.RACK_CONTROLLER},
-                "listener": "controller",
-            },
-        ),
-        (
-            "region_and_rack",
-            {
-                "params": {"node_type": NODE_TYPE.REGION_AND_RACK_CONTROLLER},
-                "listener": "controller",
-            },
-        ),
-        (
-            "region",
-            {
-                "params": {"node_type": NODE_TYPE.REGION_CONTROLLER},
-                "listener": "controller",
-            },
-        ),
-    )
+    @pytest.fixture(autouse=True)
+    def _mocker_patch(self, mocker):
+        self.patch = mocker.patch.object
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_handler_with_update_on_create(self):
-        node = yield deferToDatabase(self.create_node, self.params)
+    def test_calls_handler_with_update_on_create(
+        self, params, listener_channel
+    ):
+        node = yield deferToDatabase(self.create_node, params)
         tag = yield deferToDatabase(self.create_tag)
 
         listener = self.make_listener_without_delay()
         node_dv = DeferredValue()
-        listener.register(self.listener, lambda *args: node_dv.set(args))
+        listener.register(listener_channel, lambda *args: node_dv.set(args))
         tag_dv = DeferredValue()
         listener.register("tag", lambda *args: tag_dv.set(args))
         yield listener.startService()
         try:
             yield deferToDatabase(self.add_node_to_tag, node, tag)
             yield node_dv.get(timeout=2)
-            self.assertEqual(("update", node.system_id), node_dv.value)
+            assert (("update", node.system_id)) == (node_dv.value)
             yield tag_dv.get(timeout=2)
-            self.assertEqual(("update", str(tag.id)), tag_dv.value)
+            assert (("update", str(tag.id))) == (tag_dv.value)
         finally:
             yield listener.stopService()
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_handler_with_update_on_delete(self):
-        node = yield deferToDatabase(self.create_node, self.params)
+    def test_calls_handler_with_update_on_delete(
+        self, params, listener_channel
+    ):
+        node = yield deferToDatabase(self.create_node, params)
         tag = yield deferToDatabase(self.create_tag)
         yield deferToDatabase(self.add_node_to_tag, node, tag)
 
@@ -574,102 +605,101 @@ class TestNodeTagListener(
         node_dv = DeferredValue()
         tag_dv = DeferredValue()
         listener.register("tag", lambda *args: tag_dv.set(args))
-        listener.register(self.listener, lambda *args: node_dv.set(args))
+        listener.register(listener_channel, lambda *args: node_dv.set(args))
         yield listener.startService()
         try:
             yield deferToDatabase(self.remove_node_from_tag, node, tag)
             yield node_dv.get(timeout=2)
-            self.assertEqual(("update", node.system_id), node_dv.value)
+            assert (("update", node.system_id)) == (node_dv.value)
             yield tag_dv.get(timeout=2)
-            self.assertEqual(("update", str(tag.id)), tag_dv.value)
+            assert (("update", str(tag.id))) == (tag_dv.value)
         finally:
             yield listener.stopService()
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_node_handler_with_update_on_tag_rename(self):
-        node = yield deferToDatabase(self.create_node, self.params)
+    def test_calls_node_handler_with_update_on_tag_rename(
+        self, params, listener_channel
+    ):
+        node = yield deferToDatabase(self.create_node, params)
         tag = yield deferToDatabase(self.create_tag)
         yield deferToDatabase(self.add_node_to_tag, node, tag)
 
         listener = self.make_listener_without_delay()
         dv = DeferredValue()
-        listener.register(self.listener, lambda *args: dv.set(args))
+        listener.register(listener_channel, lambda *args: dv.set(args))
         yield listener.startService()
         try:
             tag = yield deferToDatabase(
                 self.update_tag, tag.id, {"name": factory.make_name("tag")}
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", node.system_id), dv.value)
+            assert (("update", node.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
 
-class TestOwnerDataTriggers(
-    MAASTransactionServerTestCase, TransactionalHelpersMixin
-):
-    scenarios = (
-        (
-            "machine",
-            {
-                "params": {"node_type": NODE_TYPE.MACHINE},
-                "listener": "machine",
-            },
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "transactional_maasdb"
+)
+@pytest.mark.allow_transactions
+@pytest.mark.parametrize(
+    "params, listener_channel",
+    [
+        pytest.param(
+            {"node_type": NODE_TYPE.MACHINE}, "machine", id="machine"
         ),
-        (
-            "device",
-            {"params": {"node_type": NODE_TYPE.DEVICE}, "listener": "device"},
+        pytest.param({"node_type": NODE_TYPE.DEVICE}, "device", id="device"),
+        pytest.param(
+            {"node_type": NODE_TYPE.RACK_CONTROLLER}, "controller", id="rack"
         ),
-        (
-            "rack",
-            {
-                "params": {"node_type": NODE_TYPE.RACK_CONTROLLER},
-                "listener": "controller",
-            },
+        pytest.param(
+            {"node_type": NODE_TYPE.REGION_AND_RACK_CONTROLLER},
+            "controller",
+            id="region_and_rack",
         ),
-        (
-            "region_and_rack",
-            {
-                "params": {"node_type": NODE_TYPE.REGION_AND_RACK_CONTROLLER},
-                "listener": "controller",
-            },
+        pytest.param(
+            {"node_type": NODE_TYPE.REGION_CONTROLLER},
+            "controller",
+            id="region",
         ),
-        (
-            "region",
-            {
-                "params": {"node_type": NODE_TYPE.REGION_CONTROLLER},
-                "listener": "controller",
-            },
-        ),
-    )
+    ],
+)
+class TestOwnerDataTriggers(TransactionalHelpersMixin):
+    @pytest.fixture(autouse=True)
+    def _mocker_patch(self, mocker):
+        self.patch = mocker.patch.object
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_handler_with_update_on_create(self):
-        node = yield deferToDatabase(self.create_node, self.params)
+    def test_calls_handler_with_update_on_create(
+        self, params, listener_channel
+    ):
+        node = yield deferToDatabase(self.create_node, params)
 
         listener = self.make_listener_without_delay()
         dv = DeferredValue()
-        listener.register(self.listener, lambda *args: dv.set(args))
+        listener.register(listener_channel, lambda *args: dv.set(args))
         yield listener.startService()
         try:
             yield deferToDatabase(
                 OwnerData.objects.set_owner_data, node, {"foo": "baz"}
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", node.system_id), dv.value)
+            assert (("update", node.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_handler_with_update_on_update(self):
-        node = yield deferToDatabase(self.create_node, self.params)
+    def test_calls_handler_with_update_on_update(
+        self, params, listener_channel
+    ):
+        node = yield deferToDatabase(self.create_node, params)
 
         listener = self.make_listener_without_delay()
         dv = DeferredValue()
-        listener.register(self.listener, lambda *args: dv.set(args))
+        listener.register(listener_channel, lambda *args: dv.set(args))
         yield deferToDatabase(
             OwnerData.objects.set_owner_data, node, {"foo": "bar"}
         )
@@ -679,18 +709,20 @@ class TestOwnerDataTriggers(
                 OwnerData.objects.set_owner_data, node, {"foo": "baz"}
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", node.system_id), dv.value)
+            assert (("update", node.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_handler_with_update_on_replace(self):
-        node = yield deferToDatabase(self.create_node, self.params)
+    def test_calls_handler_with_update_on_replace(
+        self, params, listener_channel
+    ):
+        node = yield deferToDatabase(self.create_node, params)
 
         listener = self.make_listener_without_delay()
         dv = DeferredValue()
-        listener.register(self.listener, lambda *args: dv.set(args))
+        listener.register(listener_channel, lambda *args: dv.set(args))
         yield deferToDatabase(
             OwnerData.objects.set_owner_data, node, {"foo": "bar"}
         )
@@ -700,108 +732,113 @@ class TestOwnerDataTriggers(
                 OwnerData.objects.set_owner_data, node, {"new": "value"}
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", node.system_id), dv.value)
+            assert (("update", node.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
 
-class TestNodeMetadataTriggers(
-    MAASTransactionServerTestCase, TransactionalHelpersMixin
-):
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "transactional_maasdb"
+)
+@pytest.mark.allow_transactions
+@pytest.mark.parametrize(
+    "params, listener_channel",
+    [
+        pytest.param(
+            {"node_type": NODE_TYPE.MACHINE}, "machine", id="machine"
+        ),
+        pytest.param({"node_type": NODE_TYPE.DEVICE}, "device", id="device"),
+        pytest.param(
+            {"node_type": NODE_TYPE.RACK_CONTROLLER}, "controller", id="rack"
+        ),
+        pytest.param(
+            {"node_type": NODE_TYPE.REGION_AND_RACK_CONTROLLER},
+            "controller",
+            id="region_and_rack",
+        ),
+        pytest.param(
+            {"node_type": NODE_TYPE.REGION_CONTROLLER},
+            "controller",
+            id="region",
+        ),
+    ],
+)
+class TestNodeMetadataTriggers(TransactionalHelpersMixin):
     """End-to-end test of both the listeners code and the triggers on
     maasserver_node_tags table."""
 
-    scenarios = (
-        (
-            "machine",
-            {
-                "params": {"node_type": NODE_TYPE.MACHINE},
-                "listener": "machine",
-            },
-        ),
-        (
-            "device",
-            {"params": {"node_type": NODE_TYPE.DEVICE}, "listener": "device"},
-        ),
-        (
-            "rack",
-            {
-                "params": {"node_type": NODE_TYPE.RACK_CONTROLLER},
-                "listener": "controller",
-            },
-        ),
-        (
-            "region_and_rack",
-            {
-                "params": {"node_type": NODE_TYPE.REGION_AND_RACK_CONTROLLER},
-                "listener": "controller",
-            },
-        ),
-        (
-            "region",
-            {
-                "params": {"node_type": NODE_TYPE.REGION_CONTROLLER},
-                "listener": "controller",
-            },
-        ),
-    )
+    @pytest.fixture(autouse=True)
+    def _mocker_patch(self, mocker):
+        self.patch = mocker.patch.object
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_handler_with_update_on_create(self):
-        node = yield deferToDatabase(self.create_node, self.params)
+    def test_calls_handler_with_update_on_create(
+        self, params, listener_channel
+    ):
+        node = yield deferToDatabase(self.create_node, params)
 
         listener = self.make_listener_without_delay()
         dv = DeferredValue()
-        listener.register(self.listener, lambda *args: dv.set(args))
+        listener.register(listener_channel, lambda *args: dv.set(args))
         yield listener.startService()
         try:
             yield deferToDatabase(self.set_node_metadata, node, "foo", "bar")
             yield dv.get(timeout=2)
-            self.assertEqual(("update", node.system_id), dv.value)
+            assert (("update", node.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_handler_with_update_on_update(self):
-        node = yield deferToDatabase(self.create_node, self.params)
+    def test_calls_handler_with_update_on_update(
+        self, params, listener_channel
+    ):
+        node = yield deferToDatabase(self.create_node, params)
 
         listener = self.make_listener_without_delay()
         dv = DeferredValue()
-        listener.register(self.listener, lambda *args: dv.set(args))
+        listener.register(listener_channel, lambda *args: dv.set(args))
         yield deferToDatabase(self.set_node_metadata, node, "foo", "bar")
         yield listener.startService()
         try:
             yield deferToDatabase(self.set_node_metadata, node, "foo", "baz")
             yield dv.get(timeout=2)
-            self.assertEqual(("update", node.system_id), dv.value)
+            assert (("update", node.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_handler_with_update_on_delete(self):
-        node = yield deferToDatabase(self.create_node, self.params)
+    def test_calls_handler_with_update_on_delete(
+        self, params, listener_channel
+    ):
+        node = yield deferToDatabase(self.create_node, params)
 
         listener = self.make_listener_without_delay()
         dv = DeferredValue()
-        listener.register(self.listener, lambda *args: dv.set(args))
+        listener.register(listener_channel, lambda *args: dv.set(args))
         yield deferToDatabase(self.set_node_metadata, node, "foo", "bar")
         yield listener.startService()
         try:
             yield deferToDatabase(self.delete_node_metadata, node, "foo")
             yield dv.get(timeout=2)
-            self.assertEqual(("update", node.system_id), dv.value)
+            assert (("update", node.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
 
-class TestDeviceWithParentTagListener(
-    MAASTransactionServerTestCase, TransactionalHelpersMixin
-):
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "transactional_maasdb"
+)
+@pytest.mark.allow_transactions
+class TestDeviceWithParentTagListener(TransactionalHelpersMixin):
     """End-to-end test of both the listeners code and the triggers on
     maasserver_node_tags table."""
+
+    @pytest.fixture(autouse=True)
+    def _mocker_patch(self, mocker):
+        self.patch = mocker.patch.object
 
     @wait_for_reactor
     @inlineCallbacks
@@ -816,7 +853,7 @@ class TestDeviceWithParentTagListener(
         try:
             yield deferToDatabase(self.add_node_to_tag, device, tag)
             yield dv.get(timeout=2)
-            self.assertEqual(("update", parent.system_id), dv.value)
+            assert (("update", parent.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -834,7 +871,7 @@ class TestDeviceWithParentTagListener(
         try:
             yield deferToDatabase(self.remove_node_from_tag, device, tag)
             yield dv.get(timeout=2)
-            self.assertEqual(("update", parent.system_id), dv.value)
+            assert (("update", parent.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -854,16 +891,22 @@ class TestDeviceWithParentTagListener(
                 self.update_tag, tag.id, {"name": factory.make_name("tag")}
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", parent.system_id), dv.value)
+            assert (("update", parent.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
 
-class TestEventListener(
-    MAASTransactionServerTestCase, TransactionalHelpersMixin
-):
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "transactional_maasdb"
+)
+@pytest.mark.allow_transactions
+class TestEventListener(TransactionalHelpersMixin):
     """End-to-end test of both the listeners code and the event
     triggers code."""
+
+    @pytest.fixture(autouse=True)
+    def _mocker_patch(self, mocker):
+        self.patch = mocker.patch.object
 
     @wait_for_reactor
     @inlineCallbacks
@@ -875,173 +918,179 @@ class TestEventListener(
         try:
             event = yield deferToDatabase(self.create_event)
             yield dv.get(timeout=2)
-            self.assertEqual(("create", str(event.id)), dv.value)
+            assert (("create", str(event.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
 
-class TestNodeEventListener(
-    MAASTransactionServerTestCase, TransactionalHelpersMixin
-):
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "transactional_maasdb"
+)
+@pytest.mark.allow_transactions
+@pytest.mark.parametrize(
+    "params, listener_channel",
+    [
+        pytest.param(
+            {"node_type": NODE_TYPE.MACHINE}, "machine", id="machine"
+        ),
+        pytest.param(
+            {"node_type": NODE_TYPE.RACK_CONTROLLER}, "controller", id="rack"
+        ),
+        pytest.param(
+            {"node_type": NODE_TYPE.REGION_AND_RACK_CONTROLLER},
+            "controller",
+            id="region_and_rack",
+        ),
+        pytest.param(
+            {"node_type": NODE_TYPE.REGION_CONTROLLER},
+            "controller",
+            id="region",
+        ),
+    ],
+)
+class TestNodeEventListener(TransactionalHelpersMixin):
     """End-to-end test of both the listeners code and the triggers on
     maasserver_event table that notifies its node."""
 
-    scenarios = (
-        (
-            "machine",
-            {
-                "params": {"node_type": NODE_TYPE.MACHINE},
-                "listener": "machine",
-            },
-        ),
-        (
-            "rack",
-            {
-                "params": {"node_type": NODE_TYPE.RACK_CONTROLLER},
-                "listener": "controller",
-            },
-        ),
-        (
-            "region_and_rack",
-            {
-                "params": {"node_type": NODE_TYPE.REGION_AND_RACK_CONTROLLER},
-                "listener": "controller",
-            },
-        ),
-        (
-            "region",
-            {
-                "params": {"node_type": NODE_TYPE.REGION_CONTROLLER},
-                "listener": "controller",
-            },
-        ),
-    )
+    @pytest.fixture(autouse=True)
+    def _mocker_patch(self, mocker):
+        self.patch = mocker.patch.object
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_handler_with_update_on_create(self):
-        node = yield deferToDatabase(self.create_node, self.params)
+    def test_calls_handler_with_update_on_create(
+        self, params, listener_channel
+    ):
+        node = yield deferToDatabase(self.create_node, params)
         event_type = yield deferToDatabase(
             self.create_event_type, {"level": logging.INFO}
         )
 
         listener = self.make_listener_without_delay()
         dv = DeferredValue()
-        listener.register(self.listener, lambda *args: dv.set(args))
+        listener.register(listener_channel, lambda *args: dv.set(args))
         yield listener.startService()
         try:
             yield deferToDatabase(
                 self.create_event, {"node": node, "type": event_type}
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", node.system_id), dv.value)
+            assert (("update", node.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
 
-class TestNodeStaticIPAddressListener(
-    MAASTransactionServerTestCase, TransactionalHelpersMixin
-):
-    """End-to-end test of both the listeners code and the triggers on
-    maasserver_interfacestaticipaddresslink table that notifies its node."""
-
-    scenarios = (
-        (
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "transactional_maasdb"
+)
+@pytest.mark.allow_transactions
+@pytest.mark.parametrize(
+    "params, listener_channel",
+    [
+        pytest.param(
+            {"node_type": NODE_TYPE.MACHINE, "interface": True},
             "machine",
-            {
-                "params": {"node_type": NODE_TYPE.MACHINE, "interface": True},
-                "listener": "machine",
-            },
+            id="machine",
         ),
-        (
+        pytest.param(
+            {"node_type": NODE_TYPE.DEVICE, "interface": True},
             "device",
-            {
-                "params": {"node_type": NODE_TYPE.DEVICE, "interface": True},
-                "listener": "device",
-            },
+            id="device",
         ),
-        (
-            "rack",
+        pytest.param(
             {
-                "params": {
-                    "node_type": NODE_TYPE.RACK_CONTROLLER,
-                    "interface": True,
-                },
-                "listener": "controller",
+                "node_type": NODE_TYPE.RACK_CONTROLLER,
+                "interface": True,
             },
+            "controller",
+            id="rack",
         ),
-        (
-            "region_and_rack",
+        pytest.param(
             {
-                "params": {
-                    "node_type": NODE_TYPE.REGION_AND_RACK_CONTROLLER,
-                    "interface": True,
-                },
-                "listener": "controller",
+                "node_type": NODE_TYPE.REGION_AND_RACK_CONTROLLER,
+                "interface": True,
             },
+            "controller",
+            id="region_and_rack",
         ),
-        (
-            "region",
+        pytest.param(
             {
-                "params": {
-                    "node_type": NODE_TYPE.REGION_CONTROLLER,
-                    "interface": True,
-                },
-                "listener": "controller",
+                "node_type": NODE_TYPE.REGION_CONTROLLER,
+                "interface": True,
             },
+            "controller",
+            id="region",
         ),
-    )
-
-    @wait_for_reactor
-    @inlineCallbacks
-    def test_calls_handler_with_update_on_create(self):
-        node = yield deferToDatabase(self.create_node, self.params)
-        interface = yield deferToDatabase(
-            self.get_node_boot_interface, node.system_id
-        )
-
-        listener = self.make_listener_without_delay()
-        dv = DeferredValue()
-        listener.register(self.listener, lambda *args: dv.set(args))
-        yield listener.startService()
-        try:
-            yield deferToDatabase(
-                self.create_staticipaddress, {"interface": interface}
-            )
-            yield dv.get(timeout=2)
-            self.assertEqual(("update", node.system_id), dv.value)
-        finally:
-            yield listener.stopService()
-
-    @wait_for_reactor
-    @inlineCallbacks
-    def test_calls_handler_with_update_on_delete(self):
-        node = yield deferToDatabase(self.create_node, self.params)
-        interface = yield deferToDatabase(
-            self.get_node_boot_interface, node.system_id
-        )
-        sip = yield deferToDatabase(
-            self.create_staticipaddress, {"interface": interface}
-        )
-
-        listener = self.make_listener_without_delay()
-        dv = DeferredValue()
-        listener.register(self.listener, lambda *args: dv.set(args))
-        yield listener.startService()
-        try:
-            yield deferToDatabase(self.delete_staticipaddress, sip.id)
-            yield dv.get(timeout=2)
-            self.assertEqual(("update", node.system_id), dv.value)
-        finally:
-            yield listener.stopService()
-
-
-class TestDeviceWithParentStaticIPAddressListener(
-    MAASTransactionServerTestCase, TransactionalHelpersMixin
-):
+    ],
+)
+class TestNodeStaticIPAddressListener(TransactionalHelpersMixin):
     """End-to-end test of both the listeners code and the triggers on
     maasserver_interfacestaticipaddresslink table that notifies its node."""
 
+    @pytest.fixture(autouse=True)
+    def _mocker_patch(self, mocker):
+        self.patch = mocker.patch.object
+
+    @wait_for_reactor
+    @inlineCallbacks
+    def test_calls_handler_with_update_on_create(
+        self, params, listener_channel
+    ):
+        node = yield deferToDatabase(self.create_node, params)
+        interface = yield deferToDatabase(
+            self.get_node_boot_interface, node.system_id
+        )
+
+        listener = self.make_listener_without_delay()
+        dv = DeferredValue()
+        listener.register(listener_channel, lambda *args: dv.set(args))
+        yield listener.startService()
+        try:
+            yield deferToDatabase(
+                self.create_staticipaddress, {"interface": interface}
+            )
+            yield dv.get(timeout=2)
+            assert (("update", node.system_id)) == (dv.value)
+        finally:
+            yield listener.stopService()
+
+    @wait_for_reactor
+    @inlineCallbacks
+    def test_calls_handler_with_update_on_delete(
+        self, params, listener_channel
+    ):
+        node = yield deferToDatabase(self.create_node, params)
+        interface = yield deferToDatabase(
+            self.get_node_boot_interface, node.system_id
+        )
+        sip = yield deferToDatabase(
+            self.create_staticipaddress, {"interface": interface}
+        )
+
+        listener = self.make_listener_without_delay()
+        dv = DeferredValue()
+        listener.register(listener_channel, lambda *args: dv.set(args))
+        yield listener.startService()
+        try:
+            yield deferToDatabase(self.delete_staticipaddress, sip.id)
+            yield dv.get(timeout=2)
+            assert (("update", node.system_id)) == (dv.value)
+        finally:
+            yield listener.stopService()
+
+
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "transactional_maasdb"
+)
+@pytest.mark.allow_transactions
+class TestDeviceWithParentStaticIPAddressListener(TransactionalHelpersMixin):
+    """End-to-end test of both the listeners code and the triggers on
+    maasserver_interfacestaticipaddresslink table that notifies its node."""
+
+    @pytest.fixture(autouse=True)
+    def _mocker_patch(self, mocker):
+        self.patch = mocker.patch.object
+
     @wait_for_reactor
     @inlineCallbacks
     def test_calls_handler_with_update_on_create(self):
@@ -1061,7 +1110,7 @@ class TestDeviceWithParentStaticIPAddressListener(
                 self.create_staticipaddress, {"interface": interface}
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", parent.system_id), dv.value)
+            assert (("update", parent.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -1085,93 +1134,96 @@ class TestDeviceWithParentStaticIPAddressListener(
         try:
             yield deferToDatabase(self.delete_staticipaddress, sip.id)
             yield dv.get(timeout=2)
-            self.assertEqual(("update", parent.system_id), dv.value)
+            assert (("update", parent.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
 
-class TestScriptSetListener(
-    MAASTransactionServerTestCase, TransactionalHelpersMixin
-):
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "transactional_maasdb"
+)
+@pytest.mark.allow_transactions
+@pytest.mark.parametrize(
+    "params, listener_channel",
+    [
+        pytest.param(
+            {"node_type": NODE_TYPE.MACHINE}, "machine", id="machine"
+        ),
+        pytest.param({"node_type": NODE_TYPE.DEVICE}, "device", id="device"),
+        pytest.param(
+            {"node_type": NODE_TYPE.RACK_CONTROLLER}, "controller", id="rack"
+        ),
+        pytest.param(
+            {"node_type": NODE_TYPE.REGION_AND_RACK_CONTROLLER},
+            "controller",
+            id="region_and_rack",
+        ),
+        pytest.param(
+            {"node_type": NODE_TYPE.REGION_CONTROLLER},
+            "controller",
+            id="region",
+        ),
+    ],
+)
+class TestScriptSetListener(TransactionalHelpersMixin):
     """End-to-end test of both the listeners code and the triggers on
     maasserver_scriptset table that notifies its node."""
 
-    scenarios = (
-        (
-            "machine",
-            {
-                "params": {"node_type": NODE_TYPE.MACHINE},
-                "listener": "machine",
-            },
-        ),
-        (
-            "device",
-            {"params": {"node_type": NODE_TYPE.DEVICE}, "listener": "device"},
-        ),
-        (
-            "rack",
-            {
-                "params": {"node_type": NODE_TYPE.RACK_CONTROLLER},
-                "listener": "controller",
-            },
-        ),
-        (
-            "region_and_rack",
-            {
-                "params": {"node_type": NODE_TYPE.REGION_AND_RACK_CONTROLLER},
-                "listener": "controller",
-            },
-        ),
-        (
-            "region",
-            {
-                "params": {"node_type": NODE_TYPE.REGION_CONTROLLER},
-                "listener": "controller",
-            },
-        ),
-    )
+    @pytest.fixture(autouse=True)
+    def _mocker_patch(self, mocker):
+        self.patch = mocker.patch.object
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_handler_with_update_on_create(self):
+    def test_calls_handler_with_update_on_create(
+        self, params, listener_channel
+    ):
         yield deferToDatabase(load_builtin_scripts)
-        node = yield deferToDatabase(self.create_node, self.params)
+        node = yield deferToDatabase(self.create_node, params)
 
         listener = self.make_listener_without_delay()
         dv = DeferredValue()
-        listener.register(self.listener, lambda *args: dv.set(args))
+        listener.register(listener_channel, lambda *args: dv.set(args))
         yield listener.startService()
         try:
             yield deferToDatabase(self.create_scriptset, node)
             yield dv.get(timeout=2)
-            self.assertEqual(("update", node.system_id), dv.value)
+            assert (("update", node.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_handler_with_update_on_delete(self):
+    def test_calls_handler_with_update_on_delete(
+        self, params, listener_channel
+    ):
         yield deferToDatabase(load_builtin_scripts)
-        node = yield deferToDatabase(self.create_node, self.params)
+        node = yield deferToDatabase(self.create_node, params)
         result = yield deferToDatabase(self.create_scriptset, node)
 
         listener = self.make_listener_without_delay()
         dv = DeferredValue()
-        listener.register(self.listener, lambda *args: dv.set(args))
+        listener.register(listener_channel, lambda *args: dv.set(args))
         yield listener.startService()
         try:
             yield deferToDatabase(self.delete_scriptset, result)
             yield dv.get(timeout=2)
-            self.assertEqual(("update", node.system_id), dv.value)
+            assert (("update", node.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
 
-class TestDeviceWithParentScriptSetListener(
-    MAASTransactionServerTestCase, TransactionalHelpersMixin
-):
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "transactional_maasdb"
+)
+@pytest.mark.allow_transactions
+class TestDeviceWithParentScriptSetListener(TransactionalHelpersMixin):
     """End-to-end test of both the listeners code and the triggers on
     maasserver_scriptset table that notifies its node."""
+
+    @pytest.fixture(autouse=True)
+    def _mocker_patch(self, mocker):
+        self.patch = mocker.patch.object
 
     @wait_for_reactor
     @inlineCallbacks
@@ -1186,7 +1238,7 @@ class TestDeviceWithParentScriptSetListener(
         try:
             yield deferToDatabase(self.create_scriptset, device)
             yield dv.get(timeout=2)
-            self.assertEqual(("update", parent.system_id), dv.value)
+            assert (("update", parent.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -1204,75 +1256,72 @@ class TestDeviceWithParentScriptSetListener(
         try:
             yield deferToDatabase(self.delete_scriptset, result)
             yield dv.get(timeout=2)
-            self.assertEqual(("update", parent.system_id), dv.value)
+            assert (("update", parent.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
 
-class TestNDScriptResultListener(
-    MAASTransactionServerTestCase, TransactionalHelpersMixin
-):
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "transactional_maasdb"
+)
+@pytest.mark.allow_transactions
+@pytest.mark.parametrize(
+    "params, listener_channel",
+    [
+        pytest.param(
+            {"node_type": NODE_TYPE.MACHINE}, "machine", id="machine"
+        ),
+        pytest.param({"node_type": NODE_TYPE.DEVICE}, "device", id="device"),
+        pytest.param(
+            {"node_type": NODE_TYPE.RACK_CONTROLLER}, "controller", id="rack"
+        ),
+        pytest.param(
+            {"node_type": NODE_TYPE.REGION_AND_RACK_CONTROLLER},
+            "controller",
+            id="region_and_rack",
+        ),
+        pytest.param(
+            {"node_type": NODE_TYPE.REGION_CONTROLLER},
+            "controller",
+            id="region",
+        ),
+    ],
+)
+class TestNDScriptResultListener(TransactionalHelpersMixin):
     """End-to-end test of both the listeners code and the triggers on
     maasserver_scriptresult table that notifies its node."""
 
-    scenarios = (
-        (
-            "machine",
-            {
-                "params": {"node_type": NODE_TYPE.MACHINE},
-                "listener": "machine",
-            },
-        ),
-        (
-            "device",
-            {"params": {"node_type": NODE_TYPE.DEVICE}, "listener": "device"},
-        ),
-        (
-            "rack",
-            {
-                "params": {"node_type": NODE_TYPE.RACK_CONTROLLER},
-                "listener": "controller",
-            },
-        ),
-        (
-            "region_and_rack",
-            {
-                "params": {"node_type": NODE_TYPE.REGION_AND_RACK_CONTROLLER},
-                "listener": "controller",
-            },
-        ),
-        (
-            "region",
-            {
-                "params": {"node_type": NODE_TYPE.REGION_CONTROLLER},
-                "listener": "controller",
-            },
-        ),
-    )
+    @pytest.fixture(autouse=True)
+    def _mocker_patch(self, mocker):
+        self.patch = mocker.patch.object
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_handler_with_update_on_create(self):
+    def test_calls_handler_with_update_on_create(
+        self, params, listener_channel
+    ):
         yield deferToDatabase(load_builtin_scripts)
-        node = yield deferToDatabase(self.create_node, self.params)
+        node = yield deferToDatabase(self.create_node, params)
         script_set = yield deferToDatabase(self.create_scriptset, node)
 
         listener = self.make_listener_without_delay()
         dv = DeferredValue()
-        listener.register(self.listener, lambda *args: dv.set(args))
+        listener.register(listener_channel, lambda *args: dv.set(args))
         yield listener.startService()
         try:
             yield deferToDatabase(self.create_scriptresult, script_set)
             yield dv.get(timeout=2)
-            self.assertEqual(("update", node.system_id), dv.value)
+            assert (("update", node.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_handler_with_update_on_update(self):
+    def test_calls_handler_with_update_on_update(
+        self, params, listener_channel
+    ):
         yield deferToDatabase(load_builtin_scripts)
-        node = yield deferToDatabase(self.create_node, self.params)
+        node = yield deferToDatabase(self.create_node, params)
         script_set = yield deferToDatabase(self.create_scriptset, node)
         script_result = yield deferToDatabase(
             self.create_scriptresult,
@@ -1282,20 +1331,22 @@ class TestNDScriptResultListener(
 
         listener = self.make_listener_without_delay()
         dv = DeferredValue()
-        listener.register(self.listener, lambda *args: dv.set(args))
+        listener.register(listener_channel, lambda *args: dv.set(args))
         yield listener.startService()
         try:
             yield deferToDatabase(script_result.store_result, 0)
             yield dv.get(timeout=2)
-            self.assertEqual(("update", node.system_id), dv.value)
+            assert (("update", node.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_handler_with_update_on_delete(self):
+    def test_calls_handler_with_update_on_delete(
+        self, params, listener_channel
+    ):
         yield deferToDatabase(load_builtin_scripts)
-        node = yield deferToDatabase(self.create_node, self.params)
+        node = yield deferToDatabase(self.create_node, params)
         script_set = yield deferToDatabase(self.create_scriptset, node)
         script_result = yield deferToDatabase(
             self.create_scriptresult, script_set
@@ -1303,22 +1354,28 @@ class TestNDScriptResultListener(
 
         listener = self.make_listener_without_delay()
         dv = DeferredValue()
-        listener.register(self.listener, lambda *args: dv.set(args))
+        listener.register(listener_channel, lambda *args: dv.set(args))
         yield listener.startService()
         try:
             yield deferToDatabase(self.delete_scriptresult, script_result)
             yield dv.get(timeout=2)
-            self.assertEqual(("update", node.system_id), dv.value)
+            assert (("update", node.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
 
-class TestScriptResultListener(
-    MAASTransactionServerTestCase, TransactionalHelpersMixin
-):
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "transactional_maasdb"
+)
+@pytest.mark.allow_transactions
+class TestScriptResultListener(TransactionalHelpersMixin):
     """End-to-end test of both the listers code and the triggers on
     the maasserver_scriptresult table that notifies the node-results
     websocket."""
+
+    @pytest.fixture(autouse=True)
+    def _mocker_patch(self, mocker):
+        self.patch = mocker.patch.object
 
     @wait_for_reactor
     @inlineCallbacks
@@ -1336,7 +1393,7 @@ class TestScriptResultListener(
                 self.create_scriptresult, script_set
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("create", str(script_result.id)), dv.value)
+            assert (("create", str(script_result.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -1359,7 +1416,7 @@ class TestScriptResultListener(
         try:
             yield deferToDatabase(script_result.store_result, 0)
             yield dv.get(timeout=2)
-            self.assertEqual(("update", str(script_result.id)), dv.value)
+            assert (("update", str(script_result.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -1381,99 +1438,100 @@ class TestScriptResultListener(
         try:
             yield deferToDatabase(self.delete_scriptresult, script_result)
             yield dv.get(timeout=2)
-            self.assertEqual(("delete", str(script_result_id)), dv.value)
+            assert (("delete", str(script_result_id))) == (dv.value)
         finally:
             yield listener.stopService()
 
 
-class TestNodeInterfaceListener(
-    MAASTransactionServerTestCase, TransactionalHelpersMixin
-):
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "transactional_maasdb"
+)
+@pytest.mark.allow_transactions
+@pytest.mark.parametrize(
+    "params, listener_channel",
+    [
+        pytest.param(
+            {"node_type": NODE_TYPE.MACHINE}, "machine", id="machine"
+        ),
+        pytest.param({"node_type": NODE_TYPE.DEVICE}, "device", id="device"),
+        pytest.param(
+            {"node_type": NODE_TYPE.RACK_CONTROLLER}, "controller", id="rack"
+        ),
+        pytest.param(
+            {"node_type": NODE_TYPE.REGION_AND_RACK_CONTROLLER},
+            "controller",
+            id="region_and_rack",
+        ),
+        pytest.param(
+            {"node_type": NODE_TYPE.REGION_CONTROLLER},
+            "controller",
+            id="region",
+        ),
+    ],
+)
+class TestNodeInterfaceListener(TransactionalHelpersMixin):
     """End-to-end test of both the listeners code and the triggers on
     maasserver_interface table that notifies its node."""
 
-    scenarios = (
-        (
-            "machine",
-            {
-                "params": {"node_type": NODE_TYPE.MACHINE},
-                "listener": "machine",
-            },
-        ),
-        (
-            "device",
-            {"params": {"node_type": NODE_TYPE.DEVICE}, "listener": "device"},
-        ),
-        (
-            "rack",
-            {
-                "params": {"node_type": NODE_TYPE.RACK_CONTROLLER},
-                "listener": "controller",
-            },
-        ),
-        (
-            "region_and_rack",
-            {
-                "params": {"node_type": NODE_TYPE.REGION_AND_RACK_CONTROLLER},
-                "listener": "controller",
-            },
-        ),
-        (
-            "region",
-            {
-                "params": {"node_type": NODE_TYPE.REGION_CONTROLLER},
-                "listener": "controller",
-            },
-        ),
-    )
+    @pytest.fixture(autouse=True)
+    def _mocker_patch(self, mocker):
+        self.patch = mocker.patch.object
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_handler_with_update_on_create(self):
-        node = yield deferToDatabase(self.create_node, self.params)
+    def test_calls_handler_with_update_on_create(
+        self, params, listener_channel
+    ):
+        node = yield deferToDatabase(self.create_node, params)
 
         listener = self.make_listener_without_delay()
         dv = DeferredValue()
-        listener.register(self.listener, lambda *args: dv.set(args))
+        listener.register(listener_channel, lambda *args: dv.set(args))
         yield listener.startService()
         try:
             yield deferToDatabase(self.create_interface, {"node": node})
             yield dv.get(timeout=2)
-            self.assertEqual(("update", node.system_id), dv.value)
+            assert (("update", node.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_handler_with_update_on_delete(self):
-        node = yield deferToDatabase(self.create_node, self.params)
+    def test_calls_handler_with_update_on_delete(
+        self, params, listener_channel
+    ):
+        node = yield deferToDatabase(self.create_node, params)
         interface = yield deferToDatabase(
             self.create_interface, {"node": node}
         )
 
         listener = self.make_listener_without_delay()
         dv = DeferredValue()
-        listener.register(self.listener, lambda *args: dv.set(args))
+        listener.register(listener_channel, lambda *args: dv.set(args))
         yield listener.startService()
         try:
             yield deferToDatabase(self.delete_interface, interface.id)
             yield dv.get(timeout=2)
-            self.assertEqual(("update", node.system_id), dv.value)
+            assert (("update", node.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
-    @skip("XXX: LaMontJones 2016-06-14 bug=1592474: Fails spuriously.")
+    @pytest.mark.skip(
+        reason="XXX: LaMontJones 2016-06-14 bug=1592474: Fails spuriously."
+    )
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_handler_with_update_on_update(self):
-        node = yield deferToDatabase(self.create_node, self.params)
+    def test_calls_handler_with_update_on_update(
+        self, params, listener_channel
+    ):
+        node = yield deferToDatabase(self.create_node, params)
         interface = yield deferToDatabase(
             self.create_interface, {"node": node}
         )
 
         listener = self.make_listener_without_delay()
         dv = DeferredValue()
-        listener.register(self.listener, lambda *args: dv.set(args))
+        listener.register(listener_channel, lambda *args: dv.set(args))
         yield listener.startService()
         try:
             yield deferToDatabase(
@@ -1482,15 +1540,17 @@ class TestNodeInterfaceListener(
                 {"mac_address": factory.make_mac_address()},
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", node.system_id), dv.value)
+            assert (("update", node.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_handler_with_update_on_old_node_on_update(self):
-        node1 = yield deferToDatabase(self.create_node, self.params)
-        node2 = yield deferToDatabase(self.create_node, self.params)
+    def test_calls_handler_with_update_on_old_node_on_update(
+        self, params, listener_channel
+    ):
+        node1 = yield deferToDatabase(self.create_node, params)
+        node2 = yield deferToDatabase(self.create_node, params)
         interface = yield deferToDatabase(
             self.create_interface, {"node": node1}
         )
@@ -1503,7 +1563,7 @@ class TestNodeInterfaceListener(
                     break
 
         listener = self.make_listener_without_delay()
-        listener.register(self.listener, set_defer_value)
+        listener.register(listener_channel, set_defer_value)
         yield listener.startService()
         try:
             yield deferToDatabase(
@@ -1513,22 +1573,27 @@ class TestNodeInterfaceListener(
             )
             yield dvs[0].get(timeout=2)
             yield dvs[1].get(timeout=2)
-            self.assertCountEqual(
+            assert sorted(
                 [
                     ("update", node1.system_id),
                     ("update", node2.system_id),
-                ],
-                [dvs[0].value, dvs[1].value],
-            )
+                ]
+            ) == sorted([dvs[0].value, dvs[1].value])
         finally:
             yield listener.stopService()
 
 
-class TestDeviceWithParentInterfaceListener(
-    MAASTransactionServerTestCase, TransactionalHelpersMixin
-):
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "transactional_maasdb"
+)
+@pytest.mark.allow_transactions
+class TestDeviceWithParentInterfaceListener(TransactionalHelpersMixin):
     """End-to-end test of both the listeners code and the triggers on
     maasserver_interface table that notifies its node."""
+
+    @pytest.fixture(autouse=True)
+    def _mocker_patch(self, mocker):
+        self.patch = mocker.patch.object
 
     @wait_for_reactor
     @inlineCallbacks
@@ -1542,7 +1607,7 @@ class TestDeviceWithParentInterfaceListener(
         try:
             yield deferToDatabase(self.create_interface, {"node": device})
             yield dv.get(timeout=2)
-            self.assertEqual(("update", parent.system_id), dv.value)
+            assert (("update", parent.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -1561,7 +1626,7 @@ class TestDeviceWithParentInterfaceListener(
         try:
             yield deferToDatabase(self.delete_interface, interface.id)
             yield dv.get(timeout=2)
-            self.assertEqual(("update", parent.system_id), dv.value)
+            assert (("update", parent.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -1584,7 +1649,7 @@ class TestDeviceWithParentInterfaceListener(
                 {"mac_address": factory.make_mac_address()},
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", parent.system_id), dv.value)
+            assert (("update", parent.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -1619,22 +1684,27 @@ class TestDeviceWithParentInterfaceListener(
             )
             yield dvs[0].get(timeout=2)
             yield dvs[1].get(timeout=2)
-            self.assertCountEqual(
+            assert sorted(
                 [
                     ("update", parent1.system_id),
                     ("update", parent2.system_id),
-                ],
-                [dvs[0].value, dvs[1].value],
-            )
+                ]
+            ) == sorted([dvs[0].value, dvs[1].value])
         finally:
             yield listener.stopService()
 
 
-class TestFabricListener(
-    MAASTransactionServerTestCase, TransactionalHelpersMixin
-):
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "transactional_maasdb"
+)
+@pytest.mark.allow_transactions
+class TestFabricListener(TransactionalHelpersMixin):
     """End-to-end test of both the listeners code and the cluster
     triggers code."""
+
+    @pytest.fixture(autouse=True)
+    def _mocker_patch(self, mocker):
+        self.patch = mocker.patch.object
 
     @wait_for_reactor
     @inlineCallbacks
@@ -1647,10 +1717,9 @@ class TestFabricListener(
         try:
             fabric = yield deferToDatabase(self.create_fabric)
             results = yield DeferredList(dv.get(timeout=2) for dv in save_dvs)
-            self.assertCountEqual(
-                [("create", str(fabric.id)), ("update", str(fabric.id))],
-                [res for (suc, res) in results],
-            )
+            assert sorted(
+                [("create", str(fabric.id)), ("update", str(fabric.id))]
+            ) == sorted([res for (suc, res) in results])
         finally:
             yield listener.stopService()
 
@@ -1666,7 +1735,7 @@ class TestFabricListener(
                 self.create_fabric, {"name": factory.make_name("name")}
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("create", str(fabric.id)), dv.value)
+            assert (("create", str(fabric.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -1686,7 +1755,7 @@ class TestFabricListener(
                 {"name": factory.make_name("name")},
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", str(fabric.id)), dv.value)
+            assert (("update", str(fabric.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -1701,16 +1770,22 @@ class TestFabricListener(
         try:
             yield deferToDatabase(self.delete_fabric, fabric.id)
             yield dv.get(timeout=2)
-            self.assertEqual(("delete", str(fabric.id)), dv.value)
+            assert (("delete", str(fabric.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
 
-class TestVLANListener(
-    MAASTransactionServerTestCase, TransactionalHelpersMixin
-):
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "transactional_maasdb"
+)
+@pytest.mark.allow_transactions
+class TestVLANListener(TransactionalHelpersMixin):
     """End-to-end test of both the listeners code and the cluster
     triggers code."""
+
+    @pytest.fixture(autouse=True)
+    def _mocker_patch(self, mocker):
+        self.patch = mocker.patch.object
 
     @wait_for_reactor
     @inlineCallbacks
@@ -1723,7 +1798,7 @@ class TestVLANListener(
         try:
             vlan = yield deferToDatabase(self.create_vlan, {"fabric": fabric})
             yield dv.get(timeout=2)
-            self.assertEqual(("create", str(vlan.id)), dv.value)
+            assert (("create", str(vlan.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -1742,7 +1817,7 @@ class TestVLANListener(
                 self.update_vlan, vlan.id, {"name": factory.make_name("name")}
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", str(vlan.id)), dv.value)
+            assert (("update", str(vlan.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -1758,16 +1833,22 @@ class TestVLANListener(
         try:
             yield deferToDatabase(self.delete_vlan, vlan.id)
             yield dv.get(timeout=2)
-            self.assertEqual(("delete", str(vlan.id)), dv.value)
+            assert (("delete", str(vlan.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
 
-class TestIPRangeListener(
-    MAASTransactionServerTestCase, TransactionalHelpersMixin
-):
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "transactional_maasdb"
+)
+@pytest.mark.allow_transactions
+class TestIPRangeListener(TransactionalHelpersMixin):
     """End-to-end test of both the listeners code and the cluster
     triggers code."""
+
+    @pytest.fixture(autouse=True)
+    def _mocker_patch(self, mocker):
+        self.patch = mocker.patch.object
 
     @wait_for_reactor
     @inlineCallbacks
@@ -1788,7 +1869,7 @@ class TestIPRangeListener(
         try:
             iprange = yield deferToDatabase(self.create_iprange, params)
             yield dv.get(timeout=2)
-            self.assertEqual(("create", str(iprange.id)), dv.value)
+            assert (("create", str(iprange.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -1807,7 +1888,7 @@ class TestIPRangeListener(
                 {"comment": factory.make_name("name")},
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", str(iprange.id)), dv.value)
+            assert (("update", str(iprange.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -1822,16 +1903,22 @@ class TestIPRangeListener(
         try:
             yield deferToDatabase(self.delete_iprange, iprange.id)
             yield dv.get(timeout=2)
-            self.assertEqual(("delete", str(iprange.id)), dv.value)
+            assert (("delete", str(iprange.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
 
-class TestStaticRouteListener(
-    MAASTransactionServerTestCase, TransactionalHelpersMixin
-):
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "transactional_maasdb"
+)
+@pytest.mark.allow_transactions
+class TestStaticRouteListener(TransactionalHelpersMixin):
     """End-to-end test of both the listeners code and the cluster
     triggers code."""
+
+    @pytest.fixture(autouse=True)
+    def _mocker_patch(self, mocker):
+        self.patch = mocker.patch.object
 
     @wait_for_reactor
     @inlineCallbacks
@@ -1843,7 +1930,7 @@ class TestStaticRouteListener(
         try:
             staticroute = yield deferToDatabase(self.create_staticroute)
             yield dv.get(timeout=2)
-            self.assertEqual(("create", str(staticroute.id)), dv.value)
+            assert (("create", str(staticroute.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -1864,7 +1951,7 @@ class TestStaticRouteListener(
                 {"metric": random.randint(10, 500)},
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", str(staticroute.id)), dv.value)
+            assert (("update", str(staticroute.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -1879,16 +1966,22 @@ class TestStaticRouteListener(
         try:
             yield deferToDatabase(self.delete_staticroute, staticroute.id)
             yield dv.get(timeout=2)
-            self.assertEqual(("delete", str(staticroute.id)), dv.value)
+            assert (("delete", str(staticroute.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
 
-class TestDomainListener(
-    MAASTransactionServerTestCase, TransactionalHelpersMixin
-):
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "transactional_maasdb"
+)
+@pytest.mark.allow_transactions
+class TestDomainListener(TransactionalHelpersMixin):
     """End-to-end test of both the listeners code and the cluster
     triggers code."""
+
+    @pytest.fixture(autouse=True)
+    def _mocker_patch(self, mocker):
+        self.patch = mocker.patch.object
 
     @wait_for_reactor
     @inlineCallbacks
@@ -1900,7 +1993,7 @@ class TestDomainListener(
         try:
             domain = yield deferToDatabase(self.create_domain)
             yield dv.get(timeout=2)
-            self.assertEqual(("create", str(domain.id)), dv.value)
+            assert (("create", str(domain.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -1920,7 +2013,7 @@ class TestDomainListener(
                 {"name": factory.make_name("name")},
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", str(domain.id)), dv.value)
+            assert (("update", str(domain.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -1935,7 +2028,7 @@ class TestDomainListener(
         try:
             yield deferToDatabase(self.delete_domain, domain.id)
             yield dv.get(timeout=2)
-            self.assertEqual(("delete", str(domain.id)), dv.value)
+            assert (("delete", str(domain.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -1971,7 +2064,7 @@ class TestDomainListener(
                 {"alloc_type": IPADDRESS_TYPE.STICKY, "ip": selected_ip},
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", str(domain.id)), dv.value)
+            assert (("update", str(domain.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -2002,7 +2095,7 @@ class TestDomainListener(
                 },
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", str(domain.id)), dv.value)
+            assert (("update", str(domain.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -2034,7 +2127,7 @@ class TestDomainListener(
         try:
             yield deferToDatabase(self.delete_staticipaddress, ipaddress.id)
             yield dv.get(timeout=2)
-            self.assertEqual(("update", str(domain.id)), dv.value)
+            assert (("update", str(domain.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -2049,7 +2142,7 @@ class TestDomainListener(
         try:
             yield deferToDatabase(self.create_dnsresource, {"domain": domain})
             yield dv.get(timeout=2)
-            self.assertEqual(("update", str(domain.id)), dv.value)
+            assert (("update", str(domain.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -2079,7 +2172,7 @@ class TestDomainListener(
                 },
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", str(domain.id)), dv.value)
+            assert (("update", str(domain.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -2098,7 +2191,7 @@ class TestDomainListener(
         try:
             yield deferToDatabase(self.delete_staticipaddress, staticip.id)
             yield dv.get(timeout=2)
-            self.assertEqual(("update", str(domain.id)), dv.value)
+            assert (("update", str(domain.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -2121,7 +2214,7 @@ class TestDomainListener(
                 {"name": factory.make_name("name")},
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", str(domain.id)), dv.value)
+            assert (("update", str(domain.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -2139,7 +2232,7 @@ class TestDomainListener(
         try:
             yield deferToDatabase(self.delete_dnsresource, dnsrr.id)
             yield dv.get(timeout=2)
-            self.assertEqual(("update", str(domain.id)), dv.value)
+            assert (("update", str(domain.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -2154,7 +2247,7 @@ class TestDomainListener(
         try:
             yield deferToDatabase(self.create_dnsdata, {"domain": domain})
             yield dv.get(timeout=2)
-            self.assertEqual(("update", str(domain.id)), dv.value)
+            assert (("update", str(domain.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -2177,7 +2270,7 @@ class TestDomainListener(
                 {"ttl": random.randint(100, 199)},
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", str(domain.id)), dv.value)
+            assert (("update", str(domain.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -2195,16 +2288,22 @@ class TestDomainListener(
         try:
             yield deferToDatabase(self.delete_dnsdata, dnsdata.id)
             yield dv.get(timeout=2)
-            self.assertEqual(("update", str(domain.id)), dv.value)
+            assert (("update", str(domain.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
 
-class TestSubnetListener(
-    MAASTransactionServerTestCase, TransactionalHelpersMixin
-):
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "transactional_maasdb"
+)
+@pytest.mark.allow_transactions
+class TestSubnetListener(TransactionalHelpersMixin):
     """End-to-end test of both the listeners code and the cluster
     triggers code."""
+
+    @pytest.fixture(autouse=True)
+    def _mocker_patch(self, mocker):
+        self.patch = mocker.patch.object
 
     @wait_for_reactor
     @inlineCallbacks
@@ -2216,7 +2315,7 @@ class TestSubnetListener(
         try:
             subnet = yield deferToDatabase(self.create_subnet)
             yield dv.get(timeout=2)
-            self.assertEqual(("create", str(subnet.id)), dv.value)
+            assert (("create", str(subnet.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -2236,7 +2335,7 @@ class TestSubnetListener(
                 {"name": factory.make_name("name")},
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", str(subnet.id)), dv.value)
+            assert (("update", str(subnet.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -2256,7 +2355,7 @@ class TestSubnetListener(
                 {"name": factory.make_name("name")},
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", str(subnet.id)), dv.value)
+            assert (("update", str(subnet.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -2271,7 +2370,7 @@ class TestSubnetListener(
         try:
             yield deferToDatabase(self.delete_subnet, subnet.id)
             yield dv.get(timeout=2)
-            self.assertEqual(("delete", str(subnet.id)), dv.value)
+            assert (("delete", str(subnet.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -2302,7 +2401,7 @@ class TestSubnetListener(
                 },
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", str(subnet.id)), dv.value)
+            assert (("update", str(subnet.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -2337,7 +2436,7 @@ class TestSubnetListener(
                 self.update_staticipaddress, ipaddress.id, {"ip": selected_ip}
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", str(subnet.id)), dv.value)
+            assert (("update", str(subnet.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -2369,16 +2468,22 @@ class TestSubnetListener(
         try:
             yield deferToDatabase(self.delete_staticipaddress, ipaddress.id)
             yield dv.get(timeout=2)
-            self.assertEqual(("update", str(subnet.id)), dv.value)
+            assert (("update", str(subnet.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
 
-class TestSpaceListener(
-    MAASTransactionServerTestCase, TransactionalHelpersMixin
-):
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "transactional_maasdb"
+)
+@pytest.mark.allow_transactions
+class TestSpaceListener(TransactionalHelpersMixin):
     """End-to-end test of both the listeners code and the cluster
     triggers code."""
+
+    @pytest.fixture(autouse=True)
+    def _mocker_patch(self, mocker):
+        self.patch = mocker.patch.object
 
     @wait_for_reactor
     @inlineCallbacks
@@ -2391,10 +2496,9 @@ class TestSpaceListener(
         try:
             space = yield deferToDatabase(self.create_space)
             results = yield DeferredList(dv.get(timeout=2) for dv in save_dvs)
-            self.assertCountEqual(
-                [("create", str(space.id)), ("update", str(space.id))],
-                [res for (suc, res) in results],
-            )
+            assert sorted(
+                [("create", str(space.id)), ("update", str(space.id))]
+            ) == sorted([res for (suc, res) in results])
         finally:
             yield listener.stopService()
 
@@ -2410,7 +2514,7 @@ class TestSpaceListener(
                 self.create_space, {"name": factory.make_name("name")}
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("create", str(space.id)), dv.value)
+            assert (("create", str(space.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -2430,7 +2534,7 @@ class TestSpaceListener(
                 {"name": factory.make_name("name")},
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", str(space.id)), dv.value)
+            assert (("update", str(space.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -2445,210 +2549,224 @@ class TestSpaceListener(
         try:
             yield deferToDatabase(self.delete_space, space.id)
             yield dv.get(timeout=2)
-            self.assertEqual(("delete", str(space.id)), dv.value)
+            assert (("delete", str(space.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
 
-class TestNodeNetworkListener(
-    MAASTransactionServerTestCase, TransactionalHelpersMixin
-):
-    """End-to-end test of both the listeners code and the triggers on
-    maasserver_fabric, maasserver_space, maasserver_subnet, and
-    maasserver_vlan tables that notifies affected nodes."""
-
-    scenarios = (
-        (
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "transactional_maasdb"
+)
+@pytest.mark.allow_transactions
+@pytest.mark.parametrize(
+    "params, listener_channel",
+    [
+        pytest.param(
+            {"node_type": NODE_TYPE.MACHINE, "interface": True},
             "machine",
-            {
-                "params": {"node_type": NODE_TYPE.MACHINE, "interface": True},
-                "listener": "machine",
-            },
+            id="machine",
         ),
-        (
+        pytest.param(
+            {"node_type": NODE_TYPE.DEVICE, "interface": True},
             "device",
-            {
-                "params": {"node_type": NODE_TYPE.DEVICE, "interface": True},
-                "listener": "device",
-            },
+            id="device",
         ),
-        (
-            "rack",
+        pytest.param(
             {
-                "params": {
-                    "node_type": NODE_TYPE.RACK_CONTROLLER,
-                    "interface": True,
-                },
-                "listener": "controller",
+                "node_type": NODE_TYPE.RACK_CONTROLLER,
+                "interface": True,
             },
+            "controller",
+            id="rack",
         ),
-        (
-            "region_and_rack",
+        pytest.param(
             {
-                "params": {
-                    "node_type": NODE_TYPE.REGION_AND_RACK_CONTROLLER,
-                    "interface": True,
-                },
-                "listener": "controller",
+                "node_type": NODE_TYPE.REGION_AND_RACK_CONTROLLER,
+                "interface": True,
             },
+            "controller",
+            id="region_and_rack",
         ),
-        (
-            "region",
+        pytest.param(
             {
-                "params": {
-                    "node_type": NODE_TYPE.REGION_CONTROLLER,
-                    "interface": True,
-                },
-                "listener": "controller",
+                "node_type": NODE_TYPE.REGION_CONTROLLER,
+                "interface": True,
             },
+            "controller",
+            id="region",
         ),
-    )
-
-    @wait_for_reactor
-    @inlineCallbacks
-    def test_calls_handler_iface_with_update_on_fabric_update(self):
-        node = yield deferToDatabase(self.create_node, self.params)
-        interface = yield deferToDatabase(
-            self.get_node_boot_interface, node.system_id
-        )
-        yield deferToDatabase(
-            self.create_staticipaddress, {"interface": interface}
-        )
-        fabric = yield deferToDatabase(self.get_interface_fabric, interface.id)
-
-        listener = self.make_listener_without_delay()
-        dv = DeferredValue()
-        listener.register(self.listener, lambda *args: dv.set(args))
-        yield listener.startService()
-        try:
-            yield deferToDatabase(
-                self.update_fabric,
-                fabric.id,
-                {"name": factory.make_name("name")},
-            )
-            yield dv.get(timeout=2)
-            self.assertEqual(("update", node.system_id), dv.value)
-        finally:
-            yield listener.stopService()
-
-    @wait_for_reactor
-    @inlineCallbacks
-    def test_calls_handler_iface_with_update_on_vlan_update(self):
-        node = yield deferToDatabase(self.create_node, self.params)
-        interface = yield deferToDatabase(
-            self.get_node_boot_interface, node.system_id
-        )
-        yield deferToDatabase(
-            self.create_staticipaddress, {"interface": interface}
-        )
-        vlan = yield deferToDatabase(self.get_interface_vlan, interface.id)
-        listener = self.make_listener_without_delay()
-        dv = DeferredValue()
-        listener.register(self.listener, lambda *args: dv.set(args))
-        yield listener.startService()
-        try:
-            yield deferToDatabase(
-                self.update_vlan, vlan.id, {"name": factory.make_name("name")}
-            )
-            yield dv.get(timeout=2)
-            self.assertEqual(("update", node.system_id), dv.value)
-        finally:
-            yield listener.stopService()
-
-    @wait_for_reactor
-    @inlineCallbacks
-    def test_calls_handler_with_update_on_subnet_update(self):
-        node = yield deferToDatabase(self.create_node, self.params)
-        interface = yield deferToDatabase(
-            self.get_node_boot_interface, node.system_id
-        )
-        ipaddress = yield deferToDatabase(
-            self.create_staticipaddress, {"interface": interface}
-        )
-        subnet = yield deferToDatabase(self.get_ipaddress_subnet, ipaddress.id)
-
-        listener = self.make_listener_without_delay()
-        dv = DeferredValue()
-        listener.register(self.listener, lambda *args: dv.set(args))
-        yield listener.startService()
-        try:
-            yield deferToDatabase(
-                self.update_subnet,
-                subnet.id,
-                {"name": factory.make_name("name")},
-            )
-            yield dv.get(timeout=2)
-            self.assertEqual(("update", node.system_id), dv.value)
-        finally:
-            yield listener.stopService()
-
-    @wait_for_reactor
-    @inlineCallbacks
-    def test_calls_handler_with_update_on_space_update(self):
-        node = yield deferToDatabase(self.create_node, self.params)
-        interface = yield deferToDatabase(
-            self.get_node_boot_interface, node.system_id
-        )
-        ipaddress = yield deferToDatabase(
-            self.create_staticipaddress, {"interface": interface}
-        )
-        space = yield deferToDatabase(self.get_ipaddress_space, ipaddress.id)
-
-        listener = self.make_listener_without_delay()
-        dv = DeferredValue()
-        listener.register(self.listener, lambda *args: dv.set(args))
-        yield listener.startService()
-        try:
-            yield deferToDatabase(
-                self.update_space,
-                space.id,
-                {"name": factory.make_name("name")},
-            )
-            yield dv.get(timeout=2)
-            self.assertEqual(("update", node.system_id), dv.value)
-        finally:
-            yield listener.stopService()
-
-    @wait_for_reactor
-    @inlineCallbacks
-    def test_calls_handler_with_update_on_ip_address_update(self):
-        node = yield deferToDatabase(self.create_node, self.params)
-        interface = yield deferToDatabase(
-            self.get_node_boot_interface, node.system_id
-        )
-        subnet = yield deferToDatabase(self.create_subnet)
-        selected_ip = factory.pick_ip_in_network(subnet.get_ipnetwork())
-        ipaddress = yield deferToDatabase(
-            self.create_staticipaddress,
-            {
-                "alloc_type": IPADDRESS_TYPE.AUTO,
-                "interface": interface,
-                "subnet": subnet,
-                "ip": "",
-            },
-        )
-
-        listener = self.make_listener_without_delay()
-        dv = DeferredValue()
-        listener.register(self.listener, lambda *args: dv.set(args))
-        yield listener.startService()
-        try:
-            yield deferToDatabase(
-                self.update_staticipaddress, ipaddress.id, {"ip": selected_ip}
-            )
-            yield dv.get(timeout=2)
-            self.assertEqual(("update", node.system_id), dv.value)
-        finally:
-            yield listener.stopService()
-
-
-class TestDeviceWithParentNetworkListener(
-    MAASTransactionServerTestCase, TransactionalHelpersMixin
-):
+    ],
+)
+class TestNodeNetworkListener(TransactionalHelpersMixin):
     """End-to-end test of both the listeners code and the triggers on
     maasserver_fabric, maasserver_space, maasserver_subnet, and
     maasserver_vlan tables that notifies affected nodes."""
 
+    @pytest.fixture(autouse=True)
+    def _mocker_patch(self, mocker):
+        self.patch = mocker.patch.object
+
+    @wait_for_reactor
+    @inlineCallbacks
+    def test_calls_handler_iface_with_update_on_fabric_update(
+        self, params, listener_channel
+    ):
+        node = yield deferToDatabase(self.create_node, params)
+        interface = yield deferToDatabase(
+            self.get_node_boot_interface, node.system_id
+        )
+        yield deferToDatabase(
+            self.create_staticipaddress, {"interface": interface}
+        )
+        fabric = yield deferToDatabase(self.get_interface_fabric, interface.id)
+
+        listener = self.make_listener_without_delay()
+        dv = DeferredValue()
+        listener.register(listener_channel, lambda *args: dv.set(args))
+        yield listener.startService()
+        try:
+            yield deferToDatabase(
+                self.update_fabric,
+                fabric.id,
+                {"name": factory.make_name("name")},
+            )
+            yield dv.get(timeout=2)
+            assert (("update", node.system_id)) == (dv.value)
+        finally:
+            yield listener.stopService()
+
+    @wait_for_reactor
+    @inlineCallbacks
+    def test_calls_handler_iface_with_update_on_vlan_update(
+        self, params, listener_channel
+    ):
+        node = yield deferToDatabase(self.create_node, params)
+        interface = yield deferToDatabase(
+            self.get_node_boot_interface, node.system_id
+        )
+        yield deferToDatabase(
+            self.create_staticipaddress, {"interface": interface}
+        )
+        vlan = yield deferToDatabase(self.get_interface_vlan, interface.id)
+        listener = self.make_listener_without_delay()
+        dv = DeferredValue()
+        listener.register(listener_channel, lambda *args: dv.set(args))
+        yield listener.startService()
+        try:
+            yield deferToDatabase(
+                self.update_vlan, vlan.id, {"name": factory.make_name("name")}
+            )
+            yield dv.get(timeout=2)
+            assert (("update", node.system_id)) == (dv.value)
+        finally:
+            yield listener.stopService()
+
+    @wait_for_reactor
+    @inlineCallbacks
+    def test_calls_handler_with_update_on_subnet_update(
+        self, params, listener_channel
+    ):
+        node = yield deferToDatabase(self.create_node, params)
+        interface = yield deferToDatabase(
+            self.get_node_boot_interface, node.system_id
+        )
+        ipaddress = yield deferToDatabase(
+            self.create_staticipaddress, {"interface": interface}
+        )
+        subnet = yield deferToDatabase(self.get_ipaddress_subnet, ipaddress.id)
+
+        listener = self.make_listener_without_delay()
+        dv = DeferredValue()
+        listener.register(listener_channel, lambda *args: dv.set(args))
+        yield listener.startService()
+        try:
+            yield deferToDatabase(
+                self.update_subnet,
+                subnet.id,
+                {"name": factory.make_name("name")},
+            )
+            yield dv.get(timeout=2)
+            assert (("update", node.system_id)) == (dv.value)
+        finally:
+            yield listener.stopService()
+
+    @wait_for_reactor
+    @inlineCallbacks
+    def test_calls_handler_with_update_on_space_update(
+        self, params, listener_channel
+    ):
+        node = yield deferToDatabase(self.create_node, params)
+        interface = yield deferToDatabase(
+            self.get_node_boot_interface, node.system_id
+        )
+        ipaddress = yield deferToDatabase(
+            self.create_staticipaddress, {"interface": interface}
+        )
+        space = yield deferToDatabase(self.get_ipaddress_space, ipaddress.id)
+
+        listener = self.make_listener_without_delay()
+        dv = DeferredValue()
+        listener.register(listener_channel, lambda *args: dv.set(args))
+        yield listener.startService()
+        try:
+            yield deferToDatabase(
+                self.update_space,
+                space.id,
+                {"name": factory.make_name("name")},
+            )
+            yield dv.get(timeout=2)
+            assert (("update", node.system_id)) == (dv.value)
+        finally:
+            yield listener.stopService()
+
+    @wait_for_reactor
+    @inlineCallbacks
+    def test_calls_handler_with_update_on_ip_address_update(
+        self, params, listener_channel
+    ):
+        node = yield deferToDatabase(self.create_node, params)
+        interface = yield deferToDatabase(
+            self.get_node_boot_interface, node.system_id
+        )
+        subnet = yield deferToDatabase(self.create_subnet)
+        selected_ip = factory.pick_ip_in_network(subnet.get_ipnetwork())
+        ipaddress = yield deferToDatabase(
+            self.create_staticipaddress,
+            {
+                "alloc_type": IPADDRESS_TYPE.AUTO,
+                "interface": interface,
+                "subnet": subnet,
+                "ip": "",
+            },
+        )
+
+        listener = self.make_listener_without_delay()
+        dv = DeferredValue()
+        listener.register(listener_channel, lambda *args: dv.set(args))
+        yield listener.startService()
+        try:
+            yield deferToDatabase(
+                self.update_staticipaddress, ipaddress.id, {"ip": selected_ip}
+            )
+            yield dv.get(timeout=2)
+            assert (("update", node.system_id)) == (dv.value)
+        finally:
+            yield listener.stopService()
+
+
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "transactional_maasdb"
+)
+@pytest.mark.allow_transactions
+class TestDeviceWithParentNetworkListener(TransactionalHelpersMixin):
+    """End-to-end test of both the listeners code and the triggers on
+    maasserver_fabric, maasserver_space, maasserver_subnet, and
+    maasserver_vlan tables that notifies affected nodes."""
+
+    @pytest.fixture(autouse=True)
+    def _mocker_patch(self, mocker):
+        self.patch = mocker.patch.object
+
     @wait_for_reactor
     @inlineCallbacks
     def test_calls_handler_iface_with_update_on_fabric_update(self):
@@ -2674,7 +2792,7 @@ class TestDeviceWithParentNetworkListener(
                 {"name": factory.make_name("name")},
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", parent.system_id), dv.value)
+            assert (("update", parent.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -2701,7 +2819,7 @@ class TestDeviceWithParentNetworkListener(
                 self.update_vlan, vlan.id, {"name": factory.make_name("name")}
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", parent.system_id), dv.value)
+            assert (("update", parent.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -2730,7 +2848,7 @@ class TestDeviceWithParentNetworkListener(
                 {"name": factory.make_name("name")},
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", parent.system_id), dv.value)
+            assert (("update", parent.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -2759,7 +2877,7 @@ class TestDeviceWithParentNetworkListener(
                 {"name": factory.make_name("name")},
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", parent.system_id), dv.value)
+            assert (("update", parent.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -2793,16 +2911,22 @@ class TestDeviceWithParentNetworkListener(
                 self.update_staticipaddress, ipaddress.id, {"ip": selected_ip}
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", parent.system_id), dv.value)
+            assert (("update", parent.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
 
-class TestStaticIPAddressSubnetListener(
-    MAASTransactionServerTestCase, TransactionalHelpersMixin
-):
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "transactional_maasdb"
+)
+@pytest.mark.allow_transactions
+class TestStaticIPAddressSubnetListener(TransactionalHelpersMixin):
     """End-to-end test of both the listeners code and the triggers on
     maasserver_staticipaddress tables that notifies affected subnets."""
+
+    @pytest.fixture(autouse=True)
+    def _mocker_patch(self, mocker):
+        self.patch = mocker.patch.object
 
     @wait_for_reactor
     @inlineCallbacks
@@ -2823,7 +2947,7 @@ class TestStaticIPAddressSubnetListener(
                 self.update_staticipaddress, ipaddress.id, {"ip": selected_ip}
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", str(subnet.id)), dv.value)
+            assert (("update", str(subnet.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -2860,80 +2984,89 @@ class TestStaticIPAddressSubnetListener(
             )
             yield dvs[0].get(timeout=2)
             yield dvs[1].get(timeout=2)
-            self.assertCountEqual(
+            assert sorted(
                 [
                     ("update", str(old_subnet.id)),
                     ("update", str(new_subnet.id)),
-                ],
-                [dvs[0].value, dvs[1].value],
-            )
+                ]
+            ) == sorted([dvs[0].value, dvs[1].value])
         finally:
             yield listener.stopService()
 
 
-class TestMachineBlockDeviceListener(
-    MAASTransactionServerTestCase, TransactionalHelpersMixin
-):
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "transactional_maasdb"
+)
+@pytest.mark.allow_transactions
+@pytest.mark.parametrize(
+    "params, listener_channel",
+    [
+        pytest.param(
+            {"node_type": NODE_TYPE.MACHINE}, "machine", id="machine"
+        ),
+    ],
+)
+class TestMachineBlockDeviceListener(TransactionalHelpersMixin):
     """End-to-end test of both the listeners code and the triggers on
     maasserver_blockdevice, maasserver_physicalblockdevice, and
     maasserver_virtualblockdevice tables that notifies its machine."""
 
-    scenarios = (
-        (
-            "machine",
-            {
-                "params": {"node_type": NODE_TYPE.MACHINE},
-                "listener": "machine",
-            },
-        ),
-    )
+    @pytest.fixture(autouse=True)
+    def _mocker_patch(self, mocker):
+        self.patch = mocker.patch.object
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_handler_with_update_on_create(self):
-        node = yield deferToDatabase(self.create_node, self.params)
+    def test_calls_handler_with_update_on_create(
+        self, params, listener_channel
+    ):
+        node = yield deferToDatabase(self.create_node, params)
 
         listener = self.make_listener_without_delay()
         dv = DeferredValue()
-        listener.register(self.listener, lambda *args: dv.set(args))
+        listener.register(listener_channel, lambda *args: dv.set(args))
         yield listener.startService()
         try:
             yield deferToDatabase(self.create_blockdevice, {"node": node})
             yield dv.get(timeout=2)
-            self.assertEqual(("update", node.system_id), dv.value)
+            assert (("update", node.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_handler_with_update_on_delete(self):
-        node = yield deferToDatabase(self.create_node, self.params)
+    def test_calls_handler_with_update_on_delete(
+        self, params, listener_channel
+    ):
+        node = yield deferToDatabase(self.create_node, params)
         blockdevice = yield deferToDatabase(
             self.create_blockdevice, {"node": node}
         )
 
         listener = self.make_listener_without_delay()
         dv = DeferredValue()
-        listener.register(self.listener, lambda *args: dv.set(args))
+        listener.register(listener_channel, lambda *args: dv.set(args))
         yield listener.startService()
         try:
             yield deferToDatabase(self.delete_blockdevice, blockdevice.id)
             yield dv.get(timeout=2)
-            self.assertEqual(("update", node.system_id), dv.value)
+            assert (("update", node.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_handler_with_update_on_update(self):
-        node = yield deferToDatabase(self.create_node, self.params)
+    def test_calls_handler_with_update_on_update(
+        self, params, listener_channel
+    ):
+        node = yield deferToDatabase(self.create_node, params)
         blockdevice = yield deferToDatabase(
             self.create_blockdevice, {"node": node}
         )
 
         listener = self.make_listener_without_delay()
         dv = DeferredValue()
-        listener.register(self.listener, lambda *args: dv.set(args))
+        listener.register(listener_channel, lambda *args: dv.set(args))
         yield listener.startService()
         try:
             yield deferToDatabase(
@@ -2942,21 +3075,23 @@ class TestMachineBlockDeviceListener(
                 {"size": random.randint(MIN_BLOCK_DEVICE_SIZE, 1000**3)},
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", node.system_id), dv.value)
+            assert (("update", node.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_handler_with_update_on_physicalblockdevice_update(self):
-        node = yield deferToDatabase(self.create_node, self.params)
+    def test_calls_handler_with_update_on_physicalblockdevice_update(
+        self, params, listener_channel
+    ):
+        node = yield deferToDatabase(self.create_node, params)
         blockdevice = yield deferToDatabase(
             self.create_physicalblockdevice, {"node": node}
         )
 
         listener = self.make_listener_without_delay()
         dv = DeferredValue()
-        listener.register(self.listener, lambda *args: dv.set(args))
+        listener.register(listener_channel, lambda *args: dv.set(args))
         yield listener.startService()
         try:
             yield deferToDatabase(
@@ -2965,14 +3100,16 @@ class TestMachineBlockDeviceListener(
                 {"model": factory.make_name("model")},
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", node.system_id), dv.value)
+            assert (("update", node.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_handler_with_update_on_virtualblockdevice_update(self):
-        node = yield deferToDatabase(self.create_node, self.params)
+    def test_calls_handler_with_update_on_virtualblockdevice_update(
+        self, params, listener_channel
+    ):
+        node = yield deferToDatabase(self.create_node, params)
         blockdevice = yield deferToDatabase(
             self.create_virtualblockdevice,
             {"node": node, "size": MIN_BOOT_PARTITION_SIZE},
@@ -2980,7 +3117,7 @@ class TestMachineBlockDeviceListener(
 
         listener = self.make_listener_without_delay()
         dv = DeferredValue()
-        listener.register(self.listener, lambda *args: dv.set(args))
+        listener.register(listener_channel, lambda *args: dv.set(args))
         yield listener.startService()
         try:
             yield deferToDatabase(
@@ -2989,75 +3126,85 @@ class TestMachineBlockDeviceListener(
                 {"uuid": factory.make_UUID()},
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", node.system_id), dv.value)
+            assert (("update", node.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
 
-class TestMachinePartitionTableListener(
-    MAASTransactionServerTestCase, TransactionalHelpersMixin
-):
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "transactional_maasdb"
+)
+@pytest.mark.allow_transactions
+@pytest.mark.parametrize(
+    "params, listener_channel",
+    [
+        pytest.param(
+            {"node_type": NODE_TYPE.MACHINE}, "machine", id="machine"
+        ),
+    ],
+)
+class TestMachinePartitionTableListener(TransactionalHelpersMixin):
     """End-to-end test of both the listeners code and the triggers on
     maasserver_partitiontable tables that notifies its machine."""
 
-    scenarios = (
-        (
-            "machine",
-            {
-                "params": {"node_type": NODE_TYPE.MACHINE},
-                "listener": "machine",
-            },
-        ),
-    )
+    @pytest.fixture(autouse=True)
+    def _mocker_patch(self, mocker):
+        self.patch = mocker.patch.object
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_handler_with_update_on_create(self):
-        node = yield deferToDatabase(self.create_node, self.params)
+    def test_calls_handler_with_update_on_create(
+        self, params, listener_channel
+    ):
+        node = yield deferToDatabase(self.create_node, params)
 
         listener = self.make_listener_without_delay()
         dv = DeferredValue()
-        listener.register(self.listener, lambda *args: dv.set(args))
+        listener.register(listener_channel, lambda *args: dv.set(args))
         yield listener.startService()
         try:
             yield deferToDatabase(self.create_partitiontable, {"node": node})
             yield dv.get(timeout=2)
-            self.assertEqual(("update", node.system_id), dv.value)
+            assert (("update", node.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_handler_with_update_on_delete(self):
-        node = yield deferToDatabase(self.create_node, self.params)
+    def test_calls_handler_with_update_on_delete(
+        self, params, listener_channel
+    ):
+        node = yield deferToDatabase(self.create_node, params)
         partitiontable = yield deferToDatabase(
             self.create_partitiontable, {"node": node}
         )
 
         listener = self.make_listener_without_delay()
         dv = DeferredValue()
-        listener.register(self.listener, lambda *args: dv.set(args))
+        listener.register(listener_channel, lambda *args: dv.set(args))
         yield listener.startService()
         try:
             yield deferToDatabase(
                 self.delete_partitiontable, partitiontable.id
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", node.system_id), dv.value)
+            assert (("update", node.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_handler_with_update_on_update(self):
-        node = yield deferToDatabase(self.create_node, self.params)
+    def test_calls_handler_with_update_on_update(
+        self, params, listener_channel
+    ):
+        node = yield deferToDatabase(self.create_node, params)
         partitiontable = yield deferToDatabase(
             self.create_partitiontable, {"node": node}
         )
 
         listener = self.make_listener_without_delay()
         dv = DeferredValue()
-        listener.register(self.listener, lambda *args: dv.set(args))
+        listener.register(listener_channel, lambda *args: dv.set(args))
         yield listener.startService()
         try:
             # No changes to apply, but trigger a save nonetheless.
@@ -3068,74 +3215,86 @@ class TestMachinePartitionTableListener(
                 force_update=True,
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", node.system_id), dv.value)
+            assert (("update", node.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
 
-class TestMachinePartitionListener(
-    MAASTransactionServerTestCase, TransactionalHelpersMixin
-):
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "transactional_maasdb"
+)
+@pytest.mark.allow_transactions
+@pytest.mark.parametrize(
+    "params, listener_channel",
+    [
+        pytest.param(
+            {"node_type": NODE_TYPE.MACHINE}, "machine", id="machine"
+        ),
+    ],
+)
+class TestMachinePartitionListener(TransactionalHelpersMixin):
     """End-to-end test of both the listeners code and the triggers on
     maasserver_partition tables that notifies its machine."""
 
-    scenarios = (
-        (
-            "machine",
-            {
-                "params": {"node_type": NODE_TYPE.MACHINE},
-                "listener": "machine",
-            },
-        ),
-    )
+    @pytest.fixture(autouse=True)
+    def _mocker_patch(self, mocker):
+        self.patch = mocker.patch.object
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_handler_with_update_on_create(self):
-        node = yield deferToDatabase(self.create_node, self.params)
+    def test_calls_handler_with_update_on_create(
+        self, params, listener_channel
+    ):
+        node = yield deferToDatabase(self.create_node, params)
 
         listener = self.make_listener_without_delay()
         dv = DeferredValue()
-        listener.register(self.listener, lambda *args: dv.set(args))
+        listener.register(listener_channel, lambda *args: dv.set(args))
         yield listener.startService()
         try:
             yield deferToDatabase(self.create_partition, {"node": node})
             yield dv.get(timeout=2)
-            self.assertEqual(("update", node.system_id), dv.value)
+            assert (("update", node.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_handler_with_update_on_delete(self):
-        node = yield deferToDatabase(self.create_node, self.params)
+    def test_calls_handler_with_update_on_delete(
+        self, params, listener_channel
+    ):
+        node = yield deferToDatabase(self.create_node, params)
         partition = yield deferToDatabase(
             self.create_partition, {"node": node}
         )
 
         listener = self.make_listener_without_delay()
         dv = DeferredValue()
-        listener.register(self.listener, lambda *args: dv.set(args))
+        listener.register(listener_channel, lambda *args: dv.set(args))
         yield listener.startService()
         try:
             yield deferToDatabase(self.delete_partition, partition.id)
             yield dv.get(timeout=2)
-            self.assertEqual(("update", node.system_id), dv.value)
+            assert (("update", node.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
-    @skip("XXX: GavinPanella 2016-03-11 bug=1556188: Fails spuriously.")
+    @pytest.mark.skip(
+        reason="XXX: GavinPanella 2016-03-11 bug=1556188: Fails spuriously."
+    )
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_handler_with_update_on_update(self):
-        node = yield deferToDatabase(self.create_node, self.params)
+    def test_calls_handler_with_update_on_update(
+        self, params, listener_channel
+    ):
+        node = yield deferToDatabase(self.create_node, params)
         partition = yield deferToDatabase(
             self.create_partition, {"node": node}
         )
 
         listener = self.make_listener_without_delay()
         dv = DeferredValue()
-        listener.register(self.listener, lambda *args: dv.set(args))
+        listener.register(listener_channel, lambda *args: dv.set(args))
         yield listener.startService()
         try:
             # Only downsize the partition otherwise the test may fail due
@@ -3147,136 +3306,171 @@ class TestMachinePartitionListener(
                 {"size": random.randint(MIN_PARTITION_SIZE, 1000**3)},
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", node.system_id), dv.value)
+            assert (("update", node.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
 
-class TestMachineFilesystemListener(
-    MAASTransactionServerTestCase, TransactionalHelpersMixin
-):
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "transactional_maasdb"
+)
+@pytest.mark.allow_transactions
+@pytest.mark.parametrize(
+    "params, channel",
+    [
+        pytest.param(
+            {"node_type": NODE_TYPE.MACHINE}, "machine", id="machine"
+        ),
+    ],
+)
+class TestMachineFilesystemListener(TransactionalHelpersMixin):
     """End-to-end test of both the listeners code and the triggers on
     maasserver_filesystem tables that notifies its machine."""
 
-    scenarios = (
-        (
-            "machine",
-            {"params": {"node_type": NODE_TYPE.MACHINE}, "channel": "machine"},
-        ),
-    )
+    @pytest.fixture(autouse=True)
+    def _mocker_patch(self, mocker):
+        self.patch = mocker.patch.object
 
     def setUp(self):
         super().setUp()
 
-    def test_calls_handler_with_update_on_create_fs_on_partition(self):
-        node = factory.make_Node(**self.params)
+    def test_calls_handler_with_update_on_create_fs_on_partition(
+        self, params, channel
+    ):
+        node = factory.make_Node(**params)
         partition = factory.make_Partition(node=node)
-        with listenFor(self.channel) as get:
+        with listenFor(channel) as get:
             factory.make_Filesystem(partition=partition)
-            self.assertEqual(("update", node.system_id), get())
+            assert (("update", node.system_id)) == (get())
 
-    def test_calls_handler_with_update_on_create_fs_on_block_device(self):
-        node = factory.make_Node(**self.params)
+    def test_calls_handler_with_update_on_create_fs_on_block_device(
+        self, params, channel
+    ):
+        node = factory.make_Node(**params)
         block_device = factory.make_BlockDevice(node=node)
-        with listenFor(self.channel) as get:
+        with listenFor(channel) as get:
             factory.make_Filesystem(block_device=block_device)
-            self.assertEqual(("update", node.system_id), get())
+            assert (("update", node.system_id)) == (get())
 
-    def test_calls_handler_with_update_on_create_special_fs(self):
-        node = factory.make_Node(**self.params)
-        with listenFor(self.channel) as get:
+    def test_calls_handler_with_update_on_create_special_fs(
+        self, params, channel
+    ):
+        node = factory.make_Node(**params)
+        with listenFor(channel) as get:
             factory.make_Filesystem(node_config=node.current_config)
-            self.assertEqual(("update", node.system_id), get())
+            assert (("update", node.system_id)) == (get())
 
-    def test_calls_handler_with_update_on_delete_fs_on_partition(self):
-        node = factory.make_Node(**self.params)
+    def test_calls_handler_with_update_on_delete_fs_on_partition(
+        self, params, channel
+    ):
+        node = factory.make_Node(**params)
         partition = factory.make_Partition(node=node)
         filesystem = factory.make_Filesystem(partition=partition)
-        with listenFor(self.channel) as get:
+        with listenFor(channel) as get:
             filesystem.delete()
-            self.assertEqual(("update", node.system_id), get())
+            assert (("update", node.system_id)) == (get())
 
-    def test_calls_handler_with_update_on_delete_fs_on_block_device(self):
-        node = factory.make_Node(**self.params)
+    def test_calls_handler_with_update_on_delete_fs_on_block_device(
+        self, params, channel
+    ):
+        node = factory.make_Node(**params)
         block_device = factory.make_BlockDevice(node=node)
         filesystem = factory.make_Filesystem(block_device=block_device)
-        with listenFor(self.channel) as get:
+        with listenFor(channel) as get:
             filesystem.delete()
-            self.assertEqual(("update", node.system_id), get())
+            assert (("update", node.system_id)) == (get())
 
-    def test_calls_handler_with_update_on_delete_special_fs(self):
-        node = factory.make_Node(**self.params)
+    def test_calls_handler_with_update_on_delete_special_fs(
+        self, params, channel
+    ):
+        node = factory.make_Node(**params)
         filesystem = factory.make_Filesystem(node_config=node.current_config)
-        with listenFor(self.channel) as get:
+        with listenFor(channel) as get:
             filesystem.delete()
-            self.assertEqual(("update", node.system_id), get())
+            assert (("update", node.system_id)) == (get())
 
-    def test_calls_handler_with_update_on_update_fs_on_partition(self):
-        node = factory.make_Node(**self.params)
+    def test_calls_handler_with_update_on_update_fs_on_partition(
+        self, params, channel
+    ):
+        node = factory.make_Node(**params)
         partition = factory.make_Partition(node=node)
         filesystem = factory.make_Filesystem(partition=partition)
-        with listenFor(self.channel) as get:
+        with listenFor(channel) as get:
             filesystem.save(force_update=True)  # A no-op update is enough.
-            self.assertEqual(("update", node.system_id), get())
+            assert (("update", node.system_id)) == (get())
 
-    def test_calls_handler_with_update_on_update_fs_on_block_device(self):
-        node = factory.make_Node(**self.params)
+    def test_calls_handler_with_update_on_update_fs_on_block_device(
+        self, params, channel
+    ):
+        node = factory.make_Node(**params)
         block_device = factory.make_BlockDevice(node=node)
         filesystem = factory.make_Filesystem(block_device=block_device)
-        with listenFor(self.channel) as get:
+        with listenFor(channel) as get:
             filesystem.save(force_update=True)  # A no-op update is enough.
-            self.assertEqual(("update", node.system_id), get())
+            assert (("update", node.system_id)) == (get())
 
-    def test_calls_handler_with_update_on_update_special_fs(self):
-        node = factory.make_Node(**self.params)
+    def test_calls_handler_with_update_on_update_special_fs(
+        self, params, channel
+    ):
+        node = factory.make_Node(**params)
         filesystem = factory.make_Filesystem(node_config=node.current_config)
-        with listenFor(self.channel) as get:
+        with listenFor(channel) as get:
             filesystem.save(force_update=True)  # A no-op update is enough.
-            self.assertEqual(("update", node.system_id), get())
+            assert (("update", node.system_id)) == (get())
 
 
-class TestMachineFilesystemgroupListener(
-    MAASTransactionServerTestCase, TransactionalHelpersMixin
-):
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "transactional_maasdb"
+)
+@pytest.mark.allow_transactions
+@pytest.mark.parametrize(
+    "params, listener_channel",
+    [
+        pytest.param(
+            {
+                "node_type": NODE_TYPE.MACHINE,
+                "with_boot_disk": True,
+            },
+            "machine",
+            id="machine",
+        ),
+    ],
+)
+class TestMachineFilesystemgroupListener(TransactionalHelpersMixin):
     """End-to-end test of both the listeners code and the triggers on
     maasserver_filesystemgroup tables that notifies its machine."""
 
-    scenarios = (
-        (
-            "machine",
-            {
-                "params": {
-                    "node_type": NODE_TYPE.MACHINE,
-                    "with_boot_disk": True,
-                },
-                "listener": "machine",
-            },
-        ),
-    )
+    @pytest.fixture(autouse=True)
+    def _mocker_patch(self, mocker):
+        self.patch = mocker.patch.object
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_handler_with_update_on_create(self):
-        node = yield deferToDatabase(self.create_node, self.params)
+    def test_calls_handler_with_update_on_create(
+        self, params, listener_channel
+    ):
+        node = yield deferToDatabase(self.create_node, params)
         yield deferToDatabase(
             self.create_partitiontable, {"node": node, "bootable": True}
         )
 
         listener = self.make_listener_without_delay()
         dv = DeferredValue()
-        listener.register(self.listener, lambda *args: dv.set(args))
+        listener.register(listener_channel, lambda *args: dv.set(args))
         yield listener.startService()
         try:
             yield deferToDatabase(self.create_filesystemgroup, {"node": node})
             yield dv.get(timeout=2)
-            self.assertEqual(("update", node.system_id), dv.value)
+            assert (("update", node.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_handler_with_update_on_delete(self):
-        node = yield deferToDatabase(self.create_node, self.params)
+    def test_calls_handler_with_update_on_delete(
+        self, params, listener_channel
+    ):
+        node = yield deferToDatabase(self.create_node, params)
         yield deferToDatabase(
             self.create_partitiontable, {"node": node, "bootable": True}
         )
@@ -3286,21 +3480,23 @@ class TestMachineFilesystemgroupListener(
 
         listener = self.make_listener_without_delay()
         dv = DeferredValue()
-        listener.register(self.listener, lambda *args: dv.set(args))
+        listener.register(listener_channel, lambda *args: dv.set(args))
         yield listener.startService()
         try:
             yield deferToDatabase(
                 self.delete_filesystemgroup, filesystemgroup.id
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", node.system_id), dv.value)
+            assert (("update", node.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_handler_with_update_on_update(self):
-        node = yield deferToDatabase(self.create_node, self.params)
+    def test_calls_handler_with_update_on_update(
+        self, params, listener_channel
+    ):
+        node = yield deferToDatabase(self.create_node, params)
         yield deferToDatabase(
             self.create_partitiontable, {"node": node, "bootable": True}
         )
@@ -3310,7 +3506,7 @@ class TestMachineFilesystemgroupListener(
 
         listener = self.make_listener_without_delay()
         dv = DeferredValue()
-        listener.register(self.listener, lambda *args: dv.set(args))
+        listener.register(listener_channel, lambda *args: dv.set(args))
         yield listener.startService()
         try:
             yield deferToDatabase(
@@ -3319,52 +3515,60 @@ class TestMachineFilesystemgroupListener(
                 {"name": factory.make_name("fsgroup")},
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", node.system_id), dv.value)
+            assert (("update", node.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
 
-class TestMachineCachesetListener(
-    MAASTransactionServerTestCase, TransactionalHelpersMixin
-):
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "transactional_maasdb"
+)
+@pytest.mark.allow_transactions
+@pytest.mark.parametrize(
+    "params, listener_channel",
+    [
+        pytest.param(
+            {"node_type": NODE_TYPE.MACHINE}, "machine", id="machine"
+        ),
+    ],
+)
+class TestMachineCachesetListener(TransactionalHelpersMixin):
     """End-to-end test of both the listeners code and the triggers on
     maasserver_cacheset tables that notifies its machine."""
 
-    scenarios = (
-        (
-            "machine",
-            {
-                "params": {"node_type": NODE_TYPE.MACHINE},
-                "listener": "machine",
-            },
-        ),
-    )
+    @pytest.fixture(autouse=True)
+    def _mocker_patch(self, mocker):
+        self.patch = mocker.patch.object
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_handler_with_update_on_create(self):
-        node = yield deferToDatabase(self.create_node, self.params)
+    def test_calls_handler_with_update_on_create(
+        self, params, listener_channel
+    ):
+        node = yield deferToDatabase(self.create_node, params)
         partition = yield deferToDatabase(
             self.create_partition, {"node": node}
         )
 
         listener = self.make_listener_without_delay()
         dv = DeferredValue()
-        listener.register(self.listener, lambda *args: dv.set(args))
+        listener.register(listener_channel, lambda *args: dv.set(args))
         yield listener.startService()
         try:
             yield deferToDatabase(
                 self.create_cacheset, {"node": node, "partition": partition}
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", node.system_id), dv.value)
+            assert (("update", node.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_handler_with_update_on_delete(self):
-        node = yield deferToDatabase(self.create_node, self.params)
+    def test_calls_handler_with_update_on_delete(
+        self, params, listener_channel
+    ):
+        node = yield deferToDatabase(self.create_node, params)
         partition = yield deferToDatabase(
             self.create_partition, {"node": node}
         )
@@ -3374,19 +3578,21 @@ class TestMachineCachesetListener(
 
         listener = self.make_listener_without_delay()
         dv = DeferredValue()
-        listener.register(self.listener, lambda *args: dv.set(args))
+        listener.register(listener_channel, lambda *args: dv.set(args))
         yield listener.startService()
         try:
             yield deferToDatabase(self.delete_cacheset, cacheset.id)
             yield dv.get(timeout=2)
-            self.assertEqual(("update", node.system_id), dv.value)
+            assert (("update", node.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_handler_with_update_on_update(self):
-        node = yield deferToDatabase(self.create_node, self.params)
+    def test_calls_handler_with_update_on_update(
+        self, params, listener_channel
+    ):
+        node = yield deferToDatabase(self.create_node, params)
         partition = yield deferToDatabase(
             self.create_partition, {"node": node}
         )
@@ -3396,7 +3602,7 @@ class TestMachineCachesetListener(
 
         listener = self.make_listener_without_delay()
         dv = DeferredValue()
-        listener.register(self.listener, lambda *args: dv.set(args))
+        listener.register(listener_channel, lambda *args: dv.set(args))
         yield listener.startService()
         try:
             # No changes to apply, but trigger a save nonetheless.
@@ -3404,16 +3610,22 @@ class TestMachineCachesetListener(
                 self.update_cacheset, cacheset.id, {}, force_update=True
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", node.system_id), dv.value)
+            assert (("update", node.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
 
-class TestTokenListener(
-    MAASTransactionServerTestCase, TransactionalHelpersMixin
-):
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "transactional_maasdb"
+)
+@pytest.mark.allow_transactions
+class TestTokenListener(TransactionalHelpersMixin):
     """End-to-end test of both the listeners code and the piston3_token
     table."""
+
+    @pytest.fixture(autouse=True)
+    def _mocker_patch(self, mocker):
+        self.patch = mocker.patch.object
 
     @wait_for_reactor
     @inlineCallbacks
@@ -3427,7 +3639,7 @@ class TestTokenListener(
         try:
             obj = yield deferToDatabase(self.create_token, {"user": user})
             yield dv.get(timeout=2)
-            self.assertEqual(("create", str(obj.id)), dv.value)
+            assert (("create", str(obj.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -3446,7 +3658,7 @@ class TestTokenListener(
             # Force the update because the key contents could be the same.
             yield deferToDatabase(self.update_token, token.id, name=new_name)
             yield dv.get(timeout=2)
-            self.assertEqual(("update", str(token.id)), dv.value)
+            assert (("update", str(token.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -3463,16 +3675,22 @@ class TestTokenListener(
         try:
             yield deferToDatabase(self.delete_token, token.id)
             yield dv.get(timeout=2)
-            self.assertEqual(("delete", str(token.id)), dv.value)
+            assert (("delete", str(token.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
 
-class TestPackageRepositoryListener(
-    MAASTransactionServerTestCase, TransactionalHelpersMixin
-):
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "transactional_maasdb"
+)
+@pytest.mark.allow_transactions
+class TestPackageRepositoryListener(TransactionalHelpersMixin):
     """End-to-end test of both the listeners code and the cluster
     triggers code."""
+
+    @pytest.fixture(autouse=True)
+    def _mocker_patch(self, mocker):
+        self.patch = mocker.patch.object
 
     @wait_for_reactor
     @inlineCallbacks
@@ -3484,7 +3702,7 @@ class TestPackageRepositoryListener(
         try:
             repository = yield deferToDatabase(self.create_package_repository)
             yield dv.get(timeout=2)
-            self.assertEqual(("create", str(repository.id)), dv.value)
+            assert (("create", str(repository.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -3504,7 +3722,7 @@ class TestPackageRepositoryListener(
                 {"name": factory.make_name("name")},
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", str(repository.id)), dv.value)
+            assert (("update", str(repository.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -3521,16 +3739,22 @@ class TestPackageRepositoryListener(
                 self.delete_package_repository, repository.id
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("delete", str(repository.id)), dv.value)
+            assert (("delete", str(repository.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
 
-class TestIPRangeSubnetListener(
-    MAASTransactionServerTestCase, TransactionalHelpersMixin
-):
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "transactional_maasdb"
+)
+@pytest.mark.allow_transactions
+class TestIPRangeSubnetListener(TransactionalHelpersMixin):
     """End-to-end test of both the listeners code and the triggers on
     maasserver_iprange tables that notifies affected subnets."""
+
+    @pytest.fixture(autouse=True)
+    def _mocker_patch(self, mocker):
+        self.patch = mocker.patch.object
 
     @wait_for_reactor
     @inlineCallbacks
@@ -3559,7 +3783,7 @@ class TestIPRangeSubnetListener(
                 },
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", str(iprange.subnet.id)), dv.value)
+            assert (("update", str(iprange.subnet.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -3580,7 +3804,7 @@ class TestIPRangeSubnetListener(
                 self.update_iprange, iprange.id, {"end_ip": new_end_ip}
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", str(iprange.subnet.id)), dv.value)
+            assert (("update", str(iprange.subnet.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -3636,13 +3860,12 @@ class TestIPRangeSubnetListener(
             )
             yield dvs[0].get(timeout=2)
             yield dvs[1].get(timeout=2)
-            self.assertCountEqual(
+            assert sorted(
                 [
                     ("update", str(old_subnet.id)),
                     ("update", str(new_subnet.id)),
-                ],
-                [dvs[0].value, dvs[1].value],
-            )
+                ]
+            ) == sorted([dvs[0].value, dvs[1].value])
         finally:
             yield listener.stopService()
 
@@ -3658,62 +3881,60 @@ class TestIPRangeSubnetListener(
         try:
             yield deferToDatabase(self.delete_iprange, iprange.id)
             yield dv.get(timeout=2)
-            self.assertEqual(("update", str(iprange.subnet.id)), dv.value)
+            assert (("update", str(iprange.subnet.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
 
-class TestBMCListener(
-    MAASTransactionServerTestCase, TransactionalHelpersMixin
-):
-    scenarios = (
-        (
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "transactional_maasdb"
+)
+@pytest.mark.allow_transactions
+@pytest.mark.parametrize(
+    "params, listener_channel",
+    [
+        pytest.param(
+            {
+                "node_type": NODE_TYPE.MACHINE,
+                # This is needed to avoid updating the node after creating it
+                "with_boot_disk": False,
+            },
             "machine",
-            {
-                "params": {
-                    "node_type": NODE_TYPE.MACHINE,
-                    # This is needed to avoid updating the node after creating it
-                    "with_boot_disk": False,
-                },
-                "listener": "machine",
-            },
+            id="machine",
         ),
-        (
-            "rack",
-            {
-                "params": {"node_type": NODE_TYPE.RACK_CONTROLLER},
-                "listener": "controller",
-            },
+        pytest.param(
+            {"node_type": NODE_TYPE.RACK_CONTROLLER}, "controller", id="rack"
         ),
-        (
-            "region_and_rack",
-            {
-                "params": {"node_type": NODE_TYPE.REGION_AND_RACK_CONTROLLER},
-                "listener": "controller",
-            },
+        pytest.param(
+            {"node_type": NODE_TYPE.REGION_AND_RACK_CONTROLLER},
+            "controller",
+            id="region_and_rack",
         ),
-        (
-            "region",
-            {
-                "params": {"node_type": NODE_TYPE.REGION_CONTROLLER},
-                "listener": "controller",
-            },
+        pytest.param(
+            {"node_type": NODE_TYPE.REGION_CONTROLLER},
+            "controller",
+            id="region",
         ),
-    )
+    ],
+)
+class TestBMCListener(TransactionalHelpersMixin):
+    @pytest.fixture(autouse=True)
+    def _mocker_patch(self, mocker):
+        self.patch = mocker.patch.object
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_handler_on_bmc_update(self):
+    def test_calls_handler_on_bmc_update(self, params, listener_channel):
         listener = self.make_listener_without_delay()
         dv = DeferredValue()
-        listener.register(self.listener, lambda *args: dv.set(args))
-        self.params.update(
+        listener.register(listener_channel, lambda *args: dv.set(args))
+        params.update(
             {
                 "power_type": "lxd",
                 "power_parameters": {"power_address": "1.2.3.4"},
             }
         )
-        node = yield deferToDatabase(self.create_node, self.params)
+        node = yield deferToDatabase(self.create_node, params)
 
         def update_node(system_id):
             node = Node.objects.get(system_id=system_id)
@@ -3724,168 +3945,149 @@ class TestBMCListener(
         try:
             yield deferToDatabase(update_node, node.system_id)
             yield dv.get(timeout=2)
-            self.assertEqual(("update", node.system_id), dv.value)
+            assert (("update", node.system_id)) == (dv.value)
         finally:
             yield listener.stopService()
 
 
-class TestNodeTypeChange(
-    MAASTransactionServerTestCase, TransactionalHelpersMixin
-):
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "transactional_maasdb"
+)
+@pytest.mark.allow_transactions
+@pytest.mark.parametrize(
+    "from_type, from_listener, to_type, to_listener",
+    [
+        pytest.param(
+            NODE_TYPE.MACHINE,
+            "machine",
+            NODE_TYPE.RACK_CONTROLLER,
+            "controller",
+            id="machine_to_rack",
+        ),
+        pytest.param(
+            NODE_TYPE.MACHINE,
+            "machine",
+            NODE_TYPE.REGION_CONTROLLER,
+            "controller",
+            id="machine_to_region",
+        ),
+        pytest.param(
+            NODE_TYPE.MACHINE,
+            "machine",
+            NODE_TYPE.REGION_AND_RACK_CONTROLLER,
+            "controller",
+            id="machine_to_rack_and_region",
+        ),
+        pytest.param(
+            NODE_TYPE.MACHINE,
+            "machine",
+            NODE_TYPE.DEVICE,
+            "device",
+            id="machine_to_device",
+        ),
+        pytest.param(
+            NODE_TYPE.RACK_CONTROLLER,
+            "controller",
+            NODE_TYPE.MACHINE,
+            "machine",
+            id="rack_to_machine",
+        ),
+        pytest.param(
+            NODE_TYPE.RACK_CONTROLLER,
+            "controller",
+            NODE_TYPE.DEVICE,
+            "device",
+            id="rack_to_device",
+        ),
+        pytest.param(
+            NODE_TYPE.REGION_CONTROLLER,
+            "controller",
+            NODE_TYPE.MACHINE,
+            "machine",
+            id="region_to_machine",
+        ),
+        pytest.param(
+            NODE_TYPE.REGION_CONTROLLER,
+            "controller",
+            NODE_TYPE.DEVICE,
+            "device",
+            id="region_to_device",
+        ),
+        pytest.param(
+            NODE_TYPE.REGION_AND_RACK_CONTROLLER,
+            "controller",
+            NODE_TYPE.MACHINE,
+            "machine",
+            id="region_and_rack_to_machine",
+        ),
+        pytest.param(
+            NODE_TYPE.REGION_AND_RACK_CONTROLLER,
+            "controller",
+            NODE_TYPE.DEVICE,
+            "device",
+            id="region_and_rack_to_device",
+        ),
+        pytest.param(
+            NODE_TYPE.DEVICE,
+            "device",
+            NODE_TYPE.RACK_CONTROLLER,
+            "controller",
+            id="device_to_rack",
+        ),
+        pytest.param(
+            NODE_TYPE.DEVICE,
+            "device",
+            NODE_TYPE.REGION_CONTROLLER,
+            "controller",
+            id="device_to_region",
+        ),
+        pytest.param(
+            NODE_TYPE.DEVICE,
+            "device",
+            NODE_TYPE.REGION_AND_RACK_CONTROLLER,
+            "controller",
+            id="device_to_rack_and_region",
+        ),
+        pytest.param(
+            NODE_TYPE.DEVICE,
+            "device",
+            NODE_TYPE.MACHINE,
+            "machine",
+            id="device_to_machine",
+        ),
+    ],
+)
+class TestNodeTypeChange(TransactionalHelpersMixin):
     """End-to-end test of node type change triggers code."""
 
-    scenarios = (
-        (
-            "machine_to_rack",
-            {
-                "from_type": NODE_TYPE.MACHINE,
-                "from_listener": "machine",
-                "to_type": NODE_TYPE.RACK_CONTROLLER,
-                "to_listener": "controller",
-            },
-        ),
-        (
-            "machine_to_region",
-            {
-                "from_type": NODE_TYPE.MACHINE,
-                "from_listener": "machine",
-                "to_type": NODE_TYPE.REGION_CONTROLLER,
-                "to_listener": "controller",
-            },
-        ),
-        (
-            "machine_to_rack_and_region",
-            {
-                "from_type": NODE_TYPE.MACHINE,
-                "from_listener": "machine",
-                "to_type": NODE_TYPE.REGION_AND_RACK_CONTROLLER,
-                "to_listener": "controller",
-            },
-        ),
-        (
-            "machine_to_device",
-            {
-                "from_type": NODE_TYPE.MACHINE,
-                "from_listener": "machine",
-                "to_type": NODE_TYPE.DEVICE,
-                "to_listener": "device",
-            },
-        ),
-        (
-            "rack_to_machine",
-            {
-                "from_type": NODE_TYPE.RACK_CONTROLLER,
-                "from_listener": "controller",
-                "to_type": NODE_TYPE.MACHINE,
-                "to_listener": "machine",
-            },
-        ),
-        (
-            "rack_to_device",
-            {
-                "from_type": NODE_TYPE.RACK_CONTROLLER,
-                "from_listener": "controller",
-                "to_type": NODE_TYPE.DEVICE,
-                "to_listener": "device",
-            },
-        ),
-        (
-            "region_to_machine",
-            {
-                "from_type": NODE_TYPE.REGION_CONTROLLER,
-                "from_listener": "controller",
-                "to_type": NODE_TYPE.MACHINE,
-                "to_listener": "machine",
-            },
-        ),
-        (
-            "region_to_device",
-            {
-                "from_type": NODE_TYPE.REGION_CONTROLLER,
-                "from_listener": "controller",
-                "to_type": NODE_TYPE.DEVICE,
-                "to_listener": "device",
-            },
-        ),
-        (
-            "region_and_rack_to_machine",
-            {
-                "from_type": NODE_TYPE.REGION_AND_RACK_CONTROLLER,
-                "from_listener": "controller",
-                "to_type": NODE_TYPE.MACHINE,
-                "to_listener": "machine",
-            },
-        ),
-        (
-            "region_and_rack_to_device",
-            {
-                "from_type": NODE_TYPE.REGION_AND_RACK_CONTROLLER,
-                "from_listener": "controller",
-                "to_type": NODE_TYPE.DEVICE,
-                "to_listener": "device",
-            },
-        ),
-        (
-            "device_to_rack",
-            {
-                "from_type": NODE_TYPE.DEVICE,
-                "from_listener": "device",
-                "to_type": NODE_TYPE.RACK_CONTROLLER,
-                "to_listener": "controller",
-            },
-        ),
-        (
-            "device_to_region",
-            {
-                "from_type": NODE_TYPE.DEVICE,
-                "from_listener": "device",
-                "to_type": NODE_TYPE.REGION_CONTROLLER,
-                "to_listener": "controller",
-            },
-        ),
-        (
-            "device_to_rack_and_region",
-            {
-                "from_type": NODE_TYPE.DEVICE,
-                "from_listener": "device",
-                "to_type": NODE_TYPE.REGION_AND_RACK_CONTROLLER,
-                "to_listener": "controller",
-            },
-        ),
-        (
-            "device_to_machine",
-            {
-                "from_type": NODE_TYPE.DEVICE,
-                "from_listener": "device",
-                "to_type": NODE_TYPE.MACHINE,
-                "to_listener": "machine",
-            },
-        ),
-    )
+    @pytest.fixture(autouse=True)
+    def _mocker_patch(self, mocker):
+        self.patch = mocker.patch.object
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_transition_notifies(self):
+    def test_transition_notifies(
+        self, from_type, from_listener, to_type, to_listener
+    ):
         listener1 = self.make_listener_without_delay()
         listener2 = self.make_listener_without_delay()
         node = yield deferToDatabase(
-            self.create_node, {"node_type": self.from_type}
+            self.create_node, {"node_type": from_type}
         )
         q_from, q_to = DeferredQueue(), DeferredQueue()
-        listener1.register(self.from_listener, lambda *args: q_from.put(args))
-        listener2.register(self.to_listener, lambda *args: q_to.put(args))
+        listener1.register(from_listener, lambda *args: q_from.put(args))
+        listener2.register(to_listener, lambda *args: q_to.put(args))
         yield listener1.startService()
         yield listener2.startService()
         try:
-            node.node_type = self.to_type
-            if self.to_type != NODE_TYPE.MACHINE:
+            node.node_type = to_type
+            if to_type != NODE_TYPE.MACHINE:
                 node.pool = None
             yield deferToDatabase(node.save)
-            self.assertEqual(
-                ("delete", node.system_id),
-                (yield deferWithTimeout(2, q_from.get)),
+            assert (("delete", node.system_id)) == (
+                yield deferWithTimeout(2, q_from.get)
             )
-            if NODE_TYPE.MACHINE in (self.from_type, self.to_type):
+            if NODE_TYPE.MACHINE in (from_type, to_type):
                 # Changing to and from a node will cause a pool to either
                 # be added or removed. This causes an additional update
                 # trigger.
@@ -3893,24 +4095,28 @@ class TestNodeTypeChange(
                 for _ in range(2):
                     f, system_id = yield deferWithTimeout(2, q_to.get)
                     notifications[f] = system_id
-                self.assertDictEqual(
-                    {"update": node.system_id, "create": node.system_id},
-                    notifications,
-                )
+                assert (
+                    {"update": node.system_id, "create": node.system_id}
+                ) == (notifications)
             else:
-                self.assertEqual(
-                    ("create", node.system_id),
-                    (yield deferWithTimeout(2, q_to.get)),
+                assert (("create", node.system_id)) == (
+                    yield deferWithTimeout(2, q_to.get)
                 )
         finally:
             yield listener1.stopService()
             yield listener2.stopService()
 
 
-class TestNotificationListener(
-    MAASTransactionServerTestCase, TransactionalHelpersMixin
-):
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "transactional_maasdb"
+)
+@pytest.mark.allow_transactions
+class TestNotificationListener(TransactionalHelpersMixin):
     """Tests for notifications relating to the `Notification` model."""
+
+    @pytest.fixture(autouse=True)
+    def _mocker_patch(self, mocker):
+        self.patch = mocker.patch.object
 
     @wait_for_reactor
     @inlineCallbacks
@@ -3922,7 +4128,7 @@ class TestNotificationListener(
         try:
             notification = yield deferToDatabase(factory.make_Notification)
             yield dv.get(timeout=2)
-            self.assertEqual(("create", str(notification.id)), dv.value)
+            assert (("create", str(notification.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -3943,7 +4149,7 @@ class TestNotificationListener(
         try:
             yield deferToDatabase(update_notification, notification)
             yield dv.get(timeout=2)
-            self.assertEqual(("update", str(notification.id)), dv.value)
+            assert (("update", str(notification.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -3959,18 +4165,24 @@ class TestNotificationListener(
         try:
             yield deferToDatabase(notification.delete)
             yield dv.get(timeout=2)
-            self.assertEqual(("delete", str(notification_id)), dv.value)
+            assert (("delete", str(notification_id))) == (dv.value)
         finally:
             yield listener.stopService()
 
 
-class TestNotificationDismissalListener(
-    MAASTransactionServerTestCase, TransactionalHelpersMixin
-):
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "transactional_maasdb"
+)
+@pytest.mark.allow_transactions
+class TestNotificationDismissalListener(TransactionalHelpersMixin):
     """Tests relating to the `NotificationDismissal` model.
 
     At present `NotificationDismissal` rows are only ever created.
     """
+
+    @pytest.fixture(autouse=True)
+    def _mocker_patch(self, mocker):
+        self.patch = mocker.patch.object
 
     @wait_for_reactor
     @inlineCallbacks
@@ -3984,18 +4196,24 @@ class TestNotificationDismissalListener(
             notification = yield deferToDatabase(factory.make_Notification)
             yield deferToDatabase(notification.dismiss, user)
             yield dv.get(timeout=2)
-            self.assertEqual(
-                ("create", "%d:%d" % (notification.id, user.id)), dv.value
+            assert (("create", "%d:%d" % (notification.id, user.id))) == (
+                dv.value
             )
         finally:
             yield listener.stopService()
 
 
-class TestScriptListener(
-    MAASTransactionServerTestCase, TransactionalHelpersMixin
-):
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "transactional_maasdb"
+)
+@pytest.mark.allow_transactions
+class TestScriptListener(TransactionalHelpersMixin):
     """End-to-end test of both the listeners code and the cluster
     triggers code."""
+
+    @pytest.fixture(autouse=True)
+    def _mocker_patch(self, mocker):
+        self.patch = mocker.patch.object
 
     @wait_for_reactor
     @inlineCallbacks
@@ -4008,7 +4226,7 @@ class TestScriptListener(
         try:
             script = yield deferToDatabase(self.create_script)
             yield dv.get(timeout=2)
-            self.assertEqual(("create", str(script.id)), dv.value)
+            assert (("create", str(script.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -4029,7 +4247,7 @@ class TestScriptListener(
                 {"name": factory.make_name("name")},
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", str(script.id)), dv.value)
+            assert (("update", str(script.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -4045,14 +4263,20 @@ class TestScriptListener(
         try:
             yield deferToDatabase(self.delete_script, script.id)
             yield dv.get(timeout=2)
-            self.assertEqual(("delete", str(script.id)), dv.value)
+            assert (("delete", str(script.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
 
-class TestNodeDeviceListener(
-    MAASTransactionServerTestCase, TransactionalHelpersMixin
-):
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "transactional_maasdb"
+)
+@pytest.mark.allow_transactions
+class TestNodeDeviceListener(TransactionalHelpersMixin):
+    @pytest.fixture(autouse=True)
+    def _mocker_patch(self, mocker):
+        self.patch = mocker.patch.object
+
     @wait_for_reactor
     @inlineCallbacks
     def test_calls_handler_on_create_notification(self):
@@ -4066,7 +4290,7 @@ class TestNodeDeviceListener(
                 self.create_node_device, {"node": node}
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("create", str(node_device.id)), dv.value)
+            assert (("create", str(node_device.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -4090,7 +4314,7 @@ class TestNodeDeviceListener(
                 },
             )
             yield dv.get(timeout=2)
-            self.assertEqual(("update", str(node_device.id)), dv.value)
+            assert (("update", str(node_device.id))) == (dv.value)
         finally:
             yield listener.stopService()
 
@@ -4105,6 +4329,6 @@ class TestNodeDeviceListener(
         try:
             yield deferToDatabase(self.delete_node_device, node_device.id)
             yield dv.get(timeout=2)
-            self.assertEqual(("delete", str(node_device.id)), dv.value)
+            assert (("delete", str(node_device.id))) == (dv.value)
         finally:
             yield listener.stopService()

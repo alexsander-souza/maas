@@ -54,245 +54,297 @@ def _enable_dhcp(subnet, primary_rack, secondary_rack=None, relay_vlan=None):
             subnet.vlan.save()
 
 
+_APT_PROXY_SCENARIO_VALUES = [
+    (
+        None,
+        "2001:db8::1",
+        "",
+        "http://[2001:db8::1]:8000/",
+        True,
+        False,
+        "",
+        False,
+        None,
+        None,
+        None,
+        None,
+    ),
+    (
+        None,
+        "10.0.1.1",
+        8000,
+        "http://10.0.1.1:8000/",
+        True,
+        False,
+        "",
+        False,
+        None,
+        None,
+        None,
+        None,
+    ),
+    (
+        None,
+        "region.example.com",
+        8000,
+        "http://region.example.com:8000/",
+        True,
+        False,
+        "",
+        False,
+        None,
+        None,
+        None,
+        None,
+    ),
+    (
+        None,
+        "region.example.com",
+        "",
+        "http://proxy.example.com:111/",
+        True,
+        False,
+        "http://proxy.example.com:111/",
+        False,
+        None,
+        None,
+        None,
+        None,
+    ),
+    (
+        None,
+        "region.example.com",
+        "",
+        "http://region.example.com:8000/",
+        True,
+        True,
+        "http://proxy.example.com:111/",
+        False,
+        None,
+        None,
+        None,
+        None,
+    ),
+    (
+        None,
+        "example.com",
+        8000,
+        None,
+        False,
+        False,
+        "",
+        False,
+        None,
+        None,
+        None,
+        None,
+    ),
+    # If a default IP address for the region is passed in and the
+    # rack's URL is empty, the default IP address that was provided
+    # should be preferred.
+    (
+        "2001:db8::2",
+        "",
+        8000,
+        "http://[2001:db8::2]:8000/",
+        True,
+        False,
+        "",
+        False,
+        None,
+        None,
+        None,
+        None,
+    ),
+    (
+        "10.0.1.2",
+        "",
+        8000,
+        "http://10.0.1.2:8000/",
+        True,
+        False,
+        "",
+        False,
+        None,
+        None,
+        None,
+        None,
+    ),
+    (
+        "region.example.com",
+        "",
+        8000,
+        "http://region.example.com:8000/",
+        True,
+        False,
+        "",
+        False,
+        None,
+        None,
+        None,
+        None,
+    ),
+    (
+        "10.0.0.1",
+        "",
+        8000,
+        "http://proxy.example.com:111/",
+        True,
+        False,
+        "http://proxy.example.com:111/",
+        False,
+        None,
+        None,
+        None,
+        None,
+    ),
+    (
+        "region2.example.com",
+        "",
+        8000,
+        "http://region2.example.com:8000/",
+        True,
+        True,
+        "http://proxy.example.com:111/",
+        False,
+        None,
+        None,
+        None,
+        None,
+    ),
+    (
+        "10.0.0.1",
+        "",
+        8000,
+        None,
+        False,
+        False,
+        "",
+        False,
+        None,
+        None,
+        None,
+        None,
+    ),
+    (
+        "region2.example.com",
+        "",
+        9000,
+        "http://region2.example.com:9000/",
+        True,
+        True,
+        "http://proxy.example.com:111/",
+        False,
+        None,
+        None,
+        None,
+        None,
+    ),
+    (
+        "region.example.com",
+        "",
+        8000,
+        "http://192.168.122.5:8000/",
+        True,
+        False,
+        "",
+        True,
+        "192.168.122.5",
+        "192.168.122.0/24",
+        None,
+        False,
+    ),
+]
+
+_APT_PROXY_SCENARIO_IDS = (
+    "ipv6",
+    "ipv4",
+    "builtin",
+    "external",
+    "peer-proxy",
+    "disabled",
+    "ipv6_default",
+    "ipv4_default",
+    "builtin_default",
+    "external_default",
+    "peer-proxy_default",
+    "disabled_default",
+    "changed-maas_proxy_port",
+    "rack-proxy-no-dhcp-through-rack",
+)
+
+_APT_PROXY_SCENARIO_ARGUMENTS = (
+    "default_region_ip",
+    "rack",
+    "maas_proxy_port",
+    "result",
+    "enable",
+    "use_peer_proxy",
+    "http_proxy",
+    "use_rack_proxy",
+    "boot_cluster_ip",
+    "cidr",
+    "subnet_dns",
+    "dhcp_on",
+)
+
+
 class TestAptProxyScenarios(MAASServerTestCase):
-    scenarios = (
+    scenarios = tuple(
         (
-            "ipv6",
-            dict(
-                default_region_ip=None,
-                rack="2001:db8::1",
-                maas_proxy_port="",
-                result="http://[2001:db8::1]:8000/",
-                enable=True,
-                use_peer_proxy=False,
-                http_proxy="",
-                use_rack_proxy=False,
-                boot_cluster_ip=None,
-            ),
-        ),
-        (
-            "ipv4",
-            dict(
-                default_region_ip=None,
-                rack="10.0.1.1",
-                maas_proxy_port=8000,
-                result="http://10.0.1.1:8000/",
-                enable=True,
-                use_peer_proxy=False,
-                http_proxy="",
-                use_rack_proxy=False,
-                boot_cluster_ip=None,
-            ),
-        ),
-        (
-            "builtin",
-            dict(
-                default_region_ip=None,
-                rack="region.example.com",
-                maas_proxy_port=8000,
-                result="http://region.example.com:8000/",
-                enable=True,
-                use_peer_proxy=False,
-                http_proxy="",
-                use_rack_proxy=False,
-                boot_cluster_ip=None,
-            ),
-        ),
-        (
-            "external",
-            dict(
-                default_region_ip=None,
-                rack="region.example.com",
-                maas_proxy_port="",
-                result="http://proxy.example.com:111/",
-                enable=True,
-                use_peer_proxy=False,
-                http_proxy="http://proxy.example.com:111/",
-                use_rack_proxy=False,
-                boot_cluster_ip=None,
-            ),
-        ),
-        (
-            "peer-proxy",
-            dict(
-                default_region_ip=None,
-                rack="region.example.com",
-                maas_proxy_port="",
-                result="http://region.example.com:8000/",
-                enable=True,
-                use_peer_proxy=True,
-                http_proxy="http://proxy.example.com:111/",
-                use_rack_proxy=False,
-                boot_cluster_ip=None,
-            ),
-        ),
-        (
-            "disabled",
-            dict(
-                default_region_ip=None,
-                rack="example.com",
-                maas_proxy_port=8000,
-                result=None,
-                enable=False,
-                use_peer_proxy=False,
-                http_proxy="",
-                use_rack_proxy=False,
-                boot_cluster_ip=None,
-            ),
-        ),
-        # If a default IP address for the region is passed in and the rack's
-        # URL is empty, the default IP address that was provided should be
-        # preferred.
-        (
-            "ipv6_default",
-            dict(
-                default_region_ip="2001:db8::2",
-                rack="",
-                maas_proxy_port=8000,
-                result="http://[2001:db8::2]:8000/",
-                enable=True,
-                use_peer_proxy=False,
-                http_proxy="",
-                use_rack_proxy=False,
-                boot_cluster_ip=None,
-            ),
-        ),
-        (
-            "ipv4_default",
-            dict(
-                default_region_ip="10.0.1.2",
-                rack="",
-                maas_proxy_port=8000,
-                result="http://10.0.1.2:8000/",
-                enable=True,
-                use_peer_proxy=False,
-                http_proxy="",
-                use_rack_proxy=False,
-                boot_cluster_ip=None,
-            ),
-        ),
-        (
-            "builtin_default",
-            dict(
-                default_region_ip="region.example.com",
-                rack="",
-                maas_proxy_port=8000,
-                result="http://region.example.com:8000/",
-                enable=True,
-                use_peer_proxy=False,
-                http_proxy="",
-                use_rack_proxy=False,
-                boot_cluster_ip=None,
-            ),
-        ),
-        (
-            "external_default",
-            dict(
-                default_region_ip="10.0.0.1",
-                rack="",
-                maas_proxy_port=8000,
-                result="http://proxy.example.com:111/",
-                enable=True,
-                use_peer_proxy=False,
-                http_proxy="http://proxy.example.com:111/",
-                use_rack_proxy=False,
-                boot_cluster_ip=None,
-            ),
-        ),
-        (
-            "peer-proxy_default",
-            dict(
-                default_region_ip="region2.example.com",
-                rack="",
-                maas_proxy_port=8000,
-                result="http://region2.example.com:8000/",
-                enable=True,
-                use_peer_proxy=True,
-                http_proxy="http://proxy.example.com:111/",
-                use_rack_proxy=False,
-                boot_cluster_ip=None,
-            ),
-        ),
-        (
-            "disabled_default",
-            dict(
-                default_region_ip="10.0.0.1",
-                rack="",
-                maas_proxy_port=8000,
-                result=None,
-                enable=False,
-                use_peer_proxy=False,
-                http_proxy="",
-                use_rack_proxy=False,
-                boot_cluster_ip=None,
-            ),
-        ),
-        (
-            "changed-maas_proxy_port",
-            dict(
-                default_region_ip="region2.example.com",
-                rack="",
-                maas_proxy_port=9000,
-                result="http://region2.example.com:9000/",
-                enable=True,
-                use_peer_proxy=True,
-                http_proxy="http://proxy.example.com:111/",
-                use_rack_proxy=False,
-                boot_cluster_ip=None,
-            ),
-        ),
-        (
-            "rack-proxy-no-dhcp-through-rack",
-            dict(
-                default_region_ip="region.example.com",
-                rack="",
-                maas_proxy_port=8000,
-                result="http://192.168.122.5:8000/",
-                enable=True,
-                use_peer_proxy=False,
-                http_proxy="",
-                use_rack_proxy=True,
-                cidr="192.168.122.0/24",
-                subnet_dns=None,
-                dhcp_on=False,
-                boot_cluster_ip="192.168.122.5",
-            ),
-        ),
+            name,
+            dict(zip(_APT_PROXY_SCENARIO_ARGUMENTS, values, strict=True)),
+        )
+        for name, values in zip(
+            _APT_PROXY_SCENARIO_IDS, _APT_PROXY_SCENARIO_VALUES, strict=True
+        )
     )
 
     def test_returns_correct_url(self):
+        default_region_ip = self.default_region_ip
+        rack = self.rack
+        maas_proxy_port = self.maas_proxy_port
+        result = self.result
+        enable = self.enable
+        use_peer_proxy = self.use_peer_proxy
+        http_proxy = self.http_proxy
+        use_rack_proxy = self.use_rack_proxy
+        boot_cluster_ip = self.boot_cluster_ip
+        cidr = self.cidr
+        subnet_dns = self.subnet_dns
+        dhcp_on = self.dhcp_on
         import maasserver.compose_preseed as cp_module
 
         # Force the server host to be our test data.
         self.patch(cp_module, "get_maas_facing_server_host").return_value = (
-            self.rack if self.rack else self.default_region_ip
+            rack if rack else default_region_ip
         )
         # Now setup the configuration and arguments, and see what we get back.
         node = factory.make_Node(
             interface=True, status=NODE_STATUS.COMMISSIONING
         )
-        if self.boot_cluster_ip is not None:
-            node.boot_cluster_ip = self.boot_cluster_ip
+        if boot_cluster_ip is not None:
+            node.boot_cluster_ip = boot_cluster_ip
             node.save()
-        Config.objects.set_config("enable_http_proxy", self.enable)
-        Config.objects.set_config("http_proxy", self.http_proxy)
-        Config.objects.set_config("use_peer_proxy", self.use_peer_proxy)
-        Config.objects.set_config("use_rack_proxy", self.use_rack_proxy)
-        if self.maas_proxy_port:
-            Config.objects.set_config("maas_proxy_port", self.maas_proxy_port)
-        request = make_HttpRequest(http_host=self.default_region_ip)
-        if self.use_rack_proxy:
+        Config.objects.set_config("enable_http_proxy", enable)
+        Config.objects.set_config("http_proxy", http_proxy)
+        Config.objects.set_config("use_peer_proxy", use_peer_proxy)
+        Config.objects.set_config("use_rack_proxy", use_rack_proxy)
+        if maas_proxy_port:
+            Config.objects.set_config("maas_proxy_port", maas_proxy_port)
+        request = make_HttpRequest(http_host=default_region_ip)
+        if use_rack_proxy:
             subnet = None
-            if self.cidr:
+            if cidr:
                 vlan = factory.make_VLAN()
-                if self.dhcp_on:
-                    rack = factory.make_RackController()
+                if dhcp_on:
+                    rack_controller = factory.make_RackController()
                     vlan.dhcp_on = True
-                    vlan.primary_rack = rack
+                    vlan.primary_rack = rack_controller
                     vlan.save()
-                subnet = factory.make_Subnet(cidr=self.cidr, vlan=vlan)
-                if self.subnet_dns:
-                    subnet.dns_servers = [self.subnet_dns]
+                subnet = factory.make_Subnet(cidr=cidr, vlan=vlan)
+                if subnet_dns:
+                    subnet.dns_servers = [subnet_dns]
                 else:
                     subnet.dns_servers = []
                 subnet.save()
@@ -300,7 +352,7 @@ class TestAptProxyScenarios(MAASServerTestCase):
             else:
                 request.META["REMOTE_ADDR"] = factory.make_ipv4_address()
         actual = get_apt_proxy(request, node.get_boot_rack_controller(), node)
-        self.assertEqual(self.result, actual)
+        assert result == actual
 
 
 class TestAptProxy(MAASServerTestCase):

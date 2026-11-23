@@ -1,16 +1,17 @@
 # Copyright 2016-2025 Canonical Ltd.  This software is licensed under the
 # GNU Affero General Public License version 3 (see the file LICENSE).
 
-
 from datetime import timedelta
 from hashlib import sha256
 from hmac import HMAC
 from json import dumps
 import random
 from random import randint
+import re
 
 from django.db.utils import IntegrityError
 from django.utils import timezone
+import pytest
 from twisted.internet.defer import inlineCallbacks, succeed
 from twisted.protocols.amp import UnknownRemoteError
 from twisted.python.failure import Failure
@@ -30,10 +31,6 @@ from maasserver.security import get_shared_secret
 from maasserver.testing.architecture import make_usable_architecture
 from maasserver.testing.eventloop import RegionEventLoopFixture
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import (
-    MAASServerTestCase,
-    MAASTransactionServerTestCase,
-)
 from maasserver.utils.orm import (
     make_serialization_failure,
     reload_object,
@@ -41,7 +38,6 @@ from maasserver.utils.orm import (
 )
 from maasserver.utils.threads import deferToDatabase
 from maastesting.crochet import wait_for
-from maastesting.testcase import MAASTestCase
 from maastesting.twisted import TwistedLoggerFixture
 from provisioningserver.enum import POWER_STATE
 from provisioningserver.rpc.exceptions import NoSuchCluster, NoSuchNode
@@ -71,45 +67,46 @@ from provisioningserver.rpc.testing import call_responder
 
 wait_for_reactor = wait_for()
 
+pytestmark = pytest.mark.recreate_db
+
 
 @transactional
 def transactional_reload_object(obj):
     return reload_object(obj)
 
 
-class TestRegionProtocol(MAASTestCase):
+class TestRegionProtocol:
     def test_unauthenticated_allowed_commands(self):
         protocol = Region()
-        self.assertEqual(
-            [Authenticate.commandName], protocol.unauthenticated_commands
-        )
+        assert [Authenticate.commandName] == protocol.unauthenticated_commands
 
     def test_default_auth_status(self):
         protocol = Region()
-        self.assertEqual(False, protocol.auth_status.is_authenticated)
+        assert not protocol.auth_status.is_authenticated
 
 
-class TestRegionProtocol_Identify(MAASTestCase):
+class TestRegionProtocol_Identify:
     def test_identify_is_registered(self):
         protocol = Region()
         responder = protocol.locateResponder(Identify.commandName)
-        self.assertIsNotNone(responder)
+        assert responder is not None
 
     @wait_for_reactor
     def test_identify_reports_event_loop_name(self):
         d = call_responder(Region(), Identify, {})
 
         def check(response):
-            self.assertEqual({"ident": eventloop.loop.name}, response)
+            assert {"ident": eventloop.loop.name} == response
 
         return d.addCallback(check)
 
 
-class TestRegionProtocol_Authenticate(MAASTransactionServerTestCase):
+@pytest.mark.usefixtures("maasdb")
+class TestRegionProtocol_Authenticate:
     def test_authenticate_is_registered(self):
         protocol = Region()
         responder = protocol.locateResponder(Authenticate.commandName)
-        self.assertIsNotNone(responder)
+        assert responder is not None
 
     @wait_for_reactor
     @inlineCallbacks
@@ -125,24 +122,37 @@ class TestRegionProtocol_Authenticate(MAASTransactionServerTestCase):
         expected_digest = HMAC(
             secret, message + b"rack-to-region" + salt, sha256
         ).digest()
-        self.assertEqual(expected_digest, digest)
-        self.assertEqual(len(salt), 16)
+        assert expected_digest == digest
+        assert len(salt) == 16
 
 
-class TestRegionProtocol_GetBootConfig(MAASTransactionServerTestCase):
+@pytest.mark.usefixtures("maasdb")
+class TestRegionProtocol_GetBootConfig:
     def test_get_boot_config_is_registered(self):
         protocol = Region()
         responder = protocol.locateResponder(GetBootConfig.commandName)
-        self.assertIsNotNone(responder)
+        assert responder is not None
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_get_boot_config_returns_expected_result(self):
+    def test_get_boot_config_returns_expected_result(self, mocker):
         rack_controller = yield deferToDatabase(
             transactional(factory.make_RackController)
         )
         yield deferToDatabase(factory.make_RegionController)
-        yield deferToDatabase(make_usable_architecture, self)
+
+        class _MockTestCase:
+            def __init__(self, mocker):
+                self.patch = lambda obj, attr: mocker.patch.object(obj, attr)
+                self.patch_autospec = (
+                    lambda obj, attr, **kw: mocker.patch.object(
+                        obj, attr, autospec=True, **kw
+                    )
+                )
+
+        yield deferToDatabase(
+            lambda: make_usable_architecture(_MockTestCase(mocker))
+        )
         local_ip = factory.make_ip_address()
         remote_ip = factory.make_ip_address()
 
@@ -156,35 +166,33 @@ class TestRegionProtocol_GetBootConfig(MAASTransactionServerTestCase):
             },
         )
 
-        self.assertGreater(
-            response.keys(),
-            {
-                "arch",
-                "subarch",
-                "osystem",
-                "release",
-                "kernel_osystem",
-                "kernel_release",
-                "kernel",
-                "initrd",
-                "boot_dtb",
-                "purpose",
-                "hostname",
-                "domain",
-                "preseed_url",
-                "fs_host",
-                "log_host",
-                "extra_opts",
-                "ephemeral_opts",
-            },
-        )
+        assert response.keys() >= {
+            "arch",
+            "subarch",
+            "osystem",
+            "release",
+            "kernel_osystem",
+            "kernel_release",
+            "kernel",
+            "initrd",
+            "boot_dtb",
+            "purpose",
+            "hostname",
+            "domain",
+            "preseed_url",
+            "fs_host",
+            "log_host",
+            "extra_opts",
+            "ephemeral_opts",
+        }
 
 
-class TestRegionProtocol_MarkNodeFailed(MAASTransactionServerTestCase):
+@pytest.mark.usefixtures("maasdb")
+class TestRegionProtocol_MarkNodeFailed:
     def test_mark_failed_is_registered(self):
         protocol = Region()
         responder = protocol.locateResponder(MarkNodeFailed.commandName)
-        self.assertIsNotNone(responder)
+        assert responder is not None
 
     @transactional
     def create_deploying_node(self):
@@ -203,27 +211,32 @@ class TestRegionProtocol_MarkNodeFailed(MAASTransactionServerTestCase):
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_mark_node_failed_changes_status_and_updates_error_msg(self):
-        self.useFixture(SignalsDisabled("power"))
-        self.patch(node_module, "stop_workflow")
-        system_id = yield deferToDatabase(self.create_deploying_node)
+    def test_mark_node_failed_changes_status_and_updates_error_msg(
+        self, mocker
+    ):
+        with SignalsDisabled("power"):
+            mocker.patch.object(node_module, "stop_workflow")
+            system_id = yield deferToDatabase(self.create_deploying_node)
 
-        error_description = factory.make_name("error-description")
-        response = yield call_responder(
-            Region(),
-            MarkNodeFailed,
-            {"system_id": system_id, "error_description": error_description},
-        )
+            error_description = factory.make_name("error-description")
+            response = yield call_responder(
+                Region(),
+                MarkNodeFailed,
+                {
+                    "system_id": system_id,
+                    "error_description": error_description,
+                },
+            )
 
-        self.assertEqual({}, response)
-        new_status = yield deferToDatabase(self.get_node_status, system_id)
-        new_error_description = yield deferToDatabase(
-            self.get_node_error_description, system_id
-        )
-        self.assertEqual(
-            (NODE_STATUS.FAILED_DEPLOYMENT, error_description),
-            (new_status, new_error_description),
-        )
+            assert {} == response
+            new_status = yield deferToDatabase(self.get_node_status, system_id)
+            new_error_description = yield deferToDatabase(
+                self.get_node_error_description, system_id
+            )
+            assert (NODE_STATUS.FAILED_DEPLOYMENT, error_description) == (
+                new_status,
+                new_error_description,
+            )
 
     @wait_for_reactor
     def test_mark_node_failed_errors_if_node_cannot_be_found(self):
@@ -237,17 +250,17 @@ class TestRegionProtocol_MarkNodeFailed(MAASTransactionServerTestCase):
         )
 
         def check(error):
-            self.assertIsInstance(error, Failure)
-            self.assertIsInstance(error.value, NoSuchNode)
+            assert isinstance(error, Failure)
+            assert isinstance(error.value, NoSuchNode)
             # The error message contains a reference to system_id.
-            self.assertIn(system_id, str(error.value))
+            assert system_id in str(error.value)
 
         return d.addErrback(check)
 
 
-class TestRegionProtocol_ListNodePowerParameters(
-    MAASTransactionServerTestCase
-):
+@pytest.mark.usefixtures("maasdb")
+@pytest.mark.usefixtures("mock_start_workflows")
+class TestRegionProtocol_ListNodePowerParameters:
     @transactional
     def create_node(self, **kwargs):
         node = factory.make_Node(**kwargs)
@@ -267,7 +280,7 @@ class TestRegionProtocol_ListNodePowerParameters(
         responder = protocol.locateResponder(
             ListNodePowerParameters.commandName
         )
-        self.assertIsNotNone(responder)
+        assert responder is not None
 
     @wait_for_reactor
     @inlineCallbacks
@@ -305,8 +318,9 @@ class TestRegionProtocol_ListNodePowerParameters(
             Region(), ListNodePowerParameters, {"uuid": rack.system_id}
         )
 
-        self.maxDiff = None
-        self.assertCountEqual(nodes, response["nodes"])
+        assert sorted(nodes, key=lambda n: n["system_id"]) == sorted(
+            response["nodes"], key=lambda n: n["system_id"]
+        )
 
     @wait_for_reactor
     @inlineCallbacks
@@ -315,14 +329,17 @@ class TestRegionProtocol_ListNodePowerParameters(
 
         d = call_responder(Region(), ListNodePowerParameters, {"uuid": uuid})
 
-        with self.assertRaisesRegex(
+        with pytest.raises(
             NoSuchCluster,
-            rf"The rack controller with UUID {uuid} could not be found\.",
+            match=re.escape(
+                rf"The rack controller with UUID {uuid} could not be found."
+            ),
         ):
             yield d
 
 
-class TestRegionProtocol_UpdateNodePowerState(MAASTransactionServerTestCase):
+@pytest.mark.usefixtures("maasdb")
+class TestRegionProtocol_UpdateNodePowerState:
     @transactional
     def create_node(self, power_state):
         node = factory.make_Node(power_state=power_state)
@@ -336,7 +353,7 @@ class TestRegionProtocol_UpdateNodePowerState(MAASTransactionServerTestCase):
     def test_is_registered(self):
         protocol = Region()
         responder = protocol.locateResponder(UpdateNodePowerState.commandName)
-        self.assertIsNotNone(responder)
+        assert responder is not None
 
     @wait_for_reactor
     @inlineCallbacks
@@ -354,7 +371,7 @@ class TestRegionProtocol_UpdateNodePowerState(MAASTransactionServerTestCase):
         db_state = yield deferToDatabase(
             self.get_node_power_state, node.system_id
         )
-        self.assertEqual(new_state, db_state)
+        assert new_state == db_state
 
     @wait_for_reactor
     def test_errors_if_node_cannot_be_found(self):
@@ -368,19 +385,19 @@ class TestRegionProtocol_UpdateNodePowerState(MAASTransactionServerTestCase):
         )
 
         def check(error):
-            self.assertIsInstance(error, Failure)
-            self.assertIsInstance(error.value, NoSuchNode)
-            # The error message contains a reference to system_id.
-            self.assertIn(system_id, str(error.value))
+            assert isinstance(error, Failure)
+            assert isinstance(error.value, NoSuchNode)
+            assert system_id in str(error.value)
 
         return d.addErrback(check)
 
 
-class TestRegionProtocol_RegisterEventType(MAASTransactionServerTestCase):
+@pytest.mark.usefixtures("maasdb")
+class TestRegionProtocol_RegisterEventType:
     def test_register_event_type_is_registered(self):
         protocol = Region()
         responder = protocol.locateResponder(RegisterEventType.commandName)
-        self.assertIsNotNone(responder)
+        assert responder is not None
 
     @transactional
     def get_event_type(self, name):
@@ -398,11 +415,11 @@ class TestRegionProtocol_RegisterEventType(MAASTransactionServerTestCase):
             {"name": name, "description": description, "level": level},
         )
 
-        self.assertEqual({}, response)
+        assert {} == response
         event_type = yield deferToDatabase(self.get_event_type, name)
-        self.assertEqual(event_type.name, name)
-        self.assertEqual(event_type.description, description)
-        self.assertEqual(event_type.level, level)
+        assert event_type.name == name
+        assert event_type.description == description
+        assert event_type.level == level
 
     @wait_for_reactor
     @inlineCallbacks
@@ -416,7 +433,7 @@ class TestRegionProtocol_RegisterEventType(MAASTransactionServerTestCase):
             RegisterEventType,
             {"name": name, "description": old_description, "level": level},
         )
-        self.assertEqual({}, response)
+        assert {} == response
 
         new_description = factory.make_name("new-description")
         response = yield call_responder(
@@ -426,24 +443,27 @@ class TestRegionProtocol_RegisterEventType(MAASTransactionServerTestCase):
         )
         # If we get this far, no error has been raised, even though we
         # sent a duplicate request for registration.
-        self.assertEqual({}, response)
+        assert {} == response
 
 
-class TestRegionProtocol_SendEvent(MAASTransactionServerTestCase):
-    def setUp(self):
-        super().setUp()
-        self.useFixture(RegionEventLoopFixture("database-tasks"))
+@pytest.mark.usefixtures("maasdb")
+class TestRegionProtocol_SendEvent:
+    @pytest.fixture(autouse=True)
+    def _setup(self, maasdb):
+        _fixture = RegionEventLoopFixture("database-tasks")
+        _fixture.setUp()
+        try:
+            yield
+        finally:
+            _fixture.cleanUp()
 
     def test_send_event_is_registered(self):
         protocol = Region()
         responder = protocol.locateResponder(SendEvent.commandName)
-        self.assertIsNotNone(responder)
+        assert responder is not None
 
     @transactional
     def get_event(self, system_id, type_name):
-        # Pre-fetch the related 'node' and 'type' because the caller
-        # runs in the event-loop and this can't dereference related
-        # objects (unless they have been prefetched).
         all_events_qs = Event.objects.all().select_related("node", "type")
         event = all_events_qs.get(
             node__system_id=system_id, type__name=type_name
@@ -485,19 +505,21 @@ class TestRegionProtocol_SendEvent(MAASTransactionServerTestCase):
         finally:
             yield eventloop.reset()
 
-        self.assertEqual({}, response)
+        assert {} == response
         event = yield deferToDatabase(self.get_event, system_id, name)
-        self.assertEqual(event.node.system_id, system_id)
-        self.assertEqual(event.description, event_description)
-        self.assertEqual(event.type.name, name)
+        assert event.node.system_id == system_id
+        assert event.description == event_description
+        assert event.type.name == name
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_send_event_stores_event_with_timestamp_received(self):
+    def test_send_event_stores_event_with_timestamp_received(self, mocker):
         # Use a random time in the recent past and coerce the responder to use
         # it as the time-stamp for the event. We'll check this later on.
         timestamp = timezone.now() - timedelta(seconds=randint(99, 99999))
-        self.patch(regionservice, "timezone").now.return_value = timestamp
+        mocker.patch.object(
+            regionservice, "timezone"
+        ).now.return_value = timestamp
 
         event_type = factory.make_name("type_name")
         yield deferToDatabase(self.create_event_type, event_type, "", 0)
@@ -518,7 +540,7 @@ class TestRegionProtocol_SendEvent(MAASTransactionServerTestCase):
             yield eventloop.reset()
 
         event = yield deferToDatabase(self.get_event, system_id, event_type)
-        self.assertEqual(event.created, timestamp)
+        assert event.created == timestamp
 
     @wait_for_reactor
     @inlineCallbacks
@@ -527,38 +549,38 @@ class TestRegionProtocol_SendEvent(MAASTransactionServerTestCase):
         system_id = factory.make_name("system_id")
         description = factory.make_name("description")
 
-        logger = self.useFixture(TwistedLoggerFixture())
+        with TwistedLoggerFixture() as logger:
+            yield eventloop.start()
+            try:
+                yield call_responder(
+                    Region(),
+                    SendEvent,
+                    {
+                        "system_id": system_id,
+                        "type_name": name,
+                        "description": description,
+                    },
+                )
+            finally:
+                yield eventloop.reset()
 
-        yield eventloop.start()
-        try:
-            yield call_responder(
-                Region(),
-                SendEvent,
-                {
-                    "system_id": system_id,
-                    "type_name": name,
-                    "description": description,
-                },
+        # The log records the issue.
+        assert (
+            re.search(
+                (
+                    r"(?ms)Unhandled failure in database task\..*"
+                    r"Traceback \(most recent call last\):.*"
+                    "provisioningserver.rpc.exceptions.NoSuchEventType:"
+                ),
+                logger.output,
             )
-        finally:
-            yield eventloop.reset()
-
-        # The log records the issue. FIXME: Why reject logs if the type is not
-        # registered? Seems like the region should record all logs and figure
-        # out how to present them.
-        self.assertRegex(
-            logger.output,
-            (
-                r"(?ms)Unhandled failure in database task\..*"
-                r"Traceback \(most recent call last\):.*"
-                "provisioningserver.rpc.exceptions.NoSuchEventType:"
-            ),
+            is not None
         )
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_send_event_logs_if_unknown_node(self):
-        log = self.patch(events_module, "log")
+    def test_send_event_logs_if_unknown_node(self, mocker):
+        log = mocker.patch.object(events_module, "log")
         name = factory.make_name("type_name")
         description = factory.make_name("description")
         level = random.randint(0, 100)
@@ -590,21 +612,24 @@ class TestRegionProtocol_SendEvent(MAASTransactionServerTestCase):
         )
 
 
-class TestRegionProtocol_SendEventMACAddress(MAASTransactionServerTestCase):
-    def setUp(self):
-        super().setUp()
-        self.useFixture(RegionEventLoopFixture("database-tasks"))
+@pytest.mark.usefixtures("maasdb")
+class TestRegionProtocol_SendEventMACAddress:
+    @pytest.fixture(autouse=True)
+    def _setup(self, maasdb):
+        _fixture = RegionEventLoopFixture("database-tasks")
+        _fixture.setUp()
+        try:
+            yield
+        finally:
+            _fixture.cleanUp()
 
     def test_send_event_mac_address_is_registered(self):
         protocol = Region()
         responder = protocol.locateResponder(SendEventMACAddress.commandName)
-        self.assertIsNotNone(responder)
+        assert responder is not None
 
     @transactional
     def get_event(self, mac_address, type_name):
-        # Pre-fetch the related 'node' and 'type' because the caller
-        # runs in the event-loop and this can't dereference related
-        # objects (unless they have been prefetched).
         all_events_qs = Event.objects.all().select_related("node", "type")
         node = PhysicalInterface.objects.get(
             mac_address=mac_address
@@ -621,7 +646,6 @@ class TestRegionProtocol_SendEventMACAddress(MAASTransactionServerTestCase):
     @transactional
     def make_interface(self):
         interface = factory.make_Interface(INTERFACE_TYPE.PHYSICAL)
-        # Precache the node. So a database query is not made in the event-loop.
         interface.node_config.node  # noqa: B018
         return interface
 
@@ -650,21 +674,21 @@ class TestRegionProtocol_SendEventMACAddress(MAASTransactionServerTestCase):
         finally:
             yield eventloop.reset()
 
-        self.assertEqual({}, response)
+        assert {} == response
         event = yield deferToDatabase(self.get_event, mac_address, name)
-        self.assertEqual(
-            event.node.system_id, interface.node_config.node.system_id
-        )
-        self.assertEqual(event.description, event_description)
-        self.assertEqual(event.type.name, name)
+        assert event.node.system_id == interface.node_config.node.system_id
+        assert event.description == event_description
+        assert event.type.name == name
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_send_event_mac_address_stores_event_with_timestamp_received(self):
-        # Use a random time in the recent past and coerce the responder to use
-        # it as the time-stamp for the event. We'll check this later on.
+    def test_send_event_mac_address_stores_event_with_timestamp_received(
+        self, mocker
+    ):
         timestamp = timezone.now() - timedelta(seconds=randint(99, 99999))
-        self.patch(regionservice, "timezone").now.return_value = timestamp
+        mocker.patch.object(
+            regionservice, "timezone"
+        ).now.return_value = timestamp
 
         event_type = factory.make_name("type_name")
         yield deferToDatabase(self.create_event_type, event_type, "", 0)
@@ -686,7 +710,7 @@ class TestRegionProtocol_SendEventMACAddress(MAASTransactionServerTestCase):
             yield eventloop.reset()
 
         event = yield deferToDatabase(self.get_event, mac_address, event_type)
-        self.assertEqual(event.created, timestamp)
+        assert event.created == timestamp
 
     @wait_for_reactor
     @inlineCallbacks
@@ -695,38 +719,38 @@ class TestRegionProtocol_SendEventMACAddress(MAASTransactionServerTestCase):
         mac_address = factory.make_mac_address()
         description = factory.make_name("description")
 
-        logger = self.useFixture(TwistedLoggerFixture())
+        with TwistedLoggerFixture() as logger:
+            yield eventloop.start()
+            try:
+                yield call_responder(
+                    Region(),
+                    SendEventMACAddress,
+                    {
+                        "mac_address": mac_address,
+                        "type_name": name,
+                        "description": description,
+                    },
+                )
+            finally:
+                yield eventloop.reset()
 
-        yield eventloop.start()
-        try:
-            yield call_responder(
-                Region(),
-                SendEventMACAddress,
-                {
-                    "mac_address": mac_address,
-                    "type_name": name,
-                    "description": description,
-                },
+        # The log records the issue.
+        assert (
+            re.search(
+                (
+                    r"(?ms)Unhandled failure in database task\..*"
+                    r"Traceback \(most recent call last\):.*"
+                    "provisioningserver.rpc.exceptions.NoSuchEventType:"
+                ),
+                logger.output,
             )
-        finally:
-            yield eventloop.reset()
-
-        # The log records the issue. FIXME: Why reject logs if the type is not
-        # registered? Seems like the region should record all logs and figure
-        # out how to present them.
-        self.assertRegex(
-            logger.output,
-            (
-                r"(?ms)Unhandled failure in database task\..*"
-                r"Traceback \(most recent call last\):.*"
-                "provisioningserver.rpc.exceptions.NoSuchEventType:"
-            ),
+            is not None
         )
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_send_event_mac_address_logs_if_unknown_node(self):
-        log = self.patch(events_module, "log")
+    def test_send_event_mac_address_logs_if_unknown_node(self, mocker):
+        log = mocker.patch.object(events_module, "log")
         name = factory.make_name("type_name")
         description = factory.make_name("description")
         level = random.randint(0, 100)
@@ -757,19 +781,23 @@ class TestRegionProtocol_SendEventMACAddress(MAASTransactionServerTestCase):
         )
 
 
-class TestRegionProtocol_UpdateServices(MAASTransactionServerTestCase):
-    def setUp(self):
-        super().setUp()
-        self.useFixture(RegionEventLoopFixture("database-tasks"))
+@pytest.mark.usefixtures("maasdb")
+class TestRegionProtocol_UpdateServices:
+    @pytest.fixture(autouse=True)
+    def _setup(self, maasdb):
+        _fixture = RegionEventLoopFixture("database-tasks")
+        _fixture.setUp()
+        yield
+        _fixture.cleanUp()
 
     def test_update_services_is_registered(self):
         protocol = Region()
         responder = protocol.locateResponder(UpdateServices.commandName)
-        self.assertIsNotNone(responder)
+        assert responder is not None
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_update_services_in_database_thread(self):
+    def test_calls_update_services_in_database_thread(self, mocker):
         system_id = factory.make_name("system_id")
         services = [
             {
@@ -779,7 +807,9 @@ class TestRegionProtocol_UpdateServices(MAASTransactionServerTestCase):
             }
         ]
 
-        mock_deferToDatabase = self.patch(regionservice, "deferToDatabase")
+        mock_deferToDatabase = mocker.patch.object(
+            regionservice, "deferToDatabase"
+        )
         mock_deferToDatabase.return_value = succeed({})
 
         yield eventloop.start()
@@ -797,15 +827,14 @@ class TestRegionProtocol_UpdateServices(MAASTransactionServerTestCase):
         )
 
 
-class TestRegionProtocol_ReportForeignDHCPServer(
-    MAASTransactionServerTestCase
-):
+@pytest.mark.usefixtures("maasdb")
+class TestRegionProtocol_ReportForeignDHCPServer:
     def test_is_registered(self):
         protocol = Region()
         responder = protocol.locateResponder(
             ReportForeignDHCPServer.commandName
         )
-        self.assertIsNotNone(responder)
+        assert responder is not None
 
     @transactional
     def create_rack_interface(self):
@@ -835,16 +864,17 @@ class TestRegionProtocol_ReportForeignDHCPServer(
             },
         )
 
-        self.assertEqual({}, response)
+        assert {} == response
         vlan = yield deferToDatabase(self.get_vlan_for_interface, interface)
-        self.assertEqual(dhcp_ip, vlan.external_dhcp)
+        assert dhcp_ip == vlan.external_dhcp
 
 
-class TestRegionProtocol_CreateNode(MAASTransactionServerTestCase):
+@pytest.mark.usefixtures("maasdb")
+class TestRegionProtocol_CreateNode:
     def test_create_node_is_registered(self):
         protocol = Region()
         responder = protocol.locateResponder(CreateNode.commandName)
-        self.assertIsNotNone(responder)
+        assert responder is not None
 
     @transactional
     def create_node(self):
@@ -852,8 +882,10 @@ class TestRegionProtocol_CreateNode(MAASTransactionServerTestCase):
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_create_node_function(self):
-        create_node_function = self.patch(regionservice, "create_node")
+    def test_calls_create_node_function(self, mocker):
+        create_node_function = mocker.patch.object(
+            regionservice, "create_node"
+        )
         create_node_function.return_value = yield deferToDatabase(
             self.create_node
         )
@@ -868,7 +900,7 @@ class TestRegionProtocol_CreateNode(MAASTransactionServerTestCase):
         }
 
         response = yield call_responder(Region(), CreateNode, params)
-        self.assertIsNotNone(response)
+        assert response is not None
 
         create_node_function.assert_called_once_with(
             params["architecture"],
@@ -878,21 +910,25 @@ class TestRegionProtocol_CreateNode(MAASTransactionServerTestCase):
             domain=params["domain"],
             hostname=params["hostname"],
         )
-        self.assertEqual(
-            create_node_function.return_value.system_id, response["system_id"]
+        assert (
+            create_node_function.return_value.system_id
+            == response["system_id"]
         )
 
 
-class TestRegionProtocol_CommissionNode(MAASTransactionServerTestCase):
+@pytest.mark.usefixtures("maasdb")
+class TestRegionProtocol_CommissionNode:
     def test_commission_node_is_registered(self):
         protocol = Region()
         responder = protocol.locateResponder(CommissionNode.commandName)
-        self.assertIsNotNone(responder)
+        assert responder is not None
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_commission_node_function(self):
-        commission_node_function = self.patch(regionservice, "commission_node")
+    def test_calls_commission_node_function(self, mocker):
+        commission_node_function = mocker.patch.object(
+            regionservice, "commission_node"
+        )
 
         params = {
             "system_id": factory.make_name("system_id"),
@@ -900,23 +936,24 @@ class TestRegionProtocol_CommissionNode(MAASTransactionServerTestCase):
         }
 
         response = yield call_responder(Region(), CommissionNode, params)
-        self.assertIsNotNone(response)
+        assert response is not None
 
         commission_node_function.assert_called_once_with(
             params["system_id"], params["user"]
         )
 
 
-class TestRegionProtocol_ReportNeighbours(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb")
+class TestRegionProtocol_ReportNeighbours:
     def test_report_neighbours_is_registered(self):
         protocol = Region()
         responder = protocol.locateResponder(ReportNeighbours.commandName)
-        self.assertIsNotNone(responder)
+        assert responder is not None
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_report_neighbours_function(self):
-        report_neighbours = self.patch(
+    def test_calls_report_neighbours_function(self, mocker):
+        report_neighbours = mocker.patch.object(
             regionservice.rackcontrollers, "report_neighbours"
         )
 
@@ -926,7 +963,7 @@ class TestRegionProtocol_ReportNeighbours(MAASServerTestCase):
         }
 
         response = yield call_responder(Region(), ReportNeighbours, params)
-        self.assertIsNotNone(response)
+        assert response is not None
 
         report_neighbours.assert_called_once_with(
             params["system_id"], params["neighbours"]
@@ -934,8 +971,8 @@ class TestRegionProtocol_ReportNeighbours(MAASServerTestCase):
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_retryable_db_failure_is_suppressed(self):
-        report_neighbours = self.patch(
+    def test_retryable_db_failure_is_suppressed(self, mocker):
+        report_neighbours = mocker.patch.object(
             regionservice.rackcontrollers, "report_neighbours"
         )
         report_neighbours.side_effect = make_serialization_failure()
@@ -946,12 +983,12 @@ class TestRegionProtocol_ReportNeighbours(MAASServerTestCase):
         }
 
         response = yield call_responder(Region(), ReportNeighbours, params)
-        self.assertEqual({}, response)
+        assert {} == response
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_non_retryable_db_failure_propagates(self):
-        report_neighbours = self.patch(
+    def test_non_retryable_db_failure_propagates(self, mocker):
+        report_neighbours = mocker.patch.object(
             regionservice.rackcontrollers, "report_neighbours"
         )
         report_neighbours.side_effect = IntegrityError("constraint violation")
@@ -961,19 +998,18 @@ class TestRegionProtocol_ReportNeighbours(MAASServerTestCase):
             "neighbours": [{"ip": "127.0.0.1"}],
         }
 
-        with self.assertRaises(UnknownRemoteError):
+        with pytest.raises(UnknownRemoteError):
             yield call_responder(Region(), ReportNeighbours, params)
 
 
-class TestRegionProtocol_RequestNodeInforByMACAddress(
-    MAASTransactionServerTestCase
-):
+@pytest.mark.usefixtures("maasdb")
+class TestRegionProtocol_RequestNodeInforByMACAddress:
     def test_request_node_info_by_mac_address_is_registered(self):
         protocol = Region()
         responder = protocol.locateResponder(
             RequestNodeInfoByMACAddress.commandName
         )
-        self.assertIsNotNone(responder)
+        assert responder is not None
 
     @transactional
     def make_interface(self, node):
@@ -985,10 +1021,10 @@ class TestRegionProtocol_RequestNodeInforByMACAddress(
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_request_node_info_by_mac_address_function(self):
+    def test_calls_request_node_info_by_mac_address_function(self, mocker):
         purpose = factory.make_name("purpose")
         node = yield deferToDatabase(self.create_node)
-        node_info_function = self.patch(
+        node_info_function = mocker.patch.object(
             regionservice, "request_node_info_by_mac_address"
         )
         node_info_function.return_value = (node, purpose)
@@ -999,17 +1035,17 @@ class TestRegionProtocol_RequestNodeInforByMACAddress(
         response = yield call_responder(
             Region(), RequestNodeInfoByMACAddress, params
         )
-        self.assertIsNotNone(response)
+        assert response is not None
         node_info_function.assert_called_once_with(params["mac_address"])
         response_purpose = response.pop("purpose")
-        self.assertEqual(purpose, response_purpose)
+        assert purpose == response_purpose
         # Remove the boot_type from the response as node no longer has that
         # attribute.
         copy_response = dict(response)
         del copy_response["boot_type"]
         for key, value in copy_response.items():
-            self.assertEqual(getattr(node, key), value)
-        self.assertEqual("fastpath", response["boot_type"])
+            assert getattr(node, key) == value
+        assert "fastpath" == response["boot_type"]
 
     @wait_for_reactor
     @inlineCallbacks
@@ -1017,18 +1053,21 @@ class TestRegionProtocol_RequestNodeInforByMACAddress(
         params = {"mac_address": factory.make_mac_address()}
         d = call_responder(Region(), RequestNodeInfoByMACAddress, params)
 
-        with self.assertRaisesRegex(
+        with pytest.raises(
             NoSuchNode,
-            rf"^Node with mac_address={params['mac_address']} could not be found\.",
+            match=re.escape(
+                f"Node with mac_address={params['mac_address']} could not be found."
+            ),
         ):
             yield d
 
 
-class TestRegionProtocol_RequestRefresh(MAASTransactionServerTestCase):
+@pytest.mark.usefixtures("maasdb")
+class TestRegionProtocol_RequestRefresh:
     def test_request_refresh_is_registered(self):
         protocol = Region()
         responder = protocol.locateResponder(RequestRackRefresh.commandName)
-        self.assertIsNotNone(responder)
+        assert responder is not None
 
     @wait_for_reactor
     @inlineCallbacks
@@ -1047,57 +1086,61 @@ class TestRegionProtocol_RequestRefresh(MAASTransactionServerTestCase):
             RequestRackRefresh,
             {"system_id": rack.system_id},
         )
-        self.assertCountEqual(
-            ["consumer_key", "token_key", "token_secret"], response.keys()
+        assert sorted(["consumer_key", "token_key", "token_secret"]) == sorted(
+            response.keys()
         )
 
         event_names = yield deferToDatabase(get_events, rack)
-        self.assertIn("REQUEST_CONTROLLER_REFRESH", event_names)
+        assert "REQUEST_CONTROLLER_REFRESH" in event_names
 
 
-class TestRegionProtocol_GetControllerType(MAASTransactionServerTestCase):
+@pytest.mark.usefixtures("maasdb")
+class TestRegionProtocol_GetControllerType:
     def test_get_controller_type_is_registered(self):
         protocol = Region()
         responder = protocol.locateResponder(GetControllerType.commandName)
-        self.assertIsNotNone(responder)
+        assert responder is not None
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_get_controller_type(self):
+    def test_calls_get_controller_type(self, mocker):
         example_response = {
             "is_region": factory.pick_bool(),
             "is_rack": factory.pick_bool(),
         }
-        deferToDatabase = self.patch(regionservice, "deferToDatabase")
-        deferToDatabase.return_value = succeed(example_response)
+        mock_defer = mocker.patch.object(regionservice, "deferToDatabase")
+        mock_defer.return_value = succeed(example_response)
         system_id = factory.make_name("id")
         response = yield call_responder(
             Region(), GetControllerType, {"system_id": system_id}
         )
-        self.assertEqual(example_response, response)
-        deferToDatabase.assert_called_once_with(get_controller_type, system_id)
+        assert example_response == response
+        mock_defer.assert_called_once_with(get_controller_type, system_id)
 
     @wait_for_reactor
     @inlineCallbacks
     def test_raises_NoSuchNode_when_node_does_not_exist(self):
         arguments = {"system_id": factory.make_name("id")}
         d = call_responder(Region(), GetControllerType, arguments)
-        with self.assertRaisesRegex(
+        with pytest.raises(
             NoSuchNode,
-            rf"^Node with system_id={arguments['system_id']} could not be found\.",
+            match=re.escape(
+                f"Node with system_id={arguments['system_id']} could not be found."
+            ),
         ):
             yield d
 
 
-class TestRegionProtocol_GetTimeConfiguration(MAASTransactionServerTestCase):
+@pytest.mark.usefixtures("maasdb")
+class TestRegionProtocol_GetTimeConfiguration:
     def test_get_time_configuration_is_registered(self):
         protocol = Region()
         responder = protocol.locateResponder(GetTimeConfiguration.commandName)
-        self.assertIsNotNone(responder)
+        assert responder is not None
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_calls_get_time_configuration(self):
+    def test_calls_get_time_configuration(self, mocker):
         example_response = {
             "servers": [
                 factory.make_ipv4_address(),
@@ -1109,34 +1152,35 @@ class TestRegionProtocol_GetTimeConfiguration(MAASTransactionServerTestCase):
                 factory.make_ipv6_address(),
             ],
         }
-        deferToDatabase = self.patch(regionservice, "deferToDatabase")
-        deferToDatabase.return_value = succeed(example_response)
+        mock_defer = mocker.patch.object(regionservice, "deferToDatabase")
+        mock_defer.return_value = succeed(example_response)
         system_id = factory.make_name("id")
         response = yield call_responder(
             Region(), GetTimeConfiguration, {"system_id": system_id}
         )
-        self.assertEqual(example_response, response)
-        deferToDatabase.assert_called_once_with(
-            get_time_configuration, system_id
-        )
+        assert example_response == response
+        mock_defer.assert_called_once_with(get_time_configuration, system_id)
 
     @wait_for_reactor
     @inlineCallbacks
     def test_raises_NoSuchNode_when_node_does_not_exist(self):
         arguments = {"system_id": factory.make_name("id")}
         d = call_responder(Region(), GetTimeConfiguration, arguments)
-        with self.assertRaisesRegex(
+        with pytest.raises(
             NoSuchNode,
-            rf"^Node with system_id={arguments['system_id']} could not be found\.",
+            match=re.escape(
+                f"Node with system_id={arguments['system_id']} could not be found."
+            ),
         ):
             yield d
 
 
-class TestRegionProtocol_GetProxyConfiguration(MAASTransactionServerTestCase):
+@pytest.mark.usefixtures("maasdb")
+class TestRegionProtocol_GetProxyConfiguration:
     def test_get_proxy_configuration_is_registered(self):
         protocol = Region()
         responder = protocol.locateResponder(GetProxyConfiguration.commandName)
-        self.assertIsNotNone(responder)
+        assert responder is not None
 
     @wait_for_reactor
     @inlineCallbacks
@@ -1161,24 +1205,22 @@ class TestRegionProtocol_GetProxyConfiguration(MAASTransactionServerTestCase):
         response = yield call_responder(
             Region(), GetProxyConfiguration, {"system_id": system_id}
         )
-        self.assertEqual(
-            response,
-            {
-                "enabled": enabled,
-                "port": port,
-                "allowed_cidrs": cidrs,
-                "prefer_v4_proxy": prefer_v4_proxy,
-            },
-        )
+        assert response == {
+            "enabled": enabled,
+            "port": port,
+            "allowed_cidrs": cidrs,
+            "prefer_v4_proxy": prefer_v4_proxy,
+        }
 
 
-class TestRegionProtocol_GetSyslogConfiguration(MAASTransactionServerTestCase):
+@pytest.mark.usefixtures("maasdb")
+class TestRegionProtocol_GetSyslogConfiguration:
     def test_get_proxy_configuration_is_registered(self):
         protocol = Region()
         responder = protocol.locateResponder(
             GetSyslogConfiguration.commandName
         )
-        self.assertIsNotNone(responder)
+        assert responder is not None
 
     @wait_for_reactor
     @inlineCallbacks
@@ -1194,7 +1236,7 @@ class TestRegionProtocol_GetSyslogConfiguration(MAASTransactionServerTestCase):
         response = yield call_responder(
             Region(), GetSyslogConfiguration, {"system_id": system_id}
         )
-        self.assertEqual({"port": port, "promtail_port": None}, response)
+        assert {"port": port, "promtail_port": None} == response
 
     @wait_for_reactor
     @inlineCallbacks
@@ -1212,4 +1254,4 @@ class TestRegionProtocol_GetSyslogConfiguration(MAASTransactionServerTestCase):
         response = yield call_responder(
             Region(), GetSyslogConfiguration, {"system_id": system_id}
         )
-        self.assertEqual({"port": port, "promtail_port": port + 1}, response)
+        assert {"port": port, "promtail_port": port + 1} == response

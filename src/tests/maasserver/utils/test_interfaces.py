@@ -10,31 +10,28 @@ from maasserver.utils.interfaces import (
     make_name_from_interface,
 )
 from maastesting.factory import factory
-from maastesting.testcase import MAASTestCase
 
 
-class TestMakeNameFromInterface(MAASTestCase):
+class TestMakeNameFromInterface:
     """Tests for `make_name_from_interface`."""
 
     def test_passes_name_unchanged(self):
         name = factory.make_name("itf9:2")
-        self.assertEqual(name, make_name_from_interface(name))
+        assert name == make_name_from_interface(name)
 
     def test_escapes_weird_characters(self):
-        self.assertEqual("x--y", make_name_from_interface("x?y"))
-        self.assertEqual("x--y", make_name_from_interface("x y"))
+        assert "x--y" == make_name_from_interface("x?y")
+        assert "x--y" == make_name_from_interface("x y")
 
     def test_makes_up_name_if_no_interface_given(self):
-        self.assertNotIn(make_name_from_interface(None), (None, ""))
-        self.assertNotIn(make_name_from_interface(""), (None, ""))
+        assert make_name_from_interface(None) not in (None, "")
+        assert make_name_from_interface("") not in (None, "")
 
     def test_makes_up_unique_name_if_no_interface_given(self):
-        self.assertNotEqual(
-            make_name_from_interface(""), make_name_from_interface("")
-        )
+        assert make_name_from_interface("") != make_name_from_interface("")
 
 
-class TestGetNameAndVlanFromClusterInterface(MAASTestCase):
+class TestGetNameAndVlanFromClusterInterface:
     """Tests for `get_name_and_vlan_from_cluster_interface`."""
 
     def make_interface(self):
@@ -45,10 +42,10 @@ class TestGetNameAndVlanFromClusterInterface(MAASTestCase):
         cluster = factory.make_name("cluster")
         interface = factory.make_name("iface")
         expected_name = f"{cluster}-{interface}"
-        self.assertEqual(
-            (expected_name, None),
-            get_name_and_vlan_from_cluster_interface(cluster, interface),
-        )
+        assert (
+            expected_name,
+            None,
+        ) == get_name_and_vlan_from_cluster_interface(cluster, interface)
 
     def test_substitutes_colon(self):
         cluster = factory.make_name("cluster")
@@ -56,10 +53,10 @@ class TestGetNameAndVlanFromClusterInterface(MAASTestCase):
         alias = randint(0, 99)
         interface = "%s:%d" % (base_interface, alias)
         expected_name = "%s-%s-%d" % (cluster, base_interface, alias)
-        self.assertEqual(
-            (expected_name, None),
-            get_name_and_vlan_from_cluster_interface(cluster, interface),
-        )
+        assert (
+            expected_name,
+            None,
+        ) == get_name_and_vlan_from_cluster_interface(cluster, interface)
 
     def test_returns_with_vlan_tag(self):
         cluster = factory.make_name("cluster")
@@ -67,10 +64,10 @@ class TestGetNameAndVlanFromClusterInterface(MAASTestCase):
         vlan_tag = factory.make_vlan_tag()
         interface = "%s.%d" % (base_interface, vlan_tag)
         expected_name = "%s-%s-%d" % (cluster, base_interface, vlan_tag)
-        self.assertEqual(
-            (expected_name, "%d" % vlan_tag),
-            get_name_and_vlan_from_cluster_interface(cluster, interface),
-        )
+        assert (
+            expected_name,
+            "%d" % vlan_tag,
+        ) == get_name_and_vlan_from_cluster_interface(cluster, interface)
 
     def test_returns_name_with_alias_and_vlan_tag(self):
         cluster = factory.make_name("cluster")
@@ -84,10 +81,10 @@ class TestGetNameAndVlanFromClusterInterface(MAASTestCase):
             alias,
             vlan_tag,
         )
-        self.assertEqual(
-            (expected_name, "%d" % vlan_tag),
-            get_name_and_vlan_from_cluster_interface(cluster, interface),
-        )
+        assert (
+            expected_name,
+            "%d" % vlan_tag,
+        ) == get_name_and_vlan_from_cluster_interface(cluster, interface)
 
     def test_returns_name_with_vlan_tag_and_alias(self):
         cluster = factory.make_name("cluster")
@@ -101,7 +98,7 @@ class TestGetNameAndVlanFromClusterInterface(MAASTestCase):
             vlan_tag,
             alias,
         )
-        self.assertEqual(
-            (expected_name, "%d" % vlan_tag),
-            get_name_and_vlan_from_cluster_interface(cluster, interface),
-        )
+        assert (
+            expected_name,
+            "%d" % vlan_tag,
+        ) == get_name_and_vlan_from_cluster_interface(cluster, interface)

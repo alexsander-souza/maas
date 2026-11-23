@@ -3,37 +3,36 @@
 
 """Tests for `provisioningserver.drivers.power.manual`."""
 
-from maastesting.testcase import MAASTestCase
 from provisioningserver.drivers.power import manual as manual_module
 
 
-class TestManualPowerDriver(MAASTestCase):
+class TestManualPowerDriver:
     def test_no_missing_packages(self):
         driver = manual_module.ManualPowerDriver()
         missing = driver.detect_missing_packages()
-        self.assertEqual([], missing)
+        assert [] == missing
 
-    def test_power_on(self):
+    def test_power_on(self, mocker):
         driver = manual_module.ManualPowerDriver()
-        mock_log_info = self.patch(manual_module.maaslog, "info")
+        mock_log_info = mocker.patch.object(manual_module.maaslog, "info")
         driver.power_on("fake_id", {})
         mock_log_info.assert_called_once_with(
             "You need to power on fake_id manually."
         )
 
-    def test_power_off(self):
+    def test_power_off(self, mocker):
         driver = manual_module.ManualPowerDriver()
-        mock_log_info = self.patch(manual_module.maaslog, "info")
+        mock_log_info = mocker.patch.object(manual_module.maaslog, "info")
         driver.power_off("fake_id", {})
         mock_log_info.assert_called_once_with(
             "You need to power off fake_id manually."
         )
 
-    def test_power_query(self):
+    def test_power_query(self, mocker):
         driver = manual_module.ManualPowerDriver()
-        mock_log_info = self.patch(manual_module.maaslog, "info")
+        mock_log_info = mocker.patch.object(manual_module.maaslog, "info")
         power_state = driver.power_query("fake_id", {})
-        self.assertEqual(power_state, "unknown")
+        assert power_state == "unknown"
         mock_log_info.assert_called_once_with(
             "You need to check power state of fake_id manually."
         )

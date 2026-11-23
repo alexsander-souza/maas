@@ -35,10 +35,9 @@ from maasserver.utils.converters import json_load_bytes
 from maasserver.utils.orm import get_one
 from maasservicelayer.exceptions.catalog import ValidationException
 import maasservicelayer.services.sshkeys as servicelayer_sshkeys
-from maastesting.testcase import MAASTestCase
 
 
-class TestResourceURIs(MAASTestCase):
+class TestResourceURIs:
     """Tests for `resource_uri` usage in handlers."""
 
     def test_resource_uri_in_docs_matches_handlers_idea_of_resource_uri(self):
@@ -98,7 +97,7 @@ class TestResourceURIs(MAASTestCase):
                     "the observed fields match what is expected."
                 ],
             )
-            self.fail("\n--\n".join(messages))
+            raise AssertionError("\n--\n".join(messages))
 
 
 class TestAuthentication(MAASServerTestCase):

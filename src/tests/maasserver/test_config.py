@@ -4,40 +4,39 @@
 """Tests for `maasserver.config`."""
 
 import random
-from unittest.mock import patch
 
 import formencode.api
+import pytest
 
 from maasserver.config import get_temporal_connect_address, RegionConfiguration
 from maastesting.factory import factory
-from maastesting.testcase import MAASTestCase
 
 
-class TestRegionConfiguration(MAASTestCase):
+class TestRegionConfiguration:
     """Tests for `RegionConfiguration`."""
 
     def test_default_maas_url(self):
         config = RegionConfiguration({})
-        self.assertEqual("http://localhost:5240/MAAS", config.maas_url)
+        assert config.maas_url == "http://localhost:5240/MAAS"
 
     def test_default_database_conn_max_age(self):
         config = RegionConfiguration({})
-        self.assertEqual(60 * 5, config.database_conn_max_age)
+        assert config.database_conn_max_age == 60 * 5
 
     def test_set_and_get_maas_url(self):
         config = RegionConfiguration({})
         example_url = factory.make_simple_http_url()
         config.maas_url = example_url
-        self.assertEqual(example_url, config.maas_url)
+        assert config.maas_url == example_url
         # It's also stored in the configuration database.
-        self.assertEqual({"maas_url": example_url}, config.store)
+        assert config.store == {"maas_url": example_url}
 
     def test_set_maas_url_accepts_hostnames(self):
         config = RegionConfiguration({})
         example_url = factory.make_simple_http_url()
         config.maas_url = example_url
-        self.assertEqual(example_url, config.maas_url)
-        self.assertEqual({"maas_url": example_url}, config.store)
+        assert config.maas_url == example_url
+        assert config.store == {"maas_url": example_url}
 
     def test_set_maas_url_accepts_very_short_hostnames(self):
         config = RegionConfiguration({})
@@ -45,16 +44,16 @@ class TestRegionConfiguration(MAASTestCase):
             netloc=factory.make_string(size=1)
         )
         config.maas_url = example_url
-        self.assertEqual(example_url, config.maas_url)
-        self.assertEqual({"maas_url": example_url}, config.store)
+        assert config.maas_url == example_url
+        assert config.store == {"maas_url": example_url}
 
     def test_set_maas_url_rejects_bare_ipv6_addresses(self):
         config = RegionConfiguration({})
         example_url = factory.make_simple_http_url(
             netloc=factory.make_ipv6_address()
         )
-        with self.assertRaisesRegex(
-            formencode.api.Invalid, "^That is not a valid URL$"
+        with pytest.raises(
+            formencode.api.Invalid, match="^That is not a valid URL$"
         ):
             config.maas_url = example_url
 
@@ -64,11 +63,11 @@ class TestRegionConfiguration(MAASTestCase):
             netloc="[%s]" % factory.make_ipv6_address()
         )
         config.maas_url = example_url
-        self.assertEqual(example_url, config.maas_url)
-        self.assertEqual({"maas_url": example_url}, config.store)
+        assert config.maas_url == example_url
+        assert config.store == {"maas_url": example_url}
 
 
-class TestRegionConfigurationDatabaseOptions(MAASTestCase):
+class TestRegionConfigurationDatabaseOptions:
     """Tests for the database options in `RegionConfiguration`."""
 
     options_and_defaults = {
@@ -92,7 +91,7 @@ class TestRegionConfigurationDatabaseOptions(MAASTestCase):
 
     def test_default(self):
         config = RegionConfiguration({})
-        self.assertEqual(self.default, getattr(config, self.option))
+        assert getattr(config, self.option) == self.default
 
     def test_set_and_get(self):
         config = RegionConfiguration({})
@@ -105,33 +104,33 @@ class TestRegionConfigurationDatabaseOptions(MAASTestCase):
         # Argument values will most often be passed in from the command-line,
         # so convert to a string before use to reflect that usage.
         setattr(config, self.option, str(example_value))
-        self.assertEqual(example_value, getattr(config, self.option))
+        assert getattr(config, self.option) == example_value
         # It's also stored in the configuration database.
         expected_value = example_value
         if example_value == "true":
             expected_value = True
         elif expected_value == "false":
             expected_value = False
-        self.assertEqual({self.option: expected_value}, config.store)
+        assert config.store == {self.option: expected_value}
 
 
-class TestRegionConfigurationWorkerOptions(MAASTestCase):
+class TestRegionConfigurationWorkerOptions:
     """Tests for the worker options in `RegionConfiguration`."""
 
     def test_default(self):
         config = RegionConfiguration({})
-        self.assertEqual(4, config.num_workers)
+        assert config.num_workers == 4
 
     def test_set_and_get(self):
         config = RegionConfiguration({})
         workers = random.randint(8, 12)
         config.num_workers = workers
-        self.assertEqual(workers, config.num_workers)
+        assert config.num_workers == workers
         # It's also stored in the configuration database.
-        self.assertEqual({"num_workers": workers}, config.store)
+        assert config.store == {"num_workers": workers}
 
 
-class TestRegionConfigurationDebugOptions(MAASTestCase):
+class TestRegionConfigurationDebugOptions:
     """Tests for the debug options in `RegionConfiguration`."""
 
     options_and_defaults = {"debug": False, "debug_queries": False}
@@ -143,7 +142,7 @@ class TestRegionConfigurationDebugOptions(MAASTestCase):
 
     def test_default(self):
         config = RegionConfiguration({})
-        self.assertEqual(self.default, getattr(config, self.option))
+        assert getattr(config, self.option) == self.default
 
     def test_set_and_get(self):
         config = RegionConfiguration({})
@@ -151,12 +150,12 @@ class TestRegionConfigurationDebugOptions(MAASTestCase):
         # Argument values will most often be passed in from the command-line,
         # so convert to a string before use to reflect that usage.
         setattr(config, self.option, example_value)
-        self.assertTrue(getattr(config, self.option))
+        assert getattr(config, self.option)
         # It's also stored in the configuration database.
-        self.assertEqual({self.option: True}, config.store)
+        assert config.store == {self.option: True}
 
 
-class TestRegionConfigurationUseJSONLogging(MAASTestCase):
+class TestRegionConfigurationUseJSONLogging:
     options_and_defaults = {"use_json_logging": True}
 
     scenarios = tuple(
@@ -166,7 +165,7 @@ class TestRegionConfigurationUseJSONLogging(MAASTestCase):
 
     def test_default(self):
         config = RegionConfiguration({})
-        self.assertEqual(self.default, getattr(config, self.option))
+        assert getattr(config, self.option) == self.default
 
     def test_set_and_get(self):
         config = RegionConfiguration({})
@@ -174,42 +173,41 @@ class TestRegionConfigurationUseJSONLogging(MAASTestCase):
         # Argument values will most often be passed in from the command-line,
         # so convert to a string before use to reflect that usage.
         setattr(config, self.option, example_value)
-        self.assertFalse(getattr(config, self.option))
+        assert not getattr(config, self.option)
         # It's also stored in the configuration database.
-        self.assertEqual({self.option: False}, config.store)
+        assert config.store == {self.option: False}
 
 
-class TestGetTemporalConnectAddress(MAASTestCase):
+class TestGetTemporalConnectAddress:
     """Tests for `get_temporal_connect_address`."""
 
-    def _patch_region_config(self, *, temporal_bind, maas_url):
-        mock_open = self.patch(RegionConfiguration, "open")
+    def _patch_region_config(self, mocker, *, temporal_bind, maas_url):
+        mock_open = mocker.patch.object(RegionConfiguration, "open")
         ctx = mock_open.return_value.__enter__.return_value
         ctx.temporal_bind = temporal_bind
         ctx.maas_url = maas_url
         return ctx
 
-    def test_explicit_bind_returned_unchanged(self):
+    def test_explicit_bind_returned_unchanged(self, mocker):
         self._patch_region_config(
-            temporal_bind="10.0.0.1", maas_url="http://10.0.0.1:5240/MAAS"
+            mocker,
+            temporal_bind="10.0.0.1",
+            maas_url="http://10.0.0.1:5240/MAAS",
         )
-        with patch(
+        mocker.patch(
             "maasserver.config.is_hardening_enabled", return_value=True
-        ):
-            self.assertEqual("10.0.0.1", get_temporal_connect_address())
-
-    def test_unset_wildcard_bind_maps_to_loopback(self):
-        self._patch_region_config(
-            temporal_bind="", maas_url="http://unreachable:5240/MAAS"
         )
-        with (
-            patch(
-                "maasserver.config.is_hardening_enabled",
-                return_value=False,
-            ),
-            patch(
-                "provisioningserver.utils.network.get_source_address_for_url",
-                return_value=None,
-            ),
-        ):
-            self.assertEqual("127.0.0.1", get_temporal_connect_address())
+        assert get_temporal_connect_address() == "10.0.0.1"
+
+    def test_unset_wildcard_bind_maps_to_loopback(self, mocker):
+        self._patch_region_config(
+            mocker, temporal_bind="", maas_url="http://unreachable:5240/MAAS"
+        )
+        mocker.patch(
+            "maasserver.config.is_hardening_enabled", return_value=False
+        )
+        mocker.patch(
+            "provisioningserver.utils.network.get_source_address_for_url",
+            return_value=None,
+        )
+        assert get_temporal_connect_address() == "127.0.0.1"

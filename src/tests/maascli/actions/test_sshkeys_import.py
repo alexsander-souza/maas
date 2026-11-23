@@ -6,20 +6,19 @@
 import random
 from unittest.mock import Mock
 
+import pytest
+
 from apiclient.testing.credentials import make_api_credentials
 from maascli.actions.sshkeys_import import SSHKeysImportAction
 from maascli.command import CommandError
 from maasserver.enum import KEYS_PROTOCOL_TYPE
 from maastesting.factory import factory
-from maastesting.fixtures import CaptureStandardIO
-from maastesting.testcase import MAASTestCase
 
 
-class TestSSHKeysImportAction(MAASTestCase):
+class TestSSHKeysImportAction:
     """Tests for `SSHKeysImportAction`."""
 
-    def make_sshkeys_import_action(self):
-        self.stdio = self.useFixture(CaptureStandardIO())
+    def make_sshkeys_import_action(self, capsys):
         action_bases = (SSHKeysImportAction,)
         action_ns = {
             "action": {"method": "POST"},
@@ -30,23 +29,28 @@ class TestSSHKeysImportAction(MAASTestCase):
         action = action_class(Mock())
         return action
 
-    def test_name_value_pair_returns_sshkey_creds_tuple(self):
-        action = self.make_sshkeys_import_action()
+    def test_name_value_pair_returns_sshkey_creds_tuple(self, capsys):
+        action = self.make_sshkeys_import_action(capsys)
         ks = "{}:{}".format(
             random.choice([KEYS_PROTOCOL_TYPE.LP, KEYS_PROTOCOL_TYPE.GH]),
             factory.make_name("user-id"),
         )
         expected_data = ("keysource", ks)
         data = action.name_value_pair(ks)
-        self.assertEqual(data, expected_data)
+        assert data == expected_data
 
-    def test_name_value_pair_returns_sshkey_creds_tuple_for_no_protocol(self):
-        action = self.make_sshkeys_import_action()
+    def test_name_value_pair_returns_sshkey_creds_tuple_for_no_protocol(
+        self, capsys
+    ):
+        action = self.make_sshkeys_import_action(capsys)
         ks = factory.make_name("user-id")
         expected_data = ("keysource", ks)
         data = action.name_value_pair(ks)
-        self.assertEqual(data, expected_data)
+        assert data == expected_data
 
-    def test_name_value_pair_returns_sshkey_creds_tuple_for_no_input(self):
-        action = self.make_sshkeys_import_action()
-        self.assertRaises(CommandError, action.name_value_pair, "")
+    def test_name_value_pair_returns_sshkey_creds_tuple_for_no_input(
+        self, capsys
+    ):
+        action = self.make_sshkeys_import_action(capsys)
+        with pytest.raises(CommandError):
+            action.name_value_pair("")

@@ -21,7 +21,6 @@ class TestNotFoundHandler(APITestCase.ForAnonymousAndUserAndAdmin):
     )
 
     def test_calling_bogus_handler_returns_not_found(self):
-        # Use the nodes handler to get the API prefix right.
         handler_url = reverse("nodes_handler")
         # Add bogus path.
         handler_url += "/".join(factory.make_name("path") for _ in range(5))

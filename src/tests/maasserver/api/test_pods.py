@@ -86,9 +86,7 @@ class TestVmHostEndpointsGone(APITestCase.ForUser):
         uri = reverse(self.uri_name, args=self.args)
         for method in self.gone_methods:
             response = getattr(self.client, method)(uri)
-            self.assertEqual(
-                http.client.GONE,
-                response.status_code,
-                f"{method.upper()} {uri} did not return 410 Gone",
+            assert http.client.GONE == response.status_code, (
+                f"{method.upper()} {uri} did not return 410 Gone"
             )
-            self.assertIn(b"removed", response.content)
+            assert b"removed" in response.content

@@ -4,6 +4,8 @@
 import random
 from unittest.mock import call
 
+import pytest
+
 from maasserver.enum import INTERFACE_TYPE, IPADDRESS_TYPE
 from maasserver.models import Controller, DNSPublication, Interface
 from maasserver.models.config import Config, NetworkDiscoveryConfig
@@ -220,14 +222,13 @@ class TestMTUParams(MAASServerTestCase):
         )
 
 
-class TestInterfaceVLANUpdateNotController(MAASServerTestCase):
-    scenarios = (
-        ("machine", {"maker": factory.make_Node}),
-        ("device", {"maker": factory.make_Device}),
-    )
-
-    def test_removes_links(self):
-        node = self.maker()
+@pytest.mark.parametrize("maker", [factory.make_Node, factory.make_Device])
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "factory"
+)
+class TestInterfaceVLANUpdateNotController:
+    def test_removes_links(self, maker):
+        node = maker()
         interface = factory.make_Interface(INTERFACE_TYPE.PHYSICAL, node=node)
         static_ip = factory.make_StaticIPAddress(interface=interface)
         discovered_ip = factory.make_StaticIPAddress(
@@ -240,11 +241,11 @@ class TestInterfaceVLANUpdateNotController(MAASServerTestCase):
         with post_commit_hooks:
             interface.save()
 
-        self.assertIsNone(reload_object(static_ip))
-        self.assertIsNotNone(reload_object(discovered_ip))
+        assert reload_object(static_ip) is None
+        assert reload_object(discovered_ip) is not None
 
-    def test_removes_links_when_goes_to_disconnected(self):
-        node = self.maker()
+    def test_removes_links_when_goes_to_disconnected(self, maker):
+        node = maker()
         interface = factory.make_Interface(INTERFACE_TYPE.PHYSICAL, node=node)
         static_ip = factory.make_StaticIPAddress(interface=interface)
         discovered_ip = factory.make_StaticIPAddress(
@@ -255,8 +256,8 @@ class TestInterfaceVLANUpdateNotController(MAASServerTestCase):
         with post_commit_hooks:
             interface.save()
 
-        self.assertIsNone(reload_object(static_ip))
-        self.assertIsNotNone(reload_object(discovered_ip))
+        assert reload_object(static_ip) is None
+        assert reload_object(discovered_ip) is not None
 
 
 class TestInterfaceVLANUpdateMachine(MAASServerTestCase):
@@ -282,25 +283,30 @@ class TestInterfaceVLANUpdateMachine(MAASServerTestCase):
             interface.save()
 
         # The subnet_10 is not moved to the fabric_20.
-        self.assertEqual(fabric_10, reload_object(subnet_10).vlan.fabric)
+        assert fabric_10 == reload_object(subnet_10).vlan.fabric
         # The IPs are cleared.
-        self.assertEqual(
-            0,
-            reload_object(machine)
+        assert (
+            0
+            == reload_object(machine)
             .current_config.interface_set.first()
-            .ip_addresses.count(),
+            .ip_addresses.count()
         )
 
 
-class TestInterfaceVLANUpdateController(MAASServerTestCase):
-    scenarios = (
-        ("region", {"maker": factory.make_RegionController}),
-        ("rack", {"maker": factory.make_RackController}),
-        ("region-rack", {"maker": factory.make_RegionRackController}),
-    )
-
+@pytest.mark.parametrize(
+    "maker",
+    [
+        factory.make_RegionController,
+        factory.make_RackController,
+        factory.make_RegionRackController,
+    ],
+)
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "factory"
+)
+class TestInterfaceVLANUpdateController:
     def test_subnets_are_moved_to_fabric_when_controller_changes_vlan_in_another_fabric(
-        self,
+        self, maker
     ):
         fabric_10 = factory.make_Fabric()
         vlan_10 = factory.make_VLAN(vid=10, fabric=fabric_10)
@@ -309,7 +315,7 @@ class TestInterfaceVLANUpdateController(MAASServerTestCase):
         fabric_20 = factory.make_Fabric()
         vlan_20 = factory.make_VLAN(vid=20, fabric=fabric_20)
 
-        node = self.maker()
+        node = maker()
         interface = factory.make_Interface(
             INTERFACE_TYPE.PHYSICAL, node=node, subnet=subnet_10
         )
@@ -321,10 +327,10 @@ class TestInterfaceVLANUpdateController(MAASServerTestCase):
             interface.save()
 
         # The subnet_10 moved to the fabric of the vlan_20
-        self.assertEqual(fabric_20, reload_object(subnet_10).vlan.fabric)
+        assert fabric_20 == reload_object(subnet_10).vlan.fabric
 
-    def test_moves_link_subnets_to_same_vlan(self):
-        node = self.maker()
+    def test_moves_link_subnets_to_same_vlan(self, maker):
+        node = maker()
         interface = factory.make_Interface(INTERFACE_TYPE.PHYSICAL, node=node)
         subnet = factory.make_Subnet(vlan=interface.vlan)
         factory.make_StaticIPAddress(subnet=subnet, interface=interface)
@@ -335,10 +341,10 @@ class TestInterfaceVLANUpdateController(MAASServerTestCase):
         with post_commit_hooks:
             interface.save()
 
-        self.assertEqual(new_vlan, reload_object(subnet).vlan)
+        assert new_vlan == reload_object(subnet).vlan
 
-    def test_doesnt_move_link_subnets_when_target_vlan_is_None(self):
-        node = self.maker()
+    def test_doesnt_move_link_subnets_when_target_vlan_is_None(self, maker):
+        node = maker()
         interface = factory.make_Interface(INTERFACE_TYPE.PHYSICAL, node=node)
         old_vlan = interface.vlan
         subnet = factory.make_Subnet(vlan=old_vlan)
@@ -348,10 +354,10 @@ class TestInterfaceVLANUpdateController(MAASServerTestCase):
         with post_commit_hooks:
             interface.save()
 
-        self.assertEqual(old_vlan, reload_object(subnet).vlan)
+        assert old_vlan == reload_object(subnet).vlan
 
-    def test_doesnt_move_link_subnets_when_source_vlan_is_None(self):
-        node = self.maker()
+    def test_doesnt_move_link_subnets_when_source_vlan_is_None(self, maker):
+        node = maker()
         interface = factory.make_Interface(
             INTERFACE_TYPE.PHYSICAL, node=node, vlan=None
         )
@@ -363,10 +369,10 @@ class TestInterfaceVLANUpdateController(MAASServerTestCase):
         with post_commit_hooks:
             interface.save()
 
-        self.assertEqual(interface.vlan, reload_object(subnet).vlan)
+        assert interface.vlan == reload_object(subnet).vlan
 
-    def test_moves_children_vlans_to_same_fabric(self):
-        node = self.maker()
+    def test_moves_children_vlans_to_same_fabric(self, maker):
+        node = maker()
         parent = factory.make_Interface(INTERFACE_TYPE.PHYSICAL, node=node)
         subnet = factory.make_Subnet(vlan=parent.vlan)
         factory.make_StaticIPAddress(subnet=subnet, interface=parent)
@@ -385,63 +391,63 @@ class TestInterfaceVLANUpdateController(MAASServerTestCase):
         with post_commit_hooks:
             parent.save()
 
-        self.assertEqual(new_vlan, reload_object(subnet).vlan)
+        assert new_vlan == reload_object(subnet).vlan
         vlan_interface = reload_object(vlan_interface)
-        self.assertEqual(
-            (new_fabric.id, old_vlan.vid),
-            (vlan_interface.vlan.fabric.id, vlan_interface.vlan.vid),
+        assert (new_fabric.id, old_vlan.vid) == (
+            vlan_interface.vlan.fabric.id,
+            vlan_interface.vlan.vid,
         )
         vlan_subnet = reload_object(vlan_subnet)
-        self.assertEqual(
-            (new_fabric.id, old_vlan.vid),
-            (vlan_subnet.vlan.fabric.id, vlan_subnet.vlan.vid),
+        assert (new_fabric.id, old_vlan.vid) == (
+            vlan_subnet.vlan.fabric.id,
+            vlan_subnet.vlan.vid,
         )
 
-    def test_remove_old_empty_fabric(self):
+    def test_remove_old_empty_fabric(self, maker):
         fabric = factory.make_Fabric()
         vlan = fabric.get_default_vlan()
-        node = self.maker()
+        node = maker()
         interface = factory.make_Interface(node=node, vlan=vlan)
         fabric2 = factory.make_Fabric()
         interface.vlan = fabric2.get_default_vlan()
         interface.save()
-        self.assertIsNone(reload_object(fabric))
-        self.assertIsNone(reload_object(vlan))
+        assert reload_object(fabric) is None
+        assert reload_object(vlan) is None
 
-    def test_no_remove_fabric_if_subnet_on_vlan(self):
+    def test_no_remove_fabric_if_subnet_on_vlan(self, maker):
         fabric = factory.make_Fabric()
         vlan = fabric.get_default_vlan()
         factory.make_Subnet(vlan=vlan)
-        node = self.maker()
+        node = maker()
         interface = factory.make_Interface(node=node, vlan=vlan)
         fabric2 = factory.make_Fabric()
         interface.vlan = fabric2.get_default_vlan()
 
         with post_commit_hooks:
             interface.save()
-        self.assertEqual(reload_object(fabric), fabric)
-        self.assertEqual(reload_object(vlan), vlan)
+        assert reload_object(fabric) == fabric
+        assert reload_object(vlan) == vlan
 
-    def test_no_remove_fabric_if_subnet_on_other_vlan(self):
+    def test_no_remove_fabric_if_subnet_on_other_vlan(self, maker):
         fabric = factory.make_Fabric()
         vlan = fabric.get_default_vlan()
         vlan2 = factory.make_VLAN(fabric=fabric)
         factory.make_Subnet(vlan=vlan2)
-        node = self.maker()
+        node = maker()
         interface = factory.make_Interface(node=node, vlan=vlan)
         fabric2 = factory.make_Fabric()
         interface.vlan = fabric2.get_default_vlan()
 
         with post_commit_hooks:
             interface.save()
-        self.assertEqual(reload_object(fabric), fabric)
-        self.assertEqual(reload_object(vlan), vlan)
+        assert reload_object(fabric) == fabric
+        assert reload_object(vlan) == vlan
 
-    def test_no_remove_fabric_if_other_interfaces_on_vlan(self):
+    def test_no_remove_fabric_if_other_interfaces_on_vlan(self, maker):
         fabric = factory.make_Fabric()
         vlan = fabric.get_default_vlan()
         factory.make_Subnet(vlan=vlan)
-        node = self.maker()
+        node = maker()
         interface = factory.make_Interface(node=node, vlan=vlan)
         factory.make_Interface(node=factory.make_Node(), vlan=vlan)
         fabric2 = factory.make_Fabric()
@@ -449,8 +455,8 @@ class TestInterfaceVLANUpdateController(MAASServerTestCase):
 
         with post_commit_hooks:
             interface.save()
-        self.assertEqual(reload_object(fabric), fabric)
-        self.assertEqual(reload_object(vlan), vlan)
+        assert reload_object(fabric) == fabric
+        assert reload_object(vlan) == vlan
 
 
 class TestDiscoveryConfigChanges(MAASServerTestCase):

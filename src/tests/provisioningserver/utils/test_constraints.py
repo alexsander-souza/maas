@@ -5,7 +5,6 @@
 
 from unittest import TestCase
 
-from maastesting.testcase import MAASTestCase
 from provisioningserver.utils.constraints import (
     LabeledConstraintMap,
     parse_labeled_constraint_map,
@@ -18,7 +17,7 @@ class ConstraintTestException(Exception):
     to throw works properly."""
 
 
-class TestValidateLabelName(MAASTestCase):
+class TestValidateLabelName:
     EXPECTED_BAD_NAMES = ["", " ", "_", "-", " ", "a ", "a ", "-a", "*", "%"]
 
     EXPECTED_GOOD_NAMES = ["a", "0", "A", "a-", "a-b", "a_b", "a_b"]
@@ -26,7 +25,7 @@ class TestValidateLabelName(MAASTestCase):
     def test_rejects_bad_names(self):
         for name in self.EXPECTED_BAD_NAMES:
             with TestCase.assertRaises(
-                self, ConstraintTestException, msg=f"name={name}"
+                TestCase(), ConstraintTestException, msg=f"name={name}"
             ):
                 validate_constraint_label_name(
                     name, exception_type=ConstraintTestException
@@ -37,7 +36,7 @@ class TestValidateLabelName(MAASTestCase):
             validate_constraint_label_name(name)
 
 
-class TestGetLabeledConstraintsMap(MAASTestCase):
+class TestGetLabeledConstraintsMap:
     assertRaises = TestCase.assertRaises
 
     def test_missing_key_value_pair_raises(self):
@@ -66,48 +65,45 @@ class TestGetLabeledConstraintsMap(MAASTestCase):
 
     def test_single_value_map(self):
         result = parse_labeled_constraint_map("a:b=c")
-        self.assertEqual({"a": {"b": ["c"]}}, result)
+        assert {"a": {"b": ["c"]}} == result
 
     def test_non_string_returns_None(self):
         result = parse_labeled_constraint_map(dict())
-        self.assertIsNone(result)
+        assert result is None
 
     def test_empty_string_returns_empty_map(self):
         result = parse_labeled_constraint_map("")
-        self.assertEqual({}, result)
+        assert {} == result
 
     def test_multiple_value_map(self):
         result = parse_labeled_constraint_map("a:b=c,d=e")
-        self.assertEqual({"a": {"b": ["c"], "d": ["e"]}}, result)
+        assert {"a": {"b": ["c"], "d": ["e"]}} == result
 
     def test_multiple_value_map_with_duplicate_keys_appends_to_list(self):
         result = parse_labeled_constraint_map("a:a=abc,a=def,a=ghi")
-        self.assertEqual({"a": {"a": ["abc", "def", "ghi"]}}, result)
+        assert {"a": {"a": ["abc", "def", "ghi"]}} == result
 
     def test_multiple_label_map(self):
         result = parse_labeled_constraint_map("foo:a=b;bar:c=d")
-        self.assertEqual({"foo": {"a": ["b"]}, "bar": {"c": ["d"]}}, result)
+        assert {"foo": {"a": ["b"]}, "bar": {"c": ["d"]}} == result
 
     def test_multiple_value_map_multiple_label_map(self):
         result = parse_labeled_constraint_map("foo:a=b,c=d;bar:e=f,g=h")
-        self.assertEqual(
-            result,
-            {
-                "foo": {"a": ["b"], "c": ["d"]},
-                "bar": {"e": ["f"], "g": ["h"]},
-            },
-        )
+        assert result == {
+            "foo": {"a": ["b"], "c": ["d"]},
+            "bar": {"e": ["f"], "g": ["h"]},
+        }
 
 
-class TestLabeledConstraintMap(MAASTestCase):
+class TestLabeledConstraintMap:
     def test_len__for_null_map(self):
         lcm = LabeledConstraintMap(None)
-        self.assertEqual(len(lcm), 0)
+        assert len(lcm) == 0
 
     def test_len__for_empty_map(self):
         lcm = LabeledConstraintMap("")
-        self.assertEqual(len(lcm), 0)
+        assert len(lcm) == 0
 
     def test_len__for_populated_map(self):
         lcm = LabeledConstraintMap("eth0:space=1;eth1:space=2")
-        self.assertEqual(len(lcm), 2)
+        assert len(lcm) == 2

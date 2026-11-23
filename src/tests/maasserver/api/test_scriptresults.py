@@ -206,26 +206,26 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
     """Tests for /api/2.0/nodes/<system_id>/results/<id>."""
 
     scenarios = (
-        ("id", {"id_value": None, "key": None}),
+        ("id", {"_id_value": None, "_key": None}),
         (
             "commissioning",
             {
-                "id_value": "current-commissioning",
-                "key": "current_commissioning_script_set",
+                "_id_value": "current-commissioning",
+                "_key": "current_commissioning_script_set",
             },
         ),
         (
             "testing",
             {
-                "id_value": "current-testing",
-                "key": "current_testing_script_set",
+                "_id_value": "current-testing",
+                "_key": "current_testing_script_set",
             },
         ),
         (
             "installation",
             {
-                "id_value": "current-installation",
-                "key": "current_installation_script_set",
+                "_id_value": "current-installation",
+                "_key": "current_installation_script_set",
             },
         ),
     )
@@ -239,16 +239,16 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
 
     def make_scriptset(self, *args, **kwargs):
         script_set = factory.make_ScriptSet(*args, **kwargs)
-        if self.key is not None:
-            setattr(script_set.node, self.key, script_set)
+        if self._key is not None:
+            setattr(script_set.node, self._key, script_set)
             script_set.node.save()
         return script_set
 
     def get_id(self, script_set):
-        if self.id_value is None:
+        if self._id_value is None:
             return script_set.id
         else:
-            return self.id_value
+            return self._id_value
 
     def test_hander_path(self):
         script_set = self.make_scriptset()
@@ -264,12 +264,10 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
         for _ in range(3):
             script_result = factory.make_ScriptResult(script_set=script_set)
             script_results[script_result.name] = script_result
-
         response = self.client.get(self.get_script_result_uri(script_set))
         self.assertEqual(response.status_code, http.client.OK)
         parsed_result = json_load_bytes(response.content)
         results = parsed_result.pop("results")
-
         self.assertDictEqual(
             {
                 "id": script_set.id,
@@ -332,11 +330,9 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
             script=password_script,
             parameters={"password": {"type": "password", "value": password}},
         )
-
         response = self.client.get(self.get_script_result_uri(script_set))
         self.assertEqual(response.status_code, http.client.OK)
         parsed_result = json_load_bytes(response.content)
-
         for result in parsed_result["results"]:
             if result["id"] == string_script_result.id:
                 self.assertEqual(
@@ -367,14 +363,12 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
         for _ in range(3):
             script_result = factory.make_ScriptResult(script_set=script_set)
             script_results[script_result.name] = script_result
-
         response = self.client.get(
             self.get_script_result_uri(script_set), {"include_output": True}
         )
         self.assertEqual(response.status_code, http.client.OK)
         parsed_result = json_load_bytes(response.content)
         results = parsed_result.pop("results")
-
         self.assertDictEqual(
             {
                 "id": script_set.id,
@@ -432,7 +426,6 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
             script_results[script_result.name] = script_result
         results_list = list(script_results.values())
         filtered_results = [random.choice(results_list) for _ in range(3)]
-
         response = self.client.get(
             self.get_script_result_uri(script_set),
             {
@@ -453,7 +446,6 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
         self.assertEqual(response.status_code, http.client.OK)
         parsed_result = json_load_bytes(response.content)
         results = parsed_result.pop("results")
-
         self.assertDictEqual(
             {
                 "id": script_set.id,
@@ -507,7 +499,6 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
             script_set=script_set, script=script
         )
         tag = random.choice([tag for tag in script.tags if "tag" in tag])
-
         response = self.client.get(
             self.get_script_result_uri(script_set),
             {"filters": "%s,%s" % (script_result.name, tag)},
@@ -535,7 +526,6 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
                 )
             )
             factory.make_ScriptResult(script_set=script_set, script=script)
-
         response = self.client.get(
             self.get_script_result_uri(script_set),
             {"hardware_type": hardware_type},
@@ -551,7 +541,7 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
     def test_DELETE(self):
         # Users are unable to delete the current-commissioning or
         # current-installation script sets.
-        if self.id_value in ("current-commissioning", "current-installation"):
+        if self._id_value in ("current-commissioning", "current-installation"):
             return
         self.become_admin()
         script_set = self.make_scriptset()
@@ -578,14 +568,12 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
         for _ in range(3):
             script_result = factory.make_ScriptResult(script_set=script_set)
             script_results[script_result.name] = script_result
-
         response = self.client.put(
             self.get_script_result_uri(script_set), {"include_output": True}
         )
         self.assertEqual(response.status_code, http.client.OK)
         parsed_result = json_load_bytes(response.content)
         results = parsed_result.pop("results")
-
         self.assertDictEqual(
             {
                 "id": script_set.id,
@@ -644,7 +632,6 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
             script_results[script_result.name] = script_result
         results_list = list(script_results.values())
         filtered_results = [random.choice(results_list) for _ in range(3)]
-
         response = self.client.get(
             self.get_script_result_uri(script_set),
             {
@@ -665,7 +652,6 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
         self.assertEqual(response.status_code, http.client.OK)
         parsed_result = json_load_bytes(response.content)
         results = parsed_result.pop("results")
-
         self.assertDictEqual(
             {
                 "id": script_set.id,
@@ -760,7 +746,6 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
         script_set = self.make_scriptset(node=node)
         script = factory.make_Script(hardware_type=hardware_type)
         script_result = factory.make_ScriptResult(script_set, script=script)
-
         # Make some additional scripts and script results
         scripts = [
             factory.make_Script(hardware_type=hardware_type) for _ in range(3)
@@ -770,7 +755,6 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
             script_results.append(
                 factory.make_ScriptResult(script_set=script_set, script=script)
             )
-
         response = self.client.put(
             self.get_script_result_uri(script_set),
             {"suppressed": True, "filters": script_result.id},
@@ -792,7 +776,6 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
         script_set = self.make_scriptset(node=node)
         script = factory.make_Script(hardware_type=hardware_type)
         script_result = factory.make_ScriptResult(script_set, script=script)
-
         # Make some additional scripts and script results
         scripts = [
             factory.make_Script(hardware_type=hardware_type) for _ in range(3)
@@ -802,7 +785,6 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
             script_results.append(
                 factory.make_ScriptResult(script_set=script_set, script=script)
             )
-
         response = self.client.put(
             self.get_script_result_uri(script_set),
             {"suppressed": True, "filters": script_result.script_name},
@@ -824,7 +806,6 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
         script_set = self.make_scriptset(node=node)
         script = factory.make_Script(hardware_type=hardware_type)
         script_result = factory.make_ScriptResult(script_set, script=script)
-
         # Make some additional scripts and script results
         scripts = [
             factory.make_Script(
@@ -839,7 +820,6 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
             script_results.append(
                 factory.make_ScriptResult(script_set=script_set, script=script)
             )
-
         response = self.client.put(
             self.get_script_result_uri(script_set),
             {"suppressed": True, "hardware_type": hardware_type},
@@ -860,12 +840,10 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
         script_results = [
             factory.make_ScriptResult(script_set=script_set) for _ in range(3)
         ]
-
         response = self.client.get(
             self.get_script_result_uri(script_set), {"op": "download"}
         )
         self.assertEqual(response.status_code, http.client.OK)
-
         binary = BytesIO()
         for script_result in sorted(
             list(script_results), key=lambda script_result: script_result.name
@@ -881,7 +859,6 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
     def test_download_single(self):
         script_set = self.make_scriptset()
         script_result = factory.make_ScriptResult(script_set=script_set)
-
         response = self.client.get(
             self.get_script_result_uri(script_set),
             {"op": "download", "filter": script_result.id},
@@ -892,7 +869,6 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
     def test_download_filetype_txt(self):
         script_set = self.make_scriptset()
         script_result = factory.make_ScriptResult(script_set=script_set)
-
         response = self.client.get(
             self.get_script_result_uri(script_set),
             {"op": "download", "filetype": "txt", "filters": script_result.id},
@@ -905,13 +881,11 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
         script_results = [
             factory.make_ScriptResult(script_set=script_set) for _ in range(3)
         ]
-
         response = self.client.get(
             self.get_script_result_uri(script_set),
             {"op": "download", "filetype": "tar.xz"},
         )
         self.assertEqual(response.status_code, http.client.OK)
-
         root_dir = "{}-{}-{}".format(
             script_set.node.hostname,
             script_set.result_type_name.lower(),
@@ -933,7 +907,6 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
     def test_download_filetype_unknown(self):
         script_set = self.make_scriptset()
         factory.make_ScriptResult(script_set=script_set)
-
         response = self.client.get(
             self.get_script_result_uri(script_set),
             {"op": "download", "filetype": factory.make_name("filetype")},
@@ -943,7 +916,6 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
     def test_download_output_combined(self):
         script_set = self.make_scriptset()
         script_result = factory.make_ScriptResult(script_set=script_set)
-
         response = self.client.get(
             self.get_script_result_uri(script_set),
             {
@@ -958,7 +930,6 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
     def test_download_output_stdout(self):
         script_set = self.make_scriptset()
         script_result = factory.make_ScriptResult(script_set=script_set)
-
         response = self.client.get(
             self.get_script_result_uri(script_set),
             {"op": "download", "filter": script_result.id, "output": "stdout"},
@@ -969,7 +940,6 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
     def test_download_output_stderr(self):
         script_set = self.make_scriptset()
         script_result = factory.make_ScriptResult(script_set=script_set)
-
         response = self.client.get(
             self.get_script_result_uri(script_set),
             {"op": "download", "filter": script_result.id, "output": "stderr"},
@@ -980,7 +950,6 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
     def test_download_output_result(self):
         script_set = self.make_scriptset()
         script_result = factory.make_ScriptResult(script_set=script_set)
-
         response = self.client.get(
             self.get_script_result_uri(script_set),
             {"op": "download", "filter": script_result.id, "output": "result"},
@@ -991,13 +960,11 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
     def test_download_output_all(self):
         script_set = self.make_scriptset()
         script_result = factory.make_ScriptResult(script_set=script_set)
-
         response = self.client.get(
             self.get_script_result_uri(script_set),
             {"op": "download", "filter": script_result.id, "output": "all"},
         )
         self.assertEqual(response.status_code, http.client.OK)
-
         binary = BytesIO()
         dashes = "-" * int((80.0 - (2 + len(script_result.name))) / 2)
         binary.write(f"{dashes} {script_result.name} {dashes}\n".encode())
@@ -1031,7 +998,6 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
             script_results[script_result.name] = script_result
         results_list = list(script_results.values())
         filtered_results = [random.choice(results_list) for _ in range(3)]
-
         response = self.client.get(
             self.get_script_result_uri(script_set),
             {
@@ -1052,7 +1018,6 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
             },
         )
         self.assertEqual(response.status_code, http.client.OK)
-
         root_dir = "{}-{}-{}".format(
             script_set.node.hostname,
             script_set.result_type_name.lower(),
@@ -1085,7 +1050,6 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
             script_set=script_set, script=script
         )
         factory.make_ScriptResult(script_set=script_set, script=other_script)
-
         response = self.client.get(
             self.get_script_result_uri(script_set),
             {
@@ -1098,7 +1062,6 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
         self.assertEqual(script_result.output, response.content)
 
     def test_download_shows_results_from_all_disks(self):
-        # Regression test for #LP:1755060
         script = factory.make_Script(hardware_type=HARDWARE_TYPE.STORAGE)
         script_set = self.make_scriptset()
         script_results = []
@@ -1111,11 +1074,9 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
                     physical_blockdevice=bd,
                 )
             )
-
         response = self.client.get(
             self.get_script_result_uri(script_set), {"op": "download"}
         )
-
         self.assertCountEqual(
             re.findall(r"(name-\w+ - /dev/[\w-]+)", response.content.decode()),
             [
@@ -1143,11 +1104,9 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
                     script_set=script_set, script=script, interface=interface
                 )
             )
-
         response = self.client.get(
             self.get_script_result_uri(script_set), {"op": "download"}
         )
-
         self.assertCountEqual(
             re.findall(r"(name-\w+ - [\w-]+)", response.content.decode()),
             [
@@ -1171,7 +1130,6 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
             script_set=script_set, script_name=CURTIN_ERROR_TARFILE
         )
         other_result = factory.make_ScriptResult(script_set=script_set)
-
         response = self.client.get(
             self.get_script_result_uri(script_set),
             {"op": "download", "output": "all"},
@@ -1205,27 +1163,24 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
         self.assertEqual(binary.getvalue(), response.content)
 
     def test_GET_raises_error_when_script_set_is_none(self):
-        if self.id_value is None:
+        if self._id_value is None:
             return
-
         node = factory.make_Node()
-        setattr(node, self.key, None)
+        setattr(node, self._key, None)
         node.save()
-
         response = self.client.get(
             reverse(
                 "script_result_handler",
-                args=[node.system_id, self.id_value],
+                args=[node.system_id, self._id_value],
             )
         )
         self.assertEqual(response.status_code, http.client.BAD_REQUEST)
-        expected_message = f"No {self.id_value.replace('-', ' ')} script set exists for this node."
+        expected_message = f"No {self._id_value.replace('-', ' ')} script set exists for this node."
         self.assertIn(expected_message, response.content.decode())
 
     def test_GET_raises_error_for_invalid_id(self):
         node = factory.make_Node()
         invalid_id = "invalid-script-set"
-
         response = self.client.get(
             reverse(
                 "script_result_handler",
@@ -1243,7 +1198,6 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
     def test_GET_returns_404_for_nonexistent_numeric_id(self):
         node = factory.make_Node()
         nonexistent_id = 999999
-
         response = self.client.get(
             reverse(
                 "script_result_handler",

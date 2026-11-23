@@ -4,11 +4,11 @@
 
 import random
 import re
-from unittest import skip
 from uuid import uuid4
 
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.http import Http404
+import pytest
 
 from maasserver.enum import (
     CACHE_MODE_TYPE,
@@ -38,7 +38,6 @@ from maasserver.models.virtualblockdevice import VirtualBlockDevice
 from maasserver.permissions import NodePermission
 from maasserver.testing.factory import factory
 from maasserver.testing.orm import reload_objects
-from maasserver.testing.testcase import MAASServerTestCase
 from maasserver.utils.converters import (
     machine_readable_bytes,
     round_size_to_nearest_block,
@@ -46,158 +45,153 @@ from maasserver.utils.converters import (
 from maasserver.utils.orm import reload_object
 
 
-class TestManagersGetObjectOr404(MAASServerTestCase):
+@pytest.mark.parametrize(
+    "model,type",
+    [
+        pytest.param(FilesystemGroup, None, id="FilesystemGroup"),
+        pytest.param(
+            VolumeGroup, FILESYSTEM_GROUP_TYPE.LVM_VG, id="VolumeGroup"
+        ),
+        pytest.param(RAID, FILESYSTEM_GROUP_TYPE.RAID_0, id="RAID"),
+        pytest.param(Bcache, FILESYSTEM_GROUP_TYPE.BCACHE, id="Bcache"),
+    ],
+)
+@pytest.mark.usefixtures("maasdb", "mock_openfga")
+class TestManagersGetObjectOr404:
     """Tests for the `get_object_or_404` on the managers."""
 
-    scenarios = (
-        ("FilesystemGroup", {"model": FilesystemGroup, "type": None}),
-        (
-            "VolumeGroup",
-            {"model": VolumeGroup, "type": FILESYSTEM_GROUP_TYPE.LVM_VG},
-        ),
-        ("RAID", {"model": RAID, "type": FILESYSTEM_GROUP_TYPE.RAID_0}),
-        ("Bcache", {"model": Bcache, "type": FILESYSTEM_GROUP_TYPE.BCACHE}),
-    )
-
-    def test_raises_Http404_when_invalid_node(self):
+    def test_raises_Http404_when_invalid_node(self, model, type):
         user = factory.make_admin()
-        filesystem_group = factory.make_FilesystemGroup(group_type=self.type)
-        self.assertRaises(
-            Http404,
-            self.model.objects.get_object_or_404,
-            factory.make_name("system_id"),
-            filesystem_group.id,
-            user,
-            NodePermission.view,
-        )
+        filesystem_group = factory.make_FilesystemGroup(group_type=type)
+        with pytest.raises(Http404):
+            model.objects.get_object_or_404(
+                factory.make_name("system_id"),
+                filesystem_group.id,
+                user,
+                NodePermission.view,
+            )
 
-    def test_raises_Http404_when_invalid_device(self):
+    def test_raises_Http404_when_invalid_device(self, model, type):
         user = factory.make_admin()
         node = factory.make_Node()
-        self.assertRaises(
-            Http404,
-            self.model.objects.get_object_or_404,
-            node.system_id,
-            random.randint(0, 100),
-            user,
-            NodePermission.view,
-        )
+        with pytest.raises(Http404):
+            model.objects.get_object_or_404(
+                node.system_id,
+                random.randint(0, 100),
+                user,
+                NodePermission.view,
+            )
 
-    def test_view_raises_PermissionDenied_when_user_not_owner(self):
+    def test_view_raises_PermissionDenied_when_user_not_owner(
+        self, model, type
+    ):
         user = factory.make_User()
         node = factory.make_Node(owner=factory.make_User())
         filesystem_group = factory.make_FilesystemGroup(
-            node=node, group_type=self.type
+            node=node, group_type=type
         )
-        self.assertRaises(
-            PermissionDenied,
-            self.model.objects.get_object_or_404,
-            node.system_id,
-            filesystem_group.id,
-            user,
-            NodePermission.view,
-        )
+        with pytest.raises(PermissionDenied):
+            model.objects.get_object_or_404(
+                node.system_id, filesystem_group.id, user, NodePermission.view
+            )
 
-    def test_view_returns_device_by_name(self):
+    def test_view_returns_device_by_name(self, model, type):
         user = factory.make_User()
         node = factory.make_Node()
         filesystem_group = factory.make_FilesystemGroup(
-            node=node, group_type=self.type
+            node=node, group_type=type
         )
-        self.assertEqual(
-            filesystem_group.id,
-            self.model.objects.get_object_or_404(
+        assert (
+            filesystem_group.id
+            == model.objects.get_object_or_404(
                 node.system_id,
                 filesystem_group.name,
                 user,
                 NodePermission.view,
-            ).id,
+            ).id
         )
 
-    def test_view_returns_device_when_no_owner(self):
+    def test_view_returns_device_when_no_owner(self, model, type):
         user = factory.make_User()
         node = factory.make_Node()
         filesystem_group = factory.make_FilesystemGroup(
-            node=node, group_type=self.type
+            node=node, group_type=type
         )
-        self.assertEqual(
-            filesystem_group.id,
-            self.model.objects.get_object_or_404(
+        assert (
+            filesystem_group.id
+            == model.objects.get_object_or_404(
                 node.system_id, filesystem_group.id, user, NodePermission.view
-            ).id,
+            ).id
         )
 
-    def test_view_returns_device_when_owner(self):
+    def test_view_returns_device_when_owner(self, model, type):
         user = factory.make_User()
         node = factory.make_Node(owner=user)
         filesystem_group = factory.make_FilesystemGroup(
-            node=node, group_type=self.type
+            node=node, group_type=type
         )
-        self.assertEqual(
-            filesystem_group.id,
-            self.model.objects.get_object_or_404(
+        assert (
+            filesystem_group.id
+            == model.objects.get_object_or_404(
                 node.system_id, filesystem_group.id, user, NodePermission.view
-            ).id,
+            ).id
         )
 
-    def test_edit_raises_PermissionDenied_when_user_not_owner(self):
+    def test_edit_raises_PermissionDenied_when_user_not_owner(
+        self, model, type
+    ):
         user = factory.make_User()
         node = factory.make_Node(owner=factory.make_User())
         filesystem_group = factory.make_FilesystemGroup(
-            node=node, group_type=self.type
+            node=node, group_type=type
         )
-        self.assertRaises(
-            PermissionDenied,
-            self.model.objects.get_object_or_404,
-            node.system_id,
-            filesystem_group.id,
-            user,
-            NodePermission.edit,
-        )
+        with pytest.raises(PermissionDenied):
+            model.objects.get_object_or_404(
+                node.system_id, filesystem_group.id, user, NodePermission.edit
+            )
 
-    def test_edit_returns_device_when_user_is_owner(self):
+    def test_edit_returns_device_when_user_is_owner(self, model, type):
         user = factory.make_User()
         node = factory.make_Node(owner=user)
         filesystem_group = factory.make_FilesystemGroup(
-            node=node, group_type=self.type
+            node=node, group_type=type
         )
-        self.assertEqual(
-            filesystem_group.id,
-            self.model.objects.get_object_or_404(
+        assert (
+            filesystem_group.id
+            == model.objects.get_object_or_404(
                 node.system_id, filesystem_group.id, user, NodePermission.edit
-            ).id,
+            ).id
         )
 
-    def test_admin_raises_PermissionDenied_when_user_requests_admin(self):
+    def test_admin_raises_PermissionDenied_when_user_requests_admin(
+        self, model, type
+    ):
         user = factory.make_User()
         node = factory.make_Node()
         filesystem_group = factory.make_FilesystemGroup(
-            node=node, group_type=self.type
+            node=node, group_type=type
         )
-        self.assertRaises(
-            PermissionDenied,
-            self.model.objects.get_object_or_404,
-            node.system_id,
-            filesystem_group.id,
-            user,
-            NodePermission.admin,
-        )
+        with pytest.raises(PermissionDenied):
+            model.objects.get_object_or_404(
+                node.system_id, filesystem_group.id, user, NodePermission.admin
+            )
 
-    def test_admin_returns_device_when_admin(self):
+    def test_admin_returns_device_when_admin(self, model, type):
         user = factory.make_admin()
         node = factory.make_Node()
         filesystem_group = factory.make_FilesystemGroup(
-            node=node, group_type=self.type
+            node=node, group_type=type
         )
-        self.assertEqual(
-            filesystem_group.id,
-            self.model.objects.get_object_or_404(
+        assert (
+            filesystem_group.id
+            == model.objects.get_object_or_404(
                 node.system_id, filesystem_group.id, user, NodePermission.admin
-            ).id,
+            ).id
         )
 
 
-class TestManagersFilterByBlockDevice(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "mock_openfga")
+class TestManagersFilterByBlockDevice:
     """Tests for the managers `filter_by_block_device`."""
 
     def test_volume_group_on_block_device(self):
@@ -214,7 +208,7 @@ class TestManagersFilterByBlockDevice(MAASServerTestCase):
         result_filesystem_group_ids = [
             fsgroup.id for fsgroup in filesystem_groups
         ]
-        self.assertEqual([filesystem_group.id], result_filesystem_group_ids)
+        assert [filesystem_group.id] == result_filesystem_group_ids
 
     def test_volume_group_on_partition(self):
         block_device = factory.make_PhysicalBlockDevice(size=10 * 1024**3)
@@ -236,7 +230,7 @@ class TestManagersFilterByBlockDevice(MAASServerTestCase):
         result_filesystem_group_ids = [
             fsgroup.id for fsgroup in filesystem_groups
         ]
-        self.assertEqual([filesystem_group.id], result_filesystem_group_ids)
+        assert [filesystem_group.id] == result_filesystem_group_ids
 
     def test_volume_group_on_two_partitions(self):
         block_device = factory.make_PhysicalBlockDevice()
@@ -261,7 +255,7 @@ class TestManagersFilterByBlockDevice(MAASServerTestCase):
         result_filesystem_group_ids = [
             fsgroup.id for fsgroup in filesystem_groups
         ]
-        self.assertEqual([filesystem_group.id], result_filesystem_group_ids)
+        assert [filesystem_group.id] == result_filesystem_group_ids
 
     def test_raid_on_block_devices(self):
         node = factory.make_Node()
@@ -283,7 +277,7 @@ class TestManagersFilterByBlockDevice(MAASServerTestCase):
         result_filesystem_group_ids = [
             fsgroup.id for fsgroup in filesystem_groups
         ]
-        self.assertEqual([filesystem_group.id], result_filesystem_group_ids)
+        assert [filesystem_group.id] == result_filesystem_group_ids
 
     def test_raid_on_partitions(self):
         block_device = factory.make_PhysicalBlockDevice()
@@ -306,7 +300,7 @@ class TestManagersFilterByBlockDevice(MAASServerTestCase):
         result_filesystem_group_ids = [
             fsgroup.id for fsgroup in filesystem_groups
         ]
-        self.assertEqual([filesystem_group.id], result_filesystem_group_ids)
+        assert [filesystem_group.id] == result_filesystem_group_ids
 
     def test_bcache_on_block_devices(self):
         node = factory.make_Node()
@@ -329,7 +323,7 @@ class TestManagersFilterByBlockDevice(MAASServerTestCase):
         result_filesystem_group_ids = [
             fsgroup.id for fsgroup in filesystem_groups
         ]
-        self.assertEqual([filesystem_group.id], result_filesystem_group_ids)
+        assert [filesystem_group.id] == result_filesystem_group_ids
 
     def test_bcache_on_partitions(self):
         device_size = random.randint(
@@ -361,10 +355,11 @@ class TestManagersFilterByBlockDevice(MAASServerTestCase):
         result_filesystem_group_ids = [
             fsgroup.id for fsgroup in filesystem_groups
         ]
-        self.assertEqual([filesystem_group.id], result_filesystem_group_ids)
+        assert [filesystem_group.id] == result_filesystem_group_ids
 
 
-class TestManagersFilterByNode(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "mock_openfga")
+class TestManagersFilterByNode:
     """Tests for the managers `filter_by_node`."""
 
     def test_volume_group_on_block_device(self):
@@ -380,7 +375,7 @@ class TestManagersFilterByNode(MAASServerTestCase):
         result_filesystem_group_ids = [
             fsgroup.id for fsgroup in filesystem_groups
         ]
-        self.assertEqual([filesystem_group.id], result_filesystem_group_ids)
+        assert [filesystem_group.id] == result_filesystem_group_ids
 
     def test_volume_group_on_partition(self):
         node = factory.make_Node()
@@ -399,7 +394,7 @@ class TestManagersFilterByNode(MAASServerTestCase):
         result_filesystem_group_ids = [
             fsgroup.id for fsgroup in filesystem_groups
         ]
-        self.assertEqual([filesystem_group.id], result_filesystem_group_ids)
+        assert [filesystem_group.id] == result_filesystem_group_ids
 
     def test_volume_group_on_two_partitions(self):
         node = factory.make_Node()
@@ -423,7 +418,7 @@ class TestManagersFilterByNode(MAASServerTestCase):
         result_filesystem_group_ids = [
             fsgroup.id for fsgroup in filesystem_groups
         ]
-        self.assertEqual([filesystem_group.id], result_filesystem_group_ids)
+        assert [filesystem_group.id] == result_filesystem_group_ids
 
     def test_raid_on_block_devices(self):
         node = factory.make_Node()
@@ -443,7 +438,7 @@ class TestManagersFilterByNode(MAASServerTestCase):
         result_filesystem_group_ids = [
             fsgroup.id for fsgroup in filesystem_groups
         ]
-        self.assertEqual([filesystem_group.id], result_filesystem_group_ids)
+        assert [filesystem_group.id] == result_filesystem_group_ids
 
     def test_raid_on_partitions(self):
         node = factory.make_Node()
@@ -467,7 +462,7 @@ class TestManagersFilterByNode(MAASServerTestCase):
         result_filesystem_group_ids = [
             fsgroup.id for fsgroup in filesystem_groups
         ]
-        self.assertEqual([filesystem_group.id], result_filesystem_group_ids)
+        assert [filesystem_group.id] == result_filesystem_group_ids
 
     def test_bcache_on_block_devices(self):
         node = factory.make_Node()
@@ -488,7 +483,7 @@ class TestManagersFilterByNode(MAASServerTestCase):
         result_filesystem_group_ids = [
             fsgroup.id for fsgroup in filesystem_groups
         ]
-        self.assertEqual([filesystem_group.id], result_filesystem_group_ids)
+        assert [filesystem_group.id] == result_filesystem_group_ids
 
     def test_bcache_on_partitions(self):
         node = factory.make_Node()
@@ -512,10 +507,11 @@ class TestManagersFilterByNode(MAASServerTestCase):
         result_filesystem_group_ids = [
             fsgroup.id for fsgroup in filesystem_groups
         ]
-        self.assertEqual([filesystem_group.id], result_filesystem_group_ids)
+        assert [filesystem_group.id] == result_filesystem_group_ids
 
 
-class TestFilesystemGroupManager(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "mock_openfga")
+class TestFilesystemGroupManager:
     """Tests for the `FilesystemGroupManager`."""
 
     def test_get_available_name_for_returns_next_idx(self):
@@ -525,12 +521,12 @@ class TestFilesystemGroupManager(MAASServerTestCase):
         filesystem_group.save()
         prefix = FilesystemGroup.get_name_prefix(filesystem_group.group_type)
         current_idx = int(filesystem_group.name.replace(prefix, ""))
-        self.assertEqual(
-            f"{prefix}{current_idx + 1}",
-            FilesystemGroup.objects.get_available_name_for_node(
+        assert (
+            f"{prefix}{current_idx + 1}"
+            == FilesystemGroup.objects.get_available_name_for_node(
                 filesystem_group.group_type,
                 filesystem_group.get_node(),
-            ),
+            )
         )
 
     def test_get_available_name_for_ignores_bad_int(self):
@@ -541,12 +537,12 @@ class TestFilesystemGroupManager(MAASServerTestCase):
         prefix = FilesystemGroup.get_name_prefix(filesystem_group.group_type)
         filesystem_group.name = "{}{}".format(prefix, factory.make_name("bad"))
         filesystem_group.save()
-        self.assertEqual(
-            "%s0" % prefix,
-            FilesystemGroup.objects.get_available_name_for_node(
+        assert (
+            "%s0" % prefix
+            == FilesystemGroup.objects.get_available_name_for_node(
                 filesystem_group.group_type,
                 filesystem_group.get_node(),
-            ),
+            )
         )
 
     def test_get_available_name_skips_block_device_names(self):
@@ -558,16 +554,17 @@ class TestFilesystemGroupManager(MAASServerTestCase):
             node=node,
             name=f"{prefix}0",
         )
-        self.assertEqual(
-            f"{prefix}1",
-            FilesystemGroup.objects.get_available_name_for_node(
+        assert (
+            f"{prefix}1"
+            == FilesystemGroup.objects.get_available_name_for_node(
                 FILESYSTEM_GROUP_TYPE.BCACHE,
                 node,
-            ),
+            )
         )
 
 
-class TestVolumeGroupManager(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "mock_openfga")
+class TestVolumeGroupManager:
     """Tests for the `VolumeGroupManager`."""
 
     def test_create_volume_group_with_name_and_uuid(self):
@@ -577,8 +574,8 @@ class TestVolumeGroupManager(MAASServerTestCase):
         volume_group = VolumeGroup.objects.create_volume_group(
             name, [block_device], [], uuid=vguuid
         )
-        self.assertEqual(name, volume_group.name)
-        self.assertEqual(vguuid, volume_group.uuid)
+        assert name == volume_group.name
+        assert vguuid == volume_group.uuid
 
     def test_create_volume_group_with_block_devices(self):
         node = factory.make_Node()
@@ -593,7 +590,9 @@ class TestVolumeGroupManager(MAASServerTestCase):
             filesystem.block_device.actual_instance
             for filesystem in volume_group.filesystems.all()
         ]
-        self.assertCountEqual(block_devices, block_devices_in_vg)
+        assert sorted(block_devices, key=str) == sorted(
+            block_devices_in_vg, key=str
+        )
 
     def test_create_volume_group_with_partitions(self):
         node = factory.make_Node()
@@ -616,7 +615,7 @@ class TestVolumeGroupManager(MAASServerTestCase):
             filesystem.partition
             for filesystem in volume_group.filesystems.all()
         ]
-        self.assertCountEqual(partitions, partitions_in_vg)
+        assert sorted(partitions, key=str) == sorted(partitions_in_vg, key=str)
 
     def test_create_volume_group_with_block_devices_and_partitions(self):
         node = factory.make_Node()
@@ -648,19 +647,23 @@ class TestVolumeGroupManager(MAASServerTestCase):
             for filesystem in volume_group.filesystems.all()
             if filesystem.partition is not None
         ]
-        self.assertCountEqual(block_devices, block_devices_in_vg)
-        self.assertCountEqual(partitions, partitions_in_vg)
+        assert sorted(block_devices, key=str) == sorted(
+            block_devices_in_vg, key=str
+        )
+        assert sorted(partitions, key=str) == sorted(partitions_in_vg, key=str)
 
 
-class TestFilesystemGroup(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "mock_openfga")
+class TestFilesystemGroup:
     """Tests for the `FilesystemGroup` model."""
 
     def test_virtual_device_raises_AttributeError_for_lvm(self):
         fsgroup = factory.make_FilesystemGroup(
             group_type=FILESYSTEM_GROUP_TYPE.LVM_VG
         )
-        with self.assertRaisesRegex(
-            AttributeError, "should not be called when group_type = LVM_VG"
+        with pytest.raises(
+            AttributeError,
+            match="should not be called when group_type = LVM_VG",
         ):
             fsgroup.virtual_device  # noqa: B018
 
@@ -670,9 +673,9 @@ class TestFilesystemGroup(MAASServerTestCase):
                 FILESYSTEM_GROUP_TYPE, but_not=[FILESYSTEM_GROUP_TYPE.LVM_VG]
             )
         )
-        self.assertEqual(
-            VirtualBlockDevice.objects.get(filesystem_group=fsgroup),
-            fsgroup.virtual_device,
+        assert (
+            VirtualBlockDevice.objects.get(filesystem_group=fsgroup)
+            == fsgroup.virtual_device
         )
 
     def test_get_numa_node_indexes_all_same(self):
@@ -681,7 +684,7 @@ class TestFilesystemGroup(MAASServerTestCase):
                 FILESYSTEM_GROUP_TYPE, but_not=[FILESYSTEM_GROUP_TYPE.VMFS6]
             )
         )
-        self.assertEqual(fsgroup.get_numa_node_indexes(), [0])
+        assert fsgroup.get_numa_node_indexes() == [0]
 
     def test_get_numa_node_indexes_multiple(self):
         node = factory.make_Node()
@@ -705,7 +708,7 @@ class TestFilesystemGroup(MAASServerTestCase):
             filesystems=filesystems,
             group_type=FILESYSTEM_GROUP_TYPE.LVM_VG,
         )
-        self.assertEqual(fsgroup.get_numa_node_indexes(), [0, 1, 2])
+        assert fsgroup.get_numa_node_indexes() == [0, 1, 2]
 
     def test_get_numa_node_indexes_nested(self):
         node = factory.make_Node()
@@ -758,21 +761,19 @@ class TestFilesystemGroup(MAASServerTestCase):
             filesystems=filesystems,
             group_type=FILESYSTEM_GROUP_TYPE.LVM_VG,
         )
-        self.assertEqual(fsgroup.get_numa_node_indexes(), [0, 1, 2, 3, 4])
+        assert fsgroup.get_numa_node_indexes() == [0, 1, 2, 3, 4]
 
     def test_get_node_returns_first_filesystem_node(self):
         fsgroup = factory.make_FilesystemGroup()
-        self.assertEqual(
-            fsgroup.filesystems.first().get_node(), fsgroup.get_node()
-        )
+        assert fsgroup.filesystems.first().get_node() == fsgroup.get_node()
 
     def test_get_node_returns_None_if_no_filesystems(self):
         fsgroup = FilesystemGroup()
-        self.assertIsNone(fsgroup.get_node())
+        assert fsgroup.get_node() is None
 
     def test_get_size_returns_0_if_lvm_without_filesystems(self):
         fsgroup = FilesystemGroup(group_type=FILESYSTEM_GROUP_TYPE.LVM_VG)
-        self.assertEqual(0, fsgroup.get_size())
+        assert 0 == fsgroup.get_size()
 
     def test_get_size_returns_sum_of_all_filesystem_sizes_for_lvm(self):
         node = factory.make_Node()
@@ -797,11 +798,11 @@ class TestFilesystemGroup(MAASServerTestCase):
         )
         # Reserve one extent per filesystem for LVM headers.
         extents = (total_size // LVM_PE_SIZE) - 3
-        self.assertEqual(extents * LVM_PE_SIZE, fsgroup.get_size())
+        assert extents * LVM_PE_SIZE == fsgroup.get_size()
 
     def test_get_size_returns_0_if_raid_without_filesystems(self):
         fsgroup = FilesystemGroup(group_type=FILESYSTEM_GROUP_TYPE.RAID_0)
-        self.assertEqual(0, fsgroup.get_size())
+        assert 0 == fsgroup.get_size()
 
     def test_get_size_returns_sum_of_disk_size_for_raid_0(self):
         node = factory.make_Node()
@@ -826,9 +827,9 @@ class TestFilesystemGroup(MAASServerTestCase):
         fsgroup = factory.make_FilesystemGroup(
             group_type=FILESYSTEM_GROUP_TYPE.RAID_0, filesystems=filesystems
         )
-        self.assertEqual(
-            fsgroup.get_size(),
-            (small_size + large_size) - RAID_SUPERBLOCK_OVERHEAD * 2,
+        assert (
+            fsgroup.get_size()
+            == (small_size + large_size) - RAID_SUPERBLOCK_OVERHEAD * 2
         )
 
     def test_get_size_returns_smallest_disk_size_for_raid_1(self):
@@ -854,9 +855,7 @@ class TestFilesystemGroup(MAASServerTestCase):
         fsgroup = factory.make_FilesystemGroup(
             group_type=FILESYSTEM_GROUP_TYPE.RAID_1, filesystems=filesystems
         )
-        self.assertEqual(
-            small_size - RAID_SUPERBLOCK_OVERHEAD, fsgroup.get_size()
-        )
+        assert small_size - RAID_SUPERBLOCK_OVERHEAD == fsgroup.get_size()
 
     def test_get_size_returns_correct_disk_size_for_raid_5(self):
         node = factory.make_Node()
@@ -895,10 +894,9 @@ class TestFilesystemGroup(MAASServerTestCase):
         fsgroup = factory.make_FilesystemGroup(
             group_type=FILESYSTEM_GROUP_TYPE.RAID_5, filesystems=filesystems
         )
-        self.assertEqual(
-            (small_size * number_of_raid_devices) - RAID_SUPERBLOCK_OVERHEAD,
-            fsgroup.get_size(),
-        )
+        assert (
+            small_size * number_of_raid_devices
+        ) - RAID_SUPERBLOCK_OVERHEAD == fsgroup.get_size()
 
     def test_get_size_returns_correct_disk_size_for_raid_6(self):
         node = factory.make_Node()
@@ -937,13 +935,13 @@ class TestFilesystemGroup(MAASServerTestCase):
         fsgroup = factory.make_FilesystemGroup(
             group_type=FILESYSTEM_GROUP_TYPE.RAID_6, filesystems=filesystems
         )
-        self.assertEqual(
-            (small_size * (number_of_raid_devices - 1))
-            - RAID_SUPERBLOCK_OVERHEAD,
-            fsgroup.get_size(),
-        )
+        assert (
+            small_size * (number_of_raid_devices - 1)
+        ) - RAID_SUPERBLOCK_OVERHEAD == fsgroup.get_size()
 
-    @skip("XXX: GavinPanella 2015-12-04 bug=1522965: Fails spuriously.")
+    @pytest.mark.skip(
+        "XXX: GavinPanella 2015-12-04 bug=1522965: Fails spuriously."
+    )
     def test_get_size_returns_correct_disk_size_for_raid_10(self):
         node = factory.make_Node()
         small_size = random.randint(
@@ -981,15 +979,13 @@ class TestFilesystemGroup(MAASServerTestCase):
         fsgroup = factory.make_FilesystemGroup(
             group_type=FILESYSTEM_GROUP_TYPE.RAID_10, filesystems=filesystems
         )
-        self.assertEqual(
-            (small_size * (number_of_raid_devices + 1) // 2)
-            - RAID_SUPERBLOCK_OVERHEAD,
-            fsgroup.get_size(),
-        )
+        assert (
+            small_size * (number_of_raid_devices + 1) // 2
+        ) - RAID_SUPERBLOCK_OVERHEAD == fsgroup.get_size()
 
     def test_get_size_returns_0_if_bcache_without_backing(self):
         fsgroup = FilesystemGroup(group_type=FILESYSTEM_GROUP_TYPE.BCACHE)
-        self.assertEqual(0, fsgroup.get_size())
+        assert 0 == fsgroup.get_size()
 
     def test_get_size_returns_size_of_backing_device_with_bcache(self):
         node = factory.make_Node()
@@ -1012,22 +1008,22 @@ class TestFilesystemGroup(MAASServerTestCase):
             cache_set=cache_set,
             filesystems=filesystems,
         )
-        self.assertEqual(backing_size, fsgroup.get_size())
+        assert backing_size == fsgroup.get_size()
 
     def test_get_size_returns_total_size_with_vmfs(self):
         vmfs = factory.make_VMFS()
-        self.assertEqual(vmfs.get_total_size(), vmfs.get_size())
+        assert vmfs.get_total_size() == vmfs.get_size()
 
     def test_get_total_size(self):
         vmfs = factory.make_VMFS()
         size = 0
         for fs in vmfs.filesystems.all():
             size += fs.get_size()
-        self.assertEqual(size, vmfs.get_total_size())
+        assert size == vmfs.get_total_size()
 
     def test_is_lvm_returns_true_when_LVM_VG(self):
         fsgroup = FilesystemGroup(group_type=FILESYSTEM_GROUP_TYPE.LVM_VG)
-        self.assertTrue(fsgroup.is_lvm())
+        assert fsgroup.is_lvm()
 
     def test_is_lvm_returns_false_when_not_LVM_VG(self):
         fsgroup = FilesystemGroup(
@@ -1035,28 +1031,25 @@ class TestFilesystemGroup(MAASServerTestCase):
                 FILESYSTEM_GROUP_TYPE, but_not=[FILESYSTEM_GROUP_TYPE.LVM_VG]
             )
         )
-        self.assertFalse(fsgroup.is_lvm())
+        assert not fsgroup.is_lvm()
 
     def test_is_raid_returns_true_for_all_raid_types(self):
         fsgroup = FilesystemGroup()
         for raid_type in FILESYSTEM_GROUP_RAID_TYPES:
             fsgroup.group_type = raid_type
-            self.assertTrue(
-                fsgroup.is_raid(),
-                "is_raid should return true for %s" % raid_type,
-            )
+            assert fsgroup.is_raid()
 
     def test_is_raid_returns_false_for_LVM_VG(self):
         fsgroup = FilesystemGroup(group_type=FILESYSTEM_GROUP_TYPE.LVM_VG)
-        self.assertFalse(fsgroup.is_raid())
+        assert not fsgroup.is_raid()
 
     def test_is_raid_returns_false_for_BCACHE(self):
         fsgroup = FilesystemGroup(group_type=FILESYSTEM_GROUP_TYPE.BCACHE)
-        self.assertFalse(fsgroup.is_raid())
+        assert not fsgroup.is_raid()
 
     def test_is_bcache_returns_true_when_BCACHE(self):
         fsgroup = FilesystemGroup(group_type=FILESYSTEM_GROUP_TYPE.BCACHE)
-        self.assertTrue(fsgroup.is_bcache())
+        assert fsgroup.is_bcache()
 
     def test_is_bcache_returns_false_when_not_BCACHE(self):
         fsgroup = FilesystemGroup(
@@ -1064,19 +1057,19 @@ class TestFilesystemGroup(MAASServerTestCase):
                 FILESYSTEM_GROUP_TYPE, but_not=[FILESYSTEM_GROUP_TYPE.BCACHE]
             )
         )
-        self.assertFalse(fsgroup.is_bcache())
+        assert not fsgroup.is_bcache()
 
     def test_is_vmfs(self):
         vmfs = factory.make_VMFS()
-        self.assertTrue(vmfs.is_vmfs())
+        assert vmfs.is_vmfs()
 
     def test_creating_vmfs_automatically_creates_mounted_fs(self):
         part = factory.make_Partition()
         name = factory.make_name("datastore")
         vmfs = VMFS.objects.create_vmfs(name, [part])
-        self.assertEqual(
-            "/vmfs/volumes/%s" % name,
-            vmfs.virtual_device.get_effective_filesystem().mount_point,
+        assert (
+            "/vmfs/volumes/%s" % name
+            == vmfs.virtual_device.get_effective_filesystem().mount_point
         )
 
     def test_can_save_new_filesystem_group_without_filesystems(self):
@@ -1085,8 +1078,8 @@ class TestFilesystemGroup(MAASServerTestCase):
             name=factory.make_name("vg"),
         )
         fsgroup.save()
-        self.assertIsNotNone(fsgroup.id)
-        self.assertEqual(fsgroup.filesystems.count(), 0)
+        assert fsgroup.id is not None
+        assert fsgroup.filesystems.count() == 0
 
     def test_cannot_save_without_filesystems(self):
         fsgroup = FilesystemGroup(
@@ -1094,9 +1087,9 @@ class TestFilesystemGroup(MAASServerTestCase):
             name=factory.make_name("vg"),
         )
         fsgroup.save()
-        with self.assertRaisesRegex(
+        with pytest.raises(
             ValidationError,
-            re.escape(
+            match=re.escape(
                 "{'__all__': ['At least one filesystem must have "
                 "been added.']}"
             ),
@@ -1105,9 +1098,9 @@ class TestFilesystemGroup(MAASServerTestCase):
 
     def test_cannot_save_without_filesystems_from_different_nodes(self):
         filesystems = [factory.make_Filesystem(), factory.make_Filesystem()]
-        with self.assertRaisesRegex(
+        with pytest.raises(
             ValidationError,
-            re.escape(
+            match=re.escape(
                 "{'__all__': ['All added filesystems must belong to "
                 "the same node.']}"
             ),
@@ -1129,9 +1122,9 @@ class TestFilesystemGroup(MAASServerTestCase):
                 block_device=factory.make_PhysicalBlockDevice(node=node),
             ),
         ]
-        with self.assertRaisesRegex(
+        with pytest.raises(
             ValidationError,
-            re.escape(
+            match=re.escape(
                 "{'__all__': ['Volume group can only contain lvm "
                 "physical volumes.']}"
             ),
@@ -1176,9 +1169,9 @@ class TestFilesystemGroup(MAASServerTestCase):
             size=volume_group.get_size(), filesystem_group=volume_group
         )
         filesystem_two.delete()
-        with self.assertRaisesRegex(
+        with pytest.raises(
             ValidationError,
-            re.escape(
+            match=re.escape(
                 "['Volume group cannot be smaller than its logical volumes.']"
             ),
         ):
@@ -1192,9 +1185,9 @@ class TestFilesystemGroup(MAASServerTestCase):
                 block_device=factory.make_PhysicalBlockDevice(node=node),
             )
         ]
-        with self.assertRaisesRegex(
+        with pytest.raises(
             ValidationError,
-            re.escape(
+            match=re.escape(
                 "{'__all__': ['RAID level 0 must have at least 2 raid "
                 "devices and no spares.']}"
             ),
@@ -1219,9 +1212,9 @@ class TestFilesystemGroup(MAASServerTestCase):
                 block_device=factory.make_PhysicalBlockDevice(node=node),
             )
         )
-        with self.assertRaisesRegex(
+        with pytest.raises(
             ValidationError,
-            re.escape(
+            match=re.escape(
                 "{'__all__': ['RAID level 0 must have at least 2 raid "
                 "devices and no spares.']}"
             ),
@@ -1267,9 +1260,9 @@ class TestFilesystemGroup(MAASServerTestCase):
                 block_device=factory.make_PhysicalBlockDevice(node=node),
             )
         ]
-        with self.assertRaisesRegex(
+        with pytest.raises(
             ValidationError,
-            re.escape(
+            match=re.escape(
                 "{'__all__': ['RAID level 1 must have at least 2 raid "
                 "devices and any number of spares.']}"
             ),
@@ -1322,9 +1315,9 @@ class TestFilesystemGroup(MAASServerTestCase):
             )
             for _ in range(random.randint(1, 2))
         ]
-        with self.assertRaisesRegex(
+        with pytest.raises(
             ValidationError,
-            re.escape(
+            match=re.escape(
                 "{'__all__': ['RAID level 5 must have at least 3 raid "
                 "devices and any number of spares.']}"
             ),
@@ -1364,9 +1357,9 @@ class TestFilesystemGroup(MAASServerTestCase):
             )
             for _ in range(random.randint(1, 3))
         ]
-        with self.assertRaisesRegex(
+        with pytest.raises(
             ValidationError,
-            re.escape(
+            match=re.escape(
                 "{'__all__': ['RAID level 6 must have at least 4 raid "
                 "devices and any number of spares.']}"
             ),
@@ -1406,9 +1399,9 @@ class TestFilesystemGroup(MAASServerTestCase):
             )
             for _ in range(random.randint(1, 2))
         ]
-        with self.assertRaisesRegex(
+        with pytest.raises(
             ValidationError,
-            re.escape(
+            match=re.escape(
                 "{'__all__': ['RAID level 10 must have at least 3 raid "
                 "devices and any number of spares.']}"
             ),
@@ -1468,9 +1461,9 @@ class TestFilesystemGroup(MAASServerTestCase):
                 block_device=factory.make_PhysicalBlockDevice(node=node),
             )
         ]
-        with self.assertRaisesRegex(
+        with pytest.raises(
             ValidationError,
-            re.escape(
+            match=re.escape(
                 "{'__all__': ['Bcache requires an assigned cache set.']}"
             ),
         ):
@@ -1484,9 +1477,9 @@ class TestFilesystemGroup(MAASServerTestCase):
     def test_cannot_save_bcache_without_backing(self):
         node = factory.make_Node()
         cache_set = factory.make_CacheSet(node=node)
-        with self.assertRaisesRegex(
+        with pytest.raises(
             ValidationError,
-            re.escape(
+            match=re.escape(
                 "{'__all__': ['At least one filesystem must have "
                 "been added.']}"
             ),
@@ -1506,9 +1499,9 @@ class TestFilesystemGroup(MAASServerTestCase):
                 block_device=factory.make_VirtualBlockDevice(node=node),
             )
         ]
-        with self.assertRaisesRegex(
+        with pytest.raises(
             ValidationError,
-            re.escape(
+            match=re.escape(
                 "{'__all__': ['Bcache cannot use a logical volume as a "
                 "backing device.']}"
             ),
@@ -1545,9 +1538,9 @@ class TestFilesystemGroup(MAASServerTestCase):
             )
             for _ in range(random.randint(2, 10))
         ]
-        with self.assertRaisesRegex(
+        with pytest.raises(
             ValidationError,
-            re.escape(
+            match=re.escape(
                 "{'__all__': ['Bcache can only contain one backing device.']}"
             ),
         ):
@@ -1560,17 +1553,21 @@ class TestFilesystemGroup(MAASServerTestCase):
     def test_save_doesnt_overwrite_uuid(self):
         uuid = uuid4()
         fsgroup = factory.make_FilesystemGroup(uuid=uuid)
-        self.assertEqual("%s" % uuid, fsgroup.uuid)
+        assert "%s" % uuid == fsgroup.uuid
 
-    def test_save_calls_create_or_update_for_when_filesystems_linked(self):
-        mock_create_or_update_for = self.patch(
+    def test_save_calls_create_or_update_for_when_filesystems_linked(
+        self, mocker
+    ):
+        mock_create_or_update_for = mocker.patch.object(
             VirtualBlockDevice.objects, "create_or_update_for"
         )
         filesystem_group = factory.make_FilesystemGroup()
         mock_create_or_update_for.assert_called_once_with(filesystem_group)
 
-    def test_save_doesnt_call_create_or_update_for_when_no_filesystems(self):
-        mock_create_or_update_for = self.patch(
+    def test_save_doesnt_call_create_or_update_for_when_no_filesystems(
+        self, mocker
+    ):
+        mock_create_or_update_for = mocker.patch.object(
             VirtualBlockDevice.objects, "create_or_update_for"
         )
         filesystem_group = FilesystemGroup(
@@ -1603,7 +1600,7 @@ class TestFilesystemGroup(MAASServerTestCase):
         pv_total_size = 50 * 1000**3
         extents = (pv_total_size // LVM_PE_SIZE) - 5
         usable_size = extents * LVM_PE_SIZE
-        self.assertEqual(usable_size, fsgroup.get_size())
+        assert usable_size == fsgroup.get_size()
 
         # Allocate two VirtualBlockDevice's
         factory.make_VirtualBlockDevice(
@@ -1616,10 +1613,8 @@ class TestFilesystemGroup(MAASServerTestCase):
         expected_size = round_size_to_nearest_block(
             40 * 1000**3, PARTITION_ALIGNMENT_SIZE, False
         )
-        self.assertEqual(expected_size, fsgroup.get_lvm_allocated_size())
-        self.assertEqual(
-            usable_size - expected_size, fsgroup.get_lvm_free_space()
-        )
+        assert expected_size == fsgroup.get_lvm_allocated_size()
+        assert usable_size - expected_size == fsgroup.get_lvm_free_space()
 
     def test_get_virtual_block_device_block_size_returns_backing_for_bc(self):
         # This test is not included in the scenario below
@@ -1629,9 +1624,9 @@ class TestFilesystemGroup(MAASServerTestCase):
             group_type=FILESYSTEM_GROUP_TYPE.BCACHE
         )
         filesystem = filesystem_group.get_bcache_backing_filesystem()
-        self.assertEqual(
-            filesystem.get_block_size(),
-            filesystem_group.get_virtual_block_device_block_size(),
+        assert (
+            filesystem.get_block_size()
+            == filesystem_group.get_virtual_block_device_block_size()
         )
 
     def test_delete_deletes_filesystems_not_block_devices(self):
@@ -1651,8 +1646,10 @@ class TestFilesystemGroup(MAASServerTestCase):
         filesystem_group.delete()
         deleted_filesystems = reload_objects(Filesystem, filesystems)
         kept_block_devices = reload_objects(PhysicalBlockDevice, block_devices)
-        self.assertCountEqual([], deleted_filesystems)
-        self.assertCountEqual(block_devices, kept_block_devices)
+        assert sorted([], key=str) == sorted(deleted_filesystems, key=str)
+        assert sorted(block_devices, key=str) == sorted(
+            kept_block_devices, key=str
+        )
 
     def test_delete_deletes_lvm_without_lvs_on_raid(self):
         node = factory.make_Node()
@@ -1669,7 +1666,7 @@ class TestFilesystemGroup(MAASServerTestCase):
             partitions=[],
         )
         raid.delete()
-        self.assertIsNone(reload_object(raid))
+        assert reload_object(raid) is None
 
     def test_delete_cannot_delete_volume_group_with_logical_volumes(self):
         volume_group = factory.make_FilesystemGroup(
@@ -1678,10 +1675,11 @@ class TestFilesystemGroup(MAASServerTestCase):
         factory.make_VirtualBlockDevice(
             size=volume_group.get_size(), filesystem_group=volume_group
         )
-        error = self.assertRaises(ValidationError, volume_group.delete)
-        self.assertEqual(
-            "This volume group has logical volumes; it cannot be deleted.",
-            error.message,
+        with pytest.raises(ValidationError) as error:
+            volume_group.delete()
+        assert (
+            "This volume group has logical volumes; it cannot be deleted."
+            == error.value.message
         )
 
     def test_delete_deletes_virtual_block_device(self):
@@ -1692,152 +1690,81 @@ class TestFilesystemGroup(MAASServerTestCase):
         )
         virtual_device = filesystem_group.virtual_device
         filesystem_group.delete()
-        self.assertIsNone(
-            reload_object(virtual_device),
-            "VirtualBlockDevice should have been deleted.",
-        )
+        assert reload_object(virtual_device) is None
 
 
-class TestFilesystemGroupGetNiceName(MAASServerTestCase):
-    scenarios = [
-        (
-            FILESYSTEM_GROUP_TYPE.LVM_VG,
-            {
-                "group_type": FILESYSTEM_GROUP_TYPE.LVM_VG,
-                "name": "volume group",
-            },
-        ),
-        (
-            FILESYSTEM_GROUP_TYPE.RAID_0,
-            {"group_type": FILESYSTEM_GROUP_TYPE.RAID_0, "name": "RAID"},
-        ),
-        (
-            FILESYSTEM_GROUP_TYPE.RAID_1,
-            {"group_type": FILESYSTEM_GROUP_TYPE.RAID_1, "name": "RAID"},
-        ),
-        (
-            FILESYSTEM_GROUP_TYPE.RAID_5,
-            {"group_type": FILESYSTEM_GROUP_TYPE.RAID_5, "name": "RAID"},
-        ),
-        (
-            FILESYSTEM_GROUP_TYPE.RAID_6,
-            {"group_type": FILESYSTEM_GROUP_TYPE.RAID_6, "name": "RAID"},
-        ),
-        (
-            FILESYSTEM_GROUP_TYPE.RAID_10,
-            {"group_type": FILESYSTEM_GROUP_TYPE.RAID_10, "name": "RAID"},
-        ),
-        (
-            FILESYSTEM_GROUP_TYPE.BCACHE,
-            {"group_type": FILESYSTEM_GROUP_TYPE.BCACHE, "name": "Bcache"},
-        ),
-        (
-            FILESYSTEM_GROUP_TYPE.VMFS6,
-            {"group_type": FILESYSTEM_GROUP_TYPE.VMFS6, "name": "VMFS"},
-        ),
-    ]
-
-    def test_returns_prefix(self):
-        filesystem_group = factory.make_FilesystemGroup(
-            group_type=self.group_type
-        )
-        self.assertEqual(self.name, filesystem_group.get_nice_name())
+@pytest.mark.parametrize(
+    "group_type,name",
+    [
+        pytest.param(FILESYSTEM_GROUP_TYPE.LVM_VG, "volume group"),
+        pytest.param(FILESYSTEM_GROUP_TYPE.RAID_0, "RAID"),
+        pytest.param(FILESYSTEM_GROUP_TYPE.RAID_1, "RAID"),
+        pytest.param(FILESYSTEM_GROUP_TYPE.RAID_5, "RAID"),
+        pytest.param(FILESYSTEM_GROUP_TYPE.RAID_6, "RAID"),
+        pytest.param(FILESYSTEM_GROUP_TYPE.RAID_10, "RAID"),
+        pytest.param(FILESYSTEM_GROUP_TYPE.BCACHE, "Bcache"),
+        pytest.param(FILESYSTEM_GROUP_TYPE.VMFS6, "VMFS"),
+    ],
+)
+@pytest.mark.usefixtures("maasdb", "mock_openfga")
+class TestFilesystemGroupGetNiceName:
+    def test_returns_prefix(self, group_type, name):
+        filesystem_group = factory.make_FilesystemGroup(group_type=group_type)
+        assert name == filesystem_group.get_nice_name()
 
 
-class TestFilesystemGroupGetNamePrefix(MAASServerTestCase):
-    scenarios = [
-        (
-            FILESYSTEM_GROUP_TYPE.LVM_VG,
-            {"group_type": FILESYSTEM_GROUP_TYPE.LVM_VG, "prefix": "vg"},
-        ),
-        (
-            FILESYSTEM_GROUP_TYPE.RAID_0,
-            {"group_type": FILESYSTEM_GROUP_TYPE.RAID_0, "prefix": "md"},
-        ),
-        (
-            FILESYSTEM_GROUP_TYPE.RAID_1,
-            {"group_type": FILESYSTEM_GROUP_TYPE.RAID_1, "prefix": "md"},
-        ),
-        (
-            FILESYSTEM_GROUP_TYPE.RAID_5,
-            {"group_type": FILESYSTEM_GROUP_TYPE.RAID_5, "prefix": "md"},
-        ),
-        (
-            FILESYSTEM_GROUP_TYPE.RAID_6,
-            {"group_type": FILESYSTEM_GROUP_TYPE.RAID_6, "prefix": "md"},
-        ),
-        (
-            FILESYSTEM_GROUP_TYPE.RAID_10,
-            {"group_type": FILESYSTEM_GROUP_TYPE.RAID_10, "prefix": "md"},
-        ),
-        (
-            FILESYSTEM_GROUP_TYPE.BCACHE,
-            {"group_type": FILESYSTEM_GROUP_TYPE.BCACHE, "prefix": "bcache"},
-        ),
-        (
-            FILESYSTEM_GROUP_TYPE.VMFS6,
-            {"group_type": FILESYSTEM_GROUP_TYPE.VMFS6, "prefix": "vmfs"},
-        ),
-    ]
-
-    def test_returns_prefix(self):
-        self.assertEqual(
-            self.prefix, FilesystemGroup.get_name_prefix(self.group_type)
-        )
+@pytest.mark.parametrize(
+    "group_type,prefix",
+    [
+        pytest.param(FILESYSTEM_GROUP_TYPE.LVM_VG, "vg"),
+        pytest.param(FILESYSTEM_GROUP_TYPE.RAID_0, "md"),
+        pytest.param(FILESYSTEM_GROUP_TYPE.RAID_1, "md"),
+        pytest.param(FILESYSTEM_GROUP_TYPE.RAID_5, "md"),
+        pytest.param(FILESYSTEM_GROUP_TYPE.RAID_6, "md"),
+        pytest.param(FILESYSTEM_GROUP_TYPE.RAID_10, "md"),
+        pytest.param(FILESYSTEM_GROUP_TYPE.BCACHE, "bcache"),
+        pytest.param(FILESYSTEM_GROUP_TYPE.VMFS6, "vmfs"),
+    ],
+)
+@pytest.mark.usefixtures("maasdb", "mock_openfga")
+class TestFilesystemGroupGetNamePrefix:
+    def test_returns_prefix(self, group_type, prefix):
+        assert prefix == FilesystemGroup.get_name_prefix(group_type)
 
 
-class TestFilesystemGroupGetVirtualBlockDeviceBlockSize(MAASServerTestCase):
-    scenarios = [
-        (
-            FILESYSTEM_GROUP_TYPE.LVM_VG,
-            {"group_type": FILESYSTEM_GROUP_TYPE.LVM_VG, "block_size": 4096},
-        ),
-        (
-            FILESYSTEM_GROUP_TYPE.RAID_0,
-            {"group_type": FILESYSTEM_GROUP_TYPE.RAID_0, "block_size": 512},
-        ),
-        (
-            FILESYSTEM_GROUP_TYPE.RAID_1,
-            {"group_type": FILESYSTEM_GROUP_TYPE.RAID_1, "block_size": 512},
-        ),
-        (
-            FILESYSTEM_GROUP_TYPE.RAID_5,
-            {"group_type": FILESYSTEM_GROUP_TYPE.RAID_5, "block_size": 512},
-        ),
-        (
-            FILESYSTEM_GROUP_TYPE.RAID_6,
-            {"group_type": FILESYSTEM_GROUP_TYPE.RAID_6, "block_size": 512},
-        ),
-        (
-            FILESYSTEM_GROUP_TYPE.RAID_10,
-            {"group_type": FILESYSTEM_GROUP_TYPE.RAID_10, "block_size": 512},
-        ),
-        (
-            FILESYSTEM_GROUP_TYPE.VMFS6,
-            {"group_type": FILESYSTEM_GROUP_TYPE.VMFS6, "block_size": 1024},
-        ),
+@pytest.mark.parametrize(
+    "group_type,block_size",
+    [
+        pytest.param(FILESYSTEM_GROUP_TYPE.LVM_VG, 4096),
+        pytest.param(FILESYSTEM_GROUP_TYPE.RAID_0, 512),
+        pytest.param(FILESYSTEM_GROUP_TYPE.RAID_1, 512),
+        pytest.param(FILESYSTEM_GROUP_TYPE.RAID_5, 512),
+        pytest.param(FILESYSTEM_GROUP_TYPE.RAID_6, 512),
+        pytest.param(FILESYSTEM_GROUP_TYPE.RAID_10, 512),
+        pytest.param(FILESYSTEM_GROUP_TYPE.VMFS6, 1024),
         # For BCACHE see
         # `test_get_virtual_block_device_block_size_returns_backing_for_bc`
         # above.
-    ]
-
-    def test_returns_block_size(self):
-        filesystem_group = factory.make_FilesystemGroup(
-            group_type=self.group_type
+    ],
+)
+@pytest.mark.usefixtures("maasdb", "mock_openfga")
+class TestFilesystemGroupGetVirtualBlockDeviceBlockSize:
+    def test_returns_block_size(self, group_type, block_size):
+        filesystem_group = factory.make_FilesystemGroup(group_type=group_type)
+        assert (
+            block_size
+            == filesystem_group.get_virtual_block_device_block_size()
         )
-        self.assertEqual(
-            self.block_size,
-            filesystem_group.get_virtual_block_device_block_size(),
-        )
 
 
-class TestVolumeGroup(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "mock_openfga")
+class TestVolumeGroup:
     def test_objects_is_VolumeGroupManager(self):
-        self.assertIsInstance(VolumeGroup.objects, VolumeGroupManager)
+        assert isinstance(VolumeGroup.objects, VolumeGroupManager)
 
     def test_group_type_set_to_LVM_VG(self):
         obj = VolumeGroup()
-        self.assertEqual(FILESYSTEM_GROUP_TYPE.LVM_VG, obj.group_type)
+        assert FILESYSTEM_GROUP_TYPE.LVM_VG == obj.group_type
 
     def test_update_block_devices_and_partitions(self):
         node = factory.make_Node()
@@ -1881,20 +1808,20 @@ class TestVolumeGroup(MAASServerTestCase):
         volume_group.update_block_devices_and_partitions(
             updated_block_devices, update_partitions
         )
-        self.assertIsNone(deleted_block_device.get_effective_filesystem())
-        self.assertIsNone(deleted_partition.get_effective_filesystem())
-        self.assertEqual(
-            volume_group.id,
-            new_block_device.get_effective_filesystem().filesystem_group.id,
+        assert deleted_block_device.get_effective_filesystem() is None
+        assert deleted_partition.get_effective_filesystem() is None
+        assert (
+            volume_group.id
+            == new_block_device.get_effective_filesystem().filesystem_group.id
         )
-        self.assertEqual(
-            volume_group.id,
-            new_partition.get_effective_filesystem().filesystem_group.id,
+        assert (
+            volume_group.id
+            == new_partition.get_effective_filesystem().filesystem_group.id
         )
         for device in block_devices[1:] + partitions[1:]:
-            self.assertEqual(
-                volume_group.id,
-                device.get_effective_filesystem().filesystem_group.id,
+            assert (
+                volume_group.id
+                == device.get_effective_filesystem().filesystem_group.id
             )
 
     def test_create_logical_volume(self):
@@ -1909,23 +1836,23 @@ class TestVolumeGroup(MAASServerTestCase):
         expected_size = round_size_to_nearest_block(
             size, PARTITION_ALIGNMENT_SIZE, False
         )
-        self.assertEqual(logical_volume.name, name)
-        self.assertEqual(logical_volume.uuid, vguuid)
-        self.assertEqual(logical_volume.size, expected_size)
-        self.assertEqual(
-            logical_volume.block_size,
-            volume_group.get_virtual_block_device_block_size(),
+        assert logical_volume.name == name
+        assert logical_volume.uuid == vguuid
+        assert logical_volume.size == expected_size
+        assert (
+            logical_volume.block_size
+            == volume_group.get_virtual_block_device_block_size()
         )
 
 
-class TestRAID(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "mock_openfga")
+class TestRAID:
     def test_objects_is_RAIDManager(self):
-        self.assertIsInstance(RAID.objects, RAIDManager)
+        assert isinstance(RAID.objects, RAIDManager)
 
     def test_init_raises_ValueError_if_group_type_not_set_to_raid_type(self):
-        self.assertRaises(
-            ValueError, RAID, group_type=FILESYSTEM_GROUP_TYPE.LVM_VG
-        )
+        with pytest.raises(ValueError):
+            RAID(group_type=FILESYSTEM_GROUP_TYPE.LVM_VG)
 
     def test_create_raid(self):
         node = factory.make_Node()
@@ -1951,20 +1878,21 @@ class TestRAID(MAASServerTestCase):
             spare_devices=[spare_block_device],
             spare_partitions=[spare_partition],
         )
-        self.assertEqual("md0", raid.name)
-        self.assertEqual(
-            (6 * partitions[1].size) - RAID_SUPERBLOCK_OVERHEAD,
-            raid.get_size(),
+        assert "md0" == raid.name
+        assert (
+            6 * partitions[1].size
+        ) - RAID_SUPERBLOCK_OVERHEAD == raid.get_size()
+        assert FILESYSTEM_GROUP_TYPE.RAID_6 == raid.group_type
+        assert uuid == raid.uuid
+        assert 10 == raid.filesystems.count()
+        assert (
+            8 == raid.filesystems.filter(fstype=FILESYSTEM_TYPE.RAID).count()
         )
-        self.assertEqual(FILESYSTEM_GROUP_TYPE.RAID_6, raid.group_type)
-        self.assertEqual(uuid, raid.uuid)
-        self.assertEqual(10, raid.filesystems.count())
-        self.assertEqual(
-            8, raid.filesystems.filter(fstype=FILESYSTEM_TYPE.RAID).count()
-        )
-        self.assertEqual(
-            2,
-            raid.filesystems.filter(fstype=FILESYSTEM_TYPE.RAID_SPARE).count(),
+        assert (
+            2
+            == raid.filesystems.filter(
+                fstype=FILESYSTEM_TYPE.RAID_SPARE
+            ).count()
         )
 
     def test_create_raid_auto_name_with_multiple_nodes(self):
@@ -1984,14 +1912,14 @@ class TestRAID(MAASServerTestCase):
             ],
             level=FILESYSTEM_GROUP_TYPE.RAID_1,
         )
-        self.assertEqual("md0", raid0.virtual_device.name)
+        assert "md0" == raid0.virtual_device.name
         raid1 = RAID.objects.create_raid(
             block_devices=[
                 factory.make_PhysicalBlockDevice(node=node_a) for _ in range(2)
             ],
             level=FILESYSTEM_GROUP_TYPE.RAID_1,
         )
-        self.assertEqual("md1", raid1.virtual_device.name)
+        assert "md1" == raid1.virtual_device.name
 
     def test_create_raid_0_with_a_spare_fails(self):
         node = factory.make_Node()
@@ -2000,9 +1928,9 @@ class TestRAID(MAASServerTestCase):
             for _ in range(10)
         ]
         uuid = str(uuid4())
-        with self.assertRaisesRegex(
+        with pytest.raises(
             ValidationError,
-            re.escape(
+            match=re.escape(
                 "{'__all__': ['RAID level 0 must have at least 2 raid "
                 "devices and no spares.']}"
             ),
@@ -2019,9 +1947,9 @@ class TestRAID(MAASServerTestCase):
 
     def test_create_raid_without_devices_fails(self):
         uuid = str(uuid4())
-        with self.assertRaisesRegex(
+        with pytest.raises(
             ValidationError,
-            re.escape(
+            match=re.escape(
                 "{'__all__': ['At least one filesystem must have been "
                 "added.']}"
             ),
@@ -2040,9 +1968,9 @@ class TestRAID(MAASServerTestCase):
         node = factory.make_Node()
         block_device = factory.make_PhysicalBlockDevice(node=node)
         uuid = str(uuid4())
-        with self.assertRaisesRegex(
+        with pytest.raises(
             ValidationError,
-            re.escape(
+            match=re.escape(
                 "{'__all__': ['RAID level 0 must have at least 2 raid "
                 "devices and no spares.']}"
             ),
@@ -2082,28 +2010,28 @@ class TestRAID(MAASServerTestCase):
             spare_devices=[spare_block_device],
             spare_partitions=[spare_partition],
         )
-        self.assertEqual("md0", raid.name)
-        self.assertEqual(
-            partitions[1].size - RAID_SUPERBLOCK_OVERHEAD, raid.get_size()
+        assert "md0" == raid.name
+        assert partitions[1].size - RAID_SUPERBLOCK_OVERHEAD == raid.get_size()
+        assert FILESYSTEM_GROUP_TYPE.RAID_1 == raid.group_type
+        assert uuid == raid.uuid
+        assert 10 == raid.filesystems.count()
+        assert (
+            8 == raid.filesystems.filter(fstype=FILESYSTEM_TYPE.RAID).count()
         )
-        self.assertEqual(FILESYSTEM_GROUP_TYPE.RAID_1, raid.group_type)
-        self.assertEqual(uuid, raid.uuid)
-        self.assertEqual(10, raid.filesystems.count())
-        self.assertEqual(
-            8, raid.filesystems.filter(fstype=FILESYSTEM_TYPE.RAID).count()
-        )
-        self.assertEqual(
-            2,
-            raid.filesystems.filter(fstype=FILESYSTEM_TYPE.RAID_SPARE).count(),
+        assert (
+            2
+            == raid.filesystems.filter(
+                fstype=FILESYSTEM_TYPE.RAID_SPARE
+            ).count()
         )
 
     def test_create_raid_1_with_one_element_fails(self):
         node = factory.make_Node()
         block_device = factory.make_PhysicalBlockDevice(node=node)
         uuid = str(uuid4())
-        with self.assertRaisesRegex(
+        with pytest.raises(
             ValidationError,
-            re.escape(
+            match=re.escape(
                 "{'__all__': ['RAID level 1 must have at least 2 raid "
                 "devices and any number of spares.']}"
             ),
@@ -2142,20 +2070,21 @@ class TestRAID(MAASServerTestCase):
             spare_devices=[spare_block_device],
             spare_partitions=[spare_partition],
         )
-        self.assertEqual("md0", raid.name)
-        self.assertEqual(
-            (7 * partitions[1].size) - RAID_SUPERBLOCK_OVERHEAD,
-            raid.get_size(),
+        assert "md0" == raid.name
+        assert (
+            7 * partitions[1].size
+        ) - RAID_SUPERBLOCK_OVERHEAD == raid.get_size()
+        assert FILESYSTEM_GROUP_TYPE.RAID_5 == raid.group_type
+        assert uuid == raid.uuid
+        assert 10 == raid.filesystems.count()
+        assert (
+            8 == raid.filesystems.filter(fstype=FILESYSTEM_TYPE.RAID).count()
         )
-        self.assertEqual(FILESYSTEM_GROUP_TYPE.RAID_5, raid.group_type)
-        self.assertEqual(uuid, raid.uuid)
-        self.assertEqual(10, raid.filesystems.count())
-        self.assertEqual(
-            8, raid.filesystems.filter(fstype=FILESYSTEM_TYPE.RAID).count()
-        )
-        self.assertEqual(
-            2,
-            raid.filesystems.filter(fstype=FILESYSTEM_TYPE.RAID_SPARE).count(),
+        assert (
+            2
+            == raid.filesystems.filter(
+                fstype=FILESYSTEM_TYPE.RAID_SPARE
+            ).count()
         )
 
     def test_create_raid_5_with_2_elements_fails(self):
@@ -2165,9 +2094,9 @@ class TestRAID(MAASServerTestCase):
             for _ in range(2)
         ]
         uuid = str(uuid4())
-        with self.assertRaisesRegex(
+        with pytest.raises(
             ValidationError,
-            re.escape(
+            match=re.escape(
                 "{'__all__': ['RAID level 5 must have at least 3 raid "
                 "devices and any number of spares.']}"
             ),
@@ -2188,9 +2117,9 @@ class TestRAID(MAASServerTestCase):
             factory.make_PhysicalBlockDevice(node=node) for _ in range(3)
         ]
         uuid = str(uuid4())
-        with self.assertRaisesRegex(
+        with pytest.raises(
             ValidationError,
-            re.escape(
+            match=re.escape(
                 "{'__all__': ['RAID level 6 must have at least 4 raid "
                 "devices and any number of spares.']}"
             ),
@@ -2211,9 +2140,9 @@ class TestRAID(MAASServerTestCase):
             factory.make_PhysicalBlockDevice(node=node) for _ in range(2)
         ]
         uuid = str(uuid4())
-        with self.assertRaisesRegex(
+        with pytest.raises(
             ValidationError,
-            re.escape(
+            match=re.escape(
                 "{'__all__': ['RAID level 10 must have at least 3 raid "
                 "devices and any number of spares.']}"
             ),
@@ -2238,9 +2167,9 @@ class TestRAID(MAASServerTestCase):
             factory.make_PhysicalBlockDevice(node=node2) for _ in range(5)
         ]
         uuid = str(uuid4())
-        with self.assertRaisesRegex(
+        with pytest.raises(
             ValidationError,
-            re.escape(
+            match=re.escape(
                 "{'__all__': ['All added filesystems must belong to the "
                 "same node.']}"
             ),
@@ -2271,10 +2200,8 @@ class TestRAID(MAASServerTestCase):
         )
         device = factory.make_PhysicalBlockDevice(node=node, size=device_size)
         raid.add_device(device, FILESYSTEM_TYPE.RAID)
-        self.assertEqual(11, raid.filesystems.count())
-        self.assertEqual(
-            (10 * device_size) - RAID_SUPERBLOCK_OVERHEAD, raid.get_size()
-        )
+        assert 11 == raid.filesystems.count()
+        assert (10 * device_size) - RAID_SUPERBLOCK_OVERHEAD == raid.get_size()
 
     def test_add_spare_device_to_array(self):
         node = factory.make_Node()
@@ -2292,10 +2219,8 @@ class TestRAID(MAASServerTestCase):
         )
         device = factory.make_PhysicalBlockDevice(node=node, size=device_size)
         raid.add_device(device, FILESYSTEM_TYPE.RAID_SPARE)
-        self.assertEqual(11, raid.filesystems.count())
-        self.assertEqual(
-            (9 * device_size) - RAID_SUPERBLOCK_OVERHEAD, raid.get_size()
-        )
+        assert 11 == raid.filesystems.count()
+        assert (9 * device_size) - RAID_SUPERBLOCK_OVERHEAD == raid.get_size()
 
     def test_add_partition_to_array(self):
         node = factory.make_Node()
@@ -2317,10 +2242,10 @@ class TestRAID(MAASServerTestCase):
             )
         ).add_partition()
         raid.add_partition(partition, FILESYSTEM_TYPE.RAID)
-        self.assertEqual(11, raid.filesystems.count())
-        self.assertEqual(
-            (10 * partition.size) - RAID_SUPERBLOCK_OVERHEAD, raid.get_size()
-        )
+        assert 11 == raid.filesystems.count()
+        assert (
+            10 * partition.size
+        ) - RAID_SUPERBLOCK_OVERHEAD == raid.get_size()
 
     def test_add_spare_partition_to_array(self):
         node = factory.make_Node()
@@ -2342,10 +2267,10 @@ class TestRAID(MAASServerTestCase):
             )
         ).add_partition()
         raid.add_partition(partition, FILESYSTEM_TYPE.RAID_SPARE)
-        self.assertEqual(11, raid.filesystems.count())
-        self.assertEqual(
-            (9 * partition.size) - RAID_SUPERBLOCK_OVERHEAD, raid.get_size()
-        )
+        assert 11 == raid.filesystems.count()
+        assert (
+            9 * partition.size
+        ) - RAID_SUPERBLOCK_OVERHEAD == raid.get_size()
 
     def test_add_device_from_another_node_to_array_fails(self):
         node = factory.make_Node()
@@ -2365,18 +2290,16 @@ class TestRAID(MAASServerTestCase):
         device = factory.make_PhysicalBlockDevice(
             node=other_node, size=device_size
         )
-        with self.assertRaisesRegex(
+        with pytest.raises(
             ValidationError,
-            re.escape(
+            match=re.escape(
                 "['Device needs to be attached to the same node config as "
                 "the rest of the array.']"
             ),
         ):
             raid.add_device(device, FILESYSTEM_TYPE.RAID)
-        self.assertEqual(10, raid.filesystems.count())  # Still 10 devices
-        self.assertEqual(
-            (9 * device_size) - RAID_SUPERBLOCK_OVERHEAD, raid.get_size()
-        )
+        assert 10 == raid.filesystems.count()  # Still 10 devices
+        assert (9 * device_size) - RAID_SUPERBLOCK_OVERHEAD == raid.get_size()
 
     def test_add_partition_from_another_node_to_array_fails(self):
         node = factory.make_Node()
@@ -2398,18 +2321,16 @@ class TestRAID(MAASServerTestCase):
                 node=other_node, size=device_size
             )
         ).add_partition()
-        with self.assertRaisesRegex(
+        with pytest.raises(
             ValidationError,
-            re.escape(
+            match=re.escape(
                 "['Partition must be on a device from the same node as "
                 "the rest of the array.']"
             ),
         ):
             raid.add_partition(partition, FILESYSTEM_TYPE.RAID)
-        self.assertEqual(10, raid.filesystems.count())  # Nothing added
-        self.assertEqual(
-            (9 * device_size) - RAID_SUPERBLOCK_OVERHEAD, raid.get_size()
-        )
+        assert 10 == raid.filesystems.count()  # Nothing added
+        assert (9 * device_size) - RAID_SUPERBLOCK_OVERHEAD == raid.get_size()
 
     def test_add_already_used_device_to_array_fails(self):
         node = factory.make_Node()
@@ -2432,15 +2353,13 @@ class TestRAID(MAASServerTestCase):
             mount_point="/export/home",
             fstype=FILESYSTEM_TYPE.EXT4,
         )
-        with self.assertRaisesRegex(
+        with pytest.raises(
             ValidationError,
-            re.escape("['There is another filesystem on this device.']"),
+            match=re.escape("['There is another filesystem on this device.']"),
         ):
             raid.add_device(device, FILESYSTEM_TYPE.RAID)
-        self.assertEqual(10, raid.filesystems.count())  # Nothing added.
-        self.assertEqual(
-            (9 * device_size) - RAID_SUPERBLOCK_OVERHEAD, raid.get_size()
-        )
+        assert 10 == raid.filesystems.count()  # Nothing added.
+        assert (9 * device_size) - RAID_SUPERBLOCK_OVERHEAD == raid.get_size()
 
     def test_remove_device_from_array_invalidates_array_fails(self):
         """Checks it's not possible to remove a device from an RAID in such way
@@ -2461,21 +2380,19 @@ class TestRAID(MAASServerTestCase):
             block_devices=block_devices,
         )
         fsids_before = [fs.id for fs in raid.filesystems.all()]
-        with self.assertRaisesRegex(
+        with pytest.raises(
             ValidationError,
-            re.escape(
+            match=re.escape(
                 "{'__all__': ['RAID level 6 must have at least 4 raid "
                 "devices and any number of spares.']}"
             ),
         ):
             raid.remove_device(block_devices[0])
-        self.assertEqual(4, raid.filesystems.count())
-        self.assertEqual(
-            (2 * device_size) - RAID_SUPERBLOCK_OVERHEAD, raid.get_size()
-        )
+        assert 4 == raid.filesystems.count()
+        assert (2 * device_size) - RAID_SUPERBLOCK_OVERHEAD == raid.get_size()
         # Ensure the filesystems are the exact same before and after.
-        self.assertCountEqual(
-            fsids_before, [fs.id for fs in raid.filesystems.all()]
+        assert sorted(fsids_before, key=str) == sorted(
+            [fs.id for fs in raid.filesystems.all()], key=str
         )
 
     def test_remove_partition_from_array_invalidates_array_fails(self):
@@ -2502,22 +2419,21 @@ class TestRAID(MAASServerTestCase):
             partitions=partitions,
         )
         fsids_before = [fs.id for fs in raid.filesystems.all()]
-        with self.assertRaisesRegex(
+        with pytest.raises(
             ValidationError,
-            re.escape(
+            match=re.escape(
                 "{'__all__': ['RAID level 6 must have at least 4 raid "
                 "devices and any number of spares.']}"
             ),
         ):
             raid.remove_partition(partitions[0])
-        self.assertEqual(4, raid.filesystems.count())
-        self.assertEqual(
-            (2 * partitions[0].size) - RAID_SUPERBLOCK_OVERHEAD,
-            raid.get_size(),
-        )
+        assert 4 == raid.filesystems.count()
+        assert (
+            2 * partitions[0].size
+        ) - RAID_SUPERBLOCK_OVERHEAD == raid.get_size()
         # Ensure the filesystems are the exact same before and after.
-        self.assertCountEqual(
-            fsids_before, [fs.id for fs in raid.filesystems.all()]
+        assert sorted(fsids_before, key=str) == sorted(
+            [fs.id for fs in raid.filesystems.all()], key=str
         )
 
     def test_remove_device_from_array(self):
@@ -2536,10 +2452,8 @@ class TestRAID(MAASServerTestCase):
             spare_devices=block_devices[-2:],
         )
         raid.remove_device(block_devices[0])
-        self.assertEqual(9, raid.filesystems.count())
-        self.assertEqual(
-            (6 * device_size) - RAID_SUPERBLOCK_OVERHEAD, raid.get_size()
-        )
+        assert 9 == raid.filesystems.count()
+        assert (6 * device_size) - RAID_SUPERBLOCK_OVERHEAD == raid.get_size()
 
     def test_remove_partition_from_array(self):
         node = factory.make_Node()
@@ -2561,11 +2475,10 @@ class TestRAID(MAASServerTestCase):
             spare_partitions=partitions[-2:],
         )
         raid.remove_partition(partitions[0])
-        self.assertEqual(9, raid.filesystems.count())
-        self.assertEqual(
-            (6 * partitions[0].size) - RAID_SUPERBLOCK_OVERHEAD,
-            raid.get_size(),
-        )
+        assert 9 == raid.filesystems.count()
+        assert (
+            6 * partitions[0].size
+        ) - RAID_SUPERBLOCK_OVERHEAD == raid.get_size()
 
     def test_remove_invalid_partition_from_array_fails(self):
         node = factory.make_Node(bios_boot_method="uefi")
@@ -2586,9 +2499,9 @@ class TestRAID(MAASServerTestCase):
             uuid=uuid,
             partitions=partitions,
         )
-        with self.assertRaisesRegex(
+        with pytest.raises(
             ValidationError,
-            re.escape("['Partition does not belong to this array.']"),
+            match=re.escape("['Partition does not belong to this array.']"),
         ):
             raid.remove_partition(
                 factory.make_PartitionTable(
@@ -2597,11 +2510,10 @@ class TestRAID(MAASServerTestCase):
                     )
                 ).add_partition()
             )
-        self.assertEqual(10, raid.filesystems.count())
-        self.assertEqual(
-            (9 * partitions[0].size) - RAID_SUPERBLOCK_OVERHEAD,
-            raid.get_size(),
-        )
+        assert 10 == raid.filesystems.count()
+        assert (
+            9 * partitions[0].size
+        ) - RAID_SUPERBLOCK_OVERHEAD == raid.get_size()
 
     def test_remove_device_from_array_fails(self):
         node = factory.make_Node()
@@ -2617,26 +2529,25 @@ class TestRAID(MAASServerTestCase):
             uuid=uuid,
             block_devices=block_devices,
         )
-        with self.assertRaisesRegex(
+        with pytest.raises(
             ValidationError,
-            re.escape("['Device does not belong to this array.']"),
+            match=re.escape("['Device does not belong to this array.']"),
         ):
             raid.remove_device(
                 factory.make_PhysicalBlockDevice(node=node, size=device_size)
             )
-        self.assertEqual(10, raid.filesystems.count())
-        self.assertEqual(
-            (9 * device_size) - RAID_SUPERBLOCK_OVERHEAD, raid.get_size()
-        )
+        assert 10 == raid.filesystems.count()
+        assert (9 * device_size) - RAID_SUPERBLOCK_OVERHEAD == raid.get_size()
 
 
-class TestBcache(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "mock_openfga")
+class TestBcache:
     def test_objects_is_BcacheManager(self):
-        self.assertIsInstance(Bcache.objects, BcacheManager)
+        assert isinstance(Bcache.objects, BcacheManager)
 
     def test_group_type_set_to_BCACHE(self):
         obj = Bcache()
-        self.assertEqual(FILESYSTEM_GROUP_TYPE.BCACHE, obj.group_type)
+        assert FILESYSTEM_GROUP_TYPE.BCACHE == obj.group_type
 
     def test_create_bcache_with_physical_block_devices(self):
         """Checks creation of a Bcache with physical block devices for caching
@@ -2657,14 +2568,15 @@ class TestBcache(MAASServerTestCase):
         )
 
         # Verify the filesystems were properly created on the target devices
-        self.assertEqual(backing_size, bcache.get_size())
-        self.assertEqual(
-            FILESYSTEM_TYPE.BCACHE_BACKING,
-            backing_device.get_effective_filesystem().fstype,
+        assert backing_size == bcache.get_size()
+        assert (
+            FILESYSTEM_TYPE.BCACHE_BACKING
+            == backing_device.get_effective_filesystem().fstype
         )
-        self.assertEqual(cache_set, bcache.cache_set)
-        self.assertEqual(
-            bcache, backing_device.get_effective_filesystem().filesystem_group
+        assert cache_set == bcache.cache_set
+        assert (
+            bcache
+            == backing_device.get_effective_filesystem().filesystem_group
         )
 
     def test_create_bcache_with_virtual_block_devices(self):
@@ -2700,23 +2612,24 @@ class TestBcache(MAASServerTestCase):
         )
 
         # Verify the filesystems were properly created on the target devices
-        self.assertEqual(
-            (10 * backing_size) - RAID_SUPERBLOCK_OVERHEAD, bcache.get_size()
+        assert (
+            10 * backing_size
+        ) - RAID_SUPERBLOCK_OVERHEAD == bcache.get_size()
+        assert (
+            FILESYSTEM_TYPE.BCACHE_CACHE
+            == cache_device.get_effective_filesystem().fstype
         )
-        self.assertEqual(
-            FILESYSTEM_TYPE.BCACHE_CACHE,
-            cache_device.get_effective_filesystem().fstype,
+        assert (
+            FILESYSTEM_TYPE.BCACHE_BACKING
+            == backing_device.get_effective_filesystem().fstype
         )
-        self.assertEqual(
-            FILESYSTEM_TYPE.BCACHE_BACKING,
-            backing_device.get_effective_filesystem().fstype,
+        assert cache_set == bcache.cache_set
+        assert (
+            bcache
+            == backing_device.get_effective_filesystem().filesystem_group
         )
-        self.assertEqual(cache_set, bcache.cache_set)
-        self.assertEqual(
-            bcache, backing_device.get_effective_filesystem().filesystem_group
-        )
-        self.assertEqual("md0", cache_device.name)
-        self.assertEqual("md1", backing_device.name)
+        assert "md0" == cache_device.name
+        assert "md1" == backing_device.name
 
     def test_create_bcache_auto_name_with_multiple_nodes(self):
         node_a = factory.make_Node()
@@ -2733,13 +2646,13 @@ class TestBcache(MAASServerTestCase):
             backing_device=factory.make_PhysicalBlockDevice(node=node_a),
             cache_mode=CACHE_MODE_TYPE.WRITEBACK,
         )
-        self.assertEqual("bcache0", bcache0.virtual_device.name)
+        assert "bcache0" == bcache0.virtual_device.name
         bcache1 = Bcache.objects.create_bcache(
             cache_set=factory.make_CacheSet(node=node_a),
             backing_device=factory.make_PhysicalBlockDevice(node=node_a),
             cache_mode=CACHE_MODE_TYPE.WRITEBACK,
         )
-        self.assertEqual("bcache1", bcache1.virtual_device.name)
+        assert "bcache1" == bcache1.virtual_device.name
 
     def test_create_bcache_with_partitions(self):
         """Checks creation of a Bcache with partitions for caching and backing
@@ -2768,19 +2681,19 @@ class TestBcache(MAASServerTestCase):
         )
 
         # Verify the filesystems were properly created on the target devices
-        self.assertEqual(backing_partition.size, bcache.get_size())
-        self.assertEqual(
-            FILESYSTEM_TYPE.BCACHE_CACHE,
-            cache_partition.get_effective_filesystem().fstype,
+        assert backing_partition.size == bcache.get_size()
+        assert (
+            FILESYSTEM_TYPE.BCACHE_CACHE
+            == cache_partition.get_effective_filesystem().fstype
         )
-        self.assertEqual(
-            FILESYSTEM_TYPE.BCACHE_BACKING,
-            backing_partition.get_effective_filesystem().fstype,
+        assert (
+            FILESYSTEM_TYPE.BCACHE_BACKING
+            == backing_partition.get_effective_filesystem().fstype
         )
-        self.assertEqual(cache_set, bcache.cache_set)
-        self.assertEqual(
-            bcache,
-            backing_partition.get_effective_filesystem().filesystem_group,
+        assert cache_set == bcache.cache_set
+        assert (
+            bcache
+            == backing_partition.get_effective_filesystem().filesystem_group
         )
 
     def test_create_bcache_with_block_devices_and_partition(self):
@@ -2808,18 +2721,19 @@ class TestBcache(MAASServerTestCase):
         )
 
         # Verify the filesystems were properly created on the target devices
-        self.assertEqual(backing_size, bcache.get_size())
-        self.assertEqual(
-            FILESYSTEM_TYPE.BCACHE_CACHE,
-            cache_partition.get_effective_filesystem().fstype,
+        assert backing_size == bcache.get_size()
+        assert (
+            FILESYSTEM_TYPE.BCACHE_CACHE
+            == cache_partition.get_effective_filesystem().fstype
         )
-        self.assertEqual(
-            FILESYSTEM_TYPE.BCACHE_BACKING,
-            backing_device.get_effective_filesystem().fstype,
+        assert (
+            FILESYSTEM_TYPE.BCACHE_BACKING
+            == backing_device.get_effective_filesystem().fstype
         )
-        self.assertEqual(cache_set, bcache.cache_set)
-        self.assertEqual(
-            bcache, backing_device.get_effective_filesystem().filesystem_group
+        assert cache_set == bcache.cache_set
+        assert (
+            bcache
+            == backing_device.get_effective_filesystem().filesystem_group
         )
 
     def test_delete_bcache(self):
@@ -2839,6 +2753,6 @@ class TestBcache(MAASServerTestCase):
         bcache.delete()
 
         # Verify both filesystems were deleted.
-        self.assertIsNone(backing_device.get_effective_filesystem())
+        assert backing_device.get_effective_filesystem() is None
         # Verify the cache_set is not deleted.
-        self.assertIsNotNone(reload_object(cache_set))
+        assert reload_object(cache_set) is not None

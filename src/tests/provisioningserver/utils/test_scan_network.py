@@ -7,11 +7,13 @@ from argparse import ArgumentParser, Namespace
 import io
 import os
 import random
+import re
 import subprocess
 from unittest.mock import ANY, Mock
 
+import pytest
+
 from maastesting.factory import factory
-from maastesting.testcase import MAASTestCase
 from provisioningserver.utils import scan_network as scan_network_module
 from provisioningserver.utils.scan_network import (
     add_arguments,
@@ -41,15 +43,17 @@ TEST_INTERFACES = {
 }
 
 
-class TestScanNetworkCommand(MAASTestCase):
-    def setUp(self):
-        super().setUp()
+class TestScanNetworkCommand:
+    @pytest.fixture(autouse=True)
+    def _setup(self, mocker):
         self.output = io.StringIO()
         self.error_output = io.StringIO()
-        self.all_interfaces_mock = self.patch(
+        self.all_interfaces_mock = mocker.patch.object(
             scan_network_module, "get_all_interfaces_definition"
         )
-        self.scan_networks_mock = self.patch(scan_network_module.scan_networks)
+        self.scan_networks_mock = mocker.patch.object(
+            scan_network_module, "scan_networks"
+        )
         self.all_interfaces_mock.return_value = TEST_INTERFACES
         self.parser = ArgumentParser()
         add_arguments(self.parser)
@@ -60,32 +64,28 @@ class TestScanNetworkCommand(MAASTestCase):
 
     def test_interprets_long_arguments(self):
         self.run_command("--ping", "--threads", "37", "--slow")
-        (
-            self.scan_networks_mock.assert_called_once_with(
-                Namespace(
-                    threads=37, slow=True, ping=True, interface=None, cidr=[]
-                ),
-                ANY,
-                ANY,
-                ANY,
+        self.scan_networks_mock.assert_called_once_with(
+            Namespace(
+                threads=37, slow=True, ping=True, interface=None, cidr=[]
             ),
+            ANY,
+            ANY,
+            ANY,
         )
 
     def test_default_arguments(self):
         self.run_command()
-        (
-            self.scan_networks_mock.assert_called_once_with(
-                Namespace(
-                    threads=None,
-                    slow=False,
-                    ping=False,
-                    interface=None,
-                    cidr=[],
-                ),
-                ANY,
-                ANY,
-                ANY,
+        self.scan_networks_mock.assert_called_once_with(
+            Namespace(
+                threads=None,
+                slow=False,
+                ping=False,
+                interface=None,
+                cidr=[],
             ),
+            ANY,
+            ANY,
+            ANY,
         )
 
     def test_scans_all_interface_cidrs_when_zero_parameters_passed(self):
@@ -136,28 +136,30 @@ class TestScanNetworkCommand(MAASTestCase):
 
     def test_rejects_ipv6_cidr(self):
         expected_error = ".*Not a valid IPv4 CIDR:.*"
-        with self.assertRaisesRegex(ActionScriptError, expected_error):
+        with pytest.raises(ActionScriptError, match=expected_error):
             self.run_command("eth2", "2001:db8::/64")
 
     def test_rejects_non_interface_or_cidr(self):
         expected_error = ".*First argument must be an interface or CIDR: wtf0"
-        with self.assertRaisesRegex(ActionScriptError, expected_error):
+        with pytest.raises(ActionScriptError, match=expected_error):
             self.run_command("wtf0")
 
 
-class TestScanNetworkCommandEndToEnd(MAASTestCase):
-    def setUp(self):
-        super().setUp()
+class TestScanNetworkCommandEndToEnd:
+    @pytest.fixture(autouse=True)
+    def _setup(self, mocker):
         self.output = io.StringIO()
         self.error_output = io.StringIO()
-        self.all_interfaces_mock = self.patch(
+        self.all_interfaces_mock = mocker.patch.object(
             scan_network_module, "get_all_interfaces_definition"
         )
-        self.has_command_available_mock = self.patch(
+        self.has_command_available_mock = mocker.patch.object(
             scan_network_module, "has_command_available"
         )
         self.all_interfaces_mock.return_value = TEST_INTERFACES
-        self.popen = self.patch(scan_network_module.subprocess, "Popen")
+        self.popen = mocker.patch.object(
+            scan_network_module.subprocess, "Popen"
+        )
         self.popen.return_value.poll = Mock()
         self.popen.return_value.poll.return_value = None
         self.popen.return_value.returncode = 0
@@ -198,18 +200,17 @@ class TestScanNetworkCommandEndToEnd(MAASTestCase):
         self.popen.return_value.returncode = 0
         # Force the use of `ping` even if `nmap` is installed.
         self.run_command("--ping", "eth1", "192.168.0.0/24")
-        self.assertEqual(
-            self.error_output.getvalue(),
-            "Pinged 254 hosts (254 up) in 0 second(s).\n",
+        assert self.error_output.getvalue() == (
+            "Pinged 254 hosts (254 up) in 0 second(s).\n"
         )
 
     def test_runs_ping_e2e_prints_warning_for_unknown_cidr(self):
         self.popen.return_value.returncode = 1
         # Force the use of `ping` even if `nmap` is installed.
         self.run_command("--ping", "eth1", "172.16.0.0/24")
-        self.assertRegex(
-            self.error_output.getvalue(),
+        assert re.search(
             r"^Warning: 172.16.0.0/24 is not present on eth1",
+            self.error_output.getvalue(),
         )
 
     def test_runs_nmap_single_threaded(self):
@@ -266,22 +267,22 @@ class TestScanNetworkCommandEndToEnd(MAASTestCase):
         if slow is True:
             args.append("--slow")
         self.run_command(*args)
-        self.assertRegex(
-            self.error_output.getvalue(),
+        assert re.search(
             r"1 nmap scan\(s\) completed in 0 second\(s\).",
+            self.error_output.getvalue(),
         )
 
     def test_prints_error_for_missing_cidr(self):
         self.run_command("8.8.8.0/24")
-        self.assertRegex(
-            self.error_output.getvalue(),
+        assert re.search(
             r"^Requested network\(s\) not available to scan:",
+            self.error_output.getvalue(),
         )
 
 
-class TestRunPing(MAASTestCase):
-    def test_runs_popen_with_expected_parameters(self):
-        popen = self.patch(scan_network_module.subprocess, "Popen")
+class TestRunPing:
+    def test_runs_popen_with_expected_parameters(self, mocker):
+        popen = mocker.patch.object(scan_network_module.subprocess, "Popen")
         popen.return_value.poll = Mock()
         popen.return_value.poll.return_value = None
         popen.return_value.returncode = 0
@@ -298,9 +299,9 @@ class TestRunPing(MAASTestCase):
         )
 
 
-class TestRunNmap(MAASTestCase):
-    def test_runs_popen_with_expected_parameters(self):
-        popen = self.patch(scan_network_module.subprocess, "Popen")
+class TestRunNmap:
+    def test_runs_popen_with_expected_parameters(self, mocker):
+        popen = mocker.patch.object(scan_network_module.subprocess, "Popen")
         popen.return_value.poll = Mock()
         popen.return_value.poll.return_value = None
         interface = factory.make_name("eth")
@@ -316,8 +317,8 @@ class TestRunNmap(MAASTestCase):
             preexec_fn=os.setsid,
         )
 
-    def test_runs_popen_with_expected_parameters__slow(self):
-        popen = self.patch(scan_network_module.subprocess, "Popen")
+    def test_runs_popen_with_expected_parameters__slow(self, mocker):
+        popen = mocker.patch.object(scan_network_module.subprocess, "Popen")
         popen.return_value.poll = Mock()
         popen.return_value.poll.return_value = None
         interface = factory.make_name("eth")
@@ -333,38 +334,28 @@ class TestRunNmap(MAASTestCase):
             env=get_env_with_locale(),
             preexec_fn=os.setsid,
         )
-        self.assertIn("--max-rate", nmap_args)
+        assert "--max-rate" in nmap_args
 
 
-class TestYieldNmapParameters(MAASTestCase):
+class TestYieldNmapParameters:
     def test_nmap__yields_ipv4_cidrs(self):
         slow = random.choice([True, False])
         params = yield_nmap_parameters(
             {"eth0": ["2001:db8::/64", "192.168.0.1/24", "192.168.1.1/24"]},
             slow=slow,
         )
-        self.assertEqual(
-            set(params),
-            {
-                NmapParameters(
-                    interface="eth0", cidr="192.168.0.0/24", slow=slow
-                ),
-                NmapParameters(
-                    interface="eth0", cidr="192.168.1.0/24", slow=slow
-                ),
-            },
-        )
+        assert set(params) == {
+            NmapParameters(interface="eth0", cidr="192.168.0.0/24", slow=slow),
+            NmapParameters(interface="eth0", cidr="192.168.1.0/24", slow=slow),
+        }
 
 
-class TestYieldPingParameters(MAASTestCase):
+class TestYieldPingParameters:
     def test_ping__yields_ipv4_ips(self):
         params = yield_ping_parameters(
             {"eth0": ["2001:db8::/64", "192.168.0.1/30"]}
         )
-        self.assertEqual(
-            set(params),
-            {
-                PingParameters(interface="eth0", ip="192.168.0.1"),
-                PingParameters(interface="eth0", ip="192.168.0.2"),
-            },
-        )
+        assert set(params) == {
+            PingParameters(interface="eth0", ip="192.168.0.1"),
+            PingParameters(interface="eth0", ip="192.168.0.2"),
+        }

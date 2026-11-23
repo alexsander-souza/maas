@@ -8,42 +8,41 @@ from random import randint
 from subprocess import CalledProcessError
 import types
 
+import pytest
+
 from maastesting.factory import factory
-from maastesting.fixtures import CaptureStandardIO
-from maastesting.testcase import MAASTestCase
 from provisioningserver.utils import script as script_module
 from provisioningserver.utils.script import ActionScript, ActionScriptError
 
 
-class TestActionScript(MAASTestCase):
+class TestActionScript:
     """Test `ActionScript`."""
 
     factory = ActionScript
 
-    def setUp(self):
-        super().setUp()
+    @pytest.fixture(autouse=True)
+    def _setup(self, mocker):
         # ActionScript.setup() is not safe to run in the test suite.
-        self.patch(ActionScript, "setup", lambda self: None)
-        # ArgumentParser sometimes likes to print to stdout/err.
-        self.stdio = self.useFixture(CaptureStandardIO())
+        mocker.patch.object(ActionScript, "setup", lambda self: None)
+        self.mocker = mocker
 
     def test_init(self):
         description = factory.make_string()
         script = self.factory(description)
-        self.assertIsInstance(script.parser, ArgumentParser)
-        self.assertEqual(description, script.parser.description)
+        assert isinstance(script.parser, ArgumentParser)
+        assert description == script.parser.description
 
     def test_register(self):
         handler = types.ModuleType("handler")
         handler.add_arguments = lambda parser: (
-            self.assertIsInstance(parser, ArgumentParser)
+            isinstance(parser, ArgumentParser)
         )
-        handler.run = lambda args: (self.assertIsInstance(args, int))
+        handler.run = lambda args: isinstance(args, int)
         script = self.factory("Description")
         script.register("slay", handler)
-        self.assertIn("slay", script.subparsers.choices)
+        assert "slay" in script.subparsers.choices
         action_parser = script.subparsers.choices["slay"]
-        self.assertIsInstance(action_parser, ArgumentParser)
+        assert isinstance(action_parser, ArgumentParser)
 
     def test_register_without_add_arguments(self):
         # ActionScript.register will crash if the handler has no
@@ -51,10 +50,9 @@ class TestActionScript(MAASTestCase):
         handler = types.ModuleType("handler")
         handler.run = lambda args: None
         script = self.factory("Description")
-        error = self.assertRaises(
-            AttributeError, script.register, "decapitate", handler
-        )
-        self.assertIn("'add_arguments'", "%s" % error)
+        with pytest.raises(AttributeError) as exc_info:
+            script.register("decapitate", handler)
+        assert "'add_arguments'" in "%s" % exc_info.value
 
     def test_register_without_run(self):
         # ActionScript.register will crash if the handler has no run()
@@ -62,10 +60,9 @@ class TestActionScript(MAASTestCase):
         handler = types.ModuleType("handler")
         handler.add_arguments = lambda parser: None
         script = self.factory("Description")
-        error = self.assertRaises(
-            AttributeError, script.register, "decapitate", handler
-        )
-        self.assertIn("'run'", "%s" % error)
+        with pytest.raises(AttributeError) as exc_info:
+            script.register("decapitate", handler)
+        assert "'run'" in "%s" % exc_info.value
 
     def test_call(self):
         handler_calls = []
@@ -74,15 +71,18 @@ class TestActionScript(MAASTestCase):
         handler.run = handler_calls.append
         script = self.factory("Description")
         script.register("amputate", handler)
-        error = self.assertRaises(SystemExit, script, ["amputate"])
-        self.assertEqual(0, error.code)
-        self.assertEqual(1, len(handler_calls))
-        self.assertIsInstance(handler_calls[0], Namespace)
+        with pytest.raises(SystemExit) as exc_info:
+            script(["amputate"])
+        assert 0 == exc_info.value.code
+        assert 1 == len(handler_calls)
+        assert isinstance(handler_calls[0], Namespace)
 
-    def test_call_invalid_choice(self):
+    def test_call_invalid_choice(self, capsys):
         script = self.factory("Description")
-        self.assertRaises(SystemExit, script, ["disembowel"])
-        self.assertIn("invalid choice", self.stdio.getError())
+        with pytest.raises(SystemExit):
+            script(["disembowel"])
+        stderr = capsys.readouterr().err
+        assert "invalid choice" in stderr
 
     def test_call_with_exception(self):
         # Most exceptions from run() are propagated.
@@ -91,7 +91,8 @@ class TestActionScript(MAASTestCase):
         handler.run = lambda args: 0 / 0
         script = self.factory("Description")
         script.register("eviscerate", handler)
-        self.assertRaises(ZeroDivisionError, script, ["eviscerate"])
+        with pytest.raises(ZeroDivisionError):
+            script(["eviscerate"])
 
     def test_call_with_process_exception(self):
         # CalledProcessError is converted into SystemExit.
@@ -109,8 +110,9 @@ class TestActionScript(MAASTestCase):
         handler.run = lambda args: raise_exception()
         script = self.factory("Description")
         script.register("sever", handler)
-        error = self.assertRaises(SystemExit, script, ["sever"])
-        self.assertEqual(exception.returncode, error.code)
+        with pytest.raises(SystemExit) as exc_info:
+            script(["sever"])
+        assert exception.returncode == exc_info.value.code
 
     def test_call_with_keyboard_interrupt(self):
         # KeyboardInterrupt is silently converted into SystemExit, with an
@@ -124,10 +126,11 @@ class TestActionScript(MAASTestCase):
         handler.run = lambda args: raise_exception()
         script = self.factory("Description")
         script.register("smash", handler)
-        error = self.assertRaises(SystemExit, script, ["smash"])
-        self.assertEqual(1, error.code)
+        with pytest.raises(SystemExit) as exc_info:
+            script(["smash"])
+        assert 1 == exc_info.value.code
 
-    def test_call_with_actionscripterror(self):
+    def test_call_with_actionscripterror(self, capsys):
         # ActionScriptError is converted into SystemExit, with  the
         # specified exit code. (And the message is printed to stderr.)
 
@@ -139,8 +142,9 @@ class TestActionScript(MAASTestCase):
         handler.run = lambda args: raise_exception()
         script = self.factory("Description")
         script.register("smash", handler)
-        with self.assertRaisesRegex(SystemExit, "42"):
+        with pytest.raises(SystemExit, match="42"):
             # This needs to be a no-op.
-            self.patch(script_module.ActionScript, "setup")
+            self.mocker.patch.object(script_module.ActionScript, "setup")
             script(["smash"])
-        self.assertEqual("Towel.\n", self.stdio.getError())
+        stderr = capsys.readouterr().err
+        assert "Towel.\n" == stderr

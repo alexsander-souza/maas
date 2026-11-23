@@ -4,19 +4,33 @@
 """Tests for `maasserver.utils.dblocks`."""
 
 from contextlib import closing, contextmanager
+import re
 import sys
 
 from django.db import connection, reset_queries, transaction
+import pytest
 
 from maasserver.testing.dblocks import lock_held_in_other_thread
-from maasserver.testing.testcase import (
-    MAASServerTestCase,
-    MAASTransactionServerTestCase,
-)
 from maasserver.utils import dblocks
 
 # Use "high" objid numbers to avoid conflicts with predeclared locks.
 objid_min = 2 << 10
+
+MODE_IDS = ["%s/%s" % mode for mode in dblocks.DatabaseLock.MODE_CHOICES]
+
+
+@pytest.fixture
+def transactional_maasdb(maasdb):
+    """Provide the database as `MAASTransactionServerTestCase` did.
+
+    The `maasdb` fixture leaves autocommit disabled, under which
+    `transaction.atomic()` only creates savepoints (subtransactions). The
+    tests using this fixture need top-level transactions and real commits,
+    so autocommit is restored here.
+    """
+    transaction.rollback()
+    transaction.set_autocommit(True)
+    yield
 
 
 def get_locks():
@@ -74,31 +88,28 @@ def capture_queries_while_holding_lock(lock):
     return "\n--\n".join(query["sql"] for query in connection.queries)
 
 
-class TestDatabaseLock(MAASTransactionServerTestCase):
-    scenarios = tuple(
-        ("%s/%s" % mode, {"mode": mode})
-        for mode in dblocks.DatabaseLock.MODE_CHOICES
-    )
+@pytest.mark.allow_transactions
+@pytest.mark.usefixtures("transactional_maasdb")
+@pytest.mark.parametrize(
+    "mode", dblocks.DatabaseLock.MODE_CHOICES, ids=MODE_IDS
+)
+class TestDatabaseLock:
+    def make_lock(self, objid, mode):
+        return dblocks.DatabaseLock(objid, mode=mode)
 
-    def make_lock(self, objid):
-        return dblocks.DatabaseLock(objid, mode=self.mode)
-
-    def tearDown(self):
-        super().tearDown()
-
-    def test_create_lock(self):
+    def test_create_lock(self, mode):
         objid = get_objid()
-        lock = self.make_lock(objid)
-        self.assertEqual(lock, (dblocks.classid, objid))
+        lock = self.make_lock(objid, mode)
+        assert lock == (dblocks.classid, objid)
 
-    def test_properties(self):
-        lock = self.make_lock(get_objid())
-        self.assertEqual(lock, (lock.classid, lock.objid))
+    def test_properties(self, mode):
+        lock = self.make_lock(get_objid(), mode)
+        assert lock == (lock.classid, lock.objid)
 
     @transaction.atomic
-    def test_lock_actually_locked(self):
+    def test_lock_actually_locked(self, mode):
         objid = get_objid()
-        lock = self.make_lock(objid)
+        lock = self.make_lock(objid, mode)
 
         locks_held_before = get_locks()
         with lock:
@@ -106,166 +117,175 @@ class TestDatabaseLock(MAASTransactionServerTestCase):
         locks_held_after = get_locks()
 
         locks_obtained = locks_held - locks_held_before
-        self.assertIn(objid, locks_obtained)
+        assert objid in locks_obtained
 
         locks_released = locks_held - locks_held_after
-        self.assertIn(objid, locks_released)
+        assert objid in locks_released
 
     @transaction.atomic
-    def test_is_locked(self):
+    def test_is_locked(self, mode):
         objid = get_objid()
-        lock = self.make_lock(objid)
+        lock = self.make_lock(objid, mode)
 
-        self.assertFalse(lock.is_locked())
+        assert not lock.is_locked()
         with lock:
-            self.assertTrue(lock.is_locked())
-        self.assertFalse(lock.is_locked())
+            assert lock.is_locked()
+        assert not lock.is_locked()
 
-    def test_lock_remains_held_when_committing_transaction(self):
+    def test_lock_remains_held_when_committing_transaction(self, mode):
         objid = get_objid()
-        lock = self.make_lock(objid)
+        lock = self.make_lock(objid, mode)
         txn = transaction.atomic()
 
-        self.assertFalse(lock.is_locked())
+        assert not lock.is_locked()
         txn.__enter__()
-        self.assertFalse(lock.is_locked())
+        assert not lock.is_locked()
         lock.__enter__()
-        self.assertTrue(lock.is_locked())
+        assert lock.is_locked()
         txn.__exit__(None, None, None)
-        self.assertTrue(lock.is_locked())
+        assert lock.is_locked()
         lock.__exit__(None, None, None)
-        self.assertFalse(lock.is_locked())
+        assert not lock.is_locked()
 
-    def test_lock_remains_held_when_aborting_transaction(self):
+    def test_lock_remains_held_when_aborting_transaction(self, mode):
         objid = get_objid()
-        lock = self.make_lock(objid)
+        lock = self.make_lock(objid, mode)
         txn = transaction.atomic()
 
-        self.assertFalse(lock.is_locked())
+        assert not lock.is_locked()
         txn.__enter__()
-        self.assertFalse(lock.is_locked())
+        assert not lock.is_locked()
         lock.__enter__()
-        self.assertTrue(lock.is_locked())
+        assert lock.is_locked()
 
-        self.assertRaises(ZeroDivisionError, divide_by_zero)
-        exc_info = sys.exc_info()
+        try:
+            divide_by_zero()
+        except ZeroDivisionError:
+            exc_info = sys.exc_info()
+        else:
+            raise AssertionError("ZeroDivisionError not raised.")
 
         txn.__exit__(*exc_info)
-        self.assertTrue(lock.is_locked())
+        assert lock.is_locked()
         lock.__exit__(None, None, None)
-        self.assertFalse(lock.is_locked())
+        assert not lock.is_locked()
 
-    def test_lock_is_held_around_transaction(self):
+    def test_lock_is_held_around_transaction(self, mode):
         objid = get_objid()
-        lock = self.make_lock(objid)
+        lock = self.make_lock(objid, mode)
 
-        self.assertFalse(lock.is_locked())
+        assert not lock.is_locked()
         with lock:
-            self.assertTrue(lock.is_locked())
+            assert lock.is_locked()
             with transaction.atomic():
-                self.assertTrue(lock.is_locked())
-            self.assertTrue(lock.is_locked())
-        self.assertFalse(lock.is_locked())
+                assert lock.is_locked()
+            assert lock.is_locked()
+        assert not lock.is_locked()
 
-    def test_lock_is_held_around_breaking_transaction(self):
+    def test_lock_is_held_around_breaking_transaction(self, mode):
         objid = get_objid()
-        lock = self.make_lock(objid)
+        lock = self.make_lock(objid, mode)
 
-        self.assertFalse(lock.is_locked())
+        assert not lock.is_locked()
         with lock:
-            self.assertTrue(lock.is_locked())
-            self.assertRaises(ZeroDivisionError, divide_by_zero)
-            self.assertTrue(lock.is_locked())
-        self.assertFalse(lock.is_locked())
+            assert lock.is_locked()
+            try:
+                divide_by_zero()
+            except ZeroDivisionError:
+                pass
+            else:
+                raise AssertionError("ZeroDivisionError not raised.")
+            assert lock.is_locked()
+        assert not lock.is_locked()
 
-    def test_lock_requires_preexisting_connection(self):
+    def test_lock_requires_preexisting_connection(self, mode):
         objid = get_objid()
         connection.close()
-        lock = self.make_lock(objid)
-        self.assertRaises(
-            dblocks.DatabaseLockAttemptWithoutConnection, lock.__enter__
-        )
+        lock = self.make_lock(objid, mode)
+        with pytest.raises(dblocks.DatabaseLockAttemptWithoutConnection):
+            lock.__enter__()
 
-    def test_releasing_lock_fails_when_lock_not_held(self):
+    def test_releasing_lock_fails_when_lock_not_held(self, mode):
         objid = get_objid()
-        lock = self.make_lock(objid)
-        self.assertRaises(dblocks.DatabaseLockNotHeld, lock.__exit__)
+        lock = self.make_lock(objid, mode)
+        with pytest.raises(dblocks.DatabaseLockNotHeld):
+            lock.__exit__()
 
-    def test_repr(self):
-        lock = self.make_lock(get_objid())
-        self.assertEqual(
+    def test_repr(self, mode):
+        lock = self.make_lock(get_objid(), mode)
+        assert repr(lock) == (
             "<DatabaseLock classid=%d objid=%d lock=%s unlock=%s>"
-            % (lock[0], lock[1], self.mode[0], self.mode[1]),
-            repr(lock),
+            % (lock[0], lock[1], mode[0], mode[1])
         )
 
 
-class TestDatabaseLockVariations(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "mock_openfga")
+class TestDatabaseLockVariations:
     def test_plain_variation(self):
         objid = get_objid()
         lock = dblocks.DatabaseLock(objid)
-        self.assertRegex(
-            capture_queries_while_holding_lock(lock),
+        assert re.search(
             rf"(?m)SELECT pg_advisory_lock\(\d+, {objid}\)\n"
             "--\n"
             rf"SELECT pg_advisory_unlock\(\d+, {objid}\)",
+            capture_queries_while_holding_lock(lock),
         )
 
     def test_try_variation(self):
         objid = get_objid()
         lock = dblocks.DatabaseLock(objid)
-        self.assertEqual(lock, lock.TRY)
-        self.assertRegex(
-            capture_queries_while_holding_lock(lock.TRY),
+        assert lock == lock.TRY
+        assert re.search(
             rf"(?m)SELECT pg_try_advisory_lock\(\d+, {objid}\)\n"
             "--\n"
             rf"SELECT pg_advisory_unlock\(\d+, {objid}\)",
+            capture_queries_while_holding_lock(lock.TRY),
         )
 
     def test_shared_variation(self):
         objid = get_objid()
         lock = dblocks.DatabaseLock(objid)
-        self.assertEqual(lock, lock.SHARED)
-        self.assertRegex(
-            capture_queries_while_holding_lock(lock.SHARED),
+        assert lock == lock.SHARED
+        assert re.search(
             rf"(?m)SELECT pg_advisory_lock_shared\(\d+, {objid}\)\n"
             "--\n"
             rf"SELECT pg_advisory_unlock_shared\(\d+, {objid}\)",
+            capture_queries_while_holding_lock(lock.SHARED),
         )
 
     def test_try_shared_variation(self):
         objid = get_objid()
         lock = dblocks.DatabaseLock(objid)
-        self.assertEqual(lock, lock.TRY.SHARED)
-        self.assertRegex(
-            capture_queries_while_holding_lock(lock.TRY.SHARED),
+        assert lock == lock.TRY.SHARED
+        assert re.search(
             rf"(?m)SELECT pg_try_advisory_lock_shared\(\d+, {objid}\)\n"
             "--\n"
             rf"SELECT pg_advisory_unlock_shared\(\d+, {objid}\)",
+            capture_queries_while_holding_lock(lock.TRY.SHARED),
         )
 
 
-class TestDatabaseXactLock(MAASTransactionServerTestCase):
-    scenarios = tuple(
-        ("%s/%s" % mode, {"mode": mode})
-        for mode in dblocks.DatabaseXactLock.MODE_CHOICES
-    )
+@pytest.mark.allow_transactions
+@pytest.mark.usefixtures("transactional_maasdb")
+@pytest.mark.parametrize(
+    "mode", dblocks.DatabaseXactLock.MODE_CHOICES, ids=MODE_IDS
+)
+class TestDatabaseXactLock:
+    def make_lock(self, objid, mode):
+        return dblocks.DatabaseXactLock(objid, mode=mode)
 
-    def make_lock(self, objid):
-        return dblocks.DatabaseXactLock(objid, mode=self.mode)
-
-    def test_create_lock(self):
+    def test_create_lock(self, mode):
         objid = get_objid()
-        lock = self.make_lock(objid)
-        self.assertEqual(lock, (dblocks.classid, objid))
+        lock = self.make_lock(objid, mode)
+        assert lock == (dblocks.classid, objid)
 
-    def test_properties(self):
-        lock = self.make_lock(get_objid())
-        self.assertEqual(lock, (lock.classid, lock.objid))
+    def test_properties(self, mode):
+        lock = self.make_lock(get_objid(), mode)
+        assert lock == (lock.classid, lock.objid)
 
-    def test_lock_actually_locked(self):
+    def test_lock_actually_locked(self, mode):
         objid = get_objid()
-        lock = self.make_lock(objid)
+        lock = self.make_lock(objid, mode)
 
         with transaction.atomic():
             locks_held_before = get_locks()
@@ -275,112 +295,115 @@ class TestDatabaseXactLock(MAASTransactionServerTestCase):
         locks_held_after_txn = get_locks()
 
         locks_obtained = locks_held - locks_held_before
-        self.assertIn(objid, locks_obtained)
+        assert objid in locks_obtained
 
         locks_released = locks_held - locks_held_after
-        self.assertNotIn(objid, locks_released)
+        assert objid not in locks_released
 
         locks_released_with_txn = locks_held - locks_held_after_txn
-        self.assertIn(objid, locks_released_with_txn)
+        assert objid in locks_released_with_txn
 
-    def test_is_locked(self):
+    def test_is_locked(self, mode):
         objid = get_objid()
-        lock = self.make_lock(objid)
+        lock = self.make_lock(objid, mode)
 
         with transaction.atomic():
-            self.assertFalse(lock.is_locked())
+            assert not lock.is_locked()
             with lock:
-                self.assertTrue(lock.is_locked())
-            self.assertTrue(lock.is_locked())
+                assert lock.is_locked()
+            assert lock.is_locked()
 
         # The lock is released with the end of the transaction.
-        self.assertFalse(lock.is_locked())
+        assert not lock.is_locked()
 
-    def test_obtaining_lock_fails_when_outside_of_transaction(self):
+    def test_obtaining_lock_fails_when_outside_of_transaction(self, mode):
         objid = get_objid()
-        lock = self.make_lock(objid)
-        self.assertRaises(
-            dblocks.DatabaseLockAttemptOutsideTransaction, lock.__enter__
-        )
+        lock = self.make_lock(objid, mode)
+        with pytest.raises(dblocks.DatabaseLockAttemptOutsideTransaction):
+            lock.__enter__()
 
-    def test_releasing_lock_does_nothing(self):
+    def test_releasing_lock_does_nothing(self, mode):
         objid = get_objid()
-        lock = self.make_lock(objid)
-        self.assertIsNone(lock.__exit__())
+        lock = self.make_lock(objid, mode)
+        assert lock.__exit__() is None
 
-    def test_repr(self):
-        lock = self.make_lock(get_objid())
-        self.assertEqual(
+    def test_repr(self, mode):
+        lock = self.make_lock(get_objid(), mode)
+        assert repr(lock) == (
             "<DatabaseXactLock classid=%d objid=%d lock=%s unlock=%s>"
-            % (lock[0], lock[1], self.mode[0], self.mode[1]),
-            repr(lock),
+            % (lock[0], lock[1], mode[0], mode[1])
         )
 
 
-class TestDatabaseXactLockVariations(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "mock_openfga")
+class TestDatabaseXactLockVariations:
     def test_plain_variation(self):
         objid = get_objid()
         lock = dblocks.DatabaseXactLock(objid)
-        self.assertRegex(
-            capture_queries_while_holding_lock(lock),
+        assert re.search(
             rf"SELECT pg_advisory_xact_lock\(\d+, {objid}\)",
+            capture_queries_while_holding_lock(lock),
         )
 
     def test_try_variation(self):
         objid = get_objid()
         lock = dblocks.DatabaseXactLock(objid)
-        self.assertEqual(lock, lock.TRY)
-        self.assertRegex(
-            capture_queries_while_holding_lock(lock.TRY),
+        assert lock == lock.TRY
+        assert re.search(
             rf"SELECT pg_try_advisory_xact_lock\(\d+, {objid}\)",
+            capture_queries_while_holding_lock(lock.TRY),
         )
 
     def test_shared_variation(self):
         objid = get_objid()
         lock = dblocks.DatabaseXactLock(objid)
-        self.assertEqual(lock, lock.SHARED)
-        self.assertRegex(
-            capture_queries_while_holding_lock(lock.SHARED),
+        assert lock == lock.SHARED
+        assert re.search(
             rf"SELECT pg_advisory_xact_lock_shared\(\d+, {objid}\)",
+            capture_queries_while_holding_lock(lock.SHARED),
         )
 
     def test_try_shared_variation(self):
         objid = get_objid()
         lock = dblocks.DatabaseXactLock(objid)
-        self.assertEqual(lock, lock.TRY.SHARED)
-        self.assertRegex(
-            capture_queries_while_holding_lock(lock.TRY.SHARED),
+        assert lock == lock.TRY.SHARED
+        assert re.search(
             rf"SELECT pg_try_advisory_xact_lock_shared\(\d+, {objid}\)",
+            capture_queries_while_holding_lock(lock.TRY.SHARED),
         )
 
 
-class TestTryingToAcquireLockedLock(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "mock_openfga")
+@pytest.mark.parametrize(
+    "make_lock",
+    [dblocks.DatabaseLock, dblocks.DatabaseXactLock],
+    ids=["DatabaseLock", "DatabaseXactLock"],
+)
+class TestTryingToAcquireLockedLock:
     """Test what happens when trying to acquire a lock that's already taken."""
 
-    scenarios = (
-        ("DatabaseLock", dict(make_lock=dblocks.DatabaseLock)),
-        ("DatabaseXactLock", dict(make_lock=dblocks.DatabaseXactLock)),
-    )
-
-    def test_try_variation_when_already_exclusively_locked(self):
-        lock = self.make_lock(get_objid())
+    def test_try_variation_when_already_exclusively_locked(self, make_lock):
+        lock = make_lock(get_objid())
         with lock_held_in_other_thread(lock):
-            self.assertRaises(dblocks.DatabaseLockNotHeld, lock.TRY.__enter__)
+            with pytest.raises(dblocks.DatabaseLockNotHeld):
+                lock.TRY.__enter__()
 
-    def test_try_variation_when_already_share_locked(self):
-        lock = self.make_lock(get_objid())
+    def test_try_variation_when_already_share_locked(self, make_lock):
+        lock = make_lock(get_objid())
         with lock_held_in_other_thread(lock.SHARED):
-            self.assertRaises(dblocks.DatabaseLockNotHeld, lock.TRY.__enter__)
+            with pytest.raises(dblocks.DatabaseLockNotHeld):
+                lock.TRY.__enter__()
 
-    def test_try_shared_variation_when_already_exclusively_locked(self):
-        lock = self.make_lock(get_objid())
+    def test_try_shared_variation_when_already_exclusively_locked(
+        self, make_lock
+    ):
+        lock = make_lock(get_objid())
         with lock_held_in_other_thread(lock):
-            self.assertRaises(
-                dblocks.DatabaseLockNotHeld, lock.TRY.SHARED.__enter__
-            )
+            with pytest.raises(dblocks.DatabaseLockNotHeld):
+                lock.TRY.SHARED.__enter__()
 
-    def test_try_shared_variation_when_already_share_locked(self):
-        lock = self.make_lock(get_objid())
+    def test_try_shared_variation_when_already_share_locked(self, make_lock):
+        lock = make_lock(get_objid())
         with lock_held_in_other_thread(lock.SHARED):
             with lock.SHARED:
                 pass  # No exception.

@@ -12,11 +12,10 @@ from cryptography.x509 import (
     random_serial_number,
 )
 from cryptography.x509.oid import NameOID
-from fixtures import EnvironmentVariable, TempDir
 from OpenSSL import crypto
+import pytest
 
 from maastesting.factory import factory
-from maastesting.testcase import MAASTestCase
 from provisioningserver.certificates import (
     Certificate,
     CertificateError,
@@ -28,56 +27,48 @@ from provisioningserver.certificates import (
 from provisioningserver.testing.certificates import get_sample_cert
 
 
-class TestCertificateRequest(MAASTestCase):
+class TestCertificateRequest:
     def test_certificate_request(self):
         request = CertificateRequest.generate(
             "maas", "organization", "organization_unit", 2048, b"DNS:*"
         )
-        self.assertIsInstance(request.csr, crypto.X509Req)
-        self.assertIsInstance(request.key, crypto.PKey)
+        assert isinstance(request.csr, crypto.X509Req)
+        assert isinstance(request.key, crypto.PKey)
 
-        self.assertEqual(request.csr.get_subject().CN, "maas")
-        self.assertEqual(request.csr.get_subject().O, "organization")
-        self.assertEqual(request.csr.get_subject().OU, "organization_unit")
+        assert request.csr.get_subject().CN == "maas"
+        assert request.csr.get_subject().O == "organization"
+        assert request.csr.get_subject().OU == "organization_unit"
 
-        self.assertEqual(len(request.csr.get_extensions()), 1)
+        assert len(request.csr.get_extensions()) == 1
         subject_alt_name_extension = request.csr.get_extensions()[0]
-        self.assertEqual(
-            subject_alt_name_extension.get_short_name(), b"subjectAltName"
-        )
-        self.assertEqual(subject_alt_name_extension.get_critical(), False)
+        assert subject_alt_name_extension.get_short_name() == b"subjectAltName"
+        assert not subject_alt_name_extension.get_critical()
 
 
-class TestCertificate(MAASTestCase):
-    def setUp(self):
-        super().setUp()
+class TestCertificate:
+    @pytest.fixture(autouse=True)
+    def _setup(self):
         self.sample_cert = get_sample_cert()
 
     def test_certificate(self):
-        self.assertEqual(self.sample_cert.cn(), "maas")
-        self.assertGreaterEqual(
-            datetime.now(timezone.utc) + timedelta(days=3650),
-            self.sample_cert.expiration(),
+        assert self.sample_cert.cn() == "maas"
+        assert (
+            datetime.now(timezone.utc) + timedelta(days=3650)
+            >= self.sample_cert.expiration()
         )
-        self.assertTrue(
-            self.sample_cert.certificate_pem().startswith(
-                "-----BEGIN CERTIFICATE-----"
-            )
+        assert self.sample_cert.certificate_pem().startswith(
+            "-----BEGIN CERTIFICATE-----"
         )
-        self.assertTrue(
-            self.sample_cert.public_key_pem().startswith(
-                "-----BEGIN PUBLIC KEY-----"
-            )
+        assert self.sample_cert.public_key_pem().startswith(
+            "-----BEGIN PUBLIC KEY-----"
         )
-        self.assertTrue(
-            self.sample_cert.private_key_pem().startswith(
-                "-----BEGIN PRIVATE KEY-----"
-            )
+        assert self.sample_cert.private_key_pem().startswith(
+            "-----BEGIN PRIVATE KEY-----"
         )
-        self.assertEqual(self.sample_cert.ca_certificates_pem(), "")
-        self.assertEqual(
-            self.sample_cert.certificate_pem(),
-            self.sample_cert.fullchain_pem(),
+        assert self.sample_cert.ca_certificates_pem() == ""
+        assert (
+            self.sample_cert.certificate_pem()
+            == self.sample_cert.fullchain_pem()
         )
 
     def test_from_pem_single_material(self):
@@ -85,24 +76,16 @@ class TestCertificate(MAASTestCase):
             self.sample_cert.certificate_pem()
             + self.sample_cert.private_key_pem()
         )
-        self.assertEqual(
-            self.sample_cert.certificate_pem(), cert.certificate_pem()
-        )
-        self.assertEqual(
-            self.sample_cert.private_key_pem(), cert.private_key_pem()
-        )
+        assert self.sample_cert.certificate_pem() == cert.certificate_pem()
+        assert self.sample_cert.private_key_pem() == cert.private_key_pem()
 
     def test_from_pem_multiple_material(self):
         cert = Certificate.from_pem(
             self.sample_cert.certificate_pem(),
             self.sample_cert.private_key_pem(),
         )
-        self.assertEqual(
-            self.sample_cert.certificate_pem(), cert.certificate_pem()
-        )
-        self.assertEqual(
-            self.sample_cert.private_key_pem(), cert.private_key_pem()
-        )
+        assert self.sample_cert.certificate_pem() == cert.certificate_pem()
+        assert self.sample_cert.private_key_pem() == cert.private_key_pem()
 
     def test_from_pem_multiple_material_adds_newlines(self):
         # material entries are joined with a newline since each PEM material
@@ -111,18 +94,12 @@ class TestCertificate(MAASTestCase):
             self.sample_cert.certificate_pem().strip(),
             self.sample_cert.private_key_pem().strip(),
         )
-        self.assertEqual(
-            self.sample_cert.certificate_pem(), cert.certificate_pem()
-        )
-        self.assertEqual(
-            self.sample_cert.private_key_pem(), cert.private_key_pem()
-        )
+        assert self.sample_cert.certificate_pem() == cert.certificate_pem()
+        assert self.sample_cert.private_key_pem() == cert.private_key_pem()
 
     def test_from_pem_invalid_material(self):
-        error = self.assertRaises(
-            CertificateError, Certificate.from_pem, "random stuff"
-        )
-        self.assertEqual(str(error), "Invalid PEM material")
+        with pytest.raises(CertificateError, match="Invalid PEM material"):
+            Certificate.from_pem("random stuff")
 
     def test_from_pem_private_key_with_passphrase(self):
         encrypted_privatekey_pem = crypto.dump_privatekey(
@@ -131,31 +108,25 @@ class TestCertificate(MAASTestCase):
             cipher="AES128",
             passphrase=b"sekret",
         ).decode("ascii")
-        error = self.assertRaises(
-            CertificateError,
-            Certificate.from_pem,
-            self.sample_cert.certificate_pem(),
-            encrypted_privatekey_pem,
-        )
-        self.assertEqual(str(error), "Private key can't have a passphrase")
+        with pytest.raises(
+            CertificateError, match="Private key can't have a passphrase"
+        ):
+            Certificate.from_pem(
+                self.sample_cert.certificate_pem(),
+                encrypted_privatekey_pem,
+            )
 
     def test_from_pem_no_key(self):
-        error = self.assertRaises(
-            CertificateError,
-            Certificate.from_pem,
-            self.sample_cert.certificate_pem(),
-        )
-        self.assertEqual(str(error), "Invalid PEM material")
+        with pytest.raises(CertificateError, match="Invalid PEM material"):
+            Certificate.from_pem(self.sample_cert.certificate_pem())
 
     def test_from_pem_check_keys_match(self):
         cert = Certificate.generate("maas")
         material = self.sample_cert.certificate_pem() + cert.private_key_pem()
-        error = self.assertRaises(
-            CertificateError,
-            Certificate.from_pem,
-            material,
-        )
-        self.assertEqual(str(error), "Private and public keys don't match")
+        with pytest.raises(
+            CertificateError, match="Private and public keys don't match"
+        ):
+            Certificate.from_pem(material)
 
     def test_check_key_match_uses_cryptography_api(self):
         """Test that _check_key_match properly uses the cryptography library."""
@@ -168,13 +139,10 @@ class TestCertificate(MAASTestCase):
         cert1 = Certificate.generate("maas1")
         cert2 = Certificate.generate("maas2")
 
-        error = self.assertRaises(
-            CertificateError,
-            Certificate._check_key_match,
-            cert1.key,
-            cert2.cert,
-        )
-        self.assertEqual(str(error), "Private and public keys don't match")
+        with pytest.raises(
+            CertificateError, match="Private and public keys don't match"
+        ):
+            Certificate._check_key_match(cert1.key, cert2.cert)
 
     def test_check_key_match_with_different_key_sizes(self):
         """Test key matching works with different RSA key sizes."""
@@ -186,13 +154,10 @@ class TestCertificate(MAASTestCase):
         Certificate._check_key_match(cert_4096.key, cert_4096.cert)
 
         # Mismatched should fail
-        error = self.assertRaises(
-            CertificateError,
-            Certificate._check_key_match,
-            cert_2048.key,
-            cert_4096.cert,
-        )
-        self.assertEqual(str(error), "Private and public keys don't match")
+        with pytest.raises(
+            CertificateError, match="Private and public keys don't match"
+        ):
+            Certificate._check_key_match(cert_2048.key, cert_4096.cert)
 
     def _generate_ec_certificate_pem(self) -> tuple[str, str]:
         key = ec.generate_private_key(ec.SECP256R1())
@@ -220,15 +185,15 @@ class TestCertificate(MAASTestCase):
     def test_from_pem_ec_key(self):
         cert_pem, key_pem = self._generate_ec_certificate_pem()
         cert = Certificate.from_pem(cert_pem, key_pem)
-        self.assertEqual(cert.certificate_pem(), cert_pem)
+        assert cert.certificate_pem() == cert_pem
 
     def test_from_pem_ec_key_mismatch(self):
         cert_pem, _ = self._generate_ec_certificate_pem()
         _, other_key_pem = self._generate_ec_certificate_pem()
-        error = self.assertRaises(
-            CertificateError, Certificate.from_pem, cert_pem, other_key_pem
-        )
-        self.assertEqual(str(error), "Private and public keys don't match")
+        with pytest.raises(
+            CertificateError, match="Private and public keys don't match"
+        ):
+            Certificate.from_pem(cert_pem, other_key_pem)
 
     def test_from_pem_ca_certs(self):
         other_cert = Certificate.generate("maas")
@@ -238,47 +203,42 @@ class TestCertificate(MAASTestCase):
             self.sample_cert.private_key_pem().strip(),
             ca_certs_material=other_cert_pem,
         )
-        self.assertEqual(cert.ca_certificates_pem(), other_cert_pem)
-        self.assertEqual(
-            cert.fullchain_pem(), cert.certificate_pem() + other_cert_pem
-        )
+        assert cert.ca_certificates_pem() == other_cert_pem
+        assert cert.fullchain_pem() == cert.certificate_pem() + other_cert_pem
 
     def test_tempfiles(self):
         cert_file, key_file = self.sample_cert.tempfiles()
-        self.assertEqual(
-            Path(cert_file).read_text(), self.sample_cert.certificate_pem()
+        assert (
+            Path(cert_file).read_text() == self.sample_cert.certificate_pem()
         )
-        self.assertEqual(
-            Path(key_file).read_text(), self.sample_cert.private_key_pem()
-        )
+        assert Path(key_file).read_text() == self.sample_cert.private_key_pem()
 
     def test_generate_certificate_defaults(self):
         cert = Certificate.generate("maas")
-        self.assertIsInstance(cert.cert, crypto.X509)
-        self.assertIsInstance(cert.key, crypto.PKey)
-        self.assertEqual(cert.cert.get_subject().CN, "maas")
-        self.assertIsNone(cert.cert.get_issuer().organizationName)
-        self.assertIsNone(cert.cert.get_issuer().organizationalUnitName)
-        self.assertEqual(
-            crypto.dump_publickey(crypto.FILETYPE_PEM, cert.cert.get_pubkey()),
-            crypto.dump_publickey(crypto.FILETYPE_PEM, cert.key),
-        )
-        self.assertEqual(cert.key.bits(), 4096)
-        self.assertEqual(cert.key.type(), crypto.TYPE_RSA)
-        self.assertGreaterEqual(
-            datetime.now(timezone.utc) + timedelta(days=3650),
-            cert.expiration(),
+        assert isinstance(cert.cert, crypto.X509)
+        assert isinstance(cert.key, crypto.PKey)
+        assert cert.cert.get_subject().CN == "maas"
+        assert cert.cert.get_issuer().organizationName is None
+        assert cert.cert.get_issuer().organizationalUnitName is None
+        assert crypto.dump_publickey(
+            crypto.FILETYPE_PEM, cert.cert.get_pubkey()
+        ) == crypto.dump_publickey(crypto.FILETYPE_PEM, cert.key)
+        assert cert.key.bits() == 4096
+        assert cert.key.type() == crypto.TYPE_RSA
+        assert (
+            datetime.now(timezone.utc) + timedelta(days=3650)
+            >= cert.expiration()
         )
 
     def test_generate_certificate_key_bits(self):
         cert = Certificate.generate("maas", key_bits=1024)
-        self.assertEqual(cert.key.bits(), 1024)
+        assert cert.key.bits() == 1024
 
     def test_generate_certificate_validity(self):
         cert = Certificate.generate("maas", validity=timedelta(days=100))
-        self.assertGreaterEqual(
-            datetime.now(timezone.utc) + timedelta(days=100),
-            cert.expiration(),
+        assert (
+            datetime.now(timezone.utc) + timedelta(days=100)
+            >= cert.expiration()
         )
 
     def test_generate_certificate_organization(self):
@@ -287,10 +247,8 @@ class TestCertificate(MAASTestCase):
             organization_name="myorg",
             organizational_unit_name="myunit",
         )
-        self.assertEqual(cert.cert.get_issuer().organizationName, "myorg")
-        self.assertEqual(
-            cert.cert.get_issuer().organizationalUnitName, "myunit"
-        )
+        assert cert.cert.get_issuer().organizationName == "myorg"
+        assert cert.cert.get_issuer().organizationalUnitName == "myunit"
 
     def test_generate_truncate_fields(self):
         cn = factory.make_string(size=65)
@@ -300,20 +258,17 @@ class TestCertificate(MAASTestCase):
             cn, organization_name=o, organizational_unit_name=ou
         )
         # max fields length is 64, so the last char is truncated
-        self.assertEqual(cert.cn(), cn[:-1])
-        self.assertEqual(cert.o(), o[:-1])
-        self.assertEqual(cert.ou(), ou[:-1])
+        assert cert.cn() == cn[:-1]
+        assert cert.o() == o[:-1]
+        assert cert.ou() == ou[:-1]
 
     def test_generate_certificate_not_before(self):
         cert = Certificate.generate("maas", validity=timedelta(days=100))
-        self.assertLessEqual(
-            datetime.now(timezone.utc) + timedelta(days=-1),
-            cert.not_before(),
+        assert (
+            datetime.now(timezone.utc) + timedelta(days=-1)
+            <= cert.not_before()
         )
-        self.assertGreater(
-            cert.expiration(),
-            cert.not_before(),
-        )
+        assert cert.expiration() > cert.not_before()
 
     def test_generate_ca_certificate(self):
         cert = Certificate.generate_ca_certificate(
@@ -323,39 +278,31 @@ class TestCertificate(MAASTestCase):
             validity=timedelta(days=100),
         )
 
-        self.assertIsInstance(cert.cert, crypto.X509)
-        self.assertIsInstance(cert.key, crypto.PKey)
-        self.assertEqual(cert.cert.get_subject().CN, "maas")
-        self.assertEqual(
-            crypto.dump_publickey(crypto.FILETYPE_PEM, cert.cert.get_pubkey()),
-            crypto.dump_publickey(crypto.FILETYPE_PEM, cert.key),
+        assert isinstance(cert.cert, crypto.X509)
+        assert isinstance(cert.key, crypto.PKey)
+        assert cert.cert.get_subject().CN == "maas"
+        assert crypto.dump_publickey(
+            crypto.FILETYPE_PEM, cert.cert.get_pubkey()
+        ) == crypto.dump_publickey(crypto.FILETYPE_PEM, cert.key)
+        assert cert.key.bits() == 4096
+        assert cert.key.type() == crypto.TYPE_RSA
+        assert (
+            datetime.now(timezone.utc) + timedelta(days=-1)
+            <= cert.not_before()
         )
-        self.assertEqual(cert.key.bits(), 4096)
-        self.assertEqual(cert.key.type(), crypto.TYPE_RSA)
-        self.assertLessEqual(
-            datetime.now(timezone.utc) + timedelta(days=-1),
-            cert.not_before(),
-        )
-        self.assertGreater(
-            cert.expiration(),
-            cert.not_before(),
-        )
+        assert cert.expiration() > cert.not_before()
 
         x509certificate = cert.cert
-        self.assertEqual(
-            x509certificate.get_issuer(), x509certificate.get_subject()
-        )
-        self.assertEqual(
-            x509certificate.get_version(), crypto.x509.Version.v3.value
-        )
-        self.assertEqual(x509certificate.get_extension_count(), 1)
+        assert x509certificate.get_issuer() == x509certificate.get_subject()
+        assert x509certificate.get_version() == crypto.x509.Version.v3.value
+        assert x509certificate.get_extension_count() == 1
 
         # Extensions are kept in order
         basic_constraints_extension = x509certificate.get_extension(0)
-        self.assertEqual(
-            basic_constraints_extension.get_short_name(), b"basicConstraints"
+        assert (
+            basic_constraints_extension.get_short_name() == b"basicConstraints"
         )
-        self.assertEqual(basic_constraints_extension.get_critical(), True)
+        assert basic_constraints_extension.get_critical()
 
     def test_sign_certificate(self):
         certificate_request = CertificateRequest.generate(
@@ -370,30 +317,27 @@ class TestCertificate(MAASTestCase):
 
         signed_certificate = ca.sign_certificate_request(certificate_request)
 
-        self.assertIsInstance(signed_certificate.cert, crypto.X509)
-        self.assertIsInstance(signed_certificate.key, crypto.PKey)
-        self.assertEqual(len(signed_certificate.ca_certs), 1)
-        self.assertEqual(signed_certificate.cert.get_subject().CN, "maas")
-        self.assertEqual(signed_certificate.key, certificate_request.key)
-        self.assertLessEqual(
-            datetime.now(timezone.utc) + timedelta(days=-1),
-            signed_certificate.not_before(),
+        assert isinstance(signed_certificate.cert, crypto.X509)
+        assert isinstance(signed_certificate.key, crypto.PKey)
+        assert len(signed_certificate.ca_certs) == 1
+        assert signed_certificate.cert.get_subject().CN == "maas"
+        assert signed_certificate.key == certificate_request.key
+        assert (
+            datetime.now(timezone.utc) + timedelta(days=-1)
+            <= signed_certificate.not_before()
         )
-        self.assertGreater(
-            signed_certificate.expiration(),
-            signed_certificate.not_before(),
+        assert (
+            signed_certificate.expiration() > signed_certificate.not_before()
         )
-        self.assertEqual(
-            len(certificate_request.csr.get_extensions()),
-            signed_certificate.cert.get_extension_count(),
+        assert (
+            len(certificate_request.csr.get_extensions())
+            == signed_certificate.cert.get_extension_count()
         )
-        self.assertEqual(
-            certificate_request.csr.get_extensions()[0].get_short_name(),
-            signed_certificate.cert.get_extension(0).get_short_name(),
+        assert (
+            certificate_request.csr.get_extensions()[0].get_short_name()
+            == signed_certificate.cert.get_extension(0).get_short_name()
         )
-        self.assertEqual(
-            signed_certificate.cert.get_issuer(), ca.cert.get_subject()
-        )
+        assert signed_certificate.cert.get_issuer() == ca.cert.get_subject()
 
         # check that the signed certificate is valid
         store = crypto.X509Store()
@@ -402,40 +346,38 @@ class TestCertificate(MAASTestCase):
         try:
             context.verify_certificate()
         except crypto.X509StoreContextError:
-            self.fail("Failed to verify the signed certificate.")
+            pytest.fail("Failed to verify the signed certificate.")
 
 
-class TestClusterCertificates(MAASTestCase):
-    def setUp(self):
-        super().setUp()
-        self.tempdir = Path(self.useFixture(TempDir()).path)
+class TestClusterCertificates:
+    @pytest.fixture(autouse=True)
+    def _setup(self, tmp_path, monkeypatch):
+        self.tempdir = tmp_path
+        self.monkeypatch = monkeypatch
 
     def test_get_maas_cluster_cert_paths(self):
-        self.useFixture(EnvironmentVariable("MAAS_ROOT", str(self.tempdir)))
+        self.monkeypatch.setenv("MAAS_ROOT", str(self.tempdir))
         (self.tempdir / "certificates").mkdir(parents=True)
-        self.assertIsNone(get_maas_cluster_cert_paths())
+        assert get_maas_cluster_cert_paths() is None
 
     def test_get_maas_cluster_cert(self):
-        self.useFixture(EnvironmentVariable("MAAS_ROOT", str(self.tempdir)))
+        self.monkeypatch.setenv("MAAS_ROOT", str(self.tempdir))
 
         certs_dir = self.tempdir / "certificates"
         certs_dir.mkdir(parents=True)
         (certs_dir / "cluster.pem").touch()
         (certs_dir / "cluster.key").touch()
         (certs_dir / "cacerts.pem").touch()
-        self.assertEqual(
-            get_maas_cluster_cert_paths(),
-            (
-                f"{certs_dir}/cluster.pem",
-                f"{certs_dir}/cluster.key",
-                f"{certs_dir}/cacerts.pem",
-            ),
+        assert get_maas_cluster_cert_paths() == (
+            f"{certs_dir}/cluster.pem",
+            f"{certs_dir}/cluster.key",
+            f"{certs_dir}/cacerts.pem",
         )
 
     def test_store_maas_cluster_cert_tuple(self):
         certs_dir = self.tempdir / "certificates"
         certs_dir.mkdir(parents=True)
-        self.useFixture(EnvironmentVariable("MAAS_ROOT", str(self.tempdir)))
+        self.monkeypatch.setenv("MAAS_ROOT", str(self.tempdir))
         store_maas_cluster_cert_tuple(
             b"private_key", b"certificate", b"cacerts"
         )
@@ -444,32 +386,30 @@ class TestClusterCertificates(MAASTestCase):
             private_key_path,
             cacerts_path,
         ) = get_maas_cluster_cert_paths()
-        self.assertEqual(Path(certificate_path).lstat().st_mode & 0o777, 0o644)
-        self.assertEqual(Path(private_key_path).lstat().st_mode & 0o777, 0o600)
-        self.assertEqual(Path(cacerts_path).lstat().st_mode & 0o777, 0o644)
+        assert Path(certificate_path).lstat().st_mode & 0o777 == 0o644
+        assert Path(private_key_path).lstat().st_mode & 0o777 == 0o600
+        assert Path(cacerts_path).lstat().st_mode & 0o777 == 0o644
 
 
-class TestGetMAASCertTuple(MAASTestCase):
-    def setUp(self):
-        super().setUp()
-        self.tempdir = Path(self.useFixture(TempDir()).path)
+class TestGetMAASCertTuple:
+    @pytest.fixture(autouse=True)
+    def _setup(self, tmp_path, monkeypatch):
+        self.tempdir = tmp_path
+        self.monkeypatch = monkeypatch
 
     def test_get_maas_cert_tuple_missing_files(self):
-        self.useFixture(EnvironmentVariable("SNAP_COMMON", str(self.tempdir)))
-        self.useFixture(EnvironmentVariable("SNAP", "/snap/maas/current"))
-        self.assertIsNone(get_maas_cert_tuple())
+        self.monkeypatch.setenv("SNAP_COMMON", str(self.tempdir))
+        self.monkeypatch.setenv("SNAP", "/snap/maas/current")
+        assert get_maas_cert_tuple() is None
 
     def test_get_maas_cert_tuple(self):
         certs_dir = self.tempdir / "certificates"
         certs_dir.mkdir(parents=True)
         (certs_dir / "maas.crt").touch()
         (certs_dir / "maas.key").touch()
-        self.useFixture(EnvironmentVariable("SNAP_COMMON", str(self.tempdir)))
-        self.useFixture(EnvironmentVariable("SNAP", "/snap/maas/current"))
-        self.assertEqual(
-            get_maas_cert_tuple(),
-            (
-                f"{certs_dir}/maas.crt",
-                f"{certs_dir}/maas.key",
-            ),
+        self.monkeypatch.setenv("SNAP_COMMON", str(self.tempdir))
+        self.monkeypatch.setenv("SNAP", "/snap/maas/current")
+        assert get_maas_cert_tuple() == (
+            f"{certs_dir}/maas.crt",
+            f"{certs_dir}/maas.key",
         )

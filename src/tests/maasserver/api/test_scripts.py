@@ -228,11 +228,14 @@ class TestScriptsAPI(APITestCase.ForUser):
 class TestScriptAPI(APITestCase.ForUser):
     """Tests for /api/2.0/scripts/<script name>/."""
 
-    scenarios = (("by_name", {"by_name": True}), ("by_id", {"by_name": False}))
+    scenarios = (
+        ("by_name", {"_by_name": True}),
+        ("by_id", {"_by_name": False}),
+    )
 
     def get_script_uri(self, script):
         """Return the script's URI on the API."""
-        if self.by_name:
+        if self._by_name:
             name = script.name
         else:
             name = script.id
@@ -240,7 +243,7 @@ class TestScriptAPI(APITestCase.ForUser):
 
     def test_hander_path(self):
         script = factory.make_Script()
-        if self.by_name:
+        if self._by_name:
             name = script.name
         else:
             name = script.id

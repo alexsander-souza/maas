@@ -8,6 +8,7 @@ import random
 from django.conf import settings
 from django.test import RequestFactory
 from django.urls import reverse
+import pytest
 from twisted.internet.defer import succeed
 
 from maasserver import eventloop
@@ -41,7 +42,6 @@ from maasserver.testing.osystems import make_usable_osystem
 from maasserver.testing.testclient import MAASSensibleOAuthClient
 from maasserver.utils.orm import post_commit_hooks, reload_object
 from maastesting.djangotestcase import CountQueries
-from maastesting.testcase import MAASTestCase
 from metadataserver.enum import SCRIPT_TYPE
 from provisioningserver.enum import POWER_STATE
 from provisioningserver.utils.enum import map_enum
@@ -49,14 +49,14 @@ from tests.maasserver.api.test_nodes import RenderedNodesMixin
 from tests.maasserver.auth.test_auth import OpenFGAMockMixin
 
 
-class TestGetStorageLayoutParams(MAASTestCase):
+class TestGetStorageLayoutParams:
     def test_sets_request_data_to_mutable(self):
         data = {"op": "allocate", "storage_layout": "flat"}
         request = RequestFactory().post(reverse("machines_handler"), data)
         request.data = request.POST.copy()
         request.data._mutable = False
         machines_module.get_storage_layout_params(request)
-        self.assertTrue(request.data._mutable)
+        assert request.data._mutable
 
 
 class TestMachineHostname(APITestCase.ForUserAndAdmin):
@@ -2866,7 +2866,7 @@ class TestPowerState(APITransactionTestCase.ForUser):
         self.assertPowerState(machine, random_state)
 
 
-class TestGetAllocationOptions(MAASTestCase):
+class TestGetAllocationOptions:
     def test_defaults(self):
         request = factory.make_fake_request(method="POST", data={})
         options = get_allocation_options(request)
@@ -2880,13 +2880,14 @@ class TestGetAllocationOptions(MAASTestCase):
             ephemeral_deploy=False,
             enable_hw_sync=False,
         )
-        self.assertEqual(expected_options, options)
+        assert expected_options == options
 
     def test_install_kvm_raises_bad_request(self):
         request = factory.make_fake_request(
             method="POST", data=dict(install_kvm="true")
         )
-        self.assertRaises(MAASAPIBadRequest, get_allocation_options, request)
+        with pytest.raises(MAASAPIBadRequest):
+            get_allocation_options(request)
 
     def test_non_defaults(self):
         request = factory.make_fake_request(
@@ -2913,7 +2914,7 @@ class TestGetAllocationOptions(MAASTestCase):
             ephemeral_deploy=True,
             enable_hw_sync=True,
         )
-        self.assertEqual(expected_options, options)
+        assert expected_options == options
 
 
 class TestMachinesAPIOpenFGAIntegration(OpenFGAMockMixin, APITestCase.ForUser):

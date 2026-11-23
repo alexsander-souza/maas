@@ -7,55 +7,57 @@ from argparse import ArgumentParser
 import io
 from unittest.mock import Mock
 
+import pytest
+
 from maastesting.factory import factory
-from maastesting.testcase import MAASTestCase
 from provisioningserver.utils import arp as arp_module
 from provisioningserver.utils.arp import add_arguments, run
 from provisioningserver.utils.script import ActionScriptError
 
 
-class TestObserveARPCommand(MAASTestCase):
+class TestObserveARPCommand:
     """Tests for `maas-rack observe-arp`."""
 
     def test_requires_input_interface(self):
         parser = ArgumentParser()
         add_arguments(parser)
         args = parser.parse_args([])
-        with self.assertRaisesRegex(
-            ActionScriptError, "Required argument: interface"
+        with pytest.raises(
+            ActionScriptError, match="Required argument: interface"
         ):
             run(args)
 
-    def test_calls_subprocess_for_interface(self):
+    def test_calls_subprocess_for_interface(self, mocker):
         parser = ArgumentParser()
         add_arguments(parser)
         args = parser.parse_args(["eth0"])
-        popen = self.patch(arp_module.subprocess, "Popen")
+        popen = mocker.patch.object(arp_module.subprocess, "Popen")
         popen.return_value.wait = Mock()
         popen.return_value.wait.return_value = 0
         popen.return_value.stdout = io.StringIO("{}")
         output = io.StringIO()
-        with self.assertRaisesRegex(SystemExit, "0"):
+        with pytest.raises(SystemExit, match="0"):
             run(args, output=output)
         popen.assert_called_once_with(
             ["/usr/sbin/maas-netmon", "eth0"], stdout=output
         )
 
-    def test_raises_systemexit_on_wait(self):
+    def test_raises_systemexit_on_wait(self, mocker):
         parser = ArgumentParser()
         add_arguments(parser)
         args = parser.parse_args(["eth0"])
-        popen = self.patch(arp_module.subprocess, "Popen")
+        popen = mocker.patch.object(arp_module.subprocess, "Popen")
         popen.return_value.wait = Mock()
         popen.return_value.wait.return_value = 42
         popen.return_value.stdout = io.StringIO("{}")
         output = io.StringIO()
-        with self.assertRaisesRegex(SystemExit, "42"):
+        with pytest.raises(SystemExit, match="42"):
             run(args, output=output)
 
-    def test_sets_self_as_process_group_leader(self):
+    def test_sets_self_as_process_group_leader(self, mocker):
         exception_type = factory.make_exception_type()
-        os = self.patch(arp_module, "os")
+        os = mocker.patch.object(arp_module, "os")
         os.setpgrp.side_effect = exception_type
-        self.assertRaises(exception_type, run, [])
+        with pytest.raises(exception_type):
+            run([])
         os.setpgrp.assert_called_once_with()

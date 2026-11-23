@@ -4,10 +4,12 @@
 """Tests for asynchronous utilities."""
 
 from functools import partial
+import random
 import threading
 from time import time
 from unittest.mock import call, Mock, sentinel
 
+import pytest
 from twisted.internet import reactor
 from twisted.internet.defer import Deferred
 from twisted.internet.task import deferLater
@@ -20,90 +22,84 @@ from maasserver.utils import asynchronous
 from maasserver.utils.asynchronous import DeferredHooks
 from maastesting.crochet import wait_for
 from maastesting.factory import factory
-from maastesting.testcase import MAASTestCase
 from maastesting.twisted import extract_result, TwistedLoggerFixture
 
 
-class TestGather(MAASTestCase):
+class TestGather:
     def test_gather_nothing(self):
         time_before = time()
         results = list(asynchronous.gather([], timeout=10))
         time_after = time()
-        self.assertEqual([], results)
+        assert [] == results
         # gather() should return well within 9 seconds; this shows
         # that the call is not timing out.
-        self.assertLess(time_after - time_before, 9)
+        assert time_after - time_before < 9
 
 
-class TestGatherScenarios(MAASTestCase):
-    scenarios = (
-        (
-            "synchronous",
-            {
-                # Return the call as-is.
-                "wrap": lambda call: call
-            },
-        ),
-        (
-            "asynchronous",
-            {
-                # Defer the call to a later reactor iteration.
-                "wrap": lambda call: partial(deferLater, reactor, 0, call)
-            },
-        ),
-    )
-
-    def test_gather_from_calls_without_errors(self):
-        values = [self.getUniqueInteger(), self.getUniqueString()]
-        calls = [self.wrap(lambda v=value: v) for value in values]
+@pytest.mark.parametrize(
+    "wrap",
+    [
+        lambda call: call,
+        lambda call: partial(deferLater, reactor, 0, call),
+    ],
+    ids=["synchronous", "asynchronous"],
+)
+class TestGatherScenarios:
+    def test_gather_from_calls_without_errors(self, wrap):
+        values = [random.randint(0, 1000000), factory.make_name("test")]
+        calls = [wrap(lambda v=value: v) for value in values]
         results = list(asynchronous.gather(calls))
-        self.assertCountEqual(values, results)
+        assert set(values) == set(results)
 
-    def test_gatherCallResults_returns_use_once_iterator(self):
+    def test_gatherCallResults_returns_use_once_iterator(self, wrap):
         calls = []
         results = asynchronous.gatherCallResults(calls)
-        self.assertIsInstance(results, asynchronous.UseOnceIterator)
+        assert isinstance(results, asynchronous.UseOnceIterator)
 
-    def test_gather_from_calls_with_errors(self):
+    def test_gather_from_calls_with_errors(self, wrap):
         calls = [(lambda: sentinel.okay), (lambda: 1 / 0)]  # ZeroDivisionError
-        calls = [self.wrap(call) for call in calls]
+        calls = [wrap(call) for call in calls]
         results = list(asynchronous.gather(calls))
 
-        self.assertIn(sentinel.okay, results)
+        assert sentinel.okay in results
         results.remove(sentinel.okay)
-        self.assertEqual(len(results), 1)
+        assert len(results) == 1
         failure = results[0]
-        self.assertIsInstance(failure, Failure)
-        self.assertIs(failure.type, ZeroDivisionError)
+        assert isinstance(failure, Failure)
+        assert failure.type is ZeroDivisionError
 
-    def test_gatherCallResults_yields_call_result_tuples(self):
-        values = [self.getUniqueInteger(), self.getUniqueString()]
-        calls = [self.wrap(lambda v=value: v) for value in values]
+    def test_gatherCallResults_yields_call_result_tuples(self, wrap):
+        values = [random.randint(0, 1000000), factory.make_name("test")]
+        calls = [wrap(lambda v=value: v) for value in values]
         results = list(asynchronous.gatherCallResults(calls))
         expected_results = [(calls[0], values[0]), (calls[1], values[1])]
-        self.assertCountEqual(expected_results, results)
+        assert {id(call): value for call, value in expected_results} == {
+            id(call): value for call, value in results
+        }
 
 
-class TestUseOnceIterator(MAASTestCase):
+class TestUseOnceIterator:
     def test_returns_correct_items_for_list(self):
         expected_values = list(range(10))
         iterator = asynchronous.UseOnceIterator(expected_values)
         actual_values = [val for val in iterator]
-        self.assertEqual(expected_values, actual_values)
+        assert expected_values == actual_values
 
     def test_raises_stop_iteration(self):
         iterator = asynchronous.UseOnceIterator([])
-        self.assertRaises(StopIteration, iterator.__next__)
+        with pytest.raises(StopIteration):
+            iterator.__next__()
 
     def test_raises_iterator_reused(self):
         iterator = asynchronous.UseOnceIterator([])
         # Loop over the iterator to get to the point where we might try
         # and reuse it.
         list(iterator)
-        self.assertRaises(IteratorReusedError, iterator.__next__)
+        with pytest.raises(IteratorReusedError):
+            iterator.__next__()
 
 
-class TestDeferredHooks(MAASTestCase, PostCommitHooksTestMixin):
+class TestDeferredHooks(PostCommitHooksTestMixin):
     def test_is_thread_local(self):
         dhooks = DeferredHooks()
         queues = []
@@ -113,20 +109,21 @@ class TestDeferredHooks(MAASTestCase, PostCommitHooksTestMixin):
             )
             thread.start()
             thread.join()
-        self.assertEqual(len(queues), 3)
+        assert len(queues) == 3
         # Each queue is distinct (deque is unhashable; use the id() of each).
-        self.assertEqual(len({id(q) for q in queues}), 3)
+        assert len({id(q) for q in queues}) == 3
 
     def test_add_appends_Deferred_to_queue(self):
         dhooks = DeferredHooks()
-        self.assertEqual(len(dhooks.hooks), 0)
+        assert len(dhooks.hooks) == 0
         dhooks.add(Deferred())
-        self.assertEqual(len(dhooks.hooks), 1)
+        assert len(dhooks.hooks) == 1
 
     def test_add_cannot_be_called_in_the_reactor(self):
         dhooks = DeferredHooks()
         add_in_reactor = wait_for()(dhooks.add)  # Wait 30 seconds.
-        self.assertRaises(AssertionError, add_in_reactor, Deferred())
+        with pytest.raises(AssertionError):
+            add_in_reactor(Deferred())
 
     def test_fire_calls_hooks(self):
         dhooks = DeferredHooks()
@@ -135,18 +132,18 @@ class TestDeferredHooks(MAASTestCase, PostCommitHooksTestMixin):
             dhooks.add(d)
         dhooks.fire()
         for d in ds:
-            self.assertIsNone(extract_result(d))
+            assert extract_result(d) is None
 
     def test_fire_calls_hooks_in_reactor(self):
         def validate_in_reactor(_):
-            self.assertTrue(isInIOThread())
+            assert isInIOThread()
 
         dhooks = DeferredHooks()
         d = Deferred()
         d.addCallback(validate_in_reactor)
         dhooks.add(d)
         dhooks.fire()
-        self.assertTrue(d.called)
+        assert d.called
 
     def test_fire_propagates_error_from_hook(self):
         error = factory.make_exception()
@@ -154,7 +151,8 @@ class TestDeferredHooks(MAASTestCase, PostCommitHooksTestMixin):
         d = Deferred()
         d.addCallback(lambda _: Failure(error))
         dhooks.add(d)
-        self.assertRaises(type(error), dhooks.fire)
+        with pytest.raises(type(error)):
+            dhooks.fire()
 
     def test_fire_always_consumes_all_hooks(self):
         dhooks = DeferredHooks()
@@ -162,10 +160,11 @@ class TestDeferredHooks(MAASTestCase, PostCommitHooksTestMixin):
         d1.addCallback(lambda _: 0 / 0)  # d1 will fail.
         dhooks.add(d1)
         dhooks.add(d2)
-        self.assertRaises(ZeroDivisionError, dhooks.fire)
-        self.assertEqual(len(dhooks.hooks), 0)
-        self.assertTrue(d1.called)
-        self.assertTrue(d2.called)
+        with pytest.raises(ZeroDivisionError):
+            dhooks.fire()
+        assert len(dhooks.hooks) == 0
+        assert d1.called
+        assert d2.called
 
     def test_reset_cancels_all_hooks(self):
         canceller = Mock()
@@ -174,77 +173,73 @@ class TestDeferredHooks(MAASTestCase, PostCommitHooksTestMixin):
         dhooks.add(d1)
         dhooks.add(d2)
         dhooks.reset()
-        self.assertEqual(len(dhooks.hooks), 0)
+        assert len(dhooks.hooks) == 0
         canceller.assert_has_calls((call(d1), call(d2)))
 
     def test_reset_cancels_in_reactor(self):
         def validate_in_reactor(_):
-            self.assertTrue(isInIOThread())
+            assert isInIOThread()
 
         dhooks = DeferredHooks()
         d = Deferred()
         d.addBoth(validate_in_reactor)
         dhooks.add(d)
         dhooks.reset()
-        self.assertEqual(len(dhooks.hooks), 0)
-        self.assertTrue(d.called)
+        assert len(dhooks.hooks) == 0
+        assert d.called
 
     def test_reset_suppresses_CancelledError(self):
-        logger = self.useFixture(TwistedLoggerFixture())
-
-        dhooks = DeferredHooks()
-        d = Deferred()
-        dhooks.add(d)
-        dhooks.reset()
-        self.assertEqual(len(dhooks.hooks), 0)
-        self.assertIsNone(extract_result(d))
-        self.assertEqual("", logger.output)
+        with TwistedLoggerFixture() as logger:
+            dhooks = DeferredHooks()
+            d = Deferred()
+            dhooks.add(d)
+            dhooks.reset()
+            assert len(dhooks.hooks) == 0
+            assert extract_result(d) is None
+            assert "" == logger.output
 
     def test_logs_failures_from_cancellers(self):
-        logger = self.useFixture(TwistedLoggerFixture())
-
         canceller = Mock()
         canceller.side_effect = factory.make_exception()
 
-        dhooks = DeferredHooks()
-        d = Deferred(canceller)
-        dhooks.add(d)
-        dhooks.reset()
-        self.assertEqual(len(dhooks.hooks), 0)
-        # The hook has not been fired, but because the user-supplied canceller
-        # has failed we're not in a position to know what to do. This reflects
-        # a programming error and not a run-time error that we ought to be
-        # prepared for, so it is left as-is.
-        self.assertFalse(d.called)
-        self.assertIn("Failure when cancelling hook.", logger.output)
+        with TwistedLoggerFixture() as logger:
+            dhooks = DeferredHooks()
+            d = Deferred(canceller)
+            dhooks.add(d)
+            dhooks.reset()
+            assert len(dhooks.hooks) == 0
+            # The hook has not been fired, but because the user-supplied
+            # canceller has failed we're not in a position to know what to
+            # do. This reflects a programming error and not a run-time error
+            # that we ought to be prepared for, so it is left as-is.
+            assert not d.called
+            assert "Failure when cancelling hook." in logger.output
 
     def test_logs_failures_from_cancellers_when_hook_already_fired(self):
-        logger = self.useFixture(TwistedLoggerFixture())
-
         def canceller(d):
             d.callback(None)
             raise factory.make_exception()
 
-        dhooks = DeferredHooks()
-        d = Deferred(canceller)
-        dhooks.add(d)
-        dhooks.reset()
-        self.assertEqual(len(dhooks.hooks), 0)
-        self.assertTrue(d.called)
-        self.assertIn("Failure when cancelling hook.", logger.output)
+        with TwistedLoggerFixture() as logger:
+            dhooks = DeferredHooks()
+            d = Deferred(canceller)
+            dhooks.add(d)
+            dhooks.reset()
+            assert len(dhooks.hooks) == 0
+            assert d.called
+            assert "Failure when cancelling hook." in logger.output
 
     def test_logs_failures_from_cancelled_hooks(self):
-        logger = self.useFixture(TwistedLoggerFixture())
-
         error = factory.make_exception()
-        dhooks = DeferredHooks()
-        d = Deferred()
-        d.addBoth(lambda _: Failure(error))
-        dhooks.add(d)
-        dhooks.reset()
-        self.assertEqual(len(dhooks.hooks), 0)
-        self.assertTrue(d.called)
-        self.assertIn("Failure when cancelling hook.", logger.output)
+        with TwistedLoggerFixture() as logger:
+            dhooks = DeferredHooks()
+            d = Deferred()
+            d.addBoth(lambda _: Failure(error))
+            dhooks.add(d)
+            dhooks.reset()
+            assert len(dhooks.hooks) == 0
+            assert d.called
+            assert "Failure when cancelling hook." in logger.output
 
     def test_savepoint_saves_and_restores_hooks(self):
         d = Deferred()
@@ -252,9 +247,9 @@ class TestDeferredHooks(MAASTestCase, PostCommitHooksTestMixin):
         dhooks.add(d)
 
         with dhooks.savepoint():
-            self.assertEqual(list(dhooks.hooks), [])
+            assert list(dhooks.hooks) == []
 
-        self.assertEqual(list(dhooks.hooks), [d])
+        assert list(dhooks.hooks) == [d]
 
     def test_savepoint_restores_hooks_with_new_hooks_on_clean_exit(self):
         d1 = Deferred()
@@ -264,9 +259,9 @@ class TestDeferredHooks(MAASTestCase, PostCommitHooksTestMixin):
 
         with dhooks.savepoint():
             dhooks.add(d2)
-            self.assertEqual(list(dhooks.hooks), [d2])
+            assert list(dhooks.hooks) == [d2]
 
-        self.assertEqual(list(dhooks.hooks), [d1, d2])
+        assert list(dhooks.hooks) == [d1, d2]
 
     def test_savepoint_restores_hooks_only_on_dirty_exit(self):
         d1 = Deferred()
@@ -275,9 +270,9 @@ class TestDeferredHooks(MAASTestCase, PostCommitHooksTestMixin):
         dhooks.add(d1)
 
         exception_type = factory.make_exception_type()
-        with self.assertRaisesRegex(exception_type, ""):
+        with pytest.raises(exception_type, match=None):
             with dhooks.savepoint():
                 dhooks.add(d2)
                 raise exception_type()
 
-        self.assertEqual(list(dhooks.hooks), [d1])
+        assert list(dhooks.hooks) == [d1]

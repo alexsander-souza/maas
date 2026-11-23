@@ -10,7 +10,6 @@ from maasserver.regiondservices import dns
 from maasserver.testing.testcase import MAASTransactionServerTestCase
 from maasserver.utils.threads import deferToDatabase
 from maastesting.crochet import wait_for
-from maastesting.testcase import MAASTestCase
 from provisioningserver.dns.testing import patch_zone_file_config_path
 
 wait_for_reactor = wait_for()
@@ -32,16 +31,16 @@ $TTL 15
 """
 
 
-class TestDNSReloadService_Basic(MAASTestCase):
+class TestDNSReloadService_Basic:
     """Basic tests for `DNSReloadService`."""
 
     def test_service_uses__tryUpdate_as_periodic_function(self):
         service = dns.DNSReloadService(reactor)
-        self.assertEqual((service._tryUpdate, (), {}), service.call)
+        assert (service._tryUpdate, (), {}) == service.call
 
     def test_service_iterates_every_60_seconds(self):
         service = dns.DNSReloadService(reactor)
-        self.assertEqual(60.0, service.step)
+        assert service.step == 60.0
 
 
 class TestDNSReloadService(MAASTransactionServerTestCase):

@@ -410,7 +410,7 @@ class TestIPAddressesReleaseAPI(APITransactionTestCase.ForUserAndAdmin):
 
     @transactional
     def test_POST_release_allows_admin_to_release_discovered_ip_with_interface(
-        self,
+        self
     ):
         # Make an "orphaned" IP address, like the one in bug #1898122.
         static_ip = factory.make_StaticIPAddress(

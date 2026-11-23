@@ -4,6 +4,8 @@
 
 import random
 
+import pytest
+
 from maasserver.enum import (
     IPADDRESS_TYPE,
     NODE_STATUS,
@@ -301,11 +303,13 @@ class TestNodeDefaultNUMANode(MAASServerTestCase):
         self.assertEqual(device.numanode_set.count(), 0)
 
 
-class TestNodeReleasesAutoIPs(MAASServerTestCase):
-    """Test that auto ips are released when node power is off."""
-
-    def __init__(self, *args, **kwargs):
-        self.reserved_statuses = [
+@pytest.mark.parametrize(
+    "status",
+    [
+        status
+        for status, status_label in NODE_STATUS_CHOICES
+        if status
+        not in [
             NODE_STATUS.COMMISSIONING,
             NODE_STATUS.DEPLOYED,
             NODE_STATUS.DEPLOYING,
@@ -314,14 +318,23 @@ class TestNodeReleasesAutoIPs(MAASServerTestCase):
             NODE_STATUS.ENTERING_RESCUE_MODE,
             NODE_STATUS.TESTING,
         ]
-        self.scenarios = [
-            (status_label, {"status": status})
-            for status, status_label in NODE_STATUS_CHOICES
-            if status not in self.reserved_statuses
-        ]
-        super().__init__(*args, **kwargs)
+    ],
+)
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "factory"
+)
+class TestNodeReleasesAutoIPs:
+    reserved_statuses = [
+        NODE_STATUS.COMMISSIONING,
+        NODE_STATUS.DEPLOYED,
+        NODE_STATUS.DEPLOYING,
+        NODE_STATUS.DISK_ERASING,
+        NODE_STATUS.RESCUE_MODE,
+        NODE_STATUS.ENTERING_RESCUE_MODE,
+        NODE_STATUS.TESTING,
+    ]
 
-    def test_releases_interface_config_when_turned_off(self):
+    def test_releases_interface_config_when_turned_off(self, status):
         machine = factory.make_Machine_with_Interface_on_Subnet(
             status=random.choice(self.reserved_statuses),
             power_state=POWER_STATE.ON,
@@ -332,7 +345,7 @@ class TestNodeReleasesAutoIPs(MAASServerTestCase):
                 interface.claim_auto_ips()
 
         # Hack to get around node transition model
-        Node.objects.filter(id=machine.id).update(status=self.status)
+        Node.objects.filter(id=machine.id).update(status=status)
         machine = reload_object(machine)
         machine.power_state = POWER_STATE.OFF
 
@@ -343,9 +356,9 @@ class TestNodeReleasesAutoIPs(MAASServerTestCase):
             interface__node_config__node=machine,
             alloc_type=IPADDRESS_TYPE.AUTO,
         ):
-            self.assertIsNone(ip.ip)
+            assert ip.ip is None
 
-    def test_does_nothing_if_not_off(self):
+    def test_does_nothing_if_not_off(self, status):
         machine = factory.make_Machine_with_Interface_on_Subnet(
             status=random.choice(self.reserved_statuses),
             power_state=POWER_STATE.ON,
@@ -356,7 +369,7 @@ class TestNodeReleasesAutoIPs(MAASServerTestCase):
                 interface.claim_auto_ips()
 
         # Hack to get around node transition model
-        Node.objects.filter(id=machine.id).update(status=self.status)
+        Node.objects.filter(id=machine.id).update(status=status)
         machine = reload_object(machine)
         machine.power_state = factory.pick_choice(
             POWER_STATE_CHOICES, but_not=[POWER_STATE.OFF]
@@ -367,11 +380,11 @@ class TestNodeReleasesAutoIPs(MAASServerTestCase):
             interface__node_config__node=machine,
             alloc_type=IPADDRESS_TYPE.AUTO,
         ):
-            self.assertIsNotNone(ip.ip)
+            assert ip.ip is not None
 
-    def test_does_nothing_if_reserved_status(self):
+    def test_does_nothing_if_reserved_status(self, status):
         machine = factory.make_Machine_with_Interface_on_Subnet(
-            status=self.status, power_state=POWER_STATE.ON
+            status=status, power_state=POWER_STATE.ON
         )
 
         with post_commit_hooks:
@@ -390,9 +403,9 @@ class TestNodeReleasesAutoIPs(MAASServerTestCase):
             interface__node_config__node=machine,
             alloc_type=IPADDRESS_TYPE.AUTO,
         ):
-            self.assertIsNotNone(ip.ip)
+            assert ip.ip is not None
 
-    def test_does_nothing_if_not_machine(self):
+    def test_does_nothing_if_not_machine(self, status):
         node = factory.make_Node_with_Interface_on_Subnet(
             node_type=factory.pick_choice(
                 NODE_TYPE_CHOICES, but_not=[NODE_TYPE.MACHINE]
@@ -406,7 +419,7 @@ class TestNodeReleasesAutoIPs(MAASServerTestCase):
                 interface.claim_auto_ips()
 
         # Hack to get around node transition model
-        Node.objects.filter(id=node.id).update(status=self.status)
+        Node.objects.filter(id=node.id).update(status=status)
         node = reload_object(node)
         node.power_state = POWER_STATE.OFF
         node.save()
@@ -414,4 +427,4 @@ class TestNodeReleasesAutoIPs(MAASServerTestCase):
         for ip in StaticIPAddress.objects.filter(
             interface__node_config__node=node, alloc_type=IPADDRESS_TYPE.AUTO
         ):
-            self.assertIsNotNone(ip.ip)
+            assert ip.ip is not None

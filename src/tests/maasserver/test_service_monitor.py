@@ -14,27 +14,23 @@ from maasserver.testing.testcase import MAASTransactionServerTestCase
 from maasserver.utils.orm import transactional
 from maasserver.utils.threads import deferToDatabase
 from maastesting.crochet import wait_for
-from maastesting.testcase import MAASTestCase
 from provisioningserver.proxy import config
 from provisioningserver.utils.service_monitor import SERVICE_STATE
 
 wait_for_reactor = wait_for()
 
 
-class TestGlobalServiceMonitor(MAASTestCase):
+class TestGlobalServiceMonitor:
     def test_includes_all_services(self):
-        self.assertEqual(
-            {
-                "bind9",
-                "ntp_region",
-                "proxy",
-                "reverse_proxy",
-                "syslog_region",
-                "temporal",
-                "temporal-worker",
-            },
-            service_monitor._services.keys(),
-        )
+        assert {
+            "bind9",
+            "ntp_region",
+            "proxy",
+            "reverse_proxy",
+            "syslog_region",
+            "temporal",
+            "temporal-worker",
+        } == service_monitor._services.keys()
 
     @wait_for_reactor
     @inlineCallbacks
@@ -57,8 +53,8 @@ class TestGlobalServiceMonitor(MAASTestCase):
                 actual_active_state,
                 actual_process_state,
             ) = yield service_monitor.getServiceState(service_name)
-            self.assertEqual(actual_active_state, new_active_state)
-            self.assertEqual(actual_process_state, new_process_state)
+            assert actual_active_state == new_active_state
+            assert actual_process_state == new_process_state
 
 
 class TestProxyService(MAASTransactionServerTestCase):

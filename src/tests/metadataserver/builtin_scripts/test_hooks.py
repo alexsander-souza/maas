@@ -49,7 +49,6 @@ from maasserver.testing.testcase import (
     MAASTransactionServerTestCase,
 )
 from maasserver.utils.orm import post_commit_hooks, reload_object
-from maastesting.testcase import MAASTestCase
 import metadataserver.builtin_scripts.hooks as hooks_module
 from metadataserver.builtin_scripts.hooks import (
     _device_diff,
@@ -1421,62 +1420,54 @@ def make_lldp_output(macs):
     return bytes(script)
 
 
-class TestDetectSwitchVendorModelDMIScenarios(MAASServerTestCase):
-    scenarios = (
+@pytest.mark.parametrize(
+    "modaliases,dmi_data,result",
+    [
         (
-            "accton_wedge40_1",
-            {
-                "modaliases": ["dmi:svnIntel:pnEPGSVR"],
-                "dmi_data": frozenset({"svnIntel", "pnEPGSVR"}),
-                "result": ("accton", "wedge40"),
-            },
+            ["dmi:svnIntel:pnEPGSVR"],
+            frozenset({"svnIntel", "pnEPGSVR"}),
+            ("accton", "wedge40"),
         ),
         (
-            "accton_wedge40_2",
-            {
-                "modaliases": ["dmi:svnJoytech:pnWedge-AC-F20-001329"],
-                "dmi_data": frozenset({"svnJoytech", "pnWedge-AC-F20-001329"}),
-                "result": ("accton", "wedge40"),
-            },
+            ["dmi:svnJoytech:pnWedge-AC-F20-001329"],
+            frozenset({"svnJoytech", "pnWedge-AC-F20-001329"}),
+            ("accton", "wedge40"),
         ),
         (
-            "accton_wedge100",
-            {
-                "modaliases": [
-                    "dmi:svnTobefilledbyO.E.M.:pnTobefilledbyO.E.M.:"
-                    "rnPCOM-B632VG-ECC-FB-ACCTON-D"
-                ],
-                "dmi_data": frozenset(
-                    {
-                        "svnTobefilledbyO.E.M.",
-                        "pnTobefilledbyO.E.M.",
-                        "rnPCOM-B632VG-ECC-FB-ACCTON-D",
-                    }
-                ),
-                "result": ("accton", "wedge100"),
-            },
+            [
+                "dmi:svnTobefilledbyO.E.M.:pnTobefilledbyO.E.M.:"
+                "rnPCOM-B632VG-ECC-FB-ACCTON-D"
+            ],
+            frozenset(
+                {
+                    "svnTobefilledbyO.E.M.",
+                    "pnTobefilledbyO.E.M.",
+                    "rnPCOM-B632VG-ECC-FB-ACCTON-D",
+                }
+            ),
+            ("accton", "wedge100"),
         ),
         (
-            "mellanox_sn2100",
-            {
-                "modaliases": [
-                    'dmi:svnMellanoxTechnologiesLtd.:pn"MSN2100-CB2FO"'
-                ],
-                "dmi_data": frozenset(
-                    {"svnMellanoxTechnologiesLtd.", 'pn"MSN2100-CB2FO"'}
-                ),
-                "result": ("mellanox", "sn2100"),
-            },
+            ['dmi:svnMellanoxTechnologiesLtd.:pn"MSN2100-CB2FO"'],
+            frozenset({"svnMellanoxTechnologiesLtd.", 'pn"MSN2100-CB2FO"'}),
+            ("mellanox", "sn2100"),
         ),
-    )
+    ],
+    ids=[
+        "accton_wedge40_1",
+        "accton_wedge40_2",
+        "accton_wedge100",
+        "mellanox_sn2100",
+    ],
+)
+class TestDetectSwitchVendorModelDMIScenarios:
+    def test_detect_switch_vendor_model(self, modaliases, dmi_data, result):
+        detected = detect_switch_vendor_model(dmi_data)
+        assert result == detected
 
-    def test_detect_switch_vendor_model(self):
-        detected = detect_switch_vendor_model(self.dmi_data)
-        self.assertEqual(self.result, detected)
-
-    def test_get_dmi_data(self):
-        dmi_data = get_dmi_data(self.modaliases)
-        self.assertEqual(self.dmi_data, dmi_data)
+    def test_get_dmi_data(self, modaliases, dmi_data, result):
+        dmi_data_actual = get_dmi_data(modaliases)
+        assert dmi_data == dmi_data_actual
 
 
 class TestDetectSwitchVendorModel(MAASServerTestCase):
@@ -1511,208 +1502,177 @@ TEST_MODALIASES = [
 ]
 
 
-class TestFilterModaliases(MAASTestCase):
-    scenarios = (
+@pytest.mark.parametrize(
+    "modaliases,candidates,pci,usb,result",
+    [
         (
-            "modalias_wildcard_multiple_match",
-            {
-                "modaliases": [
-                    "os:vendorCanonical:productUbuntu:version14.04",
-                    "beverage:typeCoffee:variantEspresso",
-                    "beverage:typeCoffee:variantCappuccino",
-                    "beverage:typeTea:variantProperBritish",
-                ],
-                "candidates": ["beverage:typeCoffee:*"],
-                "pci": None,
-                "usb": None,
-                "result": [
-                    "beverage:typeCoffee:variantEspresso",
-                    "beverage:typeCoffee:variantCappuccino",
-                ],
-            },
+            [
+                "os:vendorCanonical:productUbuntu:version14.04",
+                "beverage:typeCoffee:variantEspresso",
+                "beverage:typeCoffee:variantCappuccino",
+                "beverage:typeTea:variantProperBritish",
+            ],
+            ["beverage:typeCoffee:*"],
+            None,
+            None,
+            [
+                "beverage:typeCoffee:variantEspresso",
+                "beverage:typeCoffee:variantCappuccino",
+            ],
         ),
         (
-            "modalias_multiple_wildcard_match",
-            {
-                "modaliases": [
-                    "os:vendorCanonical:productUbuntu:version14.04",
-                    "beverage:typeCoffee:variantEspresso",
-                    "beverage:typeCoffee:variantCappuccino",
-                    "beverage:typeTea:variantProperBritish",
-                ],
-                "candidates": [
-                    "os:vendorCanonical:*",
-                    "os:*:productUbuntu:*",
-                    "beverage:*ProperBritish",
-                ],
-                "pci": None,
-                "usb": None,
-                "result": [
-                    "os:vendorCanonical:productUbuntu:version14.04",
-                    "beverage:typeTea:variantProperBritish",
-                ],
-            },
+            [
+                "os:vendorCanonical:productUbuntu:version14.04",
+                "beverage:typeCoffee:variantEspresso",
+                "beverage:typeCoffee:variantCappuccino",
+                "beverage:typeTea:variantProperBritish",
+            ],
+            [
+                "os:vendorCanonical:*",
+                "os:*:productUbuntu:*",
+                "beverage:*ProperBritish",
+            ],
+            None,
+            None,
+            [
+                "os:vendorCanonical:productUbuntu:version14.04",
+                "beverage:typeTea:variantProperBritish",
+            ],
         ),
         (
-            "modalias_exact_match",
-            {
-                "modaliases": [
-                    "os:vendorCanonical:productUbuntu:version14.04",
-                    "beverage:typeCoffee:variantEspresso",
-                    "beverage:typeCoffee:variantCappuccino",
-                    "beverage:typeTea:variantProperBritish",
-                ],
-                "candidates": [
-                    "os:vendorCanonical:productUbuntu:version14.04"
-                ],
-                "pci": None,
-                "usb": None,
-                "result": ["os:vendorCanonical:productUbuntu:version14.04"],
-            },
+            [
+                "os:vendorCanonical:productUbuntu:version14.04",
+                "beverage:typeCoffee:variantEspresso",
+                "beverage:typeCoffee:variantCappuccino",
+                "beverage:typeTea:variantProperBritish",
+            ],
+            ["os:vendorCanonical:productUbuntu:version14.04"],
+            None,
+            None,
+            ["os:vendorCanonical:productUbuntu:version14.04"],
         ),
         (
-            "pci_malformed_string",
-            {
-                "modaliases": TEST_MODALIASES,
-                "candidates": None,
-                "pci": ["8086"],
-                "usb": None,
-                "result": [],
-            },
+            TEST_MODALIASES,
+            None,
+            ["8086"],
+            None,
+            [],
         ),
         (
-            "pci_exact_match",
-            {
-                "modaliases": TEST_MODALIASES,
-                "candidates": None,
-                "pci": ["8086:1918"],
-                "usb": None,
-                "result": [
-                    "pci:v00008086d00001918sv000015D9sd00000888bc06sc00i00"
-                ],
-            },
+            TEST_MODALIASES,
+            None,
+            ["8086:1918"],
+            None,
+            ["pci:v00008086d00001918sv000015D9sd00000888bc06sc00i00"],
         ),
         (
-            "pci_wildcard_match",
-            {
-                "modaliases": TEST_MODALIASES,
-                "candidates": None,
-                "pci": ["1a03:*"],
-                "usb": None,
-                "result": [
-                    "pci:v00001A03d00001150sv000015D9sd00000888bc06sc04i00",
-                    "pci:v00001A03d00002000sv000015D9sd00000888bc03sc00i00",
-                ],
-            },
+            TEST_MODALIASES,
+            None,
+            ["1a03:*"],
+            None,
+            [
+                "pci:v00001A03d00001150sv000015D9sd00000888bc06sc04i00",
+                "pci:v00001A03d00002000sv000015D9sd00000888bc03sc00i00",
+            ],
         ),
         (
-            "usb_malformed_string",
-            {
-                "modaliases": TEST_MODALIASES,
-                "candidates": None,
-                "pci": None,
-                "usb": ["174c"],
-                "result": [],
-            },
+            TEST_MODALIASES,
+            None,
+            None,
+            ["174c"],
+            [],
         ),
         (
-            "usb_exact_match",
-            {
-                "modaliases": TEST_MODALIASES,
-                "candidates": None,
-                "pci": None,
-                "usb": ["174c:07d1"],
-                "result": [
-                    "usb:v174Cp07D1d1000dc00dsc00dp00ic08isc06ip50in00"
-                ],
-            },
+            TEST_MODALIASES,
+            None,
+            None,
+            ["174c:07d1"],
+            ["usb:v174Cp07D1d1000dc00dsc00dp00ic08isc06ip50in00"],
         ),
         (
-            "usb_wildcard_match",
-            {
-                "modaliases": TEST_MODALIASES,
-                "candidates": None,
-                "pci": None,
-                "usb": ["0557:*"],
-                "result": [
-                    "usb:v0557p2419d0100dc00dsc00dp00ic03isc01ip01in00",
-                    "usb:v0557p2419d0100dc00dsc00dp00ic03isc01ip02in01",
-                    "usb:v0557p7000d0000dc09dsc00dp01ic09isc00ip00in00",
-                ],
-            },
+            TEST_MODALIASES,
+            None,
+            None,
+            ["0557:*"],
+            [
+                "usb:v0557p2419d0100dc00dsc00dp00ic03isc01ip01in00",
+                "usb:v0557p2419d0100dc00dsc00dp00ic03isc01ip02in01",
+                "usb:v0557p7000d0000dc09dsc00dp01ic09isc00ip00in00",
+            ],
         ),
-    )
-
-    def test_filter_modaliases(self):
-        matches = filter_modaliases(
-            self.modaliases, self.candidates, pci=self.pci, usb=self.usb
-        )
-        self.assertEqual(self.result, matches)
+    ],
+    ids=[
+        "modalias_wildcard_multiple_match",
+        "modalias_multiple_wildcard_match",
+        "modalias_exact_match",
+        "pci_malformed_string",
+        "pci_exact_match",
+        "pci_wildcard_match",
+        "usb_malformed_string",
+        "usb_exact_match",
+        "usb_wildcard_match",
+    ],
+)
+class TestFilterModaliases:
+    def test_filter_modaliases(self, modaliases, candidates, pci, usb, result):
+        matches = filter_modaliases(modaliases, candidates, pci=pci, usb=usb)
+        assert result == matches
 
 
-class TestDetectHardware(MAASServerTestCase):
-    scenarios = (
+@pytest.mark.parametrize(
+    "modaliases,expected_match_indexes,expected_ruled_out_indexes",
+    [
         (
-            "caffeine_fueled_ubuntu_classic",
-            {
-                "modaliases": [
-                    "os:vendorCanonical:productUbuntu:version14.04",
-                    "beverage:typeCoffee:variantEspresso",
-                    "beverage:typeCoffee:variantCappuccino",
-                    "beverage:typeTea:variantProperBritish",
-                ],
-                "expected_match_indexes": [0, 1, 2],
-                "expected_ruled_out_indexes": [3],
-            },
+            [
+                "os:vendorCanonical:productUbuntu:version14.04",
+                "beverage:typeCoffee:variantEspresso",
+                "beverage:typeCoffee:variantCappuccino",
+                "beverage:typeTea:variantProperBritish",
+            ],
+            [0, 1, 2],
+            [3],
         ),
         (
-            "caffeine_fueled_ubuntu_core",
-            {
-                "modaliases": [
-                    "os:vendorCanonical:productUbuntuCore:version16.04",
-                    "beverage:typeCoffee:variantEspresso",
-                    "beverage:typeCoffee:variantCappuccino",
-                    "beverage:typeTea:variantProperBritish",
-                ],
-                "expected_match_indexes": [0, 1, 3],
-                "expected_ruled_out_indexes": [2],
-            },
+            [
+                "os:vendorCanonical:productUbuntuCore:version16.04",
+                "beverage:typeCoffee:variantEspresso",
+                "beverage:typeCoffee:variantCappuccino",
+                "beverage:typeTea:variantProperBritish",
+            ],
+            [0, 1, 3],
+            [2],
         ),
         (
-            "ubuntu_classic",
-            {
-                "modaliases": [
-                    "os:vendorCanonical:productUbuntu:version14.04"
-                ],
-                "expected_match_indexes": [1, 2],
-                "expected_ruled_out_indexes": [0, 3],
-            },
+            ["os:vendorCanonical:productUbuntu:version14.04"],
+            [1, 2],
+            [0, 3],
         ),
         (
-            "ubuntu_core",
-            {
-                "modaliases": [
-                    "os:vendorCanonical:productUbuntuCore:version16.04"
-                ],
-                "expected_match_indexes": [1, 3],
-                "expected_ruled_out_indexes": [0, 2],
-            },
+            ["os:vendorCanonical:productUbuntuCore:version16.04"],
+            [1, 3],
+            [0, 2],
         ),
         (
-            "none_of_the_above",
-            {
-                "modaliases": [
-                    "xos:vendorCanonical:productUbuntuCore:version16.04",
-                    "xbeverage:typeCoffee:variantEspresso",
-                    "xbeverage:typeCoffee:variantCappuccino",
-                    "xbeverage:typeTea:variantProperBritish",
-                ],
-                "expected_match_indexes": [],
-                "expected_ruled_out_indexes": [0, 1, 2, 3],
-            },
+            [
+                "xos:vendorCanonical:productUbuntuCore:version16.04",
+                "xbeverage:typeCoffee:variantEspresso",
+                "xbeverage:typeCoffee:variantCappuccino",
+                "xbeverage:typeTea:variantProperBritish",
+            ],
+            [],
+            [0, 1, 2, 3],
         ),
-    )
-
+    ],
+    ids=[
+        "caffeine_fueled_ubuntu_classic",
+        "caffeine_fueled_ubuntu_core",
+        "ubuntu_classic",
+        "ubuntu_core",
+        "none_of_the_above",
+    ],
+)
+@pytest.mark.usefixtures("factory")
+class TestDetectHardware:
     hardware_database = [
         {
             "modaliases": ["beverage:typeCoffee:*", "beverage:typeTea:*"],
@@ -1736,68 +1696,73 @@ class TestDetectHardware(MAASServerTestCase):
         },
     ]
 
-    def test_determine_hardware_matches(self):
+    def test_determine_hardware_matches(
+        self, modaliases, expected_match_indexes, expected_ruled_out_indexes
+    ):
         discovered, ruled_out = determine_hardware_matches(
-            self.modaliases, self.hardware_database
+            modaliases, self.hardware_database
         )
         expected_matches = [
             self.hardware_database[index].copy()
-            for index in self.expected_match_indexes
+            for index in expected_match_indexes
         ]
         # Note: determine_hardware_matches() adds the matches as informational.
         for item in discovered:
-            self.assertEqual(
-                item["matches"],
-                filter_modaliases(self.modaliases, item["modaliases"]),
+            assert item["matches"] == filter_modaliases(
+                modaliases, item["modaliases"]
             )
             # Delete this so we can compare the matches to what was expected.
             del item["matches"]
         expected_ruled_out = [
             self.hardware_database[index]
-            for index in self.expected_ruled_out_indexes
+            for index in expected_ruled_out_indexes
         ]
-        self.assertEqual(expected_matches, discovered)
-        self.assertEqual(expected_ruled_out, ruled_out)
+        assert expected_matches == discovered
+        assert expected_ruled_out == ruled_out
 
-    def test_retag_node_for_hardware_by_modalias__precreate_parent(self):
+    def test_retag_node_for_hardware_by_modalias__precreate_parent(
+        self, modaliases, expected_match_indexes, expected_ruled_out_indexes
+    ):
         node = factory.make_Node()
         parent_tag = factory.make_Tag()
         parent_tag_name = parent_tag.name
         # Need to pre-create these so the code can remove them.
         expected_removed = {
             factory.make_Tag(name=self.hardware_database[index]["tag"])
-            for index in self.expected_ruled_out_indexes
+            for index in expected_ruled_out_indexes
         }
         for tag in expected_removed:
             node.tags.add(tag)
         added, removed = retag_node_for_hardware_by_modalias(
-            node, self.modaliases, parent_tag_name, self.hardware_database
+            node, modaliases, parent_tag_name, self.hardware_database
         )
         expected_added = {
             Tag.objects.get(name=self.hardware_database[index]["tag"])
-            for index in self.expected_match_indexes
+            for index in expected_match_indexes
         }
         if len(expected_added) > 0:
             expected_added.add(parent_tag)
         else:
             expected_removed.add(parent_tag)
-        self.assertEqual(expected_added, added)
-        self.assertEqual(expected_removed, removed)
+        assert expected_added == added
+        assert expected_removed == removed
         # Run again to confirm that we added the same tags.
         added, removed = retag_node_for_hardware_by_modalias(
-            node, self.modaliases, parent_tag_name, self.hardware_database
+            node, modaliases, parent_tag_name, self.hardware_database
         )
-        self.assertEqual(expected_added, added)
+        assert expected_added == added
 
-    def test_retag_node_for_hardware_by_modalias__adds_parent_tag(self):
+    def test_retag_node_for_hardware_by_modalias__adds_parent_tag(
+        self, modaliases, expected_match_indexes, expected_ruled_out_indexes
+    ):
         node = factory.make_Node()
         parent_tag_name = "parent-tag-name"
         added, _ = retag_node_for_hardware_by_modalias(
-            node, self.modaliases, parent_tag_name, self.hardware_database
+            node, modaliases, parent_tag_name, self.hardware_database
         )
         # Test that the parent tag was created if the hardware matched.
         if len(added) > 0:
-            self.assertIsNotNone(Tag.objects.get(name=parent_tag_name))
+            assert Tag.objects.filter(name=parent_tag_name).exists()
 
 
 class TestAddSwitchVendorModelTags(MAASServerTestCase):
@@ -1818,53 +1783,52 @@ class TestAddSwitchVendorModelTags(MAASServerTestCase):
         self.assertEqual("console=tty0 console=ttyS4,57600n8", tag.kernel_opts)
 
 
-class TestCreateMetadataByModalias(MAASServerTestCase):
-    scenarios = (
+@pytest.mark.parametrize(
+    "modaliases,expected_tags",
+    [
         (
-            "switch_trident2",
+            b"pci:xxx\n"
+            b"pci:v000014E4d0000B850sv0sd1bc2sc3i4\n"
+            b"dmi:svnJoytech:pnWedge-AC-F20-001329\n"
+            b"pci:yyy\n",
             {
-                "modaliases": b"pci:xxx\n"
-                b"pci:v000014E4d0000B850sv0sd1bc2sc3i4\n"
-                b"dmi:svnJoytech:pnWedge-AC-F20-001329\n"
-                b"pci:yyy\n",
-                "expected_tags": {
-                    "accton",
-                    "switch",
-                    "bcm-trident2-asic",
-                    "wedge40",
-                },
+                "accton",
+                "switch",
+                "bcm-trident2-asic",
+                "wedge40",
             },
         ),
         (
-            "switch_tomahawk",
+            b"pci:xxx\n"
+            b"pci:v000014E4d0000B960sv0sd1bc2sc3i4\n"
+            b"dmi:svnTobefilledbyO.E.M.:pnTobefilledbyO.E.M.:"
+            b"rnPCOM-B632VG-ECC-FB-ACCTON-D\n"
+            b"pci:yyy\n",
             {
-                "modaliases": b"pci:xxx\n"
-                b"pci:v000014E4d0000B960sv0sd1bc2sc3i4\n"
-                b"dmi:svnTobefilledbyO.E.M.:pnTobefilledbyO.E.M.:"
-                b"rnPCOM-B632VG-ECC-FB-ACCTON-D\n"
-                b"pci:yyy\n",
-                "expected_tags": {
-                    "accton",
-                    "switch",
-                    "bcm-tomahawk-asic",
-                    "wedge100",
-                },
+                "accton",
+                "switch",
+                "bcm-tomahawk-asic",
+                "wedge100",
             },
         ),
         (
-            "no_matcj",
-            {
-                "modaliases": b"pci:xxx\npci:yyy\n",
-                "expected_tags": set(),
-            },
+            b"pci:xxx\npci:yyy\n",
+            set(),
         ),
-    )
-
-    def test_tags_node_appropriately(self):
+    ],
+    ids=[
+        "switch_trident2",
+        "switch_tomahawk",
+        "no_matcj",
+    ],
+)
+@pytest.mark.usefixtures("factory")
+class TestCreateMetadataByModalias:
+    def test_tags_node_appropriately(self, modaliases, expected_tags):
         node = factory.make_Node()
-        create_metadata_by_modalias(node, self.modaliases, 0)
+        create_metadata_by_modalias(node, modaliases, 0)
         tags = set(node.tags.all().values_list("name", flat=True))
-        self.assertEqual(self.expected_tags, tags)
+        assert expected_tags == tags
 
 
 class TestUpdateFruidMetadata(MAASServerTestCase):

@@ -3,12 +3,14 @@
 
 from collections import namedtuple
 import http.client
-from unittest.mock import call, Mock, sentinel
+from unittest.mock import call, MagicMock, Mock, sentinel
 
 from django.core.exceptions import PermissionDenied
 from django.urls import reverse
 from piston3.authentication import NoAuthentication
+import pytest
 
+from maasserver import openfga
 from maasserver.api.doc import get_api_description
 from maasserver.api.support import (
     AdminRestrictedResource,
@@ -20,16 +22,12 @@ from maasserver.api.support import (
     RestrictedResource,
 )
 from maasserver.models.config import Config, ConfigManager
-from maasserver.testing.api import APITestCase
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
-from maastesting.testcase import MAASTestCase
-from tests.maasserver.auth.test_auth import OpenFGAMockMixin
 
 
-class TestEmitterOnlyJSON(MAASTestCase):
+class TestEmitterOnlyJSON:
     def test_emitters(self):
-        self.assertEqual(Emitter.EMITTERS.keys(), {"json"})
+        assert Emitter.EMITTERS.keys() == {"json"}
 
 
 class StubHandler:
@@ -39,8 +37,8 @@ class StubHandler:
         raise AssertionError("Do not call the stub handler.")
 
 
-class TestOperationsResource(APITestCase.ForUser):
-    def test_type_error_is_not_hidden(self):
+class TestOperationsResource:
+    def test_type_error_is_not_hidden(self, admin_api_client, factory, mocker):
         # This tests that bug #1228205 is fixed (i.e. that a
         # TypeError is properly reported and not swallowed by
         # piston).
@@ -56,100 +54,94 @@ class TestOperationsResource(APITestCase.ForUser):
             if config == name:
                 raise TypeError()
 
-        self.patch(
-            ConfigManager, "get_config", Mock(side_effect=mock_get_config)
+        mocker.patch.object(
+            ConfigManager, "get_config", side_effect=mock_get_config
         )
-        self.become_admin()
-        response = self.client.get(
+        response = admin_api_client.get(
             reverse("maas_handler"), {"op": "get_config", "name": name}
         )
-        self.assertEqual(
-            http.client.INTERNAL_SERVER_ERROR,
-            response.status_code,
-            response.content,
+        assert http.client.INTERNAL_SERVER_ERROR == response.status_code, (
+            response.content
         )
 
-    def test_api_hash_is_set_in_headers(self):
+    def test_api_hash_is_set_in_headers(self, admin_api_client, factory):
         Config.objects.set_config("maas_name", factory.make_name("name"))
-        self.become_admin()
-        response = self.client.get(
+        response = admin_api_client.get(
             reverse("maas_handler"), {"op": "get_config", "name": "maas_name"}
         )
-        self.assertEqual(
-            response["X-MAAS-API-Hash"], get_api_description()["hash"]
-        )
+        assert response["X-MAAS-API-Hash"] == get_api_description()["hash"]
 
-    def test_call_op_in_path(self):
+    def test_call_op_in_path(self, admin_api_client, factory):
         Config.objects.set_config("maas_name", factory.make_name("name"))
-        self.become_admin()
-        response = self.client.get(
+        response = admin_api_client.get(
             reverse("maas_handler-op-get_config"), {"name": "maas_name"}
         )
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code
 
     def test_authenticated_is_False_when_no_authentication_provided(self):
         resource = OperationsResource(StubHandler)
-        self.assertFalse(resource.is_authentication_attempted)
+        assert not resource.is_authentication_attempted
 
     def test_authenticated_is_False_when_authentication_is_empty(self):
         resource = OperationsResource(StubHandler, authentication=[])
-        self.assertFalse(resource.is_authentication_attempted)
+        assert not resource.is_authentication_attempted
 
     def test_authenticated_is_False_when_authentication_is_NoAuthn(self):
         resource = OperationsResource(
             StubHandler, authentication=NoAuthentication()
         )
-        self.assertFalse(resource.is_authentication_attempted)
+        assert not resource.is_authentication_attempted
 
     def test_authenticated_is_True_when_authentication_is_provided(self):
         resource = OperationsResource(
             StubHandler, authentication=sentinel.authentication
         )
-        self.assertTrue(resource.is_authentication_attempted)
+        assert resource.is_authentication_attempted
 
 
-class TestRestrictedResources(MAASTestCase):
+@pytest.mark.parametrize(
+    "_resource_type",
+    [RestrictedResource, AdminRestrictedResource],
+    ids=["user", "admin"],
+)
+class TestRestrictedResources:
     """Tests for `RestrictedResource` and `AdminRestrictedResource`."""
 
-    scenarios = (
-        ("user", dict(resource_type=RestrictedResource)),
-        ("admin", dict(resource_type=AdminRestrictedResource)),
-    )
+    def test_authentication_must_not_be_None(self, _resource_type):
+        with pytest.raises(AssertionError) as error:
+            _resource_type(StubHandler, authentication=None)
+        assert "Authentication must be attempted." == str(error.value)
 
-    def test_authentication_must_not_be_None(self):
-        error = self.assertRaises(
-            AssertionError,
-            self.resource_type,
-            StubHandler,
-            authentication=None,
-        )
-        self.assertEqual("Authentication must be attempted.", str(error))
+    def test_authentication_must_be_non_empty(self, _resource_type):
+        with pytest.raises(AssertionError) as error:
+            _resource_type(StubHandler, authentication=[])
+        assert "Authentication must be attempted." == str(error.value)
 
-    def test_authentication_must_be_non_empty(self):
-        error = self.assertRaises(
-            AssertionError, self.resource_type, StubHandler, authentication=[]
-        )
-        self.assertEqual("Authentication must be attempted.", str(error))
+    def test_authentication_must_be_meaningful(self, _resource_type):
+        with pytest.raises(AssertionError) as error:
+            _resource_type(StubHandler, authentication=NoAuthentication())
+        assert "Authentication must be attempted." == str(error.value)
 
-    def test_authentication_must_be_meaningful(self):
-        error = self.assertRaises(
-            AssertionError,
-            self.resource_type,
-            StubHandler,
-            authentication=NoAuthentication(),
-        )
-        self.assertEqual("Authentication must be attempted.", str(error))
-
-    def test_authentication_is_okay(self):
-        resource = self.resource_type(
+    def test_authentication_is_okay(self, _resource_type):
+        resource = _resource_type(
             StubHandler, authentication=sentinel.authentication
         )
-        self.assertTrue(resource.is_authentication_attempted)
+        assert resource.is_authentication_attempted
 
 
-class TestAdminMethodDecorator(OpenFGAMockMixin, MAASServerTestCase):
-    def test_permission_denied(self):
-        self.openfga_client.can_edit_global_entities.return_value = False
+@pytest.fixture
+def openfga_client(mocker):
+    client = MagicMock()
+    mocker.patch.object(openfga, "_get_client", return_value=client)
+    openfga.get_openfga_client.cache_clear()
+    yield client
+    openfga.get_openfga_client.cache_clear()
+
+
+@pytest.mark.usefixtures("maasdb")
+class TestAdminMethodDecorator:
+    def test_permission_denied(self, openfga_client):
+        openfga_client.can_edit_global_entities.return_value = False
 
         FakeRequest = namedtuple("FakeRequest", ["user"])
         user = factory.make_User()
@@ -160,14 +152,13 @@ class TestAdminMethodDecorator(OpenFGAMockMixin, MAASServerTestCase):
         def api_method(self, request):
             return mock()
 
-        self.assertRaises(PermissionDenied, api_method, "self", request)
-        self.assertEqual([], mock.mock_calls)
-        self.openfga_client.can_edit_global_entities.assert_called_once_with(
-            user
-        )
+        with pytest.raises(PermissionDenied):
+            api_method("self", request)
+        assert [] == mock.mock_calls
+        openfga_client.can_edit_global_entities.assert_called_once_with(user)
 
-    def test_permission_success(self):
-        self.openfga_client.can_edit_global_entities.return_value = True
+    def test_permission_success(self, openfga_client):
+        openfga_client.can_edit_global_entities.return_value = True
 
         FakeRequest = namedtuple("FakeRequest", ["user"])
         user = factory.make_User()
@@ -180,13 +171,11 @@ class TestAdminMethodDecorator(OpenFGAMockMixin, MAASServerTestCase):
             return mock()
 
         response = api_method("self", request)
-        self.assertEqual((return_value, [call()]), (response, mock.mock_calls))
-        self.openfga_client.can_edit_global_entities.assert_called_once_with(
-            user
-        )
+        assert (return_value, [call()]) == (response, mock.mock_calls)
+        openfga_client.can_edit_global_entities.assert_called_once_with(user)
 
 
-class TestDeprecatedMethodDecorator(MAASServerTestCase):
+class TestDeprecatedMethodDecorator:
     def test_function_marked_as_deprecated(self):
         def api_replacement_method(self, request):
             pass
@@ -195,7 +184,7 @@ class TestDeprecatedMethodDecorator(MAASServerTestCase):
         def api_method(self, request):
             pass
 
-        self.assertEqual(api_method.deprecated, api_replacement_method)
+        assert api_method.deprecated is api_replacement_method
 
     def test_class_marked_as_deprecated(self):
         class api_replacement_endpoint:
@@ -205,7 +194,7 @@ class TestDeprecatedMethodDecorator(MAASServerTestCase):
         class api_endpoint:
             api_doc_section_name = "Deprecated"
 
-        self.assertEqual(api_endpoint.deprecated, api_replacement_endpoint)
+        assert api_endpoint.deprecated is api_replacement_endpoint
 
     def test_deprecated_class_inheritance_only_affects_own_methods(self):
         class BaseHandler:
@@ -227,13 +216,11 @@ class TestDeprecatedMethodDecorator(MAASServerTestCase):
             def own_method(self):
                 pass
 
-        self.assertTrue(hasattr(DeprecatedHandler.own_method, "deprecated"))
-        self.assertFalse(
-            hasattr(DeprecatedHandler.inherited_method, "deprecated")
-        )
+        assert hasattr(DeprecatedHandler.own_method, "deprecated")
+        assert not hasattr(DeprecatedHandler.inherited_method, "deprecated")
 
 
-class TestOperationsHandlerMixin(MAASTestCase):
+class TestOperationsHandlerMixin:
     """Tests for :py:class:`maasserver.api.support.OperationsHandlerMixin`."""
 
     def make_handler(self, **namespace):
@@ -244,13 +231,14 @@ class TestOperationsHandlerMixin(MAASTestCase):
             exports={"foo": sentinel.foo, "bar": sentinel.bar}
         )
         handler.decorate(lambda thing: str(thing).upper())
-        self.assertEqual(
-            {"foo": "SENTINEL.FOO", "bar": "SENTINEL.BAR"}, handler.exports
-        )
+        assert {
+            "foo": "SENTINEL.FOO",
+            "bar": "SENTINEL.BAR",
+        } == handler.exports
 
     def test_decorate_decorates_anonymous_exports(self):
         handler = self.make_handler(exports={"foo": sentinel.foo})
         handler.anonymous = self.make_handler(exports={"bar": sentinel.bar})
         handler.decorate(lambda thing: str(thing).upper())
-        self.assertEqual({"foo": "SENTINEL.FOO"}, handler.exports)
-        self.assertEqual({"bar": "SENTINEL.BAR"}, handler.anonymous.exports)
+        assert {"foo": "SENTINEL.FOO"} == handler.exports
+        assert {"bar": "SENTINEL.BAR"} == handler.anonymous.exports

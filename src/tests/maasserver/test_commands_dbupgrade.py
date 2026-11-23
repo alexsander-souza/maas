@@ -10,7 +10,6 @@ from django.core.management import call_command
 from maasserver.management.commands.dbupgrade import Command
 from maasserver.testing.testcase import MAASTransactionServerTestCase
 from maasservicelayer import db as db_module
-from maastesting.testcase import MAASTestCase
 
 
 class FakeSSLContext:
@@ -28,7 +27,7 @@ class FakeSSLContext:
         self.cert_chains.append((certfile, keyfile))
 
 
-class TestDBUpgradeAlembicConfig(MAASTestCase):
+class TestDBUpgradeAlembicConfig:
     def test_build_alembic_postgres_dsn_omits_ssl_params(self):
         dsn = Command._build_postgres_dsn(
             {
@@ -45,9 +44,9 @@ class TestDBUpgradeAlembicConfig(MAASTestCase):
             "postgresql+asyncpg",
         )
 
-        self.assertEqual(
-            dsn,
-            "postgresql+asyncpg://maas:secret@db.example.com:5432/maasdb",
+        assert (
+            dsn
+            == "postgresql+asyncpg://maas:secret@db.example.com:5432/maasdb"
         )
 
     def test_build_alembic_connect_args_for_non_context_modes(self):
@@ -59,10 +58,10 @@ class TestDBUpgradeAlembicConfig(MAASTestCase):
             connect_args = Command._build_alembic_connect_args(
                 {"database": "maasdb", "sslmode": sslmode}
             )
-            self.assertEqual(connect_args, {"ssl": expected})
+            assert connect_args == {"ssl": expected}
 
-    def test_build_alembic_connect_args_builds_ssl_context(self):
-        self.patch(db_module.ssl, "SSLContext", FakeSSLContext)
+    def test_build_alembic_connect_args_builds_ssl_context(self, mocker):
+        mocker.patch.object(db_module.ssl, "SSLContext", FakeSSLContext)
 
         connect_args = Command._build_alembic_connect_args(
             {
@@ -79,14 +78,13 @@ class TestDBUpgradeAlembicConfig(MAASTestCase):
         )
 
         context = connect_args["ssl"]
-        self.assertIsInstance(context, FakeSSLContext)
-        self.assertEqual(context.verify_mode, db_module.ssl.CERT_REQUIRED)
-        self.assertTrue(context.check_hostname)
-        self.assertEqual(context.verify_locations, ["/etc/maas/ca.crt"])
-        self.assertEqual(
-            context.cert_chains,
-            [("/etc/maas/db.crt", "/etc/maas/db.key")],
-        )
+        assert isinstance(context, FakeSSLContext)
+        assert context.verify_mode == db_module.ssl.CERT_REQUIRED
+        assert context.check_hostname
+        assert context.verify_locations == ["/etc/maas/ca.crt"]
+        assert context.cert_chains == [
+            ("/etc/maas/db.crt", "/etc/maas/db.key")
+        ]
 
 
 class TestDBUpgrade(MAASTransactionServerTestCase):

@@ -178,12 +178,9 @@ class TestIsActionInProgressAPI(APITestCase.ForAnonymous):
             reverse("nodes_handler"),
             {"op": "is_action_in_progress", "mac_address": mac_address},
         )
-        self.assertEqual(
-            (http.client.OK.value, self.result),
-            (
-                response.status_code,
-                response.content.decode(settings.DEFAULT_CHARSET),
-            ),
+        assert (http.client.OK.value, self.result) == (
+            response.status_code,
+            response.content.decode(settings.DEFAULT_CHARSET),
         )
 
 

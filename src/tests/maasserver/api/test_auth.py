@@ -19,7 +19,6 @@ from maasserver.api.auth import (
 )
 from maasserver.testing.factory import factory
 from maasserver.testing.testcase import MAASServerTestCase
-from maastesting.testcase import MAASTestCase
 
 
 class TestMAASAPIAuthentication(MAASServerTestCase):
@@ -181,33 +180,24 @@ class TestMAASAPIAuthentication(MAASServerTestCase):
             )
 
 
-class TestOAuthUnauthorized(MAASTestCase):
+class TestOAuthUnauthorized:
     def test_exception_unicode_includes_original_failure_message(self):
         error_msg = factory.make_name("error-message")
         original_exception = oauth.OAuthError(error_msg)
         maas_exception = OAuthUnauthorized(original_exception)
-        self.assertIn(
-            "Authorization Error: %r" % error_msg,
-            str(maas_exception),
-        )
+        assert ("Authorization Error: %r" % error_msg) in str(maas_exception)
 
     def test_exception_unicode_includes_user_friendly_message(self):
         # When the error is an authentication error, the message is more
         # user-friendly than the default 'Invalid consumer.'.
         original_exception = oauth.OAuthError("Invalid consumer.")
         maas_exception = OAuthUnauthorized(original_exception)
-        self.assertIn(
-            "Authorization Error: Invalid API key.",
-            str(maas_exception),
-        )
+        assert "Authorization Error: Invalid API key." in str(maas_exception)
 
 
-class TestOAuthBadRequest(MAASTestCase):
+class TestOAuthBadRequest:
     def test_exception_unicode_includes_original_failure_message(self):
         error_msg = factory.make_name("error-message")
         original_exception = oauth.OAuthMissingParam(error_msg)
         maas_exception = OAuthBadRequest(original_exception)
-        self.assertIn(
-            f"Bad Request: {error_msg}",
-            str(maas_exception),
-        )
+        assert f"Bad Request: {error_msg}" in str(maas_exception)

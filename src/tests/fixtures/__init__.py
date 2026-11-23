@@ -84,3 +84,23 @@ def mock_openfga(mocker):
     openfga_mock = OpenFGAClientMock()
     mocker.patch("maasserver.openfga._get_client", return_value=openfga_mock)
     yield
+
+
+@pytest.fixture
+def mock_start_workflows(mocker):
+    """Patch out start_workflow in the modules that trigger DHCP workflows.
+
+    This replicates what MAASRegionTestCaseBase.setUp() did for
+    MAASServerTestCase-based tests.
+    """
+    for module_name in (
+        "maasserver.models.node",
+        "maasserver.models.interface",
+        "maasserver.models.signals.vlan",
+        "maasserver.models.signals.subnet",
+        "maasserver.models.iprange",
+        "maasserver.models.staticipaddress",
+    ):
+        mocker.patch(f"{module_name}.start_workflow")
+    mocker.patch("maasserver.bootsources.post_commit_do")
+    yield

@@ -3037,11 +3037,11 @@ class TestMountSpecial(APITestCase.ForUser):
 class TestMountSpecialScenarios(APITestCase.ForUser):
     """Scenario tests for op=mount_special."""
 
-    scenarios = [
-        (displayname, {"fstype": name})
+    scenarios = tuple(
+        (name, {"fstype": name})
         for name, displayname in FILESYSTEM_FORMAT_TYPE_CHOICES
         if name not in Filesystem.TYPES_REQUIRING_STORAGE
-    ]
+    )
 
     def get_machine_uri(self, machine):
         """Get the API URI for `machine`."""
@@ -3257,11 +3257,11 @@ class TestUnmountSpecial(APITestCase.ForUser):
 class TestUnmountSpecialScenarios(APITestCase.ForUser):
     """Scenario tests for op=unmount_special."""
 
-    scenarios = [
-        (displayname, {"fstype": name})
+    scenarios = tuple(
+        (name, {"fstype": name})
         for name, displayname in FILESYSTEM_FORMAT_TYPE_CHOICES
         if name not in Filesystem.TYPES_REQUIRING_STORAGE
-    ]
+    )
 
     def get_machine_uri(self, machine):
         """Get the API URI for `machine`."""
@@ -3323,7 +3323,6 @@ class TestUnmountSpecialScenarios(APITestCase.ForUser):
         )
 
     def test_admin_cannot_unmount_on_non_ready_or_allocated_machine(self):
-        self.become_admin()
         statuses = {name for name, _ in NODE_STATUS_CHOICES}
         statuses -= {NODE_STATUS.READY, NODE_STATUS.ALLOCATED}
         for status in statuses:

@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, sentinel
 from django.core.exceptions import ValidationError
 from django.http import HttpRequest
 from django.utils import timezone
+import pytest
 from twisted.internet import defer
 from twisted.internet.defer import fail, inlineCallbacks, succeed
 from twisted.web.server import NOT_DONE_YET
@@ -36,7 +37,6 @@ from maasserver.websockets.protocol import (
 from maasserver.websockets.websockets import STATUSES
 from maastesting.crochet import wait_for
 from maastesting.factory import factory as maastesting_factory
-from maastesting.testcase import MAASTestCase
 from maastesting.twisted import TwistedLoggerFixture
 from provisioningserver.refresh.node_info_scripts import LSHW_OUTPUT_NAME
 from provisioningserver.utils.twisted import synchronous
@@ -707,7 +707,13 @@ class MakeProtocolFactoryMixin:
         factory = WebSocketFactory(listener)
         if rpc_service is None:
             rpc_service = MagicMock()
-        self.patch(services, "getServiceNamed").return_value = rpc_service
+        mocker = getattr(self, "mocker", None)
+        if mocker is not None:
+            mocker.patch.object(
+                services, "getServiceNamed", return_value=rpc_service
+            )
+        else:
+            self.patch(services, "getServiceNamed").return_value = rpc_service
         return factory
 
     def make_protocol_with_factory(self, user=None, rpc_service=None):
@@ -782,13 +788,19 @@ ALL_HANDLERS = {
 }
 
 
-class TestWebSocketFactory(MAASTestCase, MakeProtocolFactoryMixin):
+class TestWebSocketFactory(MakeProtocolFactoryMixin):
+    @pytest.fixture(autouse=True)
+    def _mocker(self, mocker):
+        self.mocker = mocker
+
     def test_loads_all_handlers(self):
         factory = self.make_factory()
-        self.assertEqual(ALL_HANDLERS, factory.handlers.keys())
+        assert ALL_HANDLERS == factory.handlers.keys()
 
     def test_get_SessionEngine_calls_import_module_with_SESSION_ENGINE(self):
-        getModule = self.patch_autospec(protocol_module, "getModule")
+        getModule = self.mocker.patch.object(
+            protocol_module, "getModule", autospec=True
+        )
         factory = self.make_factory()
         factory.getSessionEngine()
         # A reference to the module was obtained via getModule.
@@ -800,19 +812,19 @@ class TestWebSocketFactory(MAASTestCase, MakeProtocolFactoryMixin):
 
     def test_getHandler_returns_None_on_missing_handler(self):
         factory = self.make_factory()
-        self.assertIsNone(factory.getHandler("unknown"))
+        assert factory.getHandler("unknown") is None
 
     def test_getHandler_returns_MachineHandler(self):
         factory = self.make_factory()
-        self.assertIs(MachineHandler, factory.getHandler("machine"))
+        assert factory.getHandler("machine") is MachineHandler
 
     def test_getHandler_returns_DeviceHandler(self):
         factory = self.make_factory()
-        self.assertIs(DeviceHandler, factory.getHandler("device"))
+        assert factory.getHandler("device") is DeviceHandler
 
     def test_buildProtocol_returns_WebSocketProtocol(self):
         factory = self.make_factory()
-        self.assertIsInstance(
+        assert isinstance(
             factory.buildProtocol(sentinel.addr), WebSocketProtocol
         )
 
@@ -844,7 +856,7 @@ class TestWebSocketFactory(MAASTestCase, MakeProtocolFactoryMixin):
 
     def test_registerNotifiers_registers_all_notifiers(self):
         factory = self.make_factory()
-        self.assertEqual(ALL_NOTIFIERS, factory.listener.listeners.keys())
+        assert ALL_NOTIFIERS == factory.listener.listeners.keys()
 
 
 class TestWebSocketFactoryTransactional(

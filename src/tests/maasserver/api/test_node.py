@@ -650,8 +650,7 @@ class TestSetWorkloadAnnotations(APITestCase.ForUser):
         response = self.client.post(self.get_node_uri(node), params)
         self.assertEqual(http.client.OK, response.status_code)
         self.assertEqual(
-            json_load_bytes(response.content)["workload_annotations"],
-            {},
+            json_load_bytes(response.content)["workload_annotations"], {}
         )
 
 

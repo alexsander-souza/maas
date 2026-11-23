@@ -9,26 +9,30 @@ from textwrap import dedent
 
 from fixtures import FakeLogger
 from lxml import etree
+import pytest
 
 from apiclient.maas_client import MAASClient
 from maastesting.factory import factory
-from maastesting.testcase import MAASTestCase
 from provisioningserver import tags
 from provisioningserver.utils import classify
 
 
-class TestMergeDetailsCleanly(MAASTestCase):
+class TestMergeDetailsCleanly:
     do_merge_details = staticmethod(tags.merge_details_cleanly)
 
-    def setUp(self):
-        super().setUp()
-        self.logger = self.useFixture(FakeLogger("maas"))
+    @pytest.fixture(autouse=True)
+    def _setup(self):
+        logger = FakeLogger("maas")
+        logger.setUp()
+        self.logger = logger
+        yield
+        logger.cleanUp()
 
     def assertXMLEqual(self, actual: etree.ElementTree, expected: str):
         normalise = partial(etree.tostring, pretty_print=True)
         n_actual = normalise(actual)
         n_expected = normalise(etree.fromstring(dedent(expected)))
-        return self.assertEqual(n_actual, n_expected)
+        assert n_actual == n_expected
 
     def test_merge_with_no_details(self):
         xml = self.do_merge_details({})
@@ -86,10 +90,10 @@ class TestMergeDetailsCleanly(MAASTestCase):
         )
         # The presence of a getroot() method indicates that this is a
         # tree object, not an element.
-        self.assertTrue(callable(xml.getroot))
+        assert callable(xml.getroot)
         # The list tag can be obtained using an XPath expression
         # starting from the root of the tree.
-        self.assertEqual(["list"], [elem.tag for elem in xml.xpath("/list")])
+        assert ["list"] == [elem.tag for elem in xml.xpath("/list")]
 
     def test_merge_with_invalid_lshw_details(self):
         # The lshw details cannot be parsed, but merge_details_cleanly() still
@@ -97,7 +101,7 @@ class TestMergeDetailsCleanly(MAASTestCase):
         xml = self.do_merge_details({"lshw": b"<not>well</formed>"})
         self.assertXMLEqual(xml, '<list xmlns:lshw="lshw"/>')
         # The error is logged however.
-        self.assertIn("Invalid lshw details: ", self.logger.output)
+        assert "Invalid lshw details: " in self.logger.output
 
     def test_merge_with_invalid_lshw_details_and_others_valid(self):
         # The lshw details cannot be parsed, but merge_details_cleanly() still
@@ -119,7 +123,7 @@ class TestMergeDetailsCleanly(MAASTestCase):
         """
         self.assertXMLEqual(xml, expected)
         # The error is logged however.
-        self.assertIn("Invalid lshw details: ", self.logger.output)
+        assert "Invalid lshw details: " in self.logger.output
 
     def test_merge_with_invalid_other_details(self):
         xml = self.do_merge_details(
@@ -141,7 +145,7 @@ class TestMergeDetailsCleanly(MAASTestCase):
         """
         self.assertXMLEqual(xml, expected)
         # The error is logged however.
-        self.assertIn("Invalid foom details: ", self.logger.output)
+        assert "Invalid foom details: " in self.logger.output
 
     def test_merge_with_all_invalid_details(self):
         xml = self.do_merge_details(
@@ -159,7 +163,7 @@ class TestMergeDetailsCleanly(MAASTestCase):
         self.assertXMLEqual(xml, expected)
         # The error is logged however.
         for key in ["foom", "lshw", "zoom"]:
-            self.assertIn(f"Invalid {key} details: ", self.logger.output)
+            assert f"Invalid {key} details: " in self.logger.output
 
 
 class TestMergeDetails(TestMergeDetailsCleanly):
@@ -237,7 +241,7 @@ class TestMergeDetails(TestMergeDetailsCleanly):
         """
         self.assertXMLEqual(xml, expected)
         # The error is logged however.
-        self.assertIn("Invalid foom details: ", self.logger.output)
+        assert "Invalid foom details: " in self.logger.output
 
     def test_merge_with_all_invalid_details(self):
         # merge_details() differs from merge_details_cleanly() in that
@@ -259,31 +263,28 @@ class TestMergeDetails(TestMergeDetailsCleanly):
         self.assertXMLEqual(xml, expected)
         # The error is logged however.
         for key in ["lshw", "foom", "zoom"]:
-            self.assertIn(f"Invalid {key} details: ", self.logger.output)
+            assert f"Invalid {key} details: " in self.logger.output
 
 
-class TestGenBatches(MAASTestCase):
+class TestGenBatches:
     def test_batch_of_1_no_things(self):
-        self.assertSequenceEqual([], list(tags.gen_batches([], 1)))
+        assert [] == list(tags.gen_batches([], 1))
 
     def test_batch_of_1_one_thing(self):
-        self.assertSequenceEqual([[1]], list(tags.gen_batches([1], 1)))
+        assert [[1]] == list(tags.gen_batches([1], 1))
 
     def test_batch_of_1_more_things(self):
-        self.assertSequenceEqual(
-            [[1], [2], [3]], list(tags.gen_batches([1, 2, 3], 1))
-        )
+        assert [[1], [2], [3]] == list(tags.gen_batches([1, 2, 3], 1))
 
     def test_no_things(self):
-        self.assertSequenceEqual([], list(tags.gen_batches([], 4)))
+        assert [] == list(tags.gen_batches([], 4))
 
     def test_one_thing(self):
-        self.assertSequenceEqual([[1]], list(tags.gen_batches([1], 4)))
+        assert [[1]] == list(tags.gen_batches([1], 4))
 
     def test_more_things(self):
-        self.assertSequenceEqual(
-            [[0, 3, 6, 9], [1, 4, 7], [2, 5, 8]],
-            list(tags.gen_batches(list(range(10)), 4)),
+        assert [[0, 3, 6, 9], [1, 4, 7], [2, 5, 8]] == list(
+            tags.gen_batches(list(range(10)), 4)
         )
 
     def test_brute(self):
@@ -293,15 +294,15 @@ class TestGenBatches(MAASTestCase):
             # Every element in the original list is present in the
             # reconsolidated list.
             observed = sorted(chain.from_iterable(batches))
-            self.assertSequenceEqual(expected, observed)
+            assert expected == observed
             # The longest batch is never more than 1 element longer
             # than the shortest batch.
             lens = [len(batch) for batch in batches]
-            self.assertIn(max(lens) - min(lens), (0, 1))
+            assert max(lens) - min(lens) in (0, 1)
 
 
-class TestGenNodeDetails(MAASTestCase):
-    def fake_merge_details(self):
+class TestGenNodeDetails:
+    def fake_merge_details(self, mocker):
         """Modify `merge_details` to return a simple textual token.
 
         Specifically, it will return `merged:n1+n2+...`, where `n1`,
@@ -311,17 +312,21 @@ class TestGenNodeDetails(MAASTestCase):
         This means we can test code that uses `merge_details` without
         having to come up with example XML and match on it later.
         """
-        self.patch(
+        mocker.patch.object(
             tags,
             "merge_details",
             lambda mapping: "merged:" + "+".join(mapping),
         )
 
 
-class TestTagUpdating(MAASTestCase):
-    def setUp(self):
-        super().setUp()
-        self.useFixture(FakeLogger())
+class TestTagUpdating:
+    @pytest.fixture(autouse=True)
+    def _setup(self):
+        logger = FakeLogger()
+        logger.setUp()
+        self.logger = logger
+        yield
+        logger.cleanUp()
 
     def fake_client(self):
         return MAASClient(None, None, factory.make_simple_http_url())
@@ -335,4 +340,4 @@ class TestTagUpdating(MAASTestCase):
             ("b", xml("<not-node />")),
             ("c", xml("<parent><node /></parent>")),
         ]
-        self.assertEqual((["a", "c"], ["b"]), classify(xpath, node_details))
+        assert (["a", "c"], ["b"]) == classify(xpath, node_details)

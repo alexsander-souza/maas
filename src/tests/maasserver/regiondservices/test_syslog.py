@@ -4,6 +4,7 @@
 """Tests for `maasserver.regiondservices.syslog`."""
 
 from netaddr import IPAddress
+import pytest
 from twisted.internet import reactor
 from twisted.internet.defer import inlineCallbacks
 
@@ -12,20 +13,20 @@ from maasserver.models.config import Config
 from maasserver.regiondservices import syslog
 from maasserver.service_monitor import service_monitor
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import (
-    MAASServerTestCase,
-    MAASTransactionServerTestCase,
-)
 from maasserver.utils.orm import transactional
 from maasserver.utils.threads import deferToDatabase
 from maastesting.crochet import wait_for
-from maastesting.fixtures import MAASRootFixture
-from maastesting.testcase import MAASTestCase
 from maastesting.twisted import TwistedLoggerFixture
+from provisioningserver.utils.env import MAAS_ID
 import provisioningserver.utils.network as network_module
-from provisioningserver.utils.testing import MAASIDFixture
 
 wait_for_reactor = wait_for()
+
+
+@pytest.fixture(autouse=True)
+def _disable_post_commit_hooks(mocker):
+    mocker.patch("maasserver.utils.orm.post_commit_hooks")
+    mocker.patch("maasserver.utils.orm.post_commit_do")
 
 
 def make_region_rack_with_address(space):
@@ -40,24 +41,22 @@ def make_region_rack_with_address(space):
     return region, sip4, sip6
 
 
-class TestRegionSyslogService_Basic(MAASTestCase):
+class TestRegionSyslogService_Basic:
     """Basic tests for `RegionSyslogService`."""
 
     def test_service_uses__tryUpdate_as_periodic_function(self):
         service = syslog.RegionSyslogService(reactor)
-        self.assertEqual((service._tryUpdate, (), {}), service.call)
+        assert (service._tryUpdate, (), {}) == service.call
 
     def test_service_iterates_every_30_seconds(self):
         service = syslog.RegionSyslogService(reactor)
-        self.assertEqual(30.0, service.step)
+        assert 30.0 == service.step
 
 
-class TestRegionSyslogService(MAASTransactionServerTestCase):
+@pytest.mark.allow_transactions
+@pytest.mark.usefixtures("maasdb")
+class TestRegionSyslogService:
     """Tests for `RegionSyslogService`."""
-
-    def setUp(self):
-        super().setUp()
-        self.useFixture(MAASRootFixture())
 
     @transactional
     def make_example_configuration(self):
@@ -67,7 +66,7 @@ class TestRegionSyslogService(MAASTransactionServerTestCase):
         # Populate the database with example peers.
         space = factory.make_Space()
         region, addr4, addr6 = make_region_rack_with_address(space)
-        self.useFixture(MAASIDFixture(region.system_id))
+        MAAS_ID.set(region.system_id)
         peer1, addr1_4, addr1_6 = make_region_rack_with_address(space)
         peer2, addr2_4, addr2_6 = make_region_rack_with_address(space)
         # Return the servers and all possible peer IP addresses.
@@ -87,25 +86,30 @@ class TestRegionSyslogService(MAASTransactionServerTestCase):
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_tryUpdate_updates_syslog_server(self):
+    def test_tryUpdate_updates_syslog_server(self, mocker):
         service = syslog.RegionSyslogService(reactor)
         port, peers = yield deferToDatabase(self.make_example_configuration)
-        write_config = self.patch_autospec(syslog, "write_config")
-        restartService = self.patch_autospec(service_monitor, "restartService")
-        yield service._tryUpdate()
-        self.assertEqual(write_config.call_count, 1)
-        self.assertEqual(
-            write_config.call_args.kwargs,
-            {"port": port, "promtail_port": None, "bind": []},
+        write_config = mocker.patch.object(
+            syslog, "write_config", autospec=True
         )
+        restartService = mocker.patch.object(
+            service_monitor, "restartService", autospec=True
+        )
+        yield service._tryUpdate()
+        assert write_config.call_count == 1
+        assert write_config.call_args.kwargs == {
+            "port": port,
+            "promtail_port": None,
+            "bind": [],
+        }
         write_local, called_peers = write_config.call_args.args
-        self.assertTrue(write_local)
-        self.assertCountEqual(
-            called_peers,
-            [
-                {"ip": service._formatIP(ip), "name": node.hostname}
-                for node, ip in peers
-            ],
+        assert write_local
+        expected_peers = [
+            {"ip": service._formatIP(ip), "name": node.hostname}
+            for node, ip in peers
+        ]
+        assert sorted(called_peers, key=lambda peer: peer["ip"]) == sorted(
+            expected_peers, key=lambda peer: peer["ip"]
         )
 
         restartService.assert_called_once_with("syslog_region")
@@ -119,86 +123,98 @@ class TestRegionSyslogService(MAASTransactionServerTestCase):
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_syslog_bind_hardening_off_stays_wildcard(self):
-        self.patch(syslog, "is_hardening_enabled").return_value = False
+    def test_syslog_bind_hardening_off_stays_wildcard(self, mocker):
+        mocker.patch.object(syslog, "is_hardening_enabled", return_value=False)
         service = syslog.RegionSyslogService(reactor)
         port, _ = yield deferToDatabase(self.make_example_configuration)
-        write_config = self.patch_autospec(syslog, "write_config")
-        self.patch_autospec(service_monitor, "restartService")
+        write_config = mocker.patch.object(
+            syslog, "write_config", autospec=True
+        )
+        mocker.patch.object(service_monitor, "restartService", autospec=True)
         yield service._tryUpdate()
-        self.assertEqual(write_config.call_args.kwargs["bind"], [])
+        assert write_config.call_args.kwargs["bind"] == []
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_syslog_bind_derives_from_maas_url_under_hardening(self):
-        self.patch(syslog, "is_hardening_enabled").return_value = True
-        self.patch(
-            network_module, "get_source_address_for_url"
-        ).return_value = "10.0.0.9"
-        mock_open = self.patch(RegionConfiguration, "open")
+    def test_syslog_bind_derives_from_maas_url_under_hardening(self, mocker):
+        mocker.patch.object(syslog, "is_hardening_enabled", return_value=True)
+        mocker.patch.object(
+            network_module,
+            "get_source_address_for_url",
+            return_value="10.0.0.9",
+        )
+        mock_open = mocker.patch.object(RegionConfiguration, "open")
         mock_cfg = mock_open.return_value.__enter__.return_value
         mock_cfg.syslog_bind = []
         mock_cfg.maas_url = "http://10.0.0.9:5240/MAAS"
         mock_open.return_value.__exit__.return_value = False
         service = syslog.RegionSyslogService(reactor)
         port, _ = yield deferToDatabase(self.make_example_configuration)
-        write_config = self.patch_autospec(syslog, "write_config")
-        self.patch_autospec(service_monitor, "restartService")
+        write_config = mocker.patch.object(
+            syslog, "write_config", autospec=True
+        )
+        mocker.patch.object(service_monitor, "restartService", autospec=True)
         yield service._tryUpdate()
-        self.assertEqual(write_config.call_args.kwargs["bind"], ["10.0.0.9"])
+        assert write_config.call_args.kwargs["bind"] == ["10.0.0.9"]
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_syslog_bind_explicit_value_used(self):
-        self.patch(syslog, "is_hardening_enabled").return_value = True
-        mock_open = self.patch(RegionConfiguration, "open")
+    def test_syslog_bind_explicit_value_used(self, mocker):
+        mocker.patch.object(syslog, "is_hardening_enabled", return_value=True)
+        mock_open = mocker.patch.object(RegionConfiguration, "open")
         mock_cfg = mock_open.return_value.__enter__.return_value
         mock_cfg.syslog_bind = ["10.0.0.5"]
         mock_cfg.maas_url = "http://10.0.0.9:5240/MAAS"
         mock_open.return_value.__exit__.return_value = False
         service = syslog.RegionSyslogService(reactor)
         port, _ = yield deferToDatabase(self.make_example_configuration)
-        write_config = self.patch_autospec(syslog, "write_config")
-        self.patch_autospec(service_monitor, "restartService")
+        write_config = mocker.patch.object(
+            syslog, "write_config", autospec=True
+        )
+        mocker.patch.object(service_monitor, "restartService", autospec=True)
         yield service._tryUpdate()
-        self.assertEqual(write_config.call_args.kwargs["bind"], ["10.0.0.5"])
+        assert write_config.call_args.kwargs["bind"] == ["10.0.0.5"]
 
 
-class TestRegionSyslogService_Errors(MAASTransactionServerTestCase):
+@pytest.mark.allow_transactions
+@pytest.mark.usefixtures("maasdb")
+class TestRegionSyslogService_Errors:
     """Tests for error handing in `RegionSyslogService`."""
-
-    scenarios = (
-        ("_getConfiguration", dict(method="_getConfiguration")),
-        ("_maybeApplyConfiguration", dict(method="_maybeApplyConfiguration")),
-        ("_applyConfiguration", dict(method="_applyConfiguration")),
-        ("_configurationApplied", dict(method="_configurationApplied")),
-    )
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_tryUpdate_logs_errors_from_broken_method(self):
+    @pytest.mark.parametrize(
+        "method",
+        [
+            "_getConfiguration",
+            "_maybeApplyConfiguration",
+            "_applyConfiguration",
+            "_configurationApplied",
+        ],
+    )
+    def test_tryUpdate_logs_errors_from_broken_method(self, method, mocker):
         service = syslog.RegionSyslogService(reactor)
-        broken_method = self.patch_autospec(service, self.method)
+        broken_method = mocker.patch.object(service, method, autospec=True)
         broken_method.side_effect = factory.make_exception()
 
         # Don't actually write the file.
-        self.patch_autospec(syslog, "write_config")
+        mocker.patch.object(syslog, "write_config", autospec=True)
 
         # Ensure that we never actually execute against systemd.
-        self.patch_autospec(service_monitor, "restartService")
+        mocker.patch.object(service_monitor, "restartService", autospec=True)
 
         with TwistedLoggerFixture() as logger:
             yield service._tryUpdate()
 
-        self.maxDiff = None
-        self.assertIn(
-            "Failed to update syslog configuration.\nTraceback (most recent call last):",
-            logger.output,
+        assert (
+            "Failed to update syslog configuration.\nTraceback (most recent call last):"
+            in logger.output
         )
-        self.assertIn(str(broken_method.side_effect), logger.output)
+        assert str(broken_method.side_effect) in logger.output
 
 
-class TestRegionSyslogService_Database(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb")
+class TestRegionSyslogService_Database:
     """Database tests for `RegionSyslogService`."""
 
     def test_getConfiguration_returns_configuration_object(self):
@@ -208,12 +224,10 @@ class TestRegionSyslogService_Database(MAASServerTestCase):
         space = factory.make_Space()
         # Populate the database with "this" region rack and an example peer.
         region_rack, _, _ = make_region_rack_with_address(space)
-        self.useFixture(MAASIDFixture(region_rack.system_id))
+        MAAS_ID.set(region_rack.system_id)
         peer, addr4, addr6 = make_region_rack_with_address(space)
 
         observed = service._getConfiguration()
-        self.assertIsInstance(observed, syslog._Configuration)
+        assert isinstance(observed, syslog._Configuration)
 
-        self.assertEqual(
-            observed.peers, {(peer.hostname, IPAddress(addr4.ip))}
-        )
+        assert observed.peers == {(peer.hostname, IPAddress(addr4.ip))}

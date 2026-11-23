@@ -8,12 +8,10 @@ from random import choice
 from socket import error as SOCKETError
 from unittest.mock import Mock
 
-from hypothesis import given, settings
-from hypothesis.strategies import sampled_from
 from paramiko import SSHException
+import pytest
 
 from maastesting.factory import factory
-from maastesting.testcase import MAASTestCase
 from provisioningserver.drivers.power import hmc as hmc_module
 from provisioningserver.drivers.power import (
     PowerActionError,
@@ -34,19 +32,21 @@ def make_context():
     }
 
 
-class TestHMCPowerDriver(MAASTestCase):
+class TestHMCPowerDriver:
     def test_missing_packages(self):
         # there's nothing to check for, just confirm it returns []
         driver = hmc_module.HMCPowerDriver()
         missing = driver.detect_missing_packages()
-        self.assertEqual([], missing)
+        assert [] == missing
 
-    def test_run_hmc_command_returns_command_output(self):
+    def test_run_hmc_command_returns_command_output(self, mocker):
         driver = HMCPowerDriver()
         command = factory.make_name("command")
         context = make_context()
-        make_ssh_client = self.patch(hmc_module, "make_ssh_client")
-        connect_ssh_client = self.patch(hmc_module, "connect_ssh_client")
+        make_ssh_client = mocker.patch.object(hmc_module, "make_ssh_client")
+        connect_ssh_client = mocker.patch.object(
+            hmc_module, "connect_ssh_client"
+        )
         ssh_client = make_ssh_client.return_value
         expected = factory.make_name("output").encode("utf-8")
         stdout = BytesIO(expected)
@@ -54,7 +54,7 @@ class TestHMCPowerDriver(MAASTestCase):
         ssh_client.exec_command = Mock(return_value=streams)
         output = driver.run_hmc_command(command, **context)
 
-        self.assertEqual(expected.decode("utf-8"), output)
+        assert expected.decode("utf-8") == output
         make_ssh_client.assert_called_once_with()
         connect_ssh_client.assert_called_once_with(
             ssh_client,
@@ -64,69 +64,68 @@ class TestHMCPowerDriver(MAASTestCase):
         )
         ssh_client.exec_command.assert_called_once_with(command)
 
-    @settings(deadline=None)
-    @given(sampled_from([SSHException, EOFError, SOCKETError]))
-    def test_run_hmc_command_crashes_for_ssh_connection_error(self, error):
+    @pytest.mark.parametrize("error", [SSHException, EOFError, SOCKETError])
+    def test_run_hmc_command_crashes_for_ssh_connection_error(
+        self, error, mocker
+    ):
         driver = HMCPowerDriver()
         command = factory.make_name("command")
         context = make_context()
-        self.patch(hmc_module, "make_ssh_client")
-        connect_ssh_client = self.patch(hmc_module, "connect_ssh_client")
-        connect_ssh_client.side_effect = error
-        self.assertRaises(
-            PowerConnError, driver.run_hmc_command, command, **context
+        mocker.patch.object(hmc_module, "make_ssh_client")
+        connect_ssh_client = mocker.patch.object(
+            hmc_module, "connect_ssh_client"
         )
+        connect_ssh_client.side_effect = error
+        with pytest.raises(PowerConnError):
+            driver.run_hmc_command(command, **context)
 
-    def test_power_on_calls_run_hmc_command(self):
+    def test_power_on_calls_run_hmc_command(self, mocker):
         driver = HMCPowerDriver()
         system_id = factory.make_name("system_id")
         context = make_context()
-        power_query = self.patch(driver, "power_query")
+        power_query = mocker.patch.object(driver, "power_query")
         power_query.return_value = choice(HMCState.ON)
-        self.patch(driver, "power_off")
-        run_hmc_command = self.patch(driver, "run_hmc_command")
+        mocker.patch.object(driver, "power_off")
+        run_hmc_command = mocker.patch.object(driver, "run_hmc_command")
         driver.power_on(system_id, context)
         run_hmc_command.assert_called_once_with(
             f"chsysstate -r lpar -m {context['server_name']} -o on -n {context['lpar']} --bootstring network-all",
             **context,
         )
 
-    def test_power_on_crashes_for_connection_error(self):
+    def test_power_on_crashes_for_connection_error(self, mocker):
         driver = HMCPowerDriver()
         system_id = factory.make_name("system_id")
         context = make_context()
-        power_query = self.patch(driver, "power_query")
+        power_query = mocker.patch.object(driver, "power_query")
         power_query.return_value = "off"
-        run_hmc_command = self.patch(driver, "run_hmc_command")
+        run_hmc_command = mocker.patch.object(driver, "run_hmc_command")
         run_hmc_command.side_effect = PowerConnError("Connection Error")
-        self.assertRaises(
-            PowerActionError, driver.power_on, system_id, context
-        )
+        with pytest.raises(PowerActionError):
+            driver.power_on(system_id, context)
 
-    def test_power_off_calls_run_hmc_command(self):
+    def test_power_off_calls_run_hmc_command(self, mocker):
         driver = HMCPowerDriver()
         system_id = factory.make_name("system_id")
         context = make_context()
-        run_hmc_command = self.patch(driver, "run_hmc_command")
+        run_hmc_command = mocker.patch.object(driver, "run_hmc_command")
         driver.power_off(system_id, context)
         run_hmc_command.assert_called_once_with(
             f"chsysstate -r lpar -m {context['server_name']} -o shutdown -n {context['lpar']} --immed",
             **context,
         )
 
-    def test_power_off_crashes_for_connection_error(self):
+    def test_power_off_crashes_for_connection_error(self, mocker):
         driver = HMCPowerDriver()
         system_id = factory.make_name("system_id")
         context = make_context()
-        run_hmc_command = self.patch(driver, "run_hmc_command")
+        run_hmc_command = mocker.patch.object(driver, "run_hmc_command")
         run_hmc_command.side_effect = PowerConnError("Connection Error")
-        self.assertRaises(
-            PowerActionError, driver.power_off, system_id, context
-        )
+        with pytest.raises(PowerActionError):
+            driver.power_off(system_id, context)
 
-    @given(sampled_from(HMCState.ON + HMCState.OFF))
-    @settings(deadline=None)
-    def test_power_query_returns_power_state(self, power_state):
+    @pytest.mark.parametrize("power_state", HMCState.ON + HMCState.OFF)
+    def test_power_query_returns_power_state(self, power_state, mocker):
         def get_hmc_state(power_state):
             if power_state in HMCState.OFF:
                 return "off"
@@ -136,27 +135,25 @@ class TestHMCPowerDriver(MAASTestCase):
         driver = HMCPowerDriver()
         system_id = factory.make_name("system_id")
         context = make_context()
-        run_hmc_command = self.patch(driver, "run_hmc_command")
+        run_hmc_command = mocker.patch.object(driver, "run_hmc_command")
         run_hmc_command.return_value = power_state
         output = driver.power_query(system_id, context)
-        self.assertEqual(get_hmc_state(power_state), output)
+        assert get_hmc_state(power_state) == output
 
-    def test_power_query_crashes_for_connection_error(self):
+    def test_power_query_crashes_for_connection_error(self, mocker):
         driver = HMCPowerDriver()
         system_id = factory.make_name("system_id")
         context = make_context()
-        run_hmc_command = self.patch(driver, "run_hmc_command")
+        run_hmc_command = mocker.patch.object(driver, "run_hmc_command")
         run_hmc_command.side_effect = PowerConnError("Connection Error")
-        self.assertRaises(
-            PowerActionError, driver.power_query, system_id, context
-        )
+        with pytest.raises(PowerActionError):
+            driver.power_query(system_id, context)
 
-    def test_power_query_crashes_when_unable_to_find_match(self):
+    def test_power_query_crashes_when_unable_to_find_match(self, mocker):
         driver = HMCPowerDriver()
         system_id = factory.make_name("system_id")
         context = make_context()
-        run_hmc_command = self.patch(driver, "run_hmc_command")
+        run_hmc_command = mocker.patch.object(driver, "run_hmc_command")
         run_hmc_command.return_value = "Rubbish"
-        self.assertRaises(
-            PowerFatalError, driver.power_query, system_id, context
-        )
+        with pytest.raises(PowerFatalError):
+            driver.power_query(system_id, context)

@@ -27,7 +27,6 @@ from maasserver.models import Subnet
 from maasserver.testing.api import APITestCase
 from maasserver.testing.factory import factory
 from maasserver.testing.testcase import MAASServerTestCase
-from maastesting.testcase import MAASTestCase
 from provisioningserver.rpc import cluster
 
 
@@ -436,14 +435,12 @@ def make_RPCResults(
     )
 
 
-class TestInterpretsScanAllRackNetworksRPCResults(MAASTestCase):
+class TestInterpretsScanAllRackNetworksRPCResults:
     def test_no_racks_available(self):
         results = make_RPCResults(available=[], failed=[])
         result = get_scan_result_string_for_humans(results)
-        self.assertTrue(
-            result.startswith(
-                "Unable to initiate network scanning on any rack controller"
-            )
+        assert result.startswith(
+            "Unable to initiate network scanning on any rack controller"
         )
 
     def test_scan_not_started_on_at_least_one_rack(self):
@@ -451,34 +448,27 @@ class TestInterpretsScanAllRackNetworksRPCResults(MAASTestCase):
             available=["x"], unavailable=["y", "z"], failed=[]
         )
         result = get_scan_result_string_for_humans(results)
-        self.assertTrue(
-            result.startswith("Scanning could not be started on 2 rack")
-        )
+        assert result.startswith("Scanning could not be started on 2 rack")
 
     def test_scan_in_progress(self):
         results = make_RPCResults(available=["x"], unavailable=[], failed=[])
         result = get_scan_result_string_for_humans(results)
-        self.assertTrue(result.startswith("Scanning is in-progress"))
+        assert result.startswith("Scanning is in-progress")
 
     def test_scan_failed_on_at_least_one_rack(self):
         results = make_RPCResults(
             available=["x"], failed=["v", "w"], unavailable=["y", "z"]
         )
         result = get_scan_result_string_for_humans(results)
-        self.assertTrue(result.startswith("Scanning could not be started"))
-        self.assertIn(
-            "In addition, a scan was already in-progress on 2",
-            result,
-        )
+        assert result.startswith("Scanning could not be started")
+        assert "In addition, a scan was already in-progress on 2" in result
 
     def test_failed_rack(self):
         results = make_RPCResults(
             available=["w"], failed=["w"], unavailable=[]
         )
         result = get_scan_result_string_for_humans(results)
-        self.assertTrue(
-            result.startswith("A scan was already in-progress on 1 rack")
-        )
+        assert result.startswith("A scan was already in-progress on 1 rack")
 
 
 class TestScanAllRackNetworksInterpretsRPCResults(MAASServerTestCase):

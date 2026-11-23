@@ -10,18 +10,17 @@ from pytz import UTC
 from maasserver import security
 from maasserver.secrets import SecretManager
 from maasserver.testing.testcase import MAASTransactionServerTestCase
-from maastesting.testcase import MAASTestCase
 
 
-class TestGetSerial(MAASTestCase):
-    def test_serial_generated(self):
+class TestGetSerial:
+    def test_serial_generated(self, mocker):
         nowish = datetime(2014, 0o3, 24, 16, 0o7, tzinfo=UTC)
-        security_datetime = self.patch(security, "datetime")
+        security_datetime = mocker.patch.object(security, "datetime")
         # Make security.datetime() work like regular datetime.
         security_datetime.side_effect = datetime
         # Make security.timezone.now() return a fixed value.
         security_datetime.now.return_value = nowish
-        self.assertEqual(69005220, security.get_serial())
+        assert security.get_serial() == 69005220
 
 
 class TestGetSharedSecret(MAASTransactionServerTestCase):

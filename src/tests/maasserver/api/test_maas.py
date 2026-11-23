@@ -320,15 +320,18 @@ class TestMAASHandlerAPIForProxyPort(APITestCase.ForUser):
 
     def test_set_config_maas_proxy_port(self):
         self.become_admin()
-        port = self.port
         response = self.client.post(
             reverse("maas_handler"),
-            {"op": "set_config", "name": "maas_proxy_port", "value": port},
+            {
+                "op": "set_config",
+                "name": "maas_proxy_port",
+                "value": self.port,
+            },
         )
         if self.valid:
             self.assertEqual(http.client.OK, response.status_code)
             self.assertEqual(
-                port, Config.objects.get_config("maas_proxy_port")
+                self.port, Config.objects.get_config("maas_proxy_port")
             )
         else:
             self.assertEqual(

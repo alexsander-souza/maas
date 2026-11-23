@@ -3,19 +3,17 @@
 
 """Tests for `maascli.configfile`."""
 
-from pathlib import Path
-
+import pytest
 import yaml
 
 from maascli.configfile import MAASConfiguration
 from maastesting.factory import factory
-from maastesting.testcase import MAASTestCase
 
 
-class TestMAASConfiguration(MAASTestCase):
-    def setUp(self):
-        super().setUp()
-        self.config_dir = Path(self.make_dir())
+class TestMAASConfiguration:
+    @pytest.fixture(autouse=True)
+    def _setup(self, tmp_path):
+        self.config_dir = tmp_path
         self.environ = {"SNAP_DATA": self.config_dir}
         self.config_manager = MAASConfiguration(environ=self.environ)
 
@@ -38,7 +36,7 @@ class TestMAASConfiguration(MAASTestCase):
             factory.make_name("key"): factory.make_name("value"),
         }
         self.write_config(config, "regiond.conf")
-        self.assertEqual(config_manager.get(), config)
+        assert config_manager.get() == config
 
     def test_get(self):
         config = {
@@ -46,10 +44,10 @@ class TestMAASConfiguration(MAASTestCase):
             factory.make_name("key"): factory.make_name("value"),
         }
         self.write_config(config, "regiond.conf")
-        self.assertEqual(self.config_manager.get(), config)
+        assert self.config_manager.get() == config
 
     def test_get_empty(self):
-        self.assertEqual(self.config_manager.get(), {})
+        assert self.config_manager.get() == {}
 
     def test_write_to_file(self):
         config = {
@@ -58,20 +56,20 @@ class TestMAASConfiguration(MAASTestCase):
         }
         filename = factory.make_name("file")
         self.config_manager.write_to_file(config, filename)
-        self.assertEqual(self.read_config(filename), config)
+        assert self.read_config(filename) == config
 
     def test_update_updates(self):
         config1 = {"foo": "bar"}
         config2 = {"foo": "baz"}
         self.config_manager.update(config1)
         self.config_manager.update(config2)
-        self.assertEqual(self.read_config("regiond.conf"), config2)
+        assert self.read_config("regiond.conf") == config2
 
     def test_update_from_empty_file(self):
         config = {factory.make_name("key"): factory.make_name("value")}
         (self.config_dir / "regiond.conf").touch()
         self.config_manager.update(config)
-        self.assertEqual(self.read_config("regiond.conf"), config)
+        assert self.read_config("regiond.conf") == config
 
     def test_update_sets(self):
         config = {
@@ -79,9 +77,9 @@ class TestMAASConfiguration(MAASTestCase):
             factory.make_name("key"): factory.make_name("value"),
         }
         self.config_manager.update(config)
-        self.assertEqual(self.read_config("regiond.conf"), config)
+        assert self.read_config("regiond.conf") == config
         # no rackd config is written
-        self.assertIsNone(self.read_config("rackd.conf"))
+        assert self.read_config("rackd.conf") is None
 
     def test_update_extends(self):
         config1 = {"foo": "bar"}
@@ -91,41 +89,41 @@ class TestMAASConfiguration(MAASTestCase):
         full_config = {}
         full_config.update(config1)
         full_config.update(config2)
-        self.assertEqual(self.read_config("regiond.conf"), full_config)
+        assert self.read_config("regiond.conf") == full_config
 
     def test_update_removes_empty(self):
         config = {"foo": "bar", "baz": "bza"}
         self.config_manager.update(config)
         self.config_manager.update({"foo": None})
-        self.assertEqual(self.read_config("regiond.conf"), {"baz": "bza"})
+        assert self.read_config("regiond.conf") == {"baz": "bza"}
 
     def test_update_with_maas_url(self):
         url = factory.make_name("url")
         self.config_manager.update({"maas_url": url})
         expected = {"maas_url": url}
-        self.assertEqual(self.read_config("regiond.conf"), expected)
+        assert self.read_config("regiond.conf") == expected
         # MAAS url is set in rackd config as well
-        self.assertEqual(self.read_config("rackd.conf"), expected)
+        assert self.read_config("rackd.conf") == expected
 
     def test_update_with_debug(self):
         self.config_manager.update({"debug": True})
         expected = {"debug": True}
-        self.assertEqual(self.read_config("regiond.conf"), expected)
+        assert self.read_config("regiond.conf") == expected
         # Debug is set in rackd config as well
-        self.assertEqual(self.read_config("rackd.conf"), expected)
+        assert self.read_config("rackd.conf") == expected
 
     def test_unset_maas_url(self):
         config = {"maas_url": factory.make_name("url")}
         self.write_config(config, "regiond.conf")
         self.write_config(config, "rackd.conf")
         self.config_manager.update({"maas_url": None})
-        self.assertEqual(self.read_config("regiond.conf"), {})
-        self.assertEqual(self.read_config("rackd.conf"), {})
+        assert self.read_config("regiond.conf") == {}
+        assert self.read_config("rackd.conf") == {}
 
     def test_update_with_temporal_server(self):
         self.config_manager.update({"temporal_server": "127.0.0.1"})
         # temporal_server is rack-only; it must not be written to regiond.conf
-        self.assertEqual(self.read_config("regiond.conf"), {})
-        self.assertEqual(
-            self.read_config("rackd.conf"), {"temporal_server": "127.0.0.1"}
-        )
+        assert self.read_config("regiond.conf") == {}
+        assert self.read_config("rackd.conf") == {
+            "temporal_server": "127.0.0.1"
+        }

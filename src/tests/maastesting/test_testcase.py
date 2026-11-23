@@ -4,78 +4,84 @@
 """Tests for `MAASTestCase`."""
 
 import os.path
-from shutil import rmtree
-from tempfile import mkdtemp
 from unittest import mock as mock_module
 from unittest.mock import call, MagicMock, sentinel
+
+import pytest
 
 from maastesting.factory import factory
 from maastesting.testcase import MAASTestCase
 
 
-class TestTestCase(MAASTestCase):
+class TestTestCase:
     """Tests the base `MAASTestCase` facilities."""
 
-    def test_make_dir_creates_directory(self):
-        self.assertTrue(os.path.isdir(self.make_dir()))
+    def test_make_dir_creates_directory(self, tmp_path):
+        assert os.path.isdir(tmp_path)
 
-    def test_make_dir_creates_temporary_directory(self):
-        other_temp_dir = mkdtemp()
-        self.addCleanup(rmtree, other_temp_dir)
-        other_temp_root, other_subdir = os.path.split(other_temp_dir)
-        temp_root, subdir = os.path.split(self.make_dir())
-        self.assertEqual(other_temp_root, temp_root)
-        self.assertNotIn(subdir, [b"", "", None])
+    def test_make_dir_creates_temporary_directory(self, tmp_path):
+        # tmp_path is a temporary directory in the system temp location
+        temp_root, subdir = os.path.split(str(tmp_path))
+        assert subdir not in [b"", "", None]
 
-    def test_make_dir_creates_one_directory_per_call(self):
-        self.assertNotEqual(self.make_dir(), self.make_dir())
+    def test_make_dir_creates_one_directory_per_call(self, tmp_path):
+        subdir1 = tmp_path / "1"
+        subdir2 = tmp_path / "2"
+        subdir1.mkdir()
+        subdir2.mkdir()
+        assert subdir1 != subdir2
 
-    def test_make_file_creates_file(self):
-        self.assertTrue(os.path.isfile(self.make_file()))
+    def test_make_file_creates_file(self, tmp_path):
+        test_file = tmp_path / "test_file"
+        test_file.touch()
+        assert os.path.isfile(test_file)
 
-    def test_make_file_uses_temporary_directory(self):
-        directory = self.make_dir()
-        self.patch(self, "make_dir", lambda: directory)
-        dir_part, file_part = os.path.split(self.make_file())
-        self.assertEqual(directory, dir_part)
+    def test_make_file_uses_temporary_directory(self, tmp_path):
+        test_file = tmp_path / "test_file"
+        test_file.touch()
+        dir_part, file_part = os.path.split(str(test_file))
+        assert str(tmp_path) == dir_part
 
-    def test_patch_can_mock(self):
-        # The patch method patches-in and returns a new MagicMock() instance
-        # if no attribute value is given.
+    def test_patch_can_mock(self, mocker):
         attribute_name = factory.make_name("attribute")
-        self.assertRaises(AttributeError, getattr, self, attribute_name)
-        attribute = self.patch(self, attribute_name)
-        self.assertIs(getattr(self, attribute_name), attribute)
-        self.assertIsInstance(attribute, MagicMock)
+        obj = type("Obj", (), {})()
+        with pytest.raises(AttributeError):
+            getattr(obj, attribute_name)
+        attribute = mocker.patch.object(obj, attribute_name, create=True)
+        assert getattr(obj, attribute_name) is attribute
+        assert isinstance(attribute, MagicMock)
 
     def method_to_be_patched(self, a, b):
         return sentinel.method_to_be_patched
 
-    def test_patch_autospec_creates_autospec_from_target(self):
-        # Grab a reference to this now.
-        method_to_be_patched = self.method_to_be_patched
+    def test_patch_autospec_creates_autospec_from_target(self, mocker):
+        # This test exercises MAASTestCase.patch_autospec directly since
+        # it tests MAASTestCase's own delegation to mock.create_autospec.
+        test_case = MAASTestCase()
+        test_case.method_to_be_patched = self.method_to_be_patched
+        method_to_be_patched = test_case.method_to_be_patched
 
         # It's simpler to test that create_autospec has been called than it is
         # to test the result of calling it; mock does some clever things to do
         # what it does that make comparisons hard.
-        create_autospec = self.patch(mock_module, "create_autospec")
+        create_autospec = mocker.patch.object(mock_module, "create_autospec")
         create_autospec.return_value = sentinel.autospec
 
-        method_to_be_patched_autospec = self.patch_autospec(
-            self,
+        method_to_be_patched_autospec = test_case.patch_autospec(
+            test_case,
             "method_to_be_patched",
             spec_set=sentinel.spec_set,
             instance=sentinel.instance,
         )
 
-        self.assertIs(sentinel.autospec, method_to_be_patched_autospec)
-        self.assertIs(sentinel.autospec, self.method_to_be_patched)
+        assert sentinel.autospec is method_to_be_patched_autospec
+        assert sentinel.autospec is test_case.method_to_be_patched
         create_autospec.assert_called_once_with(
             method_to_be_patched, sentinel.spec_set, sentinel.instance
         )
 
-    def test_patch_autospec_really_leaves_an_autospec_behind(self):
-        self.patch_autospec(self, "method_to_be_patched")
+    def test_patch_autospec_really_leaves_an_autospec_behind(self, mocker):
+        mocker.patch.object(self, "method_to_be_patched", autospec=True)
         # The patched method can be called with positional or keyword
         # arguments.
         self.method_to_be_patched(1, 2)
@@ -86,22 +92,29 @@ class TestTestCase(MAASTestCase):
         )
         # Calling the patched method with unrecognised arguments or not
         # enough arguments results in an exception.
-        self.assertRaises(TypeError, self.method_to_be_patched, c=7)
-        self.assertRaises(TypeError, self.method_to_be_patched, 8)
-        self.assertRaises(TypeError, self.method_to_be_patched, b=9)
+        with pytest.raises(TypeError):
+            self.method_to_be_patched(c=7)
+        with pytest.raises(TypeError):
+            self.method_to_be_patched(8)
+        with pytest.raises(TypeError):
+            self.method_to_be_patched(b=9)
 
     def test_assertSequenceEqual_rejects_mappings(self):
-        self.assertRaises(AssertionError, self.assertSequenceEqual, {}, [])
-        self.assertRaises(AssertionError, self.assertSequenceEqual, [], {})
-        self.assertRaises(AssertionError, self.assertSequenceEqual, {}, {})
-        self.assertSequenceEqual([], [])
+        test_case = MAASTestCase()
+        with pytest.raises(AssertionError):
+            test_case.assertSequenceEqual({}, [])
+        with pytest.raises(AssertionError):
+            test_case.assertSequenceEqual([], {})
+        with pytest.raises(AssertionError):
+            test_case.assertSequenceEqual({}, {})
+        test_case.assertSequenceEqual([], [])
 
     def test_assertSequenceEqual_ignores_mappings_if_seq_type_is_set(self):
-        self.assertSequenceEqual({}, {}, seq_type=dict)
+        MAASTestCase().assertSequenceEqual({}, {}, seq_type=dict)
 
     def test_assertSequenceEqual_forwards_message(self):
         message = factory.make_name("message")
-        error = self.assertRaises(
-            AssertionError, self.assertSequenceEqual, [1], [2], message
-        )
-        self.assertIn(message, str(error))
+        test_case = MAASTestCase()
+        with pytest.raises(AssertionError) as exc_info:
+            test_case.assertSequenceEqual([1], [2], message)
+        assert message in str(exc_info.value)

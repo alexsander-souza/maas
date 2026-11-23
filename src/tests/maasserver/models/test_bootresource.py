@@ -8,7 +8,9 @@ import random
 
 from django.core.exceptions import ValidationError
 from django.utils import timezone
+import pytest
 
+from maascommon.osystem import OperatingSystemRegistry
 from maasserver.enum import (
     BOOT_RESOURCE_FILE_TYPE,
     BOOT_RESOURCE_TYPE,
@@ -19,15 +21,15 @@ from maasserver.models.bootresource import BootResource
 from maasserver.models.config import Config
 from maasserver.models.signals import bootsources
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
-from provisioningserver.testing.os import make_osystem
+from provisioningserver.testing.os import FakeOS
 
 
-class TestBootResourceManager(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "mock_openfga")
+class TestBootResourceManager:
     """Tests for the `BootResource` model manager."""
 
-    def setUp(self):
-        super().setUp()
+    @pytest.fixture(autouse=True)
+    def _setup(self, maasdb):
         self.region = factory.make_RegionController()
 
     def make_boot_resource(self, rtype, name):
@@ -60,7 +62,7 @@ class TestBootResourceManager(MAASServerTestCase):
             architecture="amd64/hwe-16.04",
             extra={"subarches": "hwe-p,hwe-t,hwe-16.04,hwe-16.10"},
         )
-        self.assertEqual(["hwe-16.04"], BootResource.objects.get_kernels())
+        assert BootResource.objects.get_kernels() == ["hwe-16.04"]
 
     def test_get_supported_kernel_compatibility_levels_includes_all_subarches(
         self,
@@ -69,9 +71,9 @@ class TestBootResourceManager(MAASServerTestCase):
             architecture="amd64/hwe-16.04",
             extra={"subarches": "hwe-p,hwe-t,hwe-16.04,hwe-16.10"},
         )
-        self.assertEqual(
-            ["hwe-p", "hwe-t", "hwe-16.04", "hwe-16.10"],
-            BootResource.objects.get_supported_kernel_compatibility_levels(),
+        assert (
+            BootResource.objects.get_supported_kernel_compatibility_levels()
+            == ["hwe-p", "hwe-t", "hwe-16.04", "hwe-16.10"]
         )
 
     def test_get_commissionable_resource_returns_iterable(self):
@@ -84,7 +86,7 @@ class TestBootResourceManager(MAASServerTestCase):
         commissionables = BootResource.objects.get_commissionable_resource(
             os, series
         )
-        self.assertIsInstance(commissionables, Iterable)
+        assert isinstance(commissionables, Iterable)
 
     def test_get_commissionable_resource_returns_only_commissionable(self):
         os = factory.make_name("os")
@@ -103,7 +105,7 @@ class TestBootResourceManager(MAASServerTestCase):
         commissionables = BootResource.objects.get_commissionable_resource(
             os, series
         )
-        self.assertEqual([resource], list(commissionables))
+        assert list(commissionables) == [resource]
 
     def test_get_commissionable_resource_returns_only_for_os_series(self):
         os = factory.make_name("os")
@@ -116,7 +118,7 @@ class TestBootResourceManager(MAASServerTestCase):
         commissionables = BootResource.objects.get_commissionable_resource(
             os, series
         )
-        self.assertCountEqual([resource], commissionables)
+        assert list(commissionables) == [resource]
 
     def test_get_commissionable_resource_returns_sorted_by_architecture(self):
         os = factory.make_name("os")
@@ -140,9 +142,7 @@ class TestBootResourceManager(MAASServerTestCase):
         commissionables = BootResource.objects.get_commissionable_resource(
             os, series
         )
-        self.assertEqual(
-            [resource_a, resource_b, resource_c], list(commissionables)
-        )
+        assert list(commissionables) == [resource_a, resource_b, resource_c]
 
     def test_get_default_commissioning_resource_returns_i386_first(self):
         os = factory.make_name("os")
@@ -155,11 +155,11 @@ class TestBootResourceManager(MAASServerTestCase):
                 name=name,
                 architecture=arch,
             )
-        self.assertEqual(
-            "i386/generic",
+        assert (
             BootResource.objects.get_default_commissioning_resource(
                 os, series
-            ).architecture,
+            ).architecture
+            == "i386/generic"
         )
 
     def test_get_default_commissioning_resource_returns_amd64_second(self):
@@ -173,11 +173,11 @@ class TestBootResourceManager(MAASServerTestCase):
                 name=name,
                 architecture=arch,
             )
-        self.assertEqual(
-            "amd64/generic",
+        assert (
             BootResource.objects.get_default_commissioning_resource(
                 os, series
-            ).architecture,
+            ).architecture
+            == "amd64/generic"
         )
 
     def test_get_default_commissioning_resource_returns_first_arch(self):
@@ -191,11 +191,11 @@ class TestBootResourceManager(MAASServerTestCase):
                 name=name,
                 architecture=arch,
             )
-        self.assertEqual(
-            "arm64/generic",
+        assert (
             BootResource.objects.get_default_commissioning_resource(
                 os, series
-            ).architecture,
+            ).architecture
+            == "arm64/generic"
         )
 
     def test_get_resource_for_returns_matching_resource(self):
@@ -212,11 +212,11 @@ class TestBootResourceManager(MAASServerTestCase):
         resource.save()
         osystem, series = resource.name.split("/")
         arch, _ = resource.split_arch()
-        self.assertEqual(
-            resource,
+        assert (
             BootResource.objects.get_resource_for(
                 osystem, arch, subarch, series
-            ),
+            )
+            == resource
         )
 
     def test_get_resource_for_returns_custom_resource(self):
@@ -236,21 +236,23 @@ class TestBootResourceManager(MAASServerTestCase):
         osystem = "custom"
         series = custom.name
         arch, _ = custom.split_arch()
-        self.assertEqual(
-            custom,
+        assert (
             BootResource.objects.get_resource_for(
                 osystem, arch, subarch, series
-            ),
+            )
+            == custom
         )
 
 
-class TestGetAvailableCommissioningResources(MAASServerTestCase):
-    def setUp(self):
-        super().setUp()
+@pytest.mark.usefixtures("maasdb", "mock_openfga")
+class TestGetAvailableCommissioningResources:
+    @pytest.fixture(autouse=True)
+    def _setup(self, maasdb):
         self.region = factory.make_RegionController()
         # Disable boot source cache signals.
-        self.addCleanup(bootsources.signals.enable)
         bootsources.signals.disable()
+        yield
+        bootsources.signals.enable()
 
     def test_returns_empty_if_no_cache(self):
         release = factory.make_name("release")
@@ -258,8 +260,8 @@ class TestGetAvailableCommissioningResources(MAASServerTestCase):
         factory.make_usable_boot_resource(
             rtype=BOOT_RESOURCE_TYPE.SYNCED, name=name
         )
-        self.assertEqual(
-            [], BootResource.objects.get_available_commissioning_resources()
+        assert (
+            BootResource.objects.get_available_commissioning_resources() == []
         )
 
     def test_returns_empty_if_no_lts(self):
@@ -275,8 +277,8 @@ class TestGetAvailableCommissioningResources(MAASServerTestCase):
             release_title=release,
             support_eol=support_eol,
         )
-        self.assertEqual(
-            [], BootResource.objects.get_available_commissioning_resources()
+        assert (
+            BootResource.objects.get_available_commissioning_resources() == []
         )
 
     def test_returns_only_lts(self):
@@ -305,9 +307,9 @@ class TestGetAvailableCommissioningResources(MAASServerTestCase):
             release_title=other_release,
             support_eol=other_support_eol,
         )
-        self.assertEqual(
-            [resource],
-            BootResource.objects.get_available_commissioning_resources(),
+        assert (
+            BootResource.objects.get_available_commissioning_resources()
+            == [resource]
         )
 
     def test_returns_longest_remaining_supported_lts_first(self):
@@ -329,76 +331,61 @@ class TestGetAvailableCommissioningResources(MAASServerTestCase):
             release_title="16.04 LTS",
             support_eol="2021-04-17",
         )
-        self.assertEqual(
-            [xenial_resource, trusty_resource],
-            BootResource.objects.get_available_commissioning_resources(),
+        assert (
+            BootResource.objects.get_available_commissioning_resources()
+            == [xenial_resource, trusty_resource]
         )
 
 
-class TestGetKernels(MAASServerTestCase):
-    """Tests for `get_kernels`."""
-
-    scenarios = (
+@pytest.mark.parametrize(
+    "name,arch,subarch,kernels",
+    [
         (
             "ubuntu/trusty",
-            {
-                "name": "ubuntu/trusty",
-                "arch": "amd64",
-                "subarch": "generic",
-                "kernels": ["hwe-t", "hwe-u", "hwe-v", "hwe-rolling"],
-            },
+            "amd64",
+            "generic",
+            ["hwe-t", "hwe-u", "hwe-v", "hwe-rolling"],
         ),
-        (
-            "ubuntu/vivid",
-            {
-                "name": "ubuntu/vivid",
-                "arch": "i386",
-                "subarch": "generic",
-                "kernels": ["hwe-v", "hwe-rolling"],
-            },
-        ),
+        ("ubuntu/vivid", "i386", "generic", ["hwe-v", "hwe-rolling"]),
         (
             "ubuntu/precise",
-            {
-                "name": "ubuntu/precise",
-                "arch": "armfh",
-                "subarch": "generic",
-                "kernels": ["hwe-p", "hwe-t", "hwe-v", "hwe-rolling"],
-            },
+            "armfh",
+            "generic",
+            ["hwe-p", "hwe-t", "hwe-v", "hwe-rolling"],
         ),
-        (
-            "ubuntu/wily",
-            {
-                "name": "ubuntu/wily",
-                "arch": "armfh",
-                "subarch": "hardbank",
-                "kernels": [],
-            },
-        ),
+        ("ubuntu/wily", "armfh", "hardbank", []),
         (
             "ubuntu/xenial",
-            {
-                "name": "ubuntu/xenial",
-                "arch": "amd64",
-                "subarch": "generic",
-                "kernels": [
-                    "hwe-16.04",
-                    "hwe-16.04-lowlatency",
-                    "hwe-rolling",
-                    "hwe-rolling-lowlatency",
-                ],
-            },
+            "amd64",
+            "generic",
+            [
+                "hwe-16.04",
+                "hwe-16.04-lowlatency",
+                "hwe-rolling",
+                "hwe-rolling-lowlatency",
+            ],
         ),
-    )
+    ],
+    ids=[
+        "ubuntu/trusty",
+        "ubuntu/vivid",
+        "ubuntu/precise",
+        "ubuntu/wily",
+        "ubuntu/xenial",
+    ],
+)
+@pytest.mark.usefixtures("maasdb", "mock_openfga")
+class TestGetKernels:
+    """Tests for `get_kernels`."""
 
-    def setUp(self):
-        super().setUp()
+    @pytest.fixture(autouse=True)
+    def _setup(self, maasdb):
         self.region = factory.make_RegionController()
 
-    def test_returns_usable_kernels(self):
-        if self.subarch == "generic":
+    def test_returns_usable_kernels(self, name, arch, subarch, kernels):
+        if subarch == "generic":
             generic_kernels = []
-            for i in self.kernels:
+            for i in kernels:
                 kernel_parts = i.split("-")
                 if len(kernel_parts) > 2:
                     kflavor = kernel_parts[2]
@@ -406,55 +393,57 @@ class TestGetKernels(MAASServerTestCase):
                     kflavor = "generic"
                     generic_kernels.append(i)
                 factory.make_usable_boot_resource(
-                    name=self.name,
+                    name=name,
                     rtype=BOOT_RESOURCE_TYPE.SYNCED,
-                    architecture=f"{self.arch}/{i}",
+                    architecture=f"{arch}/{i}",
                     kflavor=kflavor,
                     rolling=True,
                     platform=None,
                     supported_platforms=None,
                 )
                 factory.make_incomplete_boot_resource(
-                    name=self.name,
+                    name=name,
                     rtype=BOOT_RESOURCE_TYPE.SYNCED,
                     architecture="%s/%s"
-                    % (self.arch, factory.make_name("incomplete")),
+                    % (arch, factory.make_name("incomplete")),
                     kflavor=kflavor,
                 )
         else:
-            generic_kernels = self.kernels
+            generic_kernels = kernels
             factory.make_usable_boot_resource(
-                name=self.name,
+                name=name,
                 rtype=BOOT_RESOURCE_TYPE.SYNCED,
-                architecture=f"{self.arch}/{self.subarch}",
+                architecture=f"{arch}/{subarch}",
                 rolling=True,
                 platform=None,
                 supported_platforms=None,
             )
-        self.assertCountEqual(
-            self.kernels,
-            BootResource.objects.get_kernels(self.name, self.arch),
-            "%s should return %s as its usable kernel"
-            % (self.name, self.kernels),
+        assert set(BootResource.objects.get_kernels(name, arch)) == set(
+            kernels
+        ), "%s should return %s as its usable kernel" % (
+            name,
+            kernels,
         )
-        self.assertEqual(
-            generic_kernels,
+        assert (
             BootResource.objects.get_kernels(
-                name=self.name,
-                architecture=self.arch,
+                name=name,
+                architecture=arch,
                 platform=None,
                 kflavor="generic",
-            ),
-            "%s should return %s as its usable kernel"
-            % (self.name, generic_kernels),
+            )
+            == generic_kernels
+        ), "%s should return %s as its usable kernel" % (
+            name,
+            generic_kernels,
         )
 
 
-class TestGetKpackageForNode(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "mock_openfga")
+class TestGetKpackageForNode:
     """Tests for `get_kpackage_for_node`."""
 
-    def setUp(self):
-        super().setUp()
+    @pytest.fixture(autouse=True)
+    def _setup(self, maasdb):
         self.region = factory.make_RegionController()
 
     def test_returns_kpackage(self):
@@ -479,9 +468,9 @@ class TestGetKpackageForNode(MAASServerTestCase):
             architecture="amd64/generic",
             hwe_kernel="hwe-t",
         )
-        self.assertEqual(
-            "linux-image-generic-lts-trusty",
-            BootResource.objects.get_kpackage_for_node(node),
+        assert (
+            BootResource.objects.get_kpackage_for_node(node)
+            == "linux-image-generic-lts-trusty"
         )
 
     def test_returns_hwe_rolling(self):
@@ -496,20 +485,19 @@ class TestGetKpackageForNode(MAASServerTestCase):
             ],
         ):
             node.hwe_kernel = hwe_kernel
-            self.assertEqual(
-                kpackage, BootResource.objects.get_kpackage_for_node(node)
-            )
+            assert BootResource.objects.get_kpackage_for_node(node) == kpackage
 
     def test_returns_none(self):
         node = factory.make_Node()
-        self.assertIsNone(BootResource.objects.get_kpackage_for_node(node))
+        assert BootResource.objects.get_kpackage_for_node(node) is None
 
 
-class TestGetKparamsForNode(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "mock_openfga")
+class TestGetKparamsForNode:
     """Tests for `get_kparams_for_node`."""
 
-    def setUp(self):
-        super().setUp()
+    @pytest.fixture(autouse=True)
+    def _setup(self, maasdb):
         self.region = factory.make_RegionController()
 
     def test_returns_kpackage(self):
@@ -537,20 +525,19 @@ class TestGetKparamsForNode(MAASServerTestCase):
             architecture="amd64/generic",
             hwe_kernel="hwe-t",
         )
-        self.assertEqual(
-            "a=b", BootResource.objects.get_kparams_for_node(node)
-        )
+        assert BootResource.objects.get_kparams_for_node(node) == "a=b"
 
     def test_returns_none(self):
         node = factory.make_Node()
-        self.assertIsNone(BootResource.objects.get_kparams_for_node(node))
+        assert BootResource.objects.get_kparams_for_node(node) is None
 
 
-class TestBootResource(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "mock_openfga")
+class TestBootResource:
     """Tests for the `BootResource` model."""
 
-    def setUp(self):
-        super().setUp()
+    @pytest.fixture(autouse=True)
+    def _setup(self, maasdb):
         self.region = factory.make_RegionController()
 
     def make_complete_boot_resource_set(self, resource):
@@ -567,9 +554,8 @@ class TestBootResource(MAASServerTestCase):
 
     def test_validation_raises_error_on_missing_subarch(self):
         arch = factory.make_name("arch")
-        self.assertRaises(
-            ValidationError, factory.make_BootResource, architecture=arch
-        )
+        with pytest.raises(ValidationError):
+            factory.make_BootResource(architecture=arch)
 
     def test_validation_raises_error_on_invalid_name_for_synced(self):
         name = factory.make_name("name")
@@ -580,7 +566,8 @@ class TestBootResource(MAASServerTestCase):
         resource = BootResource(
             rtype=BOOT_RESOURCE_TYPE.SYNCED, name=name, architecture=arch
         )
-        self.assertRaises(ValidationError, resource.save)
+        with pytest.raises(ValidationError):
+            resource.save()
 
     def test_validation_raises_error_on_invalid_name_for_uploaded(self):
         name = "{}/{}".format(
@@ -593,11 +580,18 @@ class TestBootResource(MAASServerTestCase):
         resource = BootResource(
             rtype=BOOT_RESOURCE_TYPE.UPLOADED, name=name, architecture=arch
         )
-        self.assertRaises(ValidationError, resource.save)
+        with pytest.raises(ValidationError):
+            resource.save()
 
-    def test_validation_allows_any_uploaded_name_slash_with_supported_os(self):
+    def test_validation_allows_any_uploaded_name_slash_with_supported_os(
+        self, request
+    ):
         osystem = factory.make_name("osystem")
-        make_osystem(self, osystem)
+        fake = FakeOS(osystem)
+        OperatingSystemRegistry.register_item(fake.name, fake)
+        request.addfinalizer(
+            lambda: OperatingSystemRegistry.unregister_item(osystem)
+        )
         name = "{}/{}".format(osystem, factory.make_name("release"))
         arch = "{}/{}".format(
             factory.make_name("arch"),
@@ -630,31 +624,30 @@ class TestBootResource(MAASServerTestCase):
         factory.make_BootResource(
             rtype=BOOT_RESOURCE_TYPE.SYNCED, name=name, architecture=arch
         )
-        self.assertRaises(
-            ValidationError,
-            factory.make_BootResource,
-            rtype=BOOT_RESOURCE_TYPE.UPLOADED,
-            name=name,
-            architecture=arch,
-        )
+        with pytest.raises(ValidationError):
+            factory.make_BootResource(
+                rtype=BOOT_RESOURCE_TYPE.UPLOADED,
+                name=name,
+                architecture=arch,
+            )
 
     def test_display_rtype(self):
         for key, value in BOOT_RESOURCE_TYPE_CHOICES_DICT.items():
             resource = BootResource(rtype=key)
-            self.assertEqual(value, resource.display_rtype)
+            assert resource.display_rtype == value
 
     def test_split_arch(self):
         arch = factory.make_name("arch")
         subarch = factory.make_name("subarch")
         architecture = f"{arch}/{subarch}"
         resource = factory.make_BootResource(architecture=architecture)
-        self.assertEqual((arch, subarch), resource.split_arch())
+        assert resource.split_arch() == (arch, subarch)
 
     def test_get_latest_set(self):
         resource = factory.make_BootResource()
         factory.make_BootResourceSet(resource)
         latest_two = factory.make_BootResourceSet(resource)
-        self.assertEqual(latest_two, resource.get_latest_set())
+        assert resource.get_latest_set() == latest_two
 
     def test_get_latest_complete_set(self):
         resource = factory.make_BootResource()
@@ -662,37 +655,37 @@ class TestBootResource(MAASServerTestCase):
         self.make_complete_boot_resource_set(resource)
         latest_complete = self.make_complete_boot_resource_set(resource)
         factory.make_BootResourceSet(resource)
-        self.assertEqual(latest_complete, resource.get_latest_complete_set())
+        assert resource.get_latest_complete_set() == latest_complete
 
-    def configure_now(self):
+    def configure_now(self, mocker):
         now = timezone.now()
-        self.patch(bootresource, "now").return_value = now
+        mocker.patch.object(bootresource, "now").return_value = now
         return now.strftime("%Y%m%d")
 
-    def test_get_next_version_name_returns_current_date(self):
-        expected_version = self.configure_now()
+    def test_get_next_version_name_returns_current_date(self, mocker):
+        expected_version = self.configure_now(mocker)
         resource = factory.make_BootResource()
-        self.assertEqual(expected_version, resource.get_next_version_name())
+        assert resource.get_next_version_name() == expected_version
 
-    def test_get_next_version_name_returns_first_revision(self):
-        expected_version = "%s.1" % self.configure_now()
+    def test_get_next_version_name_returns_first_revision(self, mocker):
+        expected_version = "%s.1" % self.configure_now(mocker)
         resource = factory.make_BootResource()
         factory.make_BootResourceSet(
             resource, version=resource.get_next_version_name()
         )
-        self.assertEqual(expected_version, resource.get_next_version_name())
+        assert resource.get_next_version_name() == expected_version
 
-    def test_get_next_version_name_returns_later_revision(self):
-        expected_version = self.configure_now()
+    def test_get_next_version_name_returns_later_revision(self, mocker):
+        expected_version = self.configure_now(mocker)
         set_count = random.randint(2, 4)
         resource = factory.make_BootResource()
         for _ in range(set_count):
             factory.make_BootResourceSet(
                 resource, version=resource.get_next_version_name()
             )
-        self.assertEqual(
-            "%s.%d" % (expected_version, set_count),
-            resource.get_next_version_name(),
+        assert resource.get_next_version_name() == "%s.%d" % (
+            expected_version,
+            set_count,
         )
 
     def test_supports_subarch_returns_True_if_subarch_in_name_matches(self):
@@ -700,13 +693,11 @@ class TestBootResource(MAASServerTestCase):
         subarch = factory.make_name("subarch")
         architecture = f"{arch}/{subarch}"
         resource = factory.make_BootResource(architecture=architecture)
-        self.assertTrue(resource.supports_subarch(subarch))
+        assert resource.supports_subarch(subarch)
 
     def test_supports_subarch_returns_False_if_subarches_is_missing(self):
         resource = factory.make_BootResource()
-        self.assertFalse(
-            resource.supports_subarch(factory.make_name("subarch"))
-        )
+        assert not resource.supports_subarch(factory.make_name("subarch"))
 
     def test_supports_subarch_returns_True_if_subarch_in_subarches(self):
         subarches = [factory.make_name("subarch") for _ in range(3)]
@@ -714,16 +705,14 @@ class TestBootResource(MAASServerTestCase):
         resource = factory.make_BootResource(
             extra={"subarches": ",".join(subarches)}
         )
-        self.assertTrue(resource.supports_subarch(subarch))
+        assert resource.supports_subarch(subarch)
 
     def test_supports_subarch_returns_False_if_subarch_not_in_subarches(self):
         subarches = [factory.make_name("subarch") for _ in range(3)]
         resource = factory.make_BootResource(
             extra={"subarches": ",".join(subarches)}
         )
-        self.assertFalse(
-            resource.supports_subarch(factory.make_name("subarch"))
-        )
+        assert not resource.supports_subarch(factory.make_name("subarch"))
 
     def test_split_base_image_handles_no_base_image(self):
         resource = factory.make_BootResource()
@@ -731,7 +720,6 @@ class TestBootResource(MAASServerTestCase):
         cfg = Config.objects.get_configs(
             ["commissioning_osystem", "commissioning_distro_series"]
         )
-        self.assertCountEqual(
-            (cfg["commissioning_osystem"], cfg["commissioning_distro_series"]),
-            resource.split_base_image(),
+        assert set(resource.split_base_image()) == set(
+            (cfg["commissioning_osystem"], cfg["commissioning_distro_series"])
         )

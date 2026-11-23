@@ -6,8 +6,9 @@
 import random
 import re
 
+import pytest
+
 from maastesting.factory import factory
-from maastesting.testcase import MAASTestCase
 from provisioningserver import boot
 from provisioningserver.boot import BytesReader
 from provisioningserver.boot.grub import re_config_file, UEFIAMD64BootMethod
@@ -45,15 +46,17 @@ def compose_config_path(
     return b"grub/grub.cfg"
 
 
-class TestUEFIAMD64BootMethodRender(MAASTestCase):
+class TestUEFIAMD64BootMethodRender:
     """Tests for
     `provisioningserver.boot_amd64.uefi.UEFIAMD64BootMethod.render`."""
 
-    def setUp(self):
-        super().setUp()
+    @pytest.fixture(autouse=True)
+    def _setup(self, request):
         boot.debug_enabled.cache_clear()
-        self.addClassCleanup(boot.debug_enabled.cache_clear)
-        self.useFixture(ClusterConfigurationFixture(debug=False))
+        request.addfinalizer(boot.debug_enabled.cache_clear)
+        self.config_fixture = ClusterConfigurationFixture(debug=False)
+        self.config_fixture.setUp()
+        request.addfinalizer(self.config_fixture.cleanUp)
 
     def test_get_reader_tftp(self):
         # Given the right configuration options, the UEFI configuration is
@@ -67,11 +70,11 @@ class TestUEFIAMD64BootMethodRender(MAASTestCase):
             backend=None, kernel_params=params, protocol="tftp"
         )
         # The output is a BytesReader.
-        self.assertIsInstance(output, BytesReader)
+        assert isinstance(output, BytesReader)
         output = output.read(10000).decode("utf-8")
         # The template has rendered without error. UEFI configurations
         # typically start with a DEFAULT line.
-        self.assertTrue(output.startswith('set default="0"'))
+        assert output.startswith('set default="0"')
         # The UEFI parameters are all set according to the options.
 
         for regex in [
@@ -79,7 +82,7 @@ class TestUEFIAMD64BootMethodRender(MAASTestCase):
             rf"(?ms).*^\s+linux  {fs_host}/{params.kernel} .+?$",
             rf"(?ms).*^\s+initrd {fs_host}/{params.initrd}$",
         ]:
-            self.assertRegex(output, regex)
+            assert re.search(regex, output)
 
     def test_get_reader_http(self):
         # Given the right configuration options, the UEFI configuration is
@@ -90,18 +93,18 @@ class TestUEFIAMD64BootMethodRender(MAASTestCase):
             backend=None, kernel_params=params, protocol="http"
         )
         # The output is a BytesReader.
-        self.assertIsInstance(output, BytesReader)
+        assert isinstance(output, BytesReader)
         output = output.read(10000).decode("utf-8")
         # The template has rendered without error. UEFI configurations
         # typically start with a DEFAULT line.
-        self.assertTrue(output.startswith('set default="0"'))
+        assert output.startswith('set default="0"')
         # The UEFI parameters are all set according to the options.
         for regex in [
             r"(?ms).*\s+lin.*cc:\\{\'datasource_list\': \[\'MAAS\'\]\\}end_cc.*",
             rf"(?ms).*^\s+linux  /images/{params.kernel} .+?$",
             rf"(?ms).*^\s+initrd /images/{params.initrd}$",
         ]:
-            self.assertRegex(output, regex)
+            assert re.search(regex, output)
 
     def test_get_reader_with_extra_arguments_does_not_affect_output(self):
         # get_reader() allows any keyword arguments as a safety valve.
@@ -121,7 +124,7 @@ class TestUEFIAMD64BootMethodRender(MAASTestCase):
         # Capture the output after sprinking in some random options.
         output_after = method.get_reader(**options).read(10000)
         # The generated template is the same.
-        self.assertEqual(output_before, output_after)
+        assert output_before == output_after
 
     def test_get_reader_with_local_purpose(self):
         # If purpose is "local", the config.localboot.template should be
@@ -135,10 +138,10 @@ class TestUEFIAMD64BootMethodRender(MAASTestCase):
             "protocol": random.choice(["tftp", "http"]),
         }
         output = method.get_reader(**options).read(10000).decode("utf-8")
-        self.assertIn("chainloader /efi/", output)
-        self.assertIn("bootx64.efi", output)
-        self.assertIn("shimx64.efi", output)
-        self.assertIn("grubx64.efi", output)
+        assert "chainloader /efi/" in output
+        assert "bootx64.efi" in output
+        assert "shimx64.efi" in output
+        assert "grubx64.efi" in output
 
     def test_get_reader_with_enlist_purpose(self):
         # If purpose is "enlist", the config.enlist.template should be
@@ -156,7 +159,7 @@ class TestUEFIAMD64BootMethodRender(MAASTestCase):
             f"{params.osystem}/{params.arch}/{params.subarch}",
             params.kernel,
         ]:
-            self.assertIn(needle, output)
+            assert needle in output
 
     def test_get_reader_with_commissioning_purpose(self):
         # If purpose is "commissioning", the config.commissioning.template
@@ -174,10 +177,10 @@ class TestUEFIAMD64BootMethodRender(MAASTestCase):
             f"{params.osystem}/{params.arch}/{params.subarch}",
             params.kernel,
         ]:
-            self.assertIn(needle, output)
+            assert needle in output
 
 
-class TestUEFIAMD64BootMethodRegex(MAASTestCase):
+class TestUEFIAMD64BootMethodRegex:
     """Tests
     `provisioningserver.boot.uefi_amd64.UEFIAMD64BootMethod.re_config_file`."""
 
@@ -200,8 +203,8 @@ class TestUEFIAMD64BootMethodRegex(MAASTestCase):
         for iteration in range(10):  # noqa: B007
             config_path, args = self.get_example_path_and_components()
             match = re_config_file.match(config_path)
-            self.assertIsNotNone(match, config_path)
-            self.assertEqual(args, match.groupdict())
+            assert match is not None, config_path
+            assert args == match.groupdict()
 
     def test_re_config_file_with_leading_slash(self):
         # The regular expression for extracting components of the file path
@@ -211,8 +214,8 @@ class TestUEFIAMD64BootMethodRegex(MAASTestCase):
         # Ensure there's a leading slash.
         config_path = b"/" + config_path.lstrip(b"/")
         match = re_config_file.match(config_path)
-        self.assertIsNotNone(match, config_path)
-        self.assertEqual(args, match.groupdict())
+        assert match is not None, config_path
+        assert args == match.groupdict()
 
     def test_re_config_file_without_leading_slash(self):
         # The regular expression for extracting components of the file path
@@ -222,46 +225,46 @@ class TestUEFIAMD64BootMethodRegex(MAASTestCase):
         # Ensure there's no leading slash.
         config_path = config_path.lstrip(b"/")
         match = re_config_file.match(config_path)
-        self.assertIsNotNone(match, config_path)
-        self.assertEqual(args, match.groupdict())
+        assert match is not None, config_path
+        assert args == match.groupdict()
 
     def test_re_config_file_matches_classic_grub_cfg(self):
         # The default config path is simply "grub.cfg-{mac}" (without
         # leading slash).  The regex matches this.
         mac = b"aa:bb:cc:dd:ee:ff"
         match = re_config_file.match(b"grub/grub.cfg-%s" % mac)
-        self.assertIsNotNone(match)
-        self.assertEqual(
-            {"mac": mac, "arch": None, "subarch": None}, match.groupdict()
-        )
+        assert match is not None
+        assert match.groupdict() == {"mac": mac, "arch": None, "subarch": None}
 
     def test_re_config_file_matches_grub_cfg_with_leading_slash(self):
         mac = b"aa:bb:cc:dd:ee:ff"
         match = re_config_file.match(b"/grub/grub.cfg-%s" % mac)
-        self.assertIsNotNone(match)
-        self.assertEqual(
-            {"mac": mac, "arch": None, "subarch": None}, match.groupdict()
-        )
+        assert match is not None
+        assert match.groupdict() == {"mac": mac, "arch": None, "subarch": None}
 
     def test_re_config_file_does_not_match_default_grub_config_file(self):
         # The default grub.cfg is on the filesystem let the normal handler
         # grab it.
-        self.assertIsNone(re_config_file.match(b"grub/grub.cfg"))
+        assert re_config_file.match(b"grub/grub.cfg") is None
 
     def test_re_config_file_with_default(self):
         match = re_config_file.match(b"grub/grub.cfg-default")
-        self.assertIsNotNone(match)
-        self.assertEqual(
-            {"mac": None, "arch": None, "subarch": None}, match.groupdict()
-        )
+        assert match is not None
+        assert match.groupdict() == {
+            "mac": None,
+            "arch": None,
+            "subarch": None,
+        }
 
     def test_re_config_file_with_default_arch(self):
         arch = factory.make_name("arch", sep="").encode("ascii")
         match = re_config_file.match(b"grub/grub.cfg-default-%s" % arch)
-        self.assertIsNotNone(match)
-        self.assertEqual(
-            {"mac": None, "arch": arch, "subarch": None}, match.groupdict()
-        )
+        assert match is not None
+        assert match.groupdict() == {
+            "mac": None,
+            "arch": arch,
+            "subarch": None,
+        }
 
     def test_re_config_file_with_default_arch_and_subarch(self):
         arch = factory.make_name("arch", sep="").encode("ascii")
@@ -269,91 +272,91 @@ class TestUEFIAMD64BootMethodRegex(MAASTestCase):
         match = re_config_file.match(
             b"grub/grub.cfg-default-%s-%s" % (arch, subarch)
         )
-        self.assertIsNotNone(match)
-        self.assertEqual(
-            {"mac": None, "arch": arch, "subarch": subarch}, match.groupdict()
-        )
+        assert match is not None
+        assert match.groupdict() == {
+            "mac": None,
+            "arch": arch,
+            "subarch": subarch,
+        }
 
 
-class TestUEFIAMD64BootMethod(MAASTestCase):
+class TestUEFIAMD64BootMethod:
     """Tests `provisioningserver.boot.uefi_amd64.UEFIAMD64BootMethod`."""
 
     def test_match_path_none(self):
         method = UEFIAMD64BootMethod()
         backend = random.choice(["http", "tftp"])
-        self.assertIsNone(
-            method.match_path(backend, factory.make_string().encode())
+        assert (
+            method.match_path(backend, factory.make_string().encode()) is None
         )
 
     def test_match_path_mac_colon(self):
         method = UEFIAMD64BootMethod()
         backend = random.choice(["http", "tftp"])
         mac = factory.make_mac_address()
-        self.assertEqual(
-            {"mac": mac.replace(":", "-")},
-            method.match_path(backend, f"/grub/grub.cfg-{mac}".encode()),
-        )
+        assert method.match_path(
+            backend, f"/grub/grub.cfg-{mac}".encode()
+        ) == {
+            "mac": mac.replace(":", "-"),
+        }
 
     def test_match_path_mac_dash(self):
         method = UEFIAMD64BootMethod()
         backend = random.choice(["http", "tftp"])
         mac = factory.make_mac_address().replace(":", "-")
-        self.assertEqual(
-            {"mac": mac},
-            method.match_path(backend, f"/grub/grub.cfg-{mac}".encode()),
-        )
+        assert method.match_path(
+            backend, f"/grub/grub.cfg-{mac}".encode()
+        ) == {
+            "mac": mac,
+        }
 
     def test_match_path_arch(self):
         method = UEFIAMD64BootMethod()
         backend = random.choice(["http", "tftp"])
         arch = factory.make_string()
-        self.assertEqual(
-            {"arch": arch},
-            method.match_path(
-                backend, f"/grub/grub.cfg-default-{arch}".encode()
-            ),
-        )
+        assert method.match_path(
+            backend, f"/grub/grub.cfg-default-{arch}".encode()
+        ) == {"arch": arch}
 
     def test_match_path_arch_x86_64(self):
         method = UEFIAMD64BootMethod()
         backend = random.choice(["http", "tftp"])
-        self.assertEqual(
-            {"arch": "amd64"},
-            method.match_path(backend, b"/grub/grub.cfg-default-x86_64"),
-        )
+        assert method.match_path(
+            backend, b"/grub/grub.cfg-default-x86_64"
+        ) == {
+            "arch": "amd64",
+        }
 
     def test_match_path_arch_powerpc(self):
         method = UEFIAMD64BootMethod()
         backend = random.choice(["http", "tftp"])
-        self.assertEqual(
-            {"arch": "ppc64el"},
-            method.match_path(backend, b"/grub/grub.cfg-default-powerpc"),
-        )
+        assert method.match_path(
+            backend, b"/grub/grub.cfg-default-powerpc"
+        ) == {
+            "arch": "ppc64el",
+        }
 
     def test_match_path_arch_ppc64(self):
         method = UEFIAMD64BootMethod()
         backend = random.choice(["http", "tftp"])
-        self.assertEqual(
-            {"arch": "ppc64el"},
-            method.match_path(backend, b"/grub/grub.cfg-default-ppc64"),
-        )
+        assert method.match_path(backend, b"/grub/grub.cfg-default-ppc64") == {
+            "arch": "ppc64el",
+        }
 
     def test_match_path_arch_ppc64le(self):
         method = UEFIAMD64BootMethod()
         backend = random.choice(["http", "tftp"])
-        self.assertEqual(
-            {"arch": "ppc64el"},
-            method.match_path(backend, b"/grub/grub.cfg-default-ppc64le"),
-        )
+        assert method.match_path(
+            backend, b"/grub/grub.cfg-default-ppc64le"
+        ) == {
+            "arch": "ppc64el",
+        }
 
     def test_match_path_arch_subarch(self):
         method = UEFIAMD64BootMethod()
         backend = random.choice(["http", "tftp"])
         arch = factory.make_string()
         subarch = factory.make_string()
-        self.assertEqual(
-            {"arch": arch, "subarch": subarch},
-            method.match_path(
-                backend, f"/grub/grub.cfg-default-{arch}-{subarch}".encode()
-            ),
-        )
+        assert method.match_path(
+            backend, f"/grub/grub.cfg-default-{arch}-{subarch}".encode()
+        ) == {"arch": arch, "subarch": subarch}

@@ -11,10 +11,10 @@ import sys
 from textwrap import dedent
 from unittest.mock import ANY, call
 
+import pytest
 import yaml
 
 from maastesting.factory import factory
-from maastesting.testcase import MAASTestCase
 from metadataserver.builtin_scripts.testing_scripts import seven_z
 
 SEVEN_Z_OUTPUT = dedent(
@@ -40,23 +40,23 @@ SEVEN_Z_OUTPUT = dedent(
 )
 
 
-class TestSevenZTest(MAASTestCase):
-    def setUp(self):
-        super().setUp()
-        self.patch(seven_z, "print")
+class TestSevenZTest:
+    @pytest.fixture(autouse=True)
+    def _suppress_print(self, mocker):
+        mocker.patch.object(seven_z, "print")
 
-    def test_run_7z_executes_cmd_and_writes_results_file(self):
-        self.patch(os, "environ", {"RESULT_PATH": factory.make_name()})
+    def test_run_7z_executes_cmd_and_writes_results_file(self, mocker):
+        mocker.patch.dict(os.environ, {"RESULT_PATH": factory.make_name()})
         cmd = ["7z", "b"]
-        mock_popen = self.patch(seven_z, "Popen")
+        mock_popen = mocker.patch.object(seven_z, "Popen")
         proc = mock_popen.return_value
         proc.communicate.return_value = (SEVEN_Z_OUTPUT.encode("utf-8"), None)
         proc.returncode = 0
         match = re.search(seven_z.REGEX, SEVEN_Z_OUTPUT.encode("utf-8"))
         averages = match.group(1).split()
-        mock_open = self.patch(seven_z, "open")
+        mock_open = mocker.patch.object(seven_z, "open")
         mock_open.return_value = io.StringIO()
-        mock_yaml_safe_dump = self.patch(yaml, "safe_dump")
+        mock_yaml_safe_dump = mocker.patch.object(yaml, "safe_dump")
         results = {
             "status": "passed",
             "results": {
@@ -73,27 +73,28 @@ class TestSevenZTest(MAASTestCase):
         mock_yaml_safe_dump.assert_called_once_with(
             results, mock_open.return_value
         )
-        self.assertEqual(returncode, 0)
+        assert returncode == 0
 
-    def test_run_7z_exits_if_returncode_non_zero(self):
+    def test_run_7z_exits_if_returncode_non_zero(self, mocker):
         cmd = ["7z", "b"]
-        mock_popen = self.patch(seven_z, "Popen")
-        mock_stderr = self.patch(sys, "stderr")
+        mock_popen = mocker.patch.object(seven_z, "Popen")
+        mock_stderr = mocker.patch.object(sys, "stderr")
         proc = mock_popen.return_value
         proc.communicate.return_value = (None, b"Error")
         proc.returncode = 1
 
-        self.assertRaises(SystemExit, seven_z.run_7z)
+        with pytest.raises(SystemExit):
+            seven_z.run_7z()
         mock_popen.assert_called_once_with(cmd, stdout=PIPE, stderr=PIPE)
         # Other tests can leak finalizer output on patched stderr,
         # thus asserting on the final write
-        self.assertEqual(mock_stderr.write.call_args, call("Error"))
+        assert mock_stderr.write.call_args == call("Error")
 
-    def test_run_7z_exits_if_no_regex_match_found(self):
-        self.patch(os, "environ", {"RESULT_PATH": factory.make_name()})
+    def test_run_7z_exits_if_no_regex_match_found(self, mocker):
+        mocker.patch.dict(os.environ, {"RESULT_PATH": factory.make_name()})
         stderr = factory.make_string()
         cmd = ["7z", "b"]
-        mock_popen = self.patch(seven_z, "Popen")
+        mock_popen = mocker.patch.object(seven_z, "Popen")
         proc = mock_popen.return_value
         proc.communicate.return_value = (
             SEVEN_Z_OUTPUT.encode("utf-8"),
@@ -101,13 +102,14 @@ class TestSevenZTest(MAASTestCase):
         )
         proc.returncode = 0
 
-        mock_re_search = self.patch(re, "search")
+        mock_re_search = mocker.patch.object(re, "search")
         mock_re_search.return_value = None
-        mock_sys_stderr = self.patch(sys, "stderr")
+        mock_sys_stderr = mocker.patch.object(sys, "stderr")
 
-        self.assertRaises(SystemExit, seven_z.run_7z)
+        with pytest.raises(SystemExit):
+            seven_z.run_7z()
         mock_popen.assert_called_once_with(cmd, stdout=PIPE, stderr=PIPE)
         mock_re_search.assert_called_once_with(
             seven_z.REGEX, SEVEN_Z_OUTPUT.encode("utf-8")
         )
-        self.assertEqual(mock_sys_stderr.write.call_args, call(stderr))
+        assert mock_sys_stderr.write.call_args == call(stderr)

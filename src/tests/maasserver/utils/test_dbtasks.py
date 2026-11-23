@@ -7,6 +7,7 @@ import random
 import threading
 from unittest.mock import sentinel
 
+import pytest
 from twisted.internet import reactor
 from twisted.internet.defer import (
     Deferred,
@@ -24,7 +25,6 @@ from maasserver.utils.orm import transactional
 from maastesting import get_testing_timeout
 from maastesting.crochet import wait_for
 from maastesting.factory import factory
-from maastesting.testcase import MAASTestCase
 from maastesting.twisted import TwistedLoggerFixture
 
 TIMEOUT = get_testing_timeout()
@@ -35,31 +35,33 @@ def noop():
     pass
 
 
-class TestDatabaseTaskService(MAASTestCase):
+class TestDatabaseTaskService:
     """Tests for `DatabaseTasksService`."""
 
     def test_init(self):
         service = DatabaseTasksService()
-        self.assertIsInstance(service.queue, DeferredQueue)
-        self.assertEqual(service.queue.size, 0)
-        self.assertEqual(service.queue.backlog, 1)
+        assert isinstance(service.queue, DeferredQueue)
+        assert service.queue.size == 0
+        assert service.queue.backlog == 1
 
     def test_cannot_add_task_to_unstarted_service(self):
         service = DatabaseTasksService()
-        self.assertRaises(QueueOverflow, service.addTask, noop)
+        with pytest.raises(QueueOverflow):
+            service.addTask(noop)
 
     def test_cannot_add_task_to_stopped_service(self):
         service = DatabaseTasksService()
         service.startService()
         service.stopService()
-        self.assertRaises(QueueOverflow, service.addTask, noop)
+        with pytest.raises(QueueOverflow):
+            service.addTask(noop)
 
     def test_startup_creates_queue_with_previously_defined(self):
         service = DatabaseTasksService()
         service.startService()
         try:
-            self.assertIsInstance(service.queue, DeferredQueue)
-            self.assertEqual(service.queue.backlog, 1)
+            assert isinstance(service.queue, DeferredQueue)
+            assert service.queue.backlog == 1
         finally:
             service.stopService()
 

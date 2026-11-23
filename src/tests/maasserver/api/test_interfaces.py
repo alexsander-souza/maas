@@ -828,10 +828,13 @@ class TestInterfacesAPI(APITestCase.ForUser):
 
 
 class TestInterfacesAPIForControllers(APITestCase.ForUser):
-    scenarios = (
-        ("region", {"maker": factory.make_RegionController}),
-        ("rack", {"maker": factory.make_RackController}),
-        ("region-rack", {"maker": factory.make_RegionRackController}),
+    scenarios = tuple(
+        (maker.__name__, {"maker": maker})
+        for maker in (
+            factory.make_RegionController,
+            factory.make_RackController,
+            factory.make_RegionRackController,
+        )
     )
 
     def test_read(self):
@@ -2024,10 +2027,13 @@ class TestNodeInterfaceAPI(APITransactionTestCase.ForUser):
 
 
 class TestInterfaceAPIForControllers(APITestCase.ForUser):
-    scenarios = (
-        ("region", {"maker": factory.make_RegionController}),
-        ("rack", {"maker": factory.make_RackController}),
-        ("region-rack", {"maker": factory.make_RegionRackController}),
+    scenarios = tuple(
+        (maker.__name__, {"maker": maker})
+        for maker in (
+            factory.make_RegionController,
+            factory.make_RackController,
+            factory.make_RegionRackController,
+        )
     )
 
     def test_read(self):

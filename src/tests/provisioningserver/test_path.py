@@ -7,9 +7,9 @@ from os import getcwd
 import os.path
 
 from fixtures import EnvironmentVariableFixture
+import pytest
 
 from maastesting.factory import factory
-from maastesting.testcase import MAASTestCase
 import provisioningserver.path
 from provisioningserver.path import (
     get_data_path,
@@ -20,130 +20,130 @@ from provisioningserver.path import (
 )
 
 
-class TestGetPathFunctions(MAASTestCase):
+@pytest.mark.parametrize(
+    "get_path_function,ensures_directory,fixture",
+    [
+        (
+            get_path,
+            False,
+            lambda path: EnvironmentVariableFixture("MAAS_PATH", path),
+        ),
+        (
+            get_data_path,
+            True,
+            lambda path: EnvironmentVariableFixture("MAAS_ROOT", path),
+        ),
+        (
+            get_tentative_data_path,
+            False,
+            lambda path: EnvironmentVariableFixture("MAAS_ROOT", path),
+        ),
+    ],
+    ids=["get_path", "get_data_path", "get_tentative_data_path"],
+)
+class TestGetPathFunctions:
     """Tests for `get_path`, `get_data_path` and `get_tentative_data_path`."""
 
-    scenarios = (
-        (
-            "get_path",
-            {
-                "get_path_function": get_path,
-                "ensures_directory": False,
-                "fixture": lambda path: EnvironmentVariableFixture(
-                    "MAAS_PATH", path
-                ),
-            },
-        ),
-        (
-            "get_data_path",
-            {
-                "get_path_function": get_data_path,
-                "ensures_directory": True,
-                "fixture": lambda path: EnvironmentVariableFixture(
-                    "MAAS_ROOT", path
-                ),
-            },
-        ),
-        (
-            "get_tentative_data_path",
-            {
-                "get_path_function": get_tentative_data_path,
-                "ensures_directory": False,
-                "fixture": lambda path: EnvironmentVariableFixture(
-                    "MAAS_ROOT", path
-                ),
-            },
-        ),
-    )
+    @pytest.fixture(autouse=True)
+    def _setup(self, mocker, tmp_path):
+        self.mocker = mocker
+        self.tmp_path = tmp_path
+        self._root_fixture = None
+        yield
+        if self._root_fixture is not None:
+            self._root_fixture.cleanUp()
 
-    def set_root(self, root_path=None):
+    def set_root(self, fixture, root_path=None):
         """For the duration of this test, set the `MAAS_ROOT` variable`."""
-        self.useFixture(self.fixture(root_path))
+        self._root_fixture = fixture(root_path)
+        self._root_fixture.setUp()
 
-    def test_defaults_to_root(self):
-        self.set_root()
-        self.patch(provisioningserver.path, "makedirs")
-        self.assertEqual("/", self.get_path_function())
+    def test_defaults_to_root(
+        self, get_path_function, ensures_directory, fixture
+    ):
+        self.set_root(fixture)
+        self.mocker.patch.object(provisioningserver.path, "makedirs")
+        assert "/" == get_path_function()
 
-    def test_appends_path_elements(self):
-        self.set_root("/")
-        self.patch(provisioningserver.path, "makedirs")
+    def test_appends_path_elements(
+        self, get_path_function, ensures_directory, fixture
+    ):
+        self.set_root(fixture, "/")
+        self.mocker.patch.object(provisioningserver.path, "makedirs")
         part1 = factory.make_name("dir")
         part2 = factory.make_name("file")
-        self.assertEqual(
-            os.path.join("/", part1, part2),
-            self.get_path_function(part1, part2),
+        assert os.path.join("/", part1, part2) == get_path_function(
+            part1, part2
         )
 
-    def test_obeys_MAAS_ROOT_variable(self):
+    def test_obeys_MAAS_ROOT_variable(
+        self, get_path_function, ensures_directory, fixture
+    ):
         root = factory.make_name("/root")
-        self.set_root(root)
-        self.patch(provisioningserver.path, "makedirs")
+        self.set_root(fixture, root)
+        self.mocker.patch.object(provisioningserver.path, "makedirs")
         path = factory.make_name("path")
-        self.assertEqual(
-            os.path.join(root, path), self.get_path_function(path)
-        )
+        assert os.path.join(root, path) == get_path_function(path)
 
-    def test_assumes_MAAS_ROOT_is_unset_if_empty(self):
-        self.set_root("")
-        self.patch(provisioningserver.path, "makedirs")
+    def test_assumes_MAAS_ROOT_is_unset_if_empty(
+        self, get_path_function, ensures_directory, fixture
+    ):
+        self.set_root(fixture, "")
+        self.mocker.patch.object(provisioningserver.path, "makedirs")
         path = factory.make_name("path")
-        self.assertEqual(os.path.join("/", path), self.get_path_function(path))
+        assert os.path.join("/", path) == get_path_function(path)
 
-    def test_returns_absolute_path(self):
-        self.set_root(".")
-        self.patch(provisioningserver.path, "makedirs")
-        self.assertEqual(self.get_path_function()[0], "/")
-        self.assertEqual(getcwd(), self.get_path_function())
+    def test_returns_absolute_path(
+        self, get_path_function, ensures_directory, fixture
+    ):
+        self.set_root(fixture, ".")
+        self.mocker.patch.object(provisioningserver.path, "makedirs")
+        assert get_path_function()[0] == "/"
+        assert getcwd() == get_path_function()
 
-    def test_concatenates_despite_leading_slash(self):
-        root = self.make_dir()
-        self.set_root(root)
-        self.patch(provisioningserver.path, "makedirs")
+    def test_concatenates_despite_leading_slash(
+        self, get_path_function, ensures_directory, fixture
+    ):
+        root = str(self.tmp_path)
+        self.set_root(fixture, root)
+        self.mocker.patch.object(provisioningserver.path, "makedirs")
         filename = factory.make_name("file")
-        self.assertEqual(
-            os.path.join(root, filename),
-            self.get_path_function("/" + filename),
+        assert os.path.join(root, filename) == get_path_function(
+            "/" + filename
         )
 
-    def test_normalises(self):
-        self.set_root()
-        self.patch(provisioningserver.path, "makedirs")
-        self.assertEqual(
-            "/foo/bar", self.get_path_function("foo///szut//..///bar//")
-        )
+    def test_normalises(self, get_path_function, ensures_directory, fixture):
+        self.set_root(fixture)
+        self.mocker.patch.object(provisioningserver.path, "makedirs")
+        assert "/foo/bar" == get_path_function("foo///szut//..///bar//")
 
-    def test_maybe_creates_dirpath_if_not_exists(self):
-        root_path = self.make_dir()
-        self.set_root(root_path)
-        dir_name = os.path.dirname(self.get_path_function("/foo/bar"))
-        if self.ensures_directory:
-            self.assertTrue(os.path.isdir(dir_name), dir_name)
+    def test_maybe_creates_dirpath_if_not_exists(
+        self, get_path_function, ensures_directory, fixture
+    ):
+        root_path = str(self.tmp_path)
+        self.set_root(fixture, root_path)
+        dir_name = os.path.dirname(get_path_function("/foo/bar"))
+        if ensures_directory:
+            assert os.path.isdir(dir_name), dir_name
         else:
-            self.assertFalse(os.path.isdir(dir_name), dir_name)
+            assert not os.path.isdir(dir_name), dir_name
 
 
-class TestGetMAASDataPath(MAASTestCase):
-    def test_get_maas_data_path_env(self):
-        path = os.environ.get("MAAS_DATA")
-        self.assertEqual(
-            get_maas_data_path("some/path"), os.path.join(path, "some/path")
-        )
+class TestGetMAASDataPath:
+    def test_get_maas_data_path_env(self, monkeypatch):
+        monkeypatch.setenv("MAAS_DATA", "/custom/path")
+        assert get_maas_data_path("some/path") == "/custom/path/some/path"
 
-    def test_get_maas_data_path_no_env(self):
-        del os.environ["MAAS_DATA"]
-        self.assertEqual(
-            get_maas_data_path("some/path"), "/var/lib/maas/some/path"
-        )
+    def test_get_maas_data_path_no_env(self, monkeypatch):
+        monkeypatch.delenv("MAAS_DATA", raising=False)
+        assert get_maas_data_path("some/path") == "/var/lib/maas/some/path"
 
 
-class TestGetMAASCachePath(MAASTestCase):
-    def test_get_maas_cache_path_env(self):
-        os.environ["MAAS_CACHE"] = "some/cache/path"
-        self.assertEqual(get_maas_cache_path("foo"), "some/cache/path/foo")
+class TestGetMAASCachePath:
+    def test_get_maas_cache_path_env(self, monkeypatch):
+        monkeypatch.setenv("MAAS_CACHE", "some/cache/path")
+        assert get_maas_cache_path("foo") == "some/cache/path/foo"
 
-    def test_get_maas_cache_path_no_env(self):
-        del os.environ["MAAS_CACHE"]
-        self.assertEqual(
-            get_maas_cache_path("some/path"), "/var/cache/maas/some/path"
-        )
+    def test_get_maas_cache_path_no_env(self, monkeypatch):
+        monkeypatch.delenv("MAAS_CACHE", raising=False)
+        assert get_maas_cache_path("some/path") == "/var/cache/maas/some/path"

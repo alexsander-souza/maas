@@ -9,7 +9,6 @@ import random
 from unittest.mock import MagicMock
 import uuid
 
-from fixtures import EnvironmentVariableFixture
 from twisted.internet import reactor
 from twisted.internet.defer import DeferredList, inlineCallbacks, succeed
 
@@ -40,7 +39,6 @@ import maasserver.workers as workers_module
 from maastesting.crochet import wait_for
 from maastesting.fixtures import TempDirectory
 from maastesting.runtest import MAASCrochetRunTest
-from maastesting.testcase import MAASTestCase
 from metadataserver.builtin_scripts import load_builtin_scripts
 from provisioningserver.utils import ipaddr
 from provisioningserver.utils.twisted import callOut, DeferredValue
@@ -48,75 +46,70 @@ from provisioningserver.utils.twisted import callOut, DeferredValue
 wait_for_reactor = wait_for()
 
 
-class TestGetIPCSocketPath(MAASTestCase):
-    def test_returns_ipc_socket_env(self):
+class TestGetIPCSocketPath:
+    def test_returns_ipc_socket_env(self, mocker):
         path = factory.make_name("path")
-        self.useFixture(
-            EnvironmentVariableFixture("MAAS_IPC_SOCKET_PATH", path)
-        )
-        self.assertEqual(path, get_ipc_socket_path())
+        mocker.patch.dict(os.environ, {"MAAS_IPC_SOCKET_PATH": path})
+        assert get_ipc_socket_path() == path
 
-    def test_returns_ipc_from_maas_data(self):
+    def test_returns_ipc_from_maas_data(self, mocker):
         path = factory.make_name("path")
-        self.useFixture(EnvironmentVariableFixture("MAAS_DATA", path))
-        self.assertEqual(
-            os.path.join(path, "maas-regiond.sock"), get_ipc_socket_path()
-        )
+        mocker.patch.dict(os.environ, {"MAAS_DATA": path})
+        assert os.path.join(path, "maas-regiond.sock") == get_ipc_socket_path()
 
-    def test_returns_ipc_at_default_location(self):
-        self.useFixture(EnvironmentVariableFixture("MAAS_DATA", None))
-        self.assertEqual(
-            "/var/lib/maas/maas-regiond.sock", get_ipc_socket_path()
-        )
+    def test_returns_ipc_at_default_location(self, mocker):
+        mocker.patch.dict(os.environ, {}, clear=True)
+        assert get_ipc_socket_path() == "/var/lib/maas/maas-regiond.sock"
 
 
-class TestIPCMasterServiceGetListenAddresses(MAASTestCase):
+class TestIPCMasterServiceGetListenAddresses:
     """`_getListenAddresses` mirrors `eventloop.resolve_rpc_bind_addresses`,
     the same resolution `RegionService` uses to bind, so what's advertised
     to rack controllers always matches what's actually listening."""
 
-    def test_prefers_configured_rpc_bind(self):
+    def test_prefers_configured_rpc_bind(self, mocker, tmp_path):
         from maasserver.config import RegionConfiguration
 
         master = IPCMasterService(
-            reactor, socket_path=os.path.join(self.make_dir(), "ipc.sock")
+            reactor, socket_path=str(tmp_path / "ipc.sock")
         )
-        mock_open = self.patch(RegionConfiguration, "open")
+        mock_open = mocker.patch.object(RegionConfiguration, "open")
         mock_cfg = mock_open.return_value.__enter__.return_value
         mock_cfg.rpc_bind = ["10.0.0.1", "10.0.0.2"]
         mock_open.return_value.__exit__.return_value = False
 
-        self.assertEqual(
-            {("10.0.0.1", 5250), ("10.0.0.2", 5250)},
-            master._getListenAddresses(5250),
-        )
+        assert master._getListenAddresses(5250) == {
+            ("10.0.0.1", 5250),
+            ("10.0.0.2", 5250),
+        }
 
-    def test_derives_from_maas_url_under_hardening_when_unset(self):
+    def test_derives_from_maas_url_under_hardening_when_unset(
+        self, mocker, tmp_path
+    ):
         import maascommon.hardening as hardening_module
         from maasserver.config import RegionConfiguration
         import provisioningserver.utils.network as network_module
 
         master = IPCMasterService(
-            reactor, socket_path=os.path.join(self.make_dir(), "ipc.sock")
+            reactor, socket_path=str(tmp_path / "ipc.sock")
         )
-        mock_open = self.patch(RegionConfiguration, "open")
+        mock_open = mocker.patch.object(RegionConfiguration, "open")
         mock_cfg = mock_open.return_value.__enter__.return_value
         mock_cfg.rpc_bind = []
         mock_cfg.maas_url = "http://10.0.0.9:5240/MAAS"
         mock_open.return_value.__exit__.return_value = False
-        self.patch(
+        mocker.patch.object(
             network_module, "get_source_address_for_url"
         ).return_value = "10.0.0.9"
-        self.patch(
+        mocker.patch.object(
             hardening_module, "is_hardening_enabled"
         ).return_value = True
 
-        self.assertEqual(
-            {("10.0.0.9", 5250)},
-            master._getListenAddresses(5250),
-        )
+        assert master._getListenAddresses(5250) == {("10.0.0.9", 5250)}
 
-    def test_falls_back_to_discovery_when_hardening_inactive_and_unset(self):
+    def test_falls_back_to_discovery_when_hardening_inactive_and_unset(
+        self, mocker, tmp_path
+    ):
         # Outside hardening, `resolve_rpc_bind_addresses` returns an empty
         # list for an unset `rpc_bind` without even attempting to derive
         # from `maas_url` (the RPC listener itself binds every interface
@@ -126,45 +119,41 @@ class TestIPCMasterServiceGetListenAddresses(MAASTestCase):
         from maasserver.config import RegionConfiguration
 
         master = IPCMasterService(
-            reactor, socket_path=os.path.join(self.make_dir(), "ipc.sock")
+            reactor, socket_path=str(tmp_path / "ipc.sock")
         )
-        mock_open = self.patch(RegionConfiguration, "open")
+        mock_open = mocker.patch.object(RegionConfiguration, "open")
         mock_cfg = mock_open.return_value.__enter__.return_value
         mock_cfg.rpc_bind = []
         mock_cfg.maas_url = "http://10.0.0.9:5240/MAAS"
         mock_open.return_value.__exit__.return_value = False
-        self.patch(ipc, "get_all_interface_source_addresses").return_value = {
-            "10.0.0.9"
-        }
+        mocker.patch.object(
+            ipc, "get_all_interface_source_addresses"
+        ).return_value = {"10.0.0.9"}
 
-        self.assertEqual(
-            {("10.0.0.9", 5250)},
-            master._getListenAddresses(5250),
-        )
+        assert master._getListenAddresses(5250) == {("10.0.0.9", 5250)}
 
-    def test_falls_back_to_discovery_when_maas_url_unresolvable(self):
+    def test_falls_back_to_discovery_when_maas_url_unresolvable(
+        self, mocker, tmp_path
+    ):
         from maasserver.config import RegionConfiguration
         import provisioningserver.utils.network as network_module
 
         master = IPCMasterService(
-            reactor, socket_path=os.path.join(self.make_dir(), "ipc.sock")
+            reactor, socket_path=str(tmp_path / "ipc.sock")
         )
-        mock_open = self.patch(RegionConfiguration, "open")
+        mock_open = mocker.patch.object(RegionConfiguration, "open")
         mock_cfg = mock_open.return_value.__enter__.return_value
         mock_cfg.rpc_bind = []
         mock_cfg.maas_url = "http://unreachable.invalid:5240/MAAS"
         mock_open.return_value.__exit__.return_value = False
-        self.patch(
+        mocker.patch.object(
             network_module, "get_source_address_for_url"
         ).return_value = None
-        self.patch(ipc, "get_all_interface_source_addresses").return_value = {
-            "10.0.0.9"
-        }
+        mocker.patch.object(
+            ipc, "get_all_interface_source_addresses"
+        ).return_value = {"10.0.0.9"}
 
-        self.assertEqual(
-            {("10.0.0.9", 5250)},
-            master._getListenAddresses(5250),
-        )
+        assert master._getListenAddresses(5250) == {("10.0.0.9", 5250)}
 
 
 class TestIPCCommunication(MAASTransactionServerTestCase):

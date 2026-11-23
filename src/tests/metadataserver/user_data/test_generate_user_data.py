@@ -5,17 +5,38 @@
 
 import base64
 import email
+import re
+
+import pytest
 
 from maasserver.enum import NODE_STATUS
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from metadataserver.user_data import (
     generate_user_data_for_poweroff,
     generate_user_data_for_status,
 )
+from tests.fixtures import mock_openfga, mock_start_workflows  # noqa: F401
+
+CLOUD_INIT_CONTENT_TYPE = 'text/x-shellscript; charset="utf-8"'
+CLOUD_INIT_TRANSFER_ENCODING = "base64"
+CLOUD_INIT_DISPOSITION = 'attachment; filename="user_data.sh"'
 
 
-class TestGenerateUserData(MAASServerTestCase):
+def parse_user_data(user_data):
+    parsed_data = email.message_from_string(user_data.decode("utf-8"))
+    assert parsed_data.is_multipart()
+    user_data_script = parsed_data.get_payload()[0]
+    assert user_data_script["Content-Type"] == CLOUD_INIT_CONTENT_TYPE
+    assert (
+        user_data_script["Content-Transfer-Encoding"]
+        == CLOUD_INIT_TRANSFER_ENCODING
+    )
+    assert user_data_script["Content-Disposition"] == CLOUD_INIT_DISPOSITION
+    return base64.b64decode(user_data_script.get_payload())
+
+
+@pytest.mark.usefixtures("maasdb", "mock_openfga", "mock_start_workflows")
+class TestGenerateUserData:
     def test_generate_user_data_produces_enlist_script(self):
         # generate_user_data produces a commissioning script which contains
         # both definitions and use of various commands in python.
@@ -26,28 +47,13 @@ class TestGenerateUserData(MAASServerTestCase):
             rack_controller=rack,
             extra_content={"enlist_commissioning": True},
         )
-        parsed_data = email.message_from_string(user_data.decode("utf-8"))
-        self.assertTrue(parsed_data.is_multipart())
-
-        user_data_script = parsed_data.get_payload()[0]
-        self.assertEqual(
-            'text/x-shellscript; charset="utf-8"',
-            user_data_script["Content-Type"],
-        )
-        self.assertEqual(
-            "base64", user_data_script["Content-Transfer-Encoding"]
-        )
-        self.assertEqual(
-            'attachment; filename="user_data.sh"',
-            user_data_script["Content-Disposition"],
-        )
-        decoded = base64.b64decode(user_data_script.get_payload())
+        decoded = parse_user_data(user_data)
         for needle in (
             b"find_creds_cfg()",
             b"main()",
             b"# maas-run-remote-scripts -",
         ):
-            self.assertIn(needle, decoded)
+            assert needle in decoded
 
     def test_generate_user_data_produces_commissioning_script(self):
         # generate_user_data produces a commissioning script which contains
@@ -56,164 +62,86 @@ class TestGenerateUserData(MAASServerTestCase):
         user_data = generate_user_data_for_status(
             node, status=NODE_STATUS.COMMISSIONING
         )
-        parsed_data = email.message_from_string(user_data.decode("utf-8"))
-        self.assertTrue(parsed_data.is_multipart())
-
-        user_data_script = parsed_data.get_payload()[0]
-        self.assertEqual(
-            'text/x-shellscript; charset="utf-8"',
-            user_data_script["Content-Type"],
-        )
-        self.assertEqual(
-            "base64", user_data_script["Content-Transfer-Encoding"]
-        )
-        self.assertEqual(
-            'attachment; filename="user_data.sh"',
-            user_data_script["Content-Disposition"],
-        )
-        decoded = base64.b64decode(user_data_script.get_payload())
+        decoded = parse_user_data(user_data)
         for needle in (
             b"find_creds_cfg()",
             b"main()",
             b"# maas-run-remote-scripts -",
         ):
-            self.assertIn(needle, decoded)
+            assert needle in decoded
 
     def test_generate_user_data_produces_testing_script(self):
         node = factory.make_Node()
         user_data = generate_user_data_for_status(
             node, status=NODE_STATUS.TESTING
         )
-        parsed_data = email.message_from_string(user_data.decode("utf-8"))
-        self.assertTrue(parsed_data.is_multipart())
-
-        user_data_script = parsed_data.get_payload()[0]
-        self.assertEqual(
-            'text/x-shellscript; charset="utf-8"',
-            user_data_script["Content-Type"],
-        )
-        self.assertEqual(
-            "base64", user_data_script["Content-Transfer-Encoding"]
-        )
-        self.assertEqual(
-            'attachment; filename="user_data.sh"',
-            user_data_script["Content-Disposition"],
-        )
-        decoded = base64.b64decode(user_data_script.get_payload())
+        decoded = parse_user_data(user_data)
         for needle in (
             b"export DEBIAN_FRONTEND=noninteractive",
             b"maas-run-remote-scripts",
             b"def signal",
             b"def download_and_extract_tar",
         ):
-            self.assertIn(needle, decoded)
+            assert needle in decoded
 
     def test_generate_user_data_produces_rescue_mode_script(self):
         node = factory.make_Node()
         user_data = generate_user_data_for_status(
             node, status=NODE_STATUS.RESCUE_MODE
         )
-        parsed_data = email.message_from_string(user_data.decode("utf-8"))
-        self.assertTrue(parsed_data.is_multipart())
-
-        user_data_script = parsed_data.get_payload()[0]
-        self.assertEqual(
-            'text/x-shellscript; charset="utf-8"',
-            user_data_script["Content-Type"],
-        )
-        self.assertEqual(
-            "base64", user_data_script["Content-Transfer-Encoding"]
-        )
-        self.assertEqual(
-            'attachment; filename="user_data.sh"',
-            user_data_script["Content-Disposition"],
-        )
-        decoded = base64.b64decode(user_data_script.get_payload())
+        decoded = parse_user_data(user_data)
         for needle in (
             b"export DEBIAN_FRONTEND=noninteractive",
             b"maas-run-remote-scripts",
             b"def signal",
             b"def download_and_extract_tar",
         ):
-            self.assertIn(needle, decoded)
+            assert needle in decoded
 
     def test_generate_user_data_produces_poweroff_script(self):
         node = factory.make_Node()
         user_data = generate_user_data_for_poweroff(node)
-        parsed_data = email.message_from_string(user_data.decode("utf-8"))
-        self.assertTrue(parsed_data.is_multipart())
-
-        user_data_script = parsed_data.get_payload()[0]
-        self.assertEqual(
-            'text/x-shellscript; charset="utf-8"',
-            user_data_script["Content-Type"],
-        )
-        self.assertEqual(
-            "base64", user_data_script["Content-Transfer-Encoding"]
-        )
-        self.assertEqual(
-            'attachment; filename="user_data.sh"',
-            user_data_script["Content-Disposition"],
-        )
-        decoded = base64.b64decode(user_data_script.get_payload())
-        self.assertIn(b"Powering node off.", decoded)
+        decoded = parse_user_data(user_data)
+        assert b"Powering node off." in decoded
 
 
-class TestDiskErasingUserData(MAASServerTestCase):
-    scenarios = (
-        (
-            "secure_and_quick",
-            {
-                "extra_content": {"secure_erase": True, "quick_erase": True},
-                "maas_wipe": rb"(?ms)^\s*maas-wipe\s--secure-erase\s--quick-erase$\s*signal\sOK",
-            },
+@pytest.mark.usefixtures("maasdb", "mock_openfga", "mock_start_workflows")
+@pytest.mark.parametrize(
+    "extra_content,maas_wipe",
+    [
+        pytest.param(
+            {"secure_erase": True, "quick_erase": True},
+            rb"(?ms)^\s*maas-wipe\s--secure-erase\s--quick-erase$\s*signal\sOK",
+            id="secure_and_quick",
         ),
-        (
-            "secure_not_quick",
-            {
-                "extra_content": {"secure_erase": True, "quick_erase": False},
-                "maas_wipe": rb"(?ms)^\s*maas-wipe\s--secure-erase\s$\s*signal\sOK",
-            },
+        pytest.param(
+            {"secure_erase": True, "quick_erase": False},
+            rb"(?ms)^\s*maas-wipe\s--secure-erase\s$\s*signal\sOK",
+            id="secure_not_quick",
         ),
-        (
-            "quick_not_secure",
-            {
-                "extra_content": {"secure_erase": False, "quick_erase": True},
-                "maas_wipe": rb"(?ms)^\s*maas-wipe\s\s--quick-erase$\s*signal\sOK",
-            },
+        pytest.param(
+            {"secure_erase": False, "quick_erase": True},
+            rb"(?ms)^\s*maas-wipe\s\s--quick-erase$\s*signal\sOK",
+            id="quick_not_secure",
         ),
-        (
-            "not_quick_not_secure",
-            {
-                "extra_content": {"secure_erase": False, "quick_erase": False},
-                "maas_wipe": rb"(?ms)^\s*maas-wipe\s\s$\s*signal\sOK",
-            },
+        pytest.param(
+            {"secure_erase": False, "quick_erase": False},
+            rb"(?ms)^\s*maas-wipe\s\s$\s*signal\sOK",
+            id="not_quick_not_secure",
         ),
-    )
-
-    def test_generate_user_data_produces_disk_erase_script(self):
+    ],
+)
+class TestDiskErasingUserData:
+    def test_generate_user_data_produces_disk_erase_script(
+        self, extra_content, maas_wipe
+    ):
         node = factory.make_Node()
         user_data = generate_user_data_for_status(
             node,
             status=NODE_STATUS.DISK_ERASING,
-            extra_content=self.extra_content,
+            extra_content=extra_content,
         )
-        parsed_data = email.message_from_string(user_data.decode("utf-8"))
-        self.assertTrue(parsed_data.is_multipart())
-
-        user_data_script = parsed_data.get_payload()[0]
-        self.assertEqual(
-            'text/x-shellscript; charset="utf-8"',
-            user_data_script["Content-Type"],
-        )
-        self.assertEqual(
-            "base64", user_data_script["Content-Transfer-Encoding"]
-        )
-        self.assertEqual(
-            'attachment; filename="user_data.sh"',
-            user_data_script["Content-Disposition"],
-        )
-        payload = base64.b64decode(user_data_script.get_payload())
+        payload = parse_user_data(user_data)
         for needle in (
             b"export DEBIAN_FRONTEND=noninteractive",
             b"maas-wipe",
@@ -221,5 +149,5 @@ class TestDiskErasingUserData(MAASServerTestCase):
             b"VALID_STATUS =",
             b"class WipeError",
         ):
-            self.assertIn(needle, payload)
-        self.assertRegex(payload, self.maas_wipe)
+            assert needle in payload
+        assert re.search(maas_wipe, payload)

@@ -12,47 +12,40 @@ import pytest
 
 from maascli import utils
 from maastesting.factory import factory
-from maastesting.testcase import MAASTestCase
 
 
-class TestDocstringParsing(MAASTestCase):
+class TestDocstringParsing:
     """Tests for docstring parsing in `maascli.utils`."""
 
     def test_basic(self):
-        self.assertEqual(
-            ("Title", "Body"), utils.parse_docstring("Title\n\nBody")
-        )
-        self.assertEqual(
-            ("A longer title", "A longer body"),
-            utils.parse_docstring("A longer title\n\nA longer body"),
+        assert utils.parse_docstring("Title\n\nBody") == ("Title", "Body")
+        assert utils.parse_docstring("A longer title\n\nA longer body") == (
+            "A longer title",
+            "A longer body",
         )
 
     def test_no_body(self):
         # parse_docstring returns an empty string when there's no body.
-        self.assertEqual(("Title", ""), utils.parse_docstring("Title\n\n"))
-        self.assertEqual(("Title", ""), utils.parse_docstring("Title"))
+        assert utils.parse_docstring("Title\n\n") == ("Title", "")
+        assert utils.parse_docstring("Title") == ("Title", "")
 
     def test_unwrapping(self):
         # parse_docstring unwraps the title paragraph, and dedents the body
         # paragraphs.
-        self.assertEqual(
-            (
-                "Title over two lines",
-                "Paragraph over\ntwo lines\n\n"
-                "Another paragraph\nover two lines",
-            ),
-            utils.parse_docstring(
-                """
-                Title over
-                two lines
+        assert utils.parse_docstring(
+            """
+            Title over
+            two lines
 
-                Paragraph over
-                two lines
+            Paragraph over
+            two lines
 
-                Another paragraph
-                over two lines
-                """
-            ),
+            Another paragraph
+            over two lines
+            """
+        ) == (
+            "Title over two lines",
+            "Paragraph over\ntwo lines\n\nAnother paragraph\nover two lines",
         )
 
     def test_gets_docstring_from_function(self):
@@ -64,21 +57,19 @@ class TestDocstringParsing(MAASTestCase):
             Body.
             """
 
-        self.assertEqual(("Title.", "Body."), utils.parse_docstring(example))
+        assert utils.parse_docstring(example) == ("Title.", "Body.")
 
     def test_normalises_whitespace(self):
         # parse_docstring can parse CRLF/CR/LF text, but always emits LF (\n,
         # new-line) separated text.
-        self.assertEqual(
-            ("long title", ""), utils.parse_docstring("long\r\ntitle")
-        )
-        self.assertEqual(
-            ("title", "body1\n\nbody2"),
-            utils.parse_docstring("title\n\nbody1\r\rbody2"),
+        assert utils.parse_docstring("long\r\ntitle") == ("long title", "")
+        assert utils.parse_docstring("title\n\nbody1\r\rbody2") == (
+            "title",
+            "body1\n\nbody2",
         )
 
 
-class TestFunctions(MAASTestCase):
+class TestFunctions:
     """Tests for miscellaneous functions in `maascli.utils`."""
 
     def test_safe_name(self):
@@ -100,7 +91,7 @@ class TestFunctions(MAASTestCase):
         # safe_name will not break if passed a string with non-ASCII
         # characters. However, those characters will not be present in the
         # returned name.
-        self.assertEqual("a-b-c", utils.safe_name("a\u1234_b\u5432_c\u9876"))
+        assert utils.safe_name("a\u1234_b\u5432_c\u9876") == "a-b-c"
 
     def test_handler_command_name(self):
         # handler_command_name attempts to discriminate parts of a vaguely
@@ -125,22 +116,20 @@ class TestFunctions(MAASTestCase):
         # handler_command_name will not break if passed a string with
         # non-ASCII characters. However, those characters will not be present
         # in the returned name.
-        self.assertEqual(
-            "a-b-c", utils.handler_command_name("a\u1234_b\u5432_c\u9876")
-        )
+        assert utils.handler_command_name("a\u1234_b\u5432_c\u9876") == "a-b-c"
 
     def test_ensure_trailing_slash(self):
         # ensure_trailing_slash ensures that the given string - typically a
         # URL or path - has a trailing forward slash.
-        self.assertEqual("fred/", utils.ensure_trailing_slash("fred"))
-        self.assertEqual("fred/", utils.ensure_trailing_slash("fred/"))
+        assert utils.ensure_trailing_slash("fred") == "fred/"
+        assert utils.ensure_trailing_slash("fred/") == "fred/"
 
     def test_ensure_trailing_slash_string_type(self):
         # Given a unicode string, ensure_trailing_slash will always return a
         # unicode string, and given a byte string it will always return a byte
         # string.
-        self.assertIsInstance(utils.ensure_trailing_slash("fred"), str)
-        self.assertIsInstance(utils.ensure_trailing_slash(b"fred"), bytes)
+        assert isinstance(utils.ensure_trailing_slash("fred"), str)
+        assert isinstance(utils.ensure_trailing_slash(b"fred"), bytes)
 
     def test_api_url(self):
         transformations = list(
@@ -154,29 +143,25 @@ class TestFunctions(MAASTestCase):
         )
         urls = [url for url, url_out in transformations]
         urls_out = [url_out for url, url_out in transformations]
-        self.assertEqual([utils.api_url(url) for url in urls], urls_out)
+        assert [utils.api_url(url) for url in urls] == urls_out
 
 
-class TestGetResponseContentType(MAASTestCase):
+class TestGetResponseContentType:
     """Tests for `get_response_content_type`."""
 
     def test_get_response_content_type_returns_content_type_header(self):
         response = httplib2.Response({"content-type": "application/json"})
-        self.assertEqual(
-            "application/json", utils.get_response_content_type(response)
-        )
+        assert utils.get_response_content_type(response) == "application/json"
 
     def test_get_response_content_type_omits_parameters(self):
         response = httplib2.Response(
             {"content-type": "application/json; charset=utf-8"}
         )
-        self.assertEqual(
-            "application/json", utils.get_response_content_type(response)
-        )
+        assert utils.get_response_content_type(response) == "application/json"
 
     def test_get_response_content_type_return_None_when_type_not_found(self):
         response = httplib2.Response({})
-        self.assertIsNone(utils.get_response_content_type(response))
+        assert utils.get_response_content_type(response) is None
 
 
 class TestIsResponseTextual:
@@ -199,7 +184,7 @@ class TestIsResponseTextual:
         grct.assert_called_once_with(sentinel.response)
 
 
-class TestPrintResponseHeaders(MAASTestCase):
+class TestPrintResponseHeaders:
     """Tests for `print_response_headers`."""
 
     def test_prints_http_headers_in_order(self):
@@ -212,16 +197,15 @@ class TestPrintResponseHeaders(MAASTestCase):
         headers["one"] = factory.make_name("one")
         buf = io.StringIO()
         utils.print_response_headers(headers, buf)
-        self.assertEqual(
-            ("      One: %(one)s\n  Two-Two: %(two-two)s\n") % headers,
-            buf.getvalue(),
+        assert buf.getvalue() == (
+            "      One: %(one)s\n  Two-Two: %(two-two)s\n" % headers
         )
 
 
-class TestPrintResponseContent(MAASTestCase):
+class TestPrintResponseContent:
     """Tests for `print_response_content`."""
 
-    def test_prints_textual_response_with_newline(self):
+    def test_prints_textual_response_with_newline(self, mocker):
         # If the response content is textual and sys.stdout is connected to a
         # TTY, print_response_content() prints the response with a trailing
         # newline.
@@ -233,7 +217,7 @@ class TestPrintResponseContent(MAASTestCase):
             }
         )
         buf = io.BytesIO()
-        self.patch(buf, "isatty").return_value = True
+        mocker.patch.object(buf, "isatty", return_value=True)
         utils.print_response_content(response, response["content"], buf)
         assert buf.getvalue() == response["content"] + b"\n"
 
@@ -252,7 +236,7 @@ class TestPrintResponseContent(MAASTestCase):
         utils.print_response_content(response, response["content"], buf)
         assert buf.getvalue() == response["content"]
 
-    def test_writes_binary_response(self):
+    def test_writes_binary_response(self, mocker):
         # Non-textual response content is written to the output stream
         # using write(), so it carries no trailing newline, even if
         # stdout is connected to a tty
@@ -263,11 +247,11 @@ class TestPrintResponseContent(MAASTestCase):
             }
         )
         buf = io.BytesIO()
-        self.patch(buf, "isatty").return_value = True
+        mocker.patch.object(buf, "isatty", return_value=True)
         utils.print_response_content(response, response["content"], buf)
         assert buf.getvalue() == response["content"]
 
-    def test_prints_request_error_if_no_content(self):
+    def test_prints_request_error_if_no_content(self, mocker):
         response = httplib2.Response(
             {
                 "status": http.client.FORBIDDEN,
@@ -277,11 +261,11 @@ class TestPrintResponseContent(MAASTestCase):
         )
         response.reason = "Forbidden"  # can't set it at init time
         buf = io.BytesIO()
-        self.patch(buf, "isatty").return_value = True
+        mocker.patch.object(buf, "isatty", return_value=True)
         utils.print_response_content(response, response["content"], buf)
         assert buf.getvalue() == b"Request failed with code 403: Forbidden\n"
 
-    def test_prints_textual_response_with_success_msg(self):
+    def test_prints_textual_response_with_success_msg(self, mocker):
         # When the response has a status code of 2XX, and the response body is
         # textual print_response_content() will print a success message to the
         # TTY.
@@ -294,7 +278,7 @@ class TestPrintResponseContent(MAASTestCase):
             }
         )
         buf = io.BytesIO()
-        self.patch(buf, "isatty").return_value = True
+        mocker.patch.object(buf, "isatty", return_value=True)
         utils.print_response_content(response, response["content"], buf)
         assert buf.getvalue() == (
             b"Success.\n"
@@ -302,7 +286,7 @@ class TestPrintResponseContent(MAASTestCase):
         )
 
 
-class TestPrintServerCertificate(MAASTestCase):
+class TestPrintServerCertificate:
     """Tests for `dump_certificate_info`."""
 
     def test_dump_certificate_info_when_scheme_http(self):
@@ -312,15 +296,15 @@ class TestPrintServerCertificate(MAASTestCase):
         buf.seek(0)
         assert buf.read() == ""
 
-    def test_dump_certificate_info_when_scheme_https(self):
+    def test_dump_certificate_info_when_scheme_https(self, mocker):
         import ssl
 
         from provisioningserver.testing.certificates import get_sample_cert
 
         cert = get_sample_cert()
-        self.patch(
-            ssl, "get_server_certificate"
-        ).return_value = cert.certificate_pem()
+        mocker.patch.object(
+            ssl, "get_server_certificate", return_value=cert.certificate_pem()
+        )
 
         url = "https://example.com:5443"
 

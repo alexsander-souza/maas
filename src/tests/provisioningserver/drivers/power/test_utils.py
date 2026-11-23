@@ -9,7 +9,6 @@ from urllib3.util.retry import Retry
 
 import maascommon.fips as fips_module
 import maascommon.logging.security as security_module
-from maastesting.testcase import MAASTestCase
 from provisioningserver.drivers.power import utils as utils_module
 
 
@@ -36,9 +35,11 @@ class FakeHMCSession:
         self._new_session = _new_session
 
 
-class TestInstallFipsTlsAuditLogging(MAASTestCase):
-    def test_noop_when_fips_disabled(self):
-        self.patch(fips_module, "is_fips_enabled").return_value = False
+class TestInstallFipsTlsAuditLogging:
+    def test_noop_when_fips_disabled(self, mocker):
+        mocker.patch.object(
+            fips_module, "is_fips_enabled"
+        ).return_value = False
         hmc_session = FakeHMCSession()
         original_new_session = hmc_session._new_session
 
@@ -46,10 +47,10 @@ class TestInstallFipsTlsAuditLogging(MAASTestCase):
             hmc_session, "hmc.example.com"
         )
 
-        self.assertIs(original_new_session, hmc_session._new_session)
+        assert original_new_session is hmc_session._new_session
 
-    def test_noop_when_new_session_hook_missing(self):
-        self.patch(fips_module, "is_fips_enabled").return_value = True
+    def test_noop_when_new_session_hook_missing(self, mocker):
+        mocker.patch.object(fips_module, "is_fips_enabled").return_value = True
         hmc_session = Mock(spec=[])
 
         # Must not raise even though `hmc_session` has no `_new_session`.
@@ -57,8 +58,8 @@ class TestInstallFipsTlsAuditLogging(MAASTestCase):
             hmc_session, "hmc.example.com"
         )
 
-    def test_mounted_adapter_preserves_retry_configuration(self):
-        self.patch(fips_module, "is_fips_enabled").return_value = True
+    def test_mounted_adapter_preserves_retry_configuration(self, mocker):
+        mocker.patch.object(fips_module, "is_fips_enabled").return_value = True
         hmc_session = FakeHMCSession()
         retry_config = Retry(total=3)
 
@@ -68,16 +69,16 @@ class TestInstallFipsTlsAuditLogging(MAASTestCase):
         requests_session = hmc_session._new_session(retry_config)
 
         https_adapter = requests_session.get_adapter("https://hmc.example.com")
-        self.assertIs(retry_config, https_adapter.max_retries)
+        assert retry_config is https_adapter.max_retries
         # The http:// adapter mounted by `FakeHMCSession._new_session`
         # itself is left alone -- only https:// is intercepted.
         http_adapter = requests_session.get_adapter("http://hmc.example.com")
-        self.assertIsInstance(http_adapter, requests.adapters.HTTPAdapter)
-        self.assertIsNot(http_adapter, https_adapter)
+        assert isinstance(http_adapter, requests.adapters.HTTPAdapter)
+        assert http_adapter is not https_adapter
 
-    def test_connect_emits_fips_tls_handshake_audit_event(self):
-        self.patch(fips_module, "is_fips_enabled").return_value = True
-        mock_log = self.patch(
+    def test_connect_emits_fips_tls_handshake_audit_event(self, mocker):
+        mocker.patch.object(fips_module, "is_fips_enabled").return_value = True
+        mock_log = mocker.patch.object(
             security_module, "log_fips_tls_handshake_from_sslobj"
         )
         hmc_session = FakeHMCSession()
@@ -91,7 +92,7 @@ class TestInstallFipsTlsAuditLogging(MAASTestCase):
             "https"
         ].ConnectionCls
 
-        self.patch(HTTPSConnection, "connect")
+        mocker.patch.object(HTTPSConnection, "connect")
         conn = connection_cls(host="hmc.example.com", port=6794)
         conn.sock = sentinel.ssl_socket
 

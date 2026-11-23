@@ -38,7 +38,13 @@ def _effective_scenarios(cls, method_name):
     """
     if not hasattr(cls, "scenarios"):
         return None
-    instance = cls(method_name)
+    try:
+        instance = cls(method_name)
+    except TypeError:
+        # Class does not accept methodName (e.g. converted from
+        # MAASTestCase to plain pytest). Read scenarios from the
+        # class attribute directly.
+        return cls.scenarios
     return instance.scenarios
 
 
