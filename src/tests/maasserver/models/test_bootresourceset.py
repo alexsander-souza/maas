@@ -5,15 +5,16 @@
 
 from itertools import repeat
 import random
-from unittest import skip
+
+import pytest
 
 from maasserver.enum import BOOT_RESOURCE_FILE_TYPE
 from maasserver.models.bootresourceset import XINSTALL_TYPES
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 
 
-class TestBootResourceSet(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test")
+class TestBootResourceSet:
     """Tests for the `BootResourceSet` model."""
 
     def make_all_boot_resource_files(self, resource_set, filetypes):
@@ -39,7 +40,7 @@ class TestBootResourceSet(MAASServerTestCase):
             ),
         }
         self.make_all_boot_resource_files(resource_set, commissionable_set)
-        self.assertTrue(resource_set.commissionable)
+        assert resource_set.commissionable
 
     def test_commissionable_returns_false_when_missing_filetypes(self):
         resource = factory.make_BootResource()
@@ -49,7 +50,7 @@ class TestBootResourceSet(MAASServerTestCase):
             BOOT_RESOURCE_FILE_TYPE.BOOT_INITRD,
         }
         self.make_all_boot_resource_files(resource_set, commissionable_set)
-        self.assertFalse(resource_set.commissionable)
+        assert not resource_set.commissionable
 
     def test_xinstallable_returns_true_when_filetype_present(self):
         resource = factory.make_BootResource()
@@ -58,9 +59,11 @@ class TestBootResourceSet(MAASServerTestCase):
         factory.make_boot_resource_file_with_content(
             resource_set, filename=filetype, filetype=filetype
         )
-        self.assertTrue(resource_set.xinstallable)
+        assert resource_set.xinstallable
 
-    @skip("XXX: LaMontJones 2016-03-23 bug=1561259: Fails when root-image.gz.")
+    @pytest.mark.skip(
+        reason="XXX: LaMontJones 2016-03-23 bug=1561259: Fails when root-image.gz."
+    )
     def test_xinstallable_returns_false_when_missing_filetypes(self):
         resource = factory.make_BootResource()
         resource_set = factory.make_BootResourceSet(resource)
@@ -75,7 +78,7 @@ class TestBootResourceSet(MAASServerTestCase):
         factory.make_boot_resource_file_with_content(
             resource_set, filename=filetype, filetype=filetype
         )
-        self.assertFalse(resource_set.xinstallable)
+        assert not resource_set.xinstallable
 
     def test_total_size(self):
         resource = factory.make_BootResource()
@@ -96,12 +99,12 @@ class TestBootResourceSet(MAASServerTestCase):
                 filetype=filetype,
                 size=size,
             )
-        self.assertEqual(total_size, resource_set.total_size)
+        assert total_size == resource_set.total_size
 
     def test_complete_returns_false_for_no_files(self):
         resource = factory.make_BootResource()
         resource_set = factory.make_BootResourceSet(resource)
-        self.assertFalse(resource_set.complete)
+        assert not resource_set.complete
 
     def test_complete_returns_false_for_missing_sync(self):
         file_size = random.randint(1, 1024)
@@ -114,7 +117,7 @@ class TestBootResourceSet(MAASServerTestCase):
         factory.make_BootResourceFile(
             resource_set, size=file_size, synced=sync_status
         )
-        self.assertFalse(resource_set.complete)
+        assert not resource_set.complete
 
     def test_complete_returns_true_for_synced_set(self):
         regions = [factory.make_RegionController() for _ in range(3)]
@@ -138,4 +141,4 @@ class TestBootResourceSet(MAASServerTestCase):
                 size=size,
                 synced=sync_status,
             )
-        self.assertTrue(resource_set.complete)
+        assert resource_set.complete

@@ -3,107 +3,95 @@
 
 """Tests for XPath utilities."""
 
-from textwrap import dedent
-
 from lxml import etree
-from testscenarios import multiply_scenarios
+import pytest
 
-from maastesting.testcase import MAASTestCase
 from provisioningserver.utils import xpath as xpath_module
 from provisioningserver.utils.xpath import try_match_xpath
 
 
-class TestTryMatchXPathScenarios(MAASTestCase):
-    def scenario(name, xpath, doc, expected_result, expected_log=""):
-        """Return a scenario (for `testscenarios`) to test `try_match_xpath`.
-
-        This is a convenience function to reduce the amount of
-        boilerplate when constructing `scenarios_inputs` later on.
-
-        The scenario it constructs defines an XML document, and XPath
-        expression, the expectation as to whether it will match or
-        not, and the expected log output.
-        """
-        doc = etree.fromstring(doc).getroottree()
-        return (
-            name,
-            dict(
-                xpath=xpath,
-                doc=doc,
-                expected_result=expected_result,
-                expected_log=dedent(expected_log),
-            ),
-        )
-
-    # Exercise try_match_xpath with a variety of different inputs.
-    scenarios_inputs = (
-        scenario("expression matches", "/foo", "<foo/>", True),
-        scenario("expression does not match", "/foo", "<bar/>", False),
-        scenario(
-            "text expression matches", "/foo/text()", "<foo>bar</foo>", True
-        ),
-        scenario(
-            "text expression does not match",
-            "/foo/text()",
-            "<foo></foo>",
-            False,
-        ),
-        scenario(
-            "string expression matches", "string()", "<foo>bar</foo>", True
-        ),
-        scenario(
-            "string expression does not match",
-            "string()",
-            "<foo></foo>",
-            False,
-        ),
-        scenario(
-            "unrecognised namespace",
-            "/foo:bar",
-            "<foo/>",
-            False,
-            expected_log="Invalid expression '/foo:bar': Undefined namespace prefix: foo",
-        ),
-    )
-
-    # Exercise try_match_xpath with and without compiled XPath
-    # expressions.
-    scenarios_xpath_compiler = (
-        ("xpath-compiler=XPath", dict(xpath_compile=etree.XPath)),
-        ("xpath-compiler=None", dict(xpath_compile=lambda expr: expr)),
-    )
-
-    # Exercise try_match_xpath with and without documents wrapped in
-    # an XPathDocumentEvaluator.
-    scenarios_doc_compiler = (
+@pytest.mark.parametrize(
+    "xpath_compile",
+    [etree.XPath, lambda expr: expr],
+    ids=["xpath-compiler=XPath", "xpath-compiler=None"],
+)
+@pytest.mark.parametrize(
+    "doc_compile",
+    [etree.XPathDocumentEvaluator, lambda doc: doc],
+    ids=["doc-compiler=XPathDocumentEvaluator", "doc-compiler=None"],
+)
+@pytest.mark.parametrize(
+    "xpath,doc,expected_result,expected_log",
+    [
+        ("/foo", etree.fromstring("<foo/>").getroottree(), True, ""),
+        ("/foo", etree.fromstring("<bar/>").getroottree(), False, ""),
         (
-            "doc-compiler=XPathDocumentEvaluator",
-            dict(doc_compile=etree.XPathDocumentEvaluator),
+            "/foo/text()",
+            etree.fromstring("<foo>bar</foo>").getroottree(),
+            True,
+            "",
         ),
-        ("doc-compiler=None", dict(doc_compile=lambda doc: doc)),
-    )
+        (
+            "/foo/text()",
+            etree.fromstring("<foo></foo>").getroottree(),
+            False,
+            "",
+        ),
+        (
+            "string()",
+            etree.fromstring("<foo>bar</foo>").getroottree(),
+            True,
+            "",
+        ),
+        (
+            "string()",
+            etree.fromstring("<foo></foo>").getroottree(),
+            False,
+            "",
+        ),
+        (
+            "/foo:bar",
+            etree.fromstring("<foo/>").getroottree(),
+            False,
+            "Invalid expression '/foo:bar': Undefined namespace prefix: foo",
+        ),
+    ],
+    ids=[
+        "expression matches",
+        "expression does not match",
+        "text expression matches",
+        "text expression does not match",
+        "string expression matches",
+        "string expression does not match",
+        "unrecognised namespace",
+    ],
+)
+class TestTryMatchXPathScenarios:
+    @pytest.fixture(autouse=True)
+    def _setup(self, mocker):
+        self.logger = mocker.patch.object(xpath_module, "logger")
 
-    scenarios = multiply_scenarios(
-        scenarios_inputs, scenarios_xpath_compiler, scenarios_doc_compiler
-    )
-
-    def setUp(self):
-        super().setUp()
-        self.logger = self.patch(xpath_module, "logger")
-
-    def test(self):
-        xpath = self.xpath_compile(self.xpath)
-        doc = self.doc_compile(self.doc)
-        self.assertIs(self.expected_result, try_match_xpath(xpath, doc))
-        if self.expected_log:
+    def test(
+        self,
+        xpath,
+        doc,
+        expected_result,
+        expected_log,
+        xpath_compile,
+        doc_compile,
+    ):
+        compiled_xpath = xpath_compile(xpath)
+        compiled_doc = doc_compile(doc)
+        assert expected_result is try_match_xpath(compiled_xpath, compiled_doc)
+        if expected_log:
             self.logger.warn.assert_called_once()
             args, _ = self.logger.warn.call_args
-            self.assertEqual(self.expected_log, args[0])
+            assert expected_log == args[0]
 
 
-class TestTryMatchXPath(MAASTestCase):
-    def test_logs_to_specified_logger(self):
-        logger = self.patch(xpath_module, "logger")
+class TestTryMatchXPath:
+    def test_logs_to_specified_logger(self, mocker):
+        logger = mocker.patch.object(xpath_module, "logger")
         xpath = etree.XPath("/foo:bar")
         doc = etree.XML("<foo/>")
         try_match_xpath(xpath, doc)

@@ -6,6 +6,7 @@ import random
 import re
 
 from django.core.exceptions import PermissionDenied, ValidationError
+import pytest
 
 from maascommon.dns import HostnameRRsetMapping
 from maasserver.models.config import Config
@@ -15,7 +16,6 @@ from maasserver.models.node import Node
 from maasserver.permissions import NodePermission
 from maasserver.sqlalchemy import service_layer
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 
 # duplicated from dnsdata.py so as to not export them
 INVALID_CNAME_MSG = "Invalid CNAME: Should be '<server>'."
@@ -36,79 +36,61 @@ CNAME_AND_OTHER_MSG = (
 MULTI_CNAME_MSG = "Only one CNAME can be associated with a name."
 
 
-class TestDNSDataManagerGetDNSDataOr404(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestDNSDataManagerGetDNSDataOr404:
     def test_user_view_returns_dnsdata(self):
         user = factory.make_User()
         dnsdata = factory.make_DNSData()
-        self.assertEqual(
-            dnsdata,
-            DNSData.objects.get_dnsdata_or_404(
-                dnsdata.id, user, NodePermission.view
-            ),
+        assert dnsdata == DNSData.objects.get_dnsdata_or_404(
+            dnsdata.id, user, NodePermission.view
         )
 
     def test_user_edit_raises_PermissionError(self):
         user = factory.make_User()
         dnsdata = factory.make_DNSData()
-        self.assertRaises(
-            PermissionDenied,
-            DNSData.objects.get_dnsdata_or_404,
-            dnsdata.id,
-            user,
-            NodePermission.edit,
-        )
+        with pytest.raises(PermissionDenied):
+            DNSData.objects.get_dnsdata_or_404(
+                dnsdata.id, user, NodePermission.edit
+            )
 
     def test_user_admin_raises_PermissionError(self):
         user = factory.make_User()
         dnsdata = factory.make_DNSData()
-        self.assertRaises(
-            PermissionDenied,
-            DNSData.objects.get_dnsdata_or_404,
-            dnsdata.id,
-            user,
-            NodePermission.admin,
-        )
+        with pytest.raises(PermissionDenied):
+            DNSData.objects.get_dnsdata_or_404(
+                dnsdata.id, user, NodePermission.admin
+            )
 
     def test_admin_view_returns_dnsdata(self):
         admin = factory.make_admin()
         dnsdata = factory.make_DNSData()
-        self.assertEqual(
-            dnsdata,
-            DNSData.objects.get_dnsdata_or_404(
-                dnsdata.id, admin, NodePermission.view
-            ),
+        assert dnsdata == DNSData.objects.get_dnsdata_or_404(
+            dnsdata.id, admin, NodePermission.view
         )
 
     def test_admin_edit_returns_dnsdata(self):
         admin = factory.make_admin()
         dnsdata = factory.make_DNSData()
-        self.assertEqual(
-            dnsdata,
-            DNSData.objects.get_dnsdata_or_404(
-                dnsdata.id, admin, NodePermission.edit
-            ),
+        assert dnsdata == DNSData.objects.get_dnsdata_or_404(
+            dnsdata.id, admin, NodePermission.edit
         )
 
     def test_admin_admin_returns_dnsdata(self):
         admin = factory.make_admin()
         dnsdata = factory.make_DNSData()
-        self.assertEqual(
-            dnsdata,
-            DNSData.objects.get_dnsdata_or_404(
-                dnsdata.id, admin, NodePermission.admin
-            ),
+        assert dnsdata == DNSData.objects.get_dnsdata_or_404(
+            dnsdata.id, admin, NodePermission.admin
         )
 
 
-class TestDNSData(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestDNSData:
     def test_creates_dnsdata(self):
         name = factory.make_name("name")
         domain = factory.make_Domain()
         dnsdata = factory.make_DNSData(name=name, domain=domain)
         from_db = DNSData.objects.get(dnsresource__name=name)
-        self.assertEqual(
-            (from_db.dnsresource.name, from_db.id), (name, dnsdata.id)
-        )
+        assert (from_db.dnsresource.name, from_db.id) == (name, dnsdata.id)
 
     # The following tests intentionally pass in a lowercase rrtype,
     # which will be upshifted in the creation of the DNSData record.
@@ -116,13 +98,13 @@ class TestDNSData(MAASServerTestCase):
         name = factory.make_name("name")
         dnsdata = factory.make_DNSData(rrtype="cname", name=name)
         from_db = DNSData.objects.get(dnsresource__name=name)
-        self.assertEqual((from_db.id, from_db.rrtype), (dnsdata.id, "CNAME"))
+        assert (from_db.id, from_db.rrtype) == (dnsdata.id, "CNAME")
 
     def test_creates_cname_with_underscore(self):
         name = factory.make_name("na_me")
         dnsdata = factory.make_DNSData(rrtype="cname", name=name)
         from_db = DNSData.objects.get(dnsresource__name=name)
-        self.assertEqual((from_db.id, from_db.rrtype), (dnsdata.id, "CNAME"))
+        assert (from_db.id, from_db.rrtype) == (dnsdata.id, "CNAME")
 
     def test_rejects_bad_cname_target(self):
         target = factory.make_name("na*e")
@@ -130,25 +112,24 @@ class TestDNSData(MAASServerTestCase):
         dnsdata = DNSData(
             dnsresource=dnsresource, rrtype="CNAME", rrdata=target
         )
-        with self.assertRaisesRegex(
+        with pytest.raises(
             ValidationError,
-            re.escape("{'__all__': [\"%s\"]}" % INVALID_CNAME_MSG),
+            match=re.escape("{'__all__': [\"%s\"]}" % INVALID_CNAME_MSG),
         ):
             dnsdata.save()
 
     def test_rejects_bad_srv(self):
-        self.assertRaises(
-            ValidationError, factory.make_DNSData, rrtype="SRV", rrdata=""
-        )
+        with pytest.raises(ValidationError):
+            factory.make_DNSData(rrtype="SRV", rrdata="")
 
     def test_rejects_bad_sshfp_record(self):
         dnsresource = factory.make_DNSResource(no_ip_addresses=True)
         dnsdata = DNSData(
             dnsresource=dnsresource, rrtype="SSHFP", rrdata="wrong data"
         )
-        with self.assertRaisesRegex(
+        with pytest.raises(
             ValidationError,
-            re.escape("{'__all__': [\"%s\"]}" % INVALID_SSHFP_MSG),
+            match=re.escape("{'__all__': [\"%s\"]}" % INVALID_SSHFP_MSG),
         ):
             dnsdata.save()
 
@@ -156,13 +137,13 @@ class TestDNSData(MAASServerTestCase):
         name = factory.make_name("name")
         dnsdata = factory.make_DNSData(rrtype="mx", name=name)
         from_db = DNSData.objects.get(dnsresource__name=name)
-        self.assertEqual((from_db.id, from_db.rrtype), (dnsdata.id, "MX"))
+        assert (from_db.id, from_db.rrtype) == (dnsdata.id, "MX")
 
     def test_creates_ns(self):
         name = factory.make_name("name")
         dnsdata = factory.make_DNSData(rrtype="ns", name=name)
         from_db = DNSData.objects.get(dnsresource__name=name)
-        self.assertEqual((from_db.id, from_db.rrtype), (dnsdata.id, "NS"))
+        assert (from_db.id, from_db.rrtype) == (dnsdata.id, "NS")
 
     def test_creates_srv(self):
         service = factory.make_name(size=5)
@@ -180,21 +161,18 @@ class TestDNSData(MAASServerTestCase):
             rrtype="srv", rrdata=data, name=srv_name
         )
         from_db = DNSData.objects.get(dnsresource__name=srv_name)
-        self.assertEqual(
-            (
-                from_db.dnsresource.name,
-                from_db.id,
-                from_db.rrtype,
-                from_db.rrdata,
-            ),
-            (srv_name, dnsdata.id, "SRV", data),
-        )
+        assert (
+            from_db.dnsresource.name,
+            from_db.id,
+            from_db.rrtype,
+            from_db.rrdata,
+        ) == (srv_name, dnsdata.id, "SRV", data)
 
     def test_creates_txt(self):
         name = factory.make_name("name")
         dnsdata = factory.make_DNSData(rrtype="txt", name=name)
         from_db = DNSData.objects.get(dnsresource__name=name)
-        self.assertEqual((from_db.id, from_db.rrtype), (dnsdata.id, "TXT"))
+        assert (from_db.id, from_db.rrtype) == (dnsdata.id, "TXT")
 
     def test_rejects_cname_with_address(self):
         name = factory.make_name("name")
@@ -205,9 +183,9 @@ class TestDNSData(MAASServerTestCase):
 
         dnsdata = DNSData(dnsresource=dnsrr, rrtype="CNAME", rrdata=target)
 
-        with self.assertRaisesRegex(
+        with pytest.raises(
             ValidationError,
-            re.escape("{'__all__': ['%s']}" % CNAME_AND_OTHER_MSG),
+            match=re.escape("{'__all__': ['%s']}" % CNAME_AND_OTHER_MSG),
         ):
             dnsdata.save()
 
@@ -220,18 +198,18 @@ class TestDNSData(MAASServerTestCase):
             name=name, domain=domain, no_ip_addresses=True, rrtype=rrtype
         ).dnsresource
         dnsdata = DNSData(dnsresource=dnsrr, rrtype="CNAME", rrdata=target)
-        with self.assertRaisesRegex(
+        with pytest.raises(
             ValidationError,
-            re.escape("{'__all__': ['%s']}" % CNAME_AND_OTHER_MSG),
+            match=re.escape("{'__all__': ['%s']}" % CNAME_AND_OTHER_MSG),
         ):
             dnsdata.save()
 
     def test_allows_multiple_records_unless_cname(self):
         dnsdata = factory.make_DNSData(no_ip_addresses=True)
         if dnsdata.rrtype == "CNAME":
-            with self.assertRaisesRegex(
+            with pytest.raises(
                 ValidationError,
-                re.escape("{'__all__': ['%s']}" % MULTI_CNAME_MSG),
+                match=re.escape("{'__all__': ['%s']}" % MULTI_CNAME_MSG),
             ):
                 factory.make_DNSData(
                     dnsresource=dnsdata.dnsresource, rrtype="CNAME"
@@ -240,15 +218,16 @@ class TestDNSData(MAASServerTestCase):
             factory.make_DNSData(
                 dnsresource=dnsdata.dnsresource, rrtype=dnsdata.rrtype
             )
-            self.assertEqual(
-                2,
-                DNSData.objects.filter(
+            assert (
+                2
+                == DNSData.objects.filter(
                     dnsresource=dnsdata.dnsresource
-                ).count(),
+                ).count()
             )
 
 
-class TestDNSDataMapping(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestDNSDataMapping:
     """Tests for get_hostname_dnsdata_mapping()."""
 
     def make_mapping(self, dnsresource, raw_ttl=False):
@@ -303,7 +282,7 @@ class TestDNSDataMapping(MAASServerTestCase):
         actual = service_layer.services.domains.get_hostname_dnsdata_mapping(
             domain.id
         )
-        self.assertEqual(expected_mapping, actual)
+        assert expected_mapping == actual
 
     def test_get_hostname_dnsdata_mapping_includes_node_owner_id(self):
         domain = Domain.objects.get_default_domain()
@@ -317,7 +296,7 @@ class TestDNSDataMapping(MAASServerTestCase):
         mapping = service_layer.services.domains.get_hostname_dnsdata_mapping(
             domain.id
         )
-        self.assertEqual(mapping[node_name].user_id, user.id)
+        assert mapping[node_name].user_id == user.id
 
     def test_get_hostname_dnsdata_mapping_returns_mapping_at_domain(self):
         parent = Domain.objects.get_default_domain()
@@ -340,7 +319,7 @@ class TestDNSDataMapping(MAASServerTestCase):
         actual = service_layer.services.domains.get_hostname_dnsdata_mapping(
             domain.id
         )
-        self.assertEqual(expected_mapping, actual)
+        assert expected_mapping == actual
         # We are done with dnsrr from the child domain's perspective, make it
         # look like it would if it were in the parent domain.
         dnsrr.name = name
@@ -351,7 +330,7 @@ class TestDNSDataMapping(MAASServerTestCase):
                 parent.id
             )
         )
-        self.assertEqual(expected_parent, actual_parent)
+        assert expected_parent == actual_parent
 
     def test_get_hostname_dnsdata_mapping_handles_ttl(self):
         # We create 2 domains, one with a ttl, one withoout.
@@ -373,7 +352,7 @@ class TestDNSDataMapping(MAASServerTestCase):
                     dom.id
                 )
             )
-            self.assertEqual(expected_mapping, actual)
+            assert expected_mapping == actual
 
     def test_get_hostname_dnsdata_mapping_returns_raw_ttl(self):
         # We create 2 domains, one with a ttl, one withoout.
@@ -397,4 +376,4 @@ class TestDNSDataMapping(MAASServerTestCase):
                     dom.id, raw_ttl=True
                 )
             )
-            self.assertEqual(expected_mapping, actual)
+            assert expected_mapping == actual

@@ -14,13 +14,12 @@ from twisted.internet.defer import inlineCallbacks
 from maascommon.worker import get_worker_ids, set_max_workers_count
 from maasserver.workers import WorkerProcess, WorkersService
 from maastesting.crochet import wait_for
-from maastesting.testcase import MAASTestCase
 from provisioningserver.utils.twisted import DeferredValue
 
 wait_for_reactor = wait_for()
 
 
-class TestWorkersCount(MAASTestCase):
+class TestWorkersCount:
     def test_MAX_WORKERS_COUNT_default_cpucount(self):
         from maasserver.workers import MAX_WORKERS_COUNT
 
@@ -34,7 +33,7 @@ class TestWorkersCount(MAASTestCase):
         assert worker_count == MAX_WORKERS_COUNT
 
 
-class TestWorkersService(MAASTestCase):
+class TestWorkersService:
     def test_defaults_to_max_workers_and_argv_zero(self):
         worker_count = random.randint(1, 8)
         set_max_workers_count(worker_count)
@@ -45,17 +44,17 @@ class TestWorkersService(MAASTestCase):
         assert len(get_worker_ids()) == MAX_WORKERS_COUNT
         assert sys.argv[0] == service.worker_cmd
 
-    def test_calls_spawnWorkers_on_start(self):
+    def test_calls_spawnWorkers_on_start(self, mocker):
         service = WorkersService(reactor)
-        self.patch(service, "spawnWorkers")
+        mocker.patch.object(service, "spawnWorkers")
         service.startService()
         service.spawnWorkers.assert_called_once()
 
-    def test_spawnWorkers_calls__spawnWorker_for_missing_workers(self):
+    def test_spawnWorkers_calls__spawnWorker_for_missing_workers(self, mocker):
         worker_count = random.randint(2, 16)
         set_max_workers_count(worker_count)
         service = WorkersService(reactor)
-        self.patch(service, "_spawnWorker")
+        mocker.patch.object(service, "_spawnWorker")
         pid = random.randint(1, 500)
         service.workers[pid] = WorkerProcess(service, worker_id="0")
         service.missing_worker_ids.remove("0")
@@ -65,11 +64,11 @@ class TestWorkersService(MAASTestCase):
         ]
         service._spawnWorker.assert_has_calls(calls)
 
-    def test_registerWorker(self):
+    def test_registerWorker(self, mocker):
         worker_count = 2
         set_max_workers_count(worker_count)
         service = WorkersService(reactor)
-        self.patch(service, "_spawnWorker")
+        mocker.patch.object(service, "_spawnWorker")
 
         worker = WorkerProcess(service, worker_id="0")
         worker.pid = 100
@@ -79,11 +78,11 @@ class TestWorkersService(MAASTestCase):
         calls = [call("1", runningImport=True)]
         service._spawnWorker.assert_has_calls(calls)
 
-    def test_unregisterWorker(self):
+    def test_unregisterWorker(self, mocker):
         worker_count = 2
         set_max_workers_count(worker_count)
         service = WorkersService(reactor)
-        self.patch(service, "_spawnWorker")
+        mocker.patch.object(service, "_spawnWorker")
 
         worker = WorkerProcess(service, worker_id="0")
         worker.pid = 100
@@ -94,7 +93,7 @@ class TestWorkersService(MAASTestCase):
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_killWorker_spawns_another(self):
+    def test_killWorker_spawns_another(self, mocker):
         set_max_workers_count(1)
         service = WorkersService(reactor, worker_cmd="cat")
 
@@ -105,14 +104,14 @@ class TestWorkersService(MAASTestCase):
             original_unregisterWorker(*args, **kwargs)
             dv.set(None)
 
-        self.patch(
+        mocker.patch.object(
             service, "unregisterWorker"
         ).side_effect = mock_unregisterWorker
 
         try:
             service.startService()
 
-            self.assertEqual(1, len(service.workers))
+            assert len(service.workers) == 1
             pid = list(service.workers.keys())[0]
             service.killWorker(pid)
             yield dv.get(timeout=2)
@@ -123,7 +122,7 @@ class TestWorkersService(MAASTestCase):
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_termWorker_spawns_another(self):
+    def test_termWorker_spawns_another(self, mocker):
         set_max_workers_count(1)
         service = WorkersService(reactor, worker_cmd="cat")
 
@@ -134,14 +133,14 @@ class TestWorkersService(MAASTestCase):
             original_unregisterWorker(*args, **kwargs)
             dv.set(None)
 
-        self.patch(
+        mocker.patch.object(
             service, "unregisterWorker"
         ).side_effect = mock_unregisterWorker
 
         try:
             service.startService()
 
-            self.assertEqual(1, len(service.workers))
+            assert len(service.workers) == 1
             pid = list(service.workers.keys())[0]
             service.termWorker(pid)
             yield dv.get(timeout=2)
@@ -152,7 +151,7 @@ class TestWorkersService(MAASTestCase):
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_stopService(self):
+    def test_stopService(self, mocker):
         set_max_workers_count(1)
 
         mock_worker = Mock(spec=WorkerProcess)
@@ -169,11 +168,13 @@ class TestWorkersService(MAASTestCase):
         def fake_spawnWorker(worker_id, runningImport=False):
             service.registerWorker(mock_worker)
 
-        self.patch(service, "_spawnWorker").side_effect = fake_spawnWorker
+        mocker.patch.object(
+            service, "_spawnWorker"
+        ).side_effect = fake_spawnWorker
 
         service.startService()
         # test that the worker was registered
-        self.assertEqual(len(service.workers), 1)
+        assert len(service.workers) == 1
 
         dv = DeferredValue()
 
@@ -182,7 +183,7 @@ class TestWorkersService(MAASTestCase):
             service.missing_worker_ids.append(mock_worker.worker_id)
             dv.set(None)
 
-        self.patch(
+        mocker.patch.object(
             service, "unregisterWorker"
         ).side_effect = fake_unregisterWorker
         mock_worker.processEnded = Mock(side_effect=service.unregisterWorker)
@@ -193,4 +194,4 @@ class TestWorkersService(MAASTestCase):
         yield dv.get(timeout=2)
 
         # test that the worker was unregistered
-        self.assertEqual(len(service.workers), 0)
+        assert len(service.workers) == 0

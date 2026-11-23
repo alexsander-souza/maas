@@ -3,8 +3,10 @@
 
 """Tests for reverse-DNS service."""
 
+from unittest import TestCase as UnittestTestCase
 from unittest.mock import Mock
 
+import pytest
 from twisted.internet import defer
 from twisted.internet.defer import inlineCallbacks
 
@@ -12,28 +14,63 @@ from maasserver.models import RDNS
 from maasserver.regiondservices import reverse_dns as reverse_dns_module
 from maasserver.regiondservices.reverse_dns import ReverseDNSService
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASTransactionServerTestCase
 from maasserver.utils.threads import deferToDatabase
 from maastesting.crochet import wait_for
+import provisioningserver.utils.network as network_module
 from provisioningserver.utils.testing import callWithServiceRunning
-from provisioningserver.utils.tests.test_network import TestReverseResolveMixIn
+from tests.provisioningserver.utils.test_network import TestReverseResolveMixIn
 
 
-class TestReverseDNSService(
-    TestReverseResolveMixIn, MAASTransactionServerTestCase
-):
+@pytest.mark.allow_transactions
+@pytest.mark.usefixtures(
+    "maasdb", "transactional_maasdb", "maas_region_test", "factory"
+)
+class TestReverseDNSService(TestReverseResolveMixIn):
     """Tests for `RegionNetworksMonitoringService`."""
 
-    def setUp(self):
-        super().setUp()
+    @pytest.fixture(autouse=True)
+    def _setup_test_helpers(
+        self,
+        maasdb,
+        transactional_maasdb,
+        maas_region_test,
+        mocker,
+        request,
+    ):
+        self._mocker = mocker
+        self._request = request
+        self._assertions = UnittestTestCase()
+        self.timeout = object()
+        self.resolver = self.get_mock_iresolver()
+        self.lookupPointer = self.resolver.lookupPointer
+        self.getResolver = mocker.patch.object(network_module, "getResolver")
+        self.getResolver.return_value = self.resolver
         self.region = factory.make_RegionRackController()
-        # This is so get_running_controller() works properly.
-        RegionController = self.patch(reverse_dns_module, "RegionController")
-        RegionController.objects = Mock()
-        RegionController.objects.get_running_controller = Mock()
-        RegionController.objects.get_running_controller.return_value = (
+        region_controller = mocker.patch.object(
+            reverse_dns_module, "RegionController"
+        )
+        region_controller.objects = Mock()
+        region_controller.objects.get_running_controller = Mock()
+        region_controller.objects.get_running_controller.return_value = (
             self.region
         )
+
+    def __getattr__(self, name):
+        if name.startswith("assert") or name == "fail":
+            return getattr(self._assertions, name)
+        raise AttributeError(name)
+
+    def patch(self, obj, attribute=None, value=None):
+        if attribute is None:
+            return self._mocker.patch(obj)
+        if value is None:
+            return self._mocker.patch.object(obj, attribute)
+        return self._mocker.patch.object(obj, attribute, value)
+
+    def useFixture(self, fixture):
+        fixture.setUp()
+        self._request.addfinalizer(fixture.cleanUp)
+        return fixture
 
     @wait_for()
     @inlineCallbacks

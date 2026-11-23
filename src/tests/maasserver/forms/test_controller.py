@@ -3,38 +3,36 @@
 
 """Tests for controller forms."""
 
+import pytest
+
 from maasserver.clusterrpc.driver_parameters import get_driver_choices
 from maasserver.forms import ControllerForm
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 
 
-class TestControllerForm(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestControllerForm:
     def test_Contains_limited_set_of_fields(self):
         form = ControllerForm()
 
-        self.assertEqual(
-            {
-                "description",
-                "zone",
-                "domain",
-                "power_type",
-                "power_parameters",
-            },
-            form.fields.keys(),
-        )
+        assert {
+            "description",
+            "zone",
+            "domain",
+            "power_type",
+            "power_parameters",
+        } == form.fields.keys()
 
     def test_populates_power_type_choices(self):
         form = ControllerForm()
-        self.assertEqual(
-            [""] + [choice[0] for choice in get_driver_choices()],
-            [choice[0] for choice in form.fields["power_type"].choices],
-        )
+        assert [""] + [choice[0] for choice in get_driver_choices()] == [
+            choice[0] for choice in form.fields["power_type"].choices
+        ]
 
     def test_populates_power_type_initial(self):
         rack = factory.make_RackController()
         form = ControllerForm(instance=rack)
-        self.assertEqual(rack.power_type, form.fields["power_type"].initial)
+        assert rack.power_type == form.fields["power_type"].initial
 
     def test_sets_power_type(self):
         rack = factory.make_RackController()
@@ -47,7 +45,7 @@ class TestControllerForm(MAASServerTestCase):
             instance=rack,
         )
         rack = form.save()
-        self.assertEqual(power_type, rack.power_type)
+        assert power_type == rack.power_type
 
     def test_sets_power_parameters(self):
         rack = factory.make_RackController()
@@ -61,9 +59,7 @@ class TestControllerForm(MAASServerTestCase):
             instance=rack,
         )
         rack = form.save()
-        self.assertEqual(
-            power_parameters_field, rack.get_power_parameters()["field"]
-        )
+        assert power_parameters_field == rack.get_power_parameters()["field"]
 
     def test_sets_zone(self):
         rack = factory.make_RackController()
@@ -73,7 +69,7 @@ class TestControllerForm(MAASServerTestCase):
             instance=rack,
         )
         rack = form.save()
-        self.assertEqual(zone.name, rack.zone.name)
+        assert zone.name == rack.zone.name
 
     def test_sets_domain(self):
         rack = factory.make_RackController()
@@ -86,4 +82,4 @@ class TestControllerForm(MAASServerTestCase):
             instance=rack,
         )
         rack = form.save()
-        self.assertEqual(domain.name, rack.domain.name)
+        assert domain.name == rack.domain.name

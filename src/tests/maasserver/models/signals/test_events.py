@@ -3,25 +3,29 @@
 
 """Tests for node transition event."""
 
+import pytest
+
 from maasserver.enum import NODE_STATUS_CHOICES_DICT
 from maasserver.models import Event
 from maasserver.models.signals import power as node_query
 from maasserver.node_status import get_failed_status, NODE_STATUS
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from provisioningserver.events import EVENT_DETAILS, EVENT_TYPES
 
 
-class TestStatusTransitionEvent(MAASServerTestCase):
-    def setUp(self):
-        super().setUp()
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestStatusTransitionEvent:
+    @pytest.fixture(autouse=True)
+    def _setup(self, maas_region_test, mocker):
         # Circular imports.
         from maasserver.models import signals
 
-        self.patch(signals.events, "STATE_TRANSITION_EVENT_CONNECT", True)
+        mocker.patch.object(
+            signals.events, "STATE_TRANSITION_EVENT_CONNECT", True
+        )
 
-    def test_changing_status_of_node_emits_event(self):
-        self.addCleanup(node_query.signals.enable)
+    def test_changing_status_of_node_emits_event(self, request):
+        request.addfinalizer(node_query.signals.enable)
         node_query.signals.disable()
 
         old_status = NODE_STATUS.COMMISSIONING
@@ -34,17 +38,14 @@ class TestStatusTransitionEvent(MAASServerTestCase):
             NODE_STATUS_CHOICES_DICT[old_status],
             NODE_STATUS_CHOICES_DICT[node.status],
         )
-        self.assertEqual(
-            (
-                EVENT_TYPES.NODE_CHANGED_STATUS,
-                EVENT_DETAILS[EVENT_TYPES.NODE_CHANGED_STATUS].description,
-                description,
-            ),
-            (
-                latest_event.type.name,
-                latest_event.type.description,
-                latest_event.description,
-            ),
+        assert (
+            EVENT_TYPES.NODE_CHANGED_STATUS,
+            EVENT_DETAILS[EVENT_TYPES.NODE_CHANGED_STATUS].description,
+            description,
+        ) == (
+            latest_event.type.name,
+            latest_event.type.description,
+            latest_event.description,
         )
 
     def test_changing_to_allocated_includes_user_name(self):
@@ -59,11 +60,9 @@ class TestStatusTransitionEvent(MAASServerTestCase):
             NODE_STATUS_CHOICES_DICT[node.status],
             user.username,
         )
-        self.assertEqual(
-            EVENT_TYPES.NODE_CHANGED_STATUS, latest_event.type.name
+        assert EVENT_TYPES.NODE_CHANGED_STATUS == latest_event.type.name
+        assert (
+            EVENT_DETAILS[EVENT_TYPES.NODE_CHANGED_STATUS].description
+            == latest_event.type.description
         )
-        self.assertEqual(
-            EVENT_DETAILS[EVENT_TYPES.NODE_CHANGED_STATUS].description,
-            latest_event.type.description,
-        )
-        self.assertEqual(description, latest_event.description)
+        assert description == latest_event.description

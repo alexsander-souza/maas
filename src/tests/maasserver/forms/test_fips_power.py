@@ -6,15 +6,15 @@
 from unittest.mock import patch
 
 from django.core.exceptions import ValidationError
+import pytest
 
 from maasserver.forms.fips_power import (
     validate_power_params_fips,
     validate_power_pass_complexity,
 )
-from maastesting.testcase import MAASTestCase
 
 
-class TestValidatePowerParamsFips(MAASTestCase):
+class TestValidatePowerParamsFips:
     def test_noop_when_fips_disabled(self):
         with patch(
             "maasserver.forms.fips_power.is_fips_enabled", return_value=False
@@ -26,10 +26,9 @@ class TestValidatePowerParamsFips(MAASTestCase):
         with patch(
             "maasserver.forms.fips_power.is_fips_enabled", return_value=True
         ):
-            exc = self.assertRaises(
-                ValidationError, validate_power_params_fips, "apc", {}
-            )
-            self.assertEqual("fips_violation", exc.code)
+            with pytest.raises(ValidationError) as exc:
+                validate_power_params_fips("apc", {})
+            assert exc.value.code == "fips_violation"
 
     def test_rejected_driver_emits_audit_event(self):
         with (
@@ -41,12 +40,11 @@ class TestValidatePowerParamsFips(MAASTestCase):
                 "maasserver.forms.fips_power.log_fips_driver_rejected"
             ) as mock_log,
         ):
-            self.assertRaises(
-                ValidationError, validate_power_params_fips, "apc", {}
-            )
+            with pytest.raises(ValidationError):
+                validate_power_params_fips("apc", {})
             mock_log.assert_called_once()
-            self.assertEqual("apc", mock_log.call_args.kwargs["driver"])
-            self.assertIn("SNMPv1", mock_log.call_args.kwargs["reason"])
+            assert mock_log.call_args.kwargs["driver"] == "apc"
+            assert "SNMPv1" in mock_log.call_args.kwargs["reason"]
 
     def test_accepts_compliant_driver_in_fips(self):
         with patch(
@@ -59,37 +57,34 @@ class TestValidatePowerParamsFips(MAASTestCase):
         with patch(
             "maasserver.forms.fips_power.is_fips_enabled", return_value=True
         ):
-            exc = self.assertRaises(
-                ValidationError,
-                validate_power_params_fips,
-                "ipmi",
-                {"cipher_suite_id": "3"},
-            )
-            self.assertEqual("fips_violation", exc.code)
+            with pytest.raises(ValidationError) as exc:
+                validate_power_params_fips(
+                    "ipmi",
+                    {"cipher_suite_id": "3"},
+                )
+            assert exc.value.code == "fips_violation"
 
     def test_rejects_webhook_ssl_disabled(self):
         with patch(
             "maasserver.forms.fips_power.is_fips_enabled", return_value=True
         ):
-            exc = self.assertRaises(
-                ValidationError,
-                validate_power_params_fips,
-                "webhook",
-                {"power_verify_ssl": "n"},
-            )
-            self.assertEqual("fips_violation", exc.code)
+            with pytest.raises(ValidationError) as exc:
+                validate_power_params_fips(
+                    "webhook",
+                    {"power_verify_ssl": "n"},
+                )
+            assert exc.value.code == "fips_violation"
 
     def test_rejects_amt_legacy_renegotiation(self):
         with patch(
             "maasserver.forms.fips_power.is_fips_enabled", return_value=True
         ):
-            exc = self.assertRaises(
-                ValidationError,
-                validate_power_params_fips,
-                "amt",
-                {"allow_legacy_renegotiation": "true"},
-            )
-            self.assertEqual("fips_violation", exc.code)
+            with pytest.raises(ValidationError) as exc:
+                validate_power_params_fips(
+                    "amt",
+                    {"allow_legacy_renegotiation": "true"},
+                )
+            assert exc.value.code == "fips_violation"
 
     def test_accepts_amt_without_legacy_renegotiation(self):
         with patch(
@@ -107,7 +102,7 @@ class TestValidatePowerParamsFips(MAASTestCase):
             validate_power_params_fips("lxd", {})
 
 
-class TestValidatePowerPassComplexity(MAASTestCase):
+class TestValidatePowerPassComplexity:
     def _patch(self, active):
         return patch(
             "maasserver.forms.fips_power.is_hardening_enabled",
@@ -120,12 +115,11 @@ class TestValidatePowerPassComplexity(MAASTestCase):
 
     def test_rejects_weak_password_when_hardening(self):
         with self._patch(True):
-            exc = self.assertRaises(
-                ValidationError,
-                validate_power_pass_complexity,
-                {"power_pass": "weak"},
-            )
-        self.assertEqual("password_complexity", exc.code)
+            with pytest.raises(ValidationError) as exc:
+                validate_power_pass_complexity(
+                    {"power_pass": "weak"},
+                )
+        assert exc.value.code == "password_complexity"
 
     def test_accepts_strong_password(self):
         with self._patch(True):

@@ -6,6 +6,7 @@ import random
 from unittest.mock import ANY, DEFAULT
 
 from netaddr import IPAddress, IPNetwork
+import pytest
 
 from maasserver import server_address
 from maasserver.dns.config import get_resource_name_for_subnet
@@ -41,14 +42,53 @@ from maasserver.rpc.boot import get_config as orig_get_config
 from maasserver.testing.architecture import make_usable_architecture
 from maasserver.testing.config import RegionConfigurationFixture
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from maasserver.utils import osystems
 from maasserver.utils.orm import post_commit_hooks, reload_object
 from maasserver.utils.osystems import get_release_from_distro_info
-from maastesting.djangotestcase import count_queries
+from maastesting.querycounter import count_queries
 from provisioningserver.events import EVENT_DETAILS, EVENT_TYPES
 from provisioningserver.rpc.exceptions import BootConfigNoResponse
 from provisioningserver.utils.network import get_source_address
+
+
+class _PytestTestHelpers:
+    @pytest.fixture(autouse=True)
+    def _setup_pytest_helpers(self, mocker):
+        self._mocker = mocker
+
+    def patch(self, obj, attribute):
+        return self._mocker.patch.object(obj, attribute)
+
+    def patch_autospec(self, obj, attribute):
+        return self._mocker.patch.object(obj, attribute, autospec=True)
+
+    def assertEqual(self, expected, actual):
+        assert expected == actual
+
+    def assertIn(self, member, container):
+        assert member in container
+
+    def assertTrue(self, value):
+        assert value
+
+    def assertIsNone(self, value):
+        assert value is None
+
+    def assertNotEqual(self, left, right):
+        assert left != right
+
+    def assertNotIn(self, member, container):
+        assert member not in container
+
+    def assertGreaterEqual(self, left, right):
+        assert left >= right
+
+    def assertLessEqual(self, left, right):
+        assert left <= right
+
+    def assertRaises(self, exception, function, *args, **kwargs):
+        with pytest.raises(exception):
+            function(*args, **kwargs)
 
 
 def get_config(*args, query_count=42, **kwargs):
@@ -59,7 +99,8 @@ def get_config(*args, query_count=42, **kwargs):
     return result
 
 
-class TestKparamsMerge(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestKparamsMerge(_PytestTestHelpers):
     def test_simple_merge(self):
         expected_state = "b=c a=b"
         calculated_state = merge_kparams_with_extra("a=b", "b=c")
@@ -76,18 +117,15 @@ class TestKparamsMerge(MAASServerTestCase):
         self.assertEqual(expected_state, calculated_state)
 
 
-class TestGetConfig(MAASServerTestCase):
-    def setUp(self):
-        super().setUp()
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestGetConfig(_PytestTestHelpers):
+    @pytest.fixture(autouse=True)
+    def _setup(self, maas_region_test, request):
         self.region = factory.make_RegionController()
-        self.useFixture(RegionConfigurationFixture())
-
-    def tearDown(self):
-        # None of tests depend on the post commit hooks, but they might
-        # generate them. Remove them, since the MAASServerTestCase tear
-        # down might complain that there are commit hooks.
-        post_commit_hooks.reset()
-        super().tearDown()
+        config_fixture = RegionConfigurationFixture()
+        config_fixture.setUp()
+        request.addfinalizer(config_fixture.cleanUp)
+        request.addfinalizer(post_commit_hooks.reset)
 
     def make_node(self, arch_name=None, **kwargs):
         architecture = make_usable_architecture(self, arch_name=arch_name)
@@ -1946,9 +1984,10 @@ class TestGetConfig(MAASServerTestCase):
         )
 
 
-class TestGetBootFilenames(MAASServerTestCase):
-    def setUp(self):
-        super().setUp()
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestGetBootFilenames(_PytestTestHelpers):
+    @pytest.fixture(autouse=True)
+    def _setup(self, maasdb, maas_region_test, factory):
         self.region = factory.make_RegionController()
 
     def composeURL(
@@ -2247,9 +2286,10 @@ class TestGetBootFilenames(MAASServerTestCase):
         self.assertIsNone(boot_dbt)
 
 
-class TestGetBootConfigForMachine(MAASServerTestCase):
-    def setUp(self):
-        super().setUp()
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestGetBootConfigForMachine(_PytestTestHelpers):
+    @pytest.fixture(autouse=True)
+    def _setup(self, maasdb, maas_region_test, factory):
         self.region = factory.make_RegionController()
 
     def test_get_boot_config_for_machine_builtin_image(self):
@@ -2582,7 +2622,8 @@ class TestGetBootConfigForMachine(MAASServerTestCase):
         self.assertEqual("7", final_series)
 
 
-class TestGetNodeFromMacOrHardwareUUID(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestGetNodeFromMacOrHardwareUUID(_PytestTestHelpers):
     def test_get_node_from_mac_or_hardware_uuid_with_regular_mac(self):
         node = factory.make_Node_with_Interface_on_Subnet()
         iface = node.current_config.interface_set.first()

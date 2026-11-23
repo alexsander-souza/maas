@@ -4,19 +4,19 @@
 """Test maasserver NodeDeviceVPD model."""
 
 from django.core.exceptions import ValidationError
+import pytest
 
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 
 
-class TestNodeDeviceVPD(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestNodeDeviceVPD:
     def test_unique_on_nodedevice_and_key(self):
         # We can only ever have one NodeDeviceVPD object for a particular NodeDevice
         # and key.
         entry = factory.make_NodeDeviceVPD()
-        self.assertRaises(
-            ValidationError,
-            factory.make_NodeDeviceVPD,
-            node_device=entry.node_device,
-            key=entry.key,
-        )
+        with pytest.raises(ValidationError):
+            factory.make_NodeDeviceVPD(
+                node_device=entry.node_device,
+                key=entry.key,
+            )

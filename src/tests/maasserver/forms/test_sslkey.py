@@ -4,6 +4,7 @@
 """Tests for `SSLKeyForm`."""
 
 from django.http import HttpRequest
+import pytest
 
 from maascommon.events import AUDIT
 from maasserver.enum import ENDPOINT_CHOICES
@@ -11,10 +12,10 @@ from maasserver.forms import SSLKeyForm
 from maasserver.models import Event
 from maasserver.testing import get_data
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 
 
-class TestSSLKeyForm(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestSSLKeyForm:
     """Tests for `SSLKeyForm`."""
 
     def test_creates_audit_event_on_save(self):
@@ -25,5 +26,5 @@ class TestSSLKeyForm(MAASServerTestCase):
         request.user = user
         form.save(factory.pick_choice(ENDPOINT_CHOICES), request)
         event = Event.objects.get(type__level=AUDIT)
-        self.assertIsNotNone(event)
-        self.assertEqual(event.description, "Created SSL key.")
+        assert event is not None
+        assert event.description == "Created SSL key."

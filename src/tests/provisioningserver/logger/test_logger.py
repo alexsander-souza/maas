@@ -7,10 +7,9 @@ import pathlib
 import subprocess
 import sys
 
-from testtools.content import text_content
+import pytest
 
 from maastesting.factory import factory
-from maastesting.testcase import MAASTestCase
 from provisioningserver.logger import LoggingMode
 from provisioningserver.logger import testing as logger_testing_module
 from provisioningserver.logger.testing import find_log_lines
@@ -46,7 +45,26 @@ def log_something(
     return output.decode("utf-8")
 
 
-class TestLogging(MAASTestCase):
+@pytest.mark.parametrize(
+    "initial_only,increasing,use_json_logging",
+    [
+        (True, False, False),
+        (True, False, True),
+        (False, True, False),
+        (False, True, True),
+        (False, False, True),
+        (False, False, False),
+    ],
+    ids=[
+        "initial_only",
+        "initial_only_with_json",
+        "increasing_verbosity",
+        "increasing_verbosity_with_json",
+        "decreasing_verbosity",
+        "decreasing_verbosity_with_json",
+    ],
+)
+class TestLogging:
     """Test logging in MAAS as configured by `p.logger.configure`.
 
     The "twistd" tests reflect usage under `twistd`.
@@ -56,62 +74,13 @@ class TestLogging(MAASTestCase):
     nor stderr are wrapped.
     """
 
-    scenarios = (
-        (
-            "initial_only",
-            {
-                "initial_only": True,
-                "increasing": False,
-                "use_json_logging": False,
-            },
-        ),
-        (
-            "initial_only_with_json",
-            {
-                "initial_only": True,
-                "increasing": False,
-                "use_json_logging": True,
-            },
-        ),
-        (
-            "increasing_verbosity",
-            {
-                "initial_only": False,
-                "increasing": True,
-                "use_json_logging": False,
-            },
-        ),
-        (
-            "increasing_verbosity_with_json",
-            {
-                "initial_only": False,
-                "increasing": True,
-                "use_json_logging": True,
-            },
-        ),
-        (
-            "decreasing_verbosity",
-            {
-                "initial_only": False,
-                "increasing": False,
-                "use_json_logging": True,
-            },
-        ),
-        (
-            "decreasing_verbosity_with_json",
-            {
-                "initial_only": False,
-                "increasing": False,
-                "use_json_logging": True,
-            },
-        ),
-    )
-
-    def _get_log_levels(self, verbosity_under_test: int):
-        if self.initial_only:
+    def _get_log_levels(
+        self, verbosity_under_test: int, initial_only, increasing
+    ):
+        if initial_only:
             verbosity = verbosity_under_test
             set_verbosity = None
-        elif self.increasing:
+        elif increasing:
             verbosity = 0
             set_verbosity = verbosity_under_test
         else:
@@ -119,18 +88,21 @@ class TestLogging(MAASTestCase):
             set_verbosity = verbosity_under_test
         return verbosity, set_verbosity
 
-    def test_twistd_default_verbosity(self):
-        verbosity, set_verbosity = self._get_log_levels(2)
+    def test_twistd_default_verbosity(
+        self, initial_only, increasing, use_json_logging
+    ):
+        verbosity, set_verbosity = self._get_log_levels(
+            2, initial_only, increasing
+        )
         name = factory.make_name("log.name")
         logged = log_something(
             name,
             verbosity=verbosity,
             set_verbosity=set_verbosity,
             mode=LoggingMode.TWISTD,
-            use_json_logging=self.use_json_logging,
+            use_json_logging=use_json_logging,
         )
-        self.addDetail("logged", text_content(logged))
-        observed = find_log_lines(logged, self.use_json_logging)
+        observed = find_log_lines(logged, use_json_logging)
         expected = [
             (name, "info", "From `twisted.logger`."),
             (name, "warn", "From `twisted.logger`."),
@@ -147,20 +119,23 @@ class TestLogging(MAASTestCase):
             ("stderr", "error", "Printing to stderr."),
             ("-", "warn", "UserWarning: This is a warning!"),
         ]
-        self.assertEqual(expected, observed)
+        assert expected == observed
 
-    def test_twistd_high_verbosity(self):
-        verbosity, set_verbosity = self._get_log_levels(3)
+    def test_twistd_high_verbosity(
+        self, initial_only, increasing, use_json_logging
+    ):
+        verbosity, set_verbosity = self._get_log_levels(
+            3, initial_only, increasing
+        )
         name = factory.make_name("log.name")
         logged = log_something(
             name,
             verbosity=verbosity,
             set_verbosity=set_verbosity,
             mode=LoggingMode.TWISTD,
-            use_json_logging=self.use_json_logging,
+            use_json_logging=use_json_logging,
         )
-        self.addDetail("logged", text_content(logged))
-        observed = find_log_lines(logged, self.use_json_logging)
+        observed = find_log_lines(logged, use_json_logging)
         expected = [
             (name, "debug", "From `twisted.logger`."),
             (name, "info", "From `twisted.logger`."),
@@ -180,20 +155,23 @@ class TestLogging(MAASTestCase):
             ("stderr", "error", "Printing to stderr."),
             ("-", "warn", "UserWarning: This is a warning!"),
         ]
-        self.assertEqual(expected, observed)
+        assert expected == observed
 
-    def test_twistd_low_verbosity(self):
-        verbosity, set_verbosity = self._get_log_levels(1)
+    def test_twistd_low_verbosity(
+        self, initial_only, increasing, use_json_logging
+    ):
+        verbosity, set_verbosity = self._get_log_levels(
+            1, initial_only, increasing
+        )
         name = factory.make_name("log.name")
         logged = log_something(
             name,
             verbosity=verbosity,
             set_verbosity=set_verbosity,
             mode=LoggingMode.TWISTD,
-            use_json_logging=self.use_json_logging,
+            use_json_logging=use_json_logging,
         )
-        self.addDetail("logged", text_content(logged))
-        observed = find_log_lines(logged, self.use_json_logging)
+        observed = find_log_lines(logged, use_json_logging)
         expected = [
             (name, "warn", "From `twisted.logger`."),
             (name, "error", "From `twisted.logger`."),
@@ -204,40 +182,46 @@ class TestLogging(MAASTestCase):
             ("stderr", "error", "Printing to stderr."),
             ("-", "warn", "UserWarning: This is a warning!"),
         ]
-        self.assertEqual(expected, observed)
+        assert expected == observed
 
-    def test_twistd_lowest_verbosity(self):
-        verbosity, set_verbosity = self._get_log_levels(0)
+    def test_twistd_lowest_verbosity(
+        self, initial_only, increasing, use_json_logging
+    ):
+        verbosity, set_verbosity = self._get_log_levels(
+            0, initial_only, increasing
+        )
         name = factory.make_name("log.name")
         logged = log_something(
             name,
             verbosity=verbosity,
             set_verbosity=set_verbosity,
             mode=LoggingMode.TWISTD,
-            use_json_logging=self.use_json_logging,
+            use_json_logging=use_json_logging,
         )
-        self.addDetail("logged", text_content(logged))
-        observed = find_log_lines(logged, self.use_json_logging)
+        observed = find_log_lines(logged, use_json_logging)
         expected = [
             (name, "error", "From `twisted.logger`."),
             (name, "error", "From `logging`."),
             ("maas." + name, "error", "From `get_maas_logger`."),
             ("stderr", "error", "Printing to stderr."),
         ]
-        self.assertEqual(expected, observed)
+        assert expected == observed
 
-    def test_command_default_verbosity(self):
-        verbosity, set_verbosity = self._get_log_levels(2)
+    def test_command_default_verbosity(
+        self, initial_only, increasing, use_json_logging
+    ):
+        verbosity, set_verbosity = self._get_log_levels(
+            2, initial_only, increasing
+        )
         name = factory.make_name("log.name")
         logged = log_something(
             name,
             verbosity=verbosity,
             set_verbosity=set_verbosity,
             mode=LoggingMode.COMMAND,
-            use_json_logging=self.use_json_logging,
+            use_json_logging=use_json_logging,
         )
-        self.addDetail("logged", text_content(logged))
-        observed = find_log_lines(logged, self.use_json_logging)
+        observed = find_log_lines(logged, use_json_logging)
         expected = [
             (name, "info", "From `twisted.logger`."),
             (name, "warn", "From `twisted.logger`."),
@@ -251,26 +235,29 @@ class TestLogging(MAASTestCase):
             ("maas." + name, "warn", "From `get_maas_logger`."),
             ("maas." + name, "error", "From `get_maas_logger`."),
         ]
-        self.assertEqual(expected, observed)
+        assert expected == observed
         for needle in [
             "Printing to stdout.",
             "Printing to stderr.",
             "This is a warning",
         ]:
-            self.assertIn(needle, logged)
+            assert needle in logged
 
-    def test_command_high_verbosity(self):
-        verbosity, set_verbosity = self._get_log_levels(3)
+    def test_command_high_verbosity(
+        self, initial_only, increasing, use_json_logging
+    ):
+        verbosity, set_verbosity = self._get_log_levels(
+            3, initial_only, increasing
+        )
         name = factory.make_name("log.name")
         logged = log_something(
             name,
             verbosity=verbosity,
             set_verbosity=set_verbosity,
             mode=LoggingMode.COMMAND,
-            use_json_logging=self.use_json_logging,
+            use_json_logging=use_json_logging,
         )
-        self.addDetail("logged", text_content(logged))
-        observed = find_log_lines(logged, self.use_json_logging)
+        observed = find_log_lines(logged, use_json_logging)
         expected = [
             (name, "debug", "From `twisted.logger`."),
             (name, "info", "From `twisted.logger`."),
@@ -287,26 +274,29 @@ class TestLogging(MAASTestCase):
             ("maas." + name, "warn", "From `get_maas_logger`."),
             ("maas." + name, "error", "From `get_maas_logger`."),
         ]
-        self.assertEqual(expected, observed)
+        assert expected == observed
         for needle in [
             "Printing to stdout.",
             "Printing to stderr.",
             "This is a warning",
         ]:
-            self.assertIn(needle, logged)
+            assert needle in logged
 
-    def test_command_low_verbosity(self):
-        verbosity, set_verbosity = self._get_log_levels(1)
+    def test_command_low_verbosity(
+        self, initial_only, increasing, use_json_logging
+    ):
+        verbosity, set_verbosity = self._get_log_levels(
+            1, initial_only, increasing
+        )
         name = factory.make_name("log.name")
         logged = log_something(
             name,
             verbosity=verbosity,
             set_verbosity=set_verbosity,
             mode=LoggingMode.COMMAND,
-            use_json_logging=self.use_json_logging,
+            use_json_logging=use_json_logging,
         )
-        self.addDetail("logged", text_content(logged))
-        observed = find_log_lines(logged, self.use_json_logging)
+        observed = find_log_lines(logged, use_json_logging)
         expected = [
             (name, "warn", "From `twisted.logger`."),
             (name, "error", "From `twisted.logger`."),
@@ -315,35 +305,38 @@ class TestLogging(MAASTestCase):
             ("maas." + name, "warn", "From `get_maas_logger`."),
             ("maas." + name, "error", "From `get_maas_logger`."),
         ]
-        self.assertEqual(expected, observed)
+        assert expected == observed
         for needle in [
             "Printing to stdout.",
             "Printing to stderr.",
             "This is a warning",
         ]:
-            self.assertIn(needle, logged)
+            assert needle in logged
 
-    def test_command_lowest_verbosity(self):
-        verbosity, set_verbosity = self._get_log_levels(0)
+    def test_command_lowest_verbosity(
+        self, initial_only, increasing, use_json_logging
+    ):
+        verbosity, set_verbosity = self._get_log_levels(
+            0, initial_only, increasing
+        )
         name = factory.make_name("log.name")
         logged = log_something(
             name,
             verbosity=verbosity,
             set_verbosity=set_verbosity,
             mode=LoggingMode.COMMAND,
-            use_json_logging=self.use_json_logging,
+            use_json_logging=use_json_logging,
         )
-        self.addDetail("logged", text_content(logged))
-        observed = find_log_lines(logged, self.use_json_logging)
+        observed = find_log_lines(logged, use_json_logging)
         expected = [
             (name, "error", "From `twisted.logger`."),
             (name, "error", "From `logging`."),
             ("maas." + name, "error", "From `get_maas_logger`."),
         ]
-        self.assertEqual(expected, observed)
+        assert expected == observed
         for needle in [
             "Printing to stdout.",
             "Printing to stderr.",
             "This is a warning",
         ]:
-            self.assertIn(needle, logged)
+            assert needle in logged

@@ -1,13 +1,21 @@
 # Copyright 2020 Canonical Ltd.  This software is licensed under the
 # GNU Affero General Public License version 3 (see the file LICENSE).
 
+import pytest
+
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from maasserver.websockets.base import dehydrate_datetime, HandlerPKError
 from maasserver.websockets.handlers.node_device import NodeDeviceHandler
 
 
-class TestNodeDeviceHandler(MAASServerTestCase):
+@pytest.mark.usefixtures(
+    "maasdb",
+    "factory",
+    "maas_region_test",
+    "mock_openfga",
+    "mock_start_workflows",
+)
+class TestNodeDeviceHandler:
     def dehydrate_node_device(self, node_device):
         return {
             "id": node_device.id,
@@ -39,15 +47,18 @@ class TestNodeDeviceHandler(MAASServerTestCase):
             factory.make_NodeDevice(node=node),
             factory.make_NodeDevice(node=node),
         ]
-        self.assertCountEqual(
+        assert sorted(
             [
                 self.dehydrate_node_device(node_device)
                 for node_device in node_devices
             ],
+            key=lambda device: device["id"],
+        ) == sorted(
             handler.list({"system_id": node.system_id}),
+            key=lambda device: device["id"],
         )
 
     def test_list_raises_error_if_no_system_id(self):
         user = factory.make_User()
         handler = NodeDeviceHandler(user, {}, None)
-        self.assertRaises(HandlerPKError, handler.list, {})
+        pytest.raises(HandlerPKError, handler.list, {})

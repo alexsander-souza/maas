@@ -3,8 +3,11 @@
 
 """Tests for all forms that are used with `VMFS`."""
 
+from collections import Counter
 import random
 import uuid
+
+import pytest
 
 from maasserver.enum import FILESYSTEM_TYPE
 from maasserver.forms import CreateVMFSForm, UpdateVMFSForm
@@ -12,7 +15,6 @@ from maasserver.models.blockdevice import MIN_BLOCK_DEVICE_SIZE
 from maasserver.models.partitiontable import PARTITION_TABLE_EXTRA_SPACE
 from maasserver.storage_layouts import VMFS6StorageLayout, VMFS7StorageLayout
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from tests.maasserver.test_storage_layouts import LARGE_BLOCK_DEVICE
 
 
@@ -27,12 +29,13 @@ def make_Node_with_VMFS_layout(*args, **kwargs):
     return node
 
 
-class TestCreateVMFSForm(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestCreateVMFSForm:
     def test_requires_fields(self):
         node = make_Node_with_VMFS_layout()
         form = CreateVMFSForm(node, data={})
-        self.assertFalse(form.is_valid(), form.errors)
-        self.assertEqual({"name"}, form.errors.keys())
+        assert not form.is_valid(), form.errors
+        assert {"name"} == form.errors.keys()
 
     def test_is_not_valid_if_invalid_uuid(self):
         node = make_Node_with_VMFS_layout()
@@ -43,28 +46,24 @@ class TestCreateVMFSForm(MAASServerTestCase):
             "block_devices": [block_device.id],
         }
         form = CreateVMFSForm(node, data=data)
-        self.assertFalse(
-            form.is_valid(), "Should be invalid because of an invalid uuid."
+        assert not form.is_valid(), (
+            "Should be invalid because of an invalid uuid."
         )
-        self.assertEqual({"uuid": ["Enter a valid value."]}, form._errors)
+        assert {"uuid": ["Enter a valid value."]} == form._errors
 
     def test_is_not_valid_missing_block_devices_and_partitions(self):
         node = make_Node_with_VMFS_layout()
         data = {"name": factory.make_name("name"), "uuid": uuid.uuid4()}
         form = CreateVMFSForm(node, data=data)
-        self.assertFalse(
-            form.is_valid(),
+        assert not form.is_valid(), (
             "Should be invalid because of missing block_devices and "
-            "partitions.",
+            "partitions."
         )
-        self.assertEqual(
-            {
-                "__all__": [
-                    "At least one valid block device or partition is required."
-                ]
-            },
-            form._errors,
-        )
+        assert {
+            "__all__": [
+                "At least one valid block device or partition is required."
+            ]
+        } == form._errors
 
     def test_is_not_valid_if_block_device_does_not_belong_to_node(self):
         node = make_Node_with_VMFS_layout()
@@ -74,20 +73,16 @@ class TestCreateVMFSForm(MAASServerTestCase):
             "block_devices": [block_device.id],
         }
         form = CreateVMFSForm(node, data=data)
-        self.assertFalse(
-            form.is_valid(),
+        assert not form.is_valid(), (
             "Should be invalid because of block device does not "
-            "belonging to node.",
+            "belonging to node."
         )
-        self.assertEqual(
-            {
-                "block_devices": [
-                    "Select a valid choice. %s is not one of the available "
-                    "choices." % block_device.id
-                ]
-            },
-            form._errors,
-        )
+        assert {
+            "block_devices": [
+                "Select a valid choice. %s is not one of the available "
+                "choices." % block_device.id
+            ]
+        } == form._errors
 
     def test_is_not_valid_if_partition_does_not_belong_to_node(self):
         node = make_Node_with_VMFS_layout()
@@ -97,20 +92,16 @@ class TestCreateVMFSForm(MAASServerTestCase):
             "partitions": [partition.id],
         }
         form = CreateVMFSForm(node, data=data)
-        self.assertFalse(
-            form.is_valid(),
+        assert not form.is_valid(), (
             "Should be invalid because of partition does not "
-            "belonging to node.",
+            "belonging to node."
         )
-        self.assertEqual(
-            {
-                "partitions": [
-                    "Select a valid choice. %s is not one of the available "
-                    "choices." % partition.id
-                ]
-            },
-            form._errors,
-        )
+        assert {
+            "partitions": [
+                "Select a valid choice. %s is not one of the available "
+                "choices." % partition.id
+            ]
+        } == form._errors
 
     def test_is_not_valid_if_vmfs_layout_is_not_applied(self):
         node = factory.make_Node(with_boot_disk=False)
@@ -120,8 +111,8 @@ class TestCreateVMFSForm(MAASServerTestCase):
             "block_devices": [block_device.id],
         }
         form = CreateVMFSForm(node, data=data)
-        self.assertFalse(form.is_valid())
-        self.assertIn("VMFS", form.errors)
+        assert not form.is_valid()
+        assert "VMFS" in form.errors
 
     def test_creates_volume_group_with_block_devices(self):
         node = make_Node_with_VMFS_layout()
@@ -134,14 +125,11 @@ class TestCreateVMFSForm(MAASServerTestCase):
             "block_devices": block_device_ids,
         }
         form = CreateVMFSForm(node, data=data)
-        self.assertTrue(form.is_valid(), form._errors)
+        assert form.is_valid(), form._errors
         vmfs = form.save()
-        self.assertCountEqual(
-            block_device_ids,
-            [
-                fs.partition.partition_table.block_device_id
-                for fs in vmfs.filesystems.all()
-            ],
+        assert Counter(block_device_ids) == Counter(
+            fs.partition.partition_table.block_device_id
+            for fs in vmfs.filesystems.all()
         )
 
     def test_creates_with_block_devices_by_name(self):
@@ -157,14 +145,13 @@ class TestCreateVMFSForm(MAASServerTestCase):
             "block_devices": block_device_names,
         }
         form = CreateVMFSForm(node, data=data)
-        self.assertTrue(form.is_valid(), form._errors)
+        assert form.is_valid(), form._errors
         vmfs = form.save()
-        self.assertCountEqual(
-            [block_device.id for block_device in block_devices],
-            [
-                fs.partition.partition_table.block_device_id
-                for fs in vmfs.filesystems.all()
-            ],
+        assert Counter(
+            block_device.id for block_device in block_devices
+        ) == Counter(
+            fs.partition.partition_table.block_device_id
+            for fs in vmfs.filesystems.all()
         )
 
     def test_creates_with_partitions(self):
@@ -183,11 +170,10 @@ class TestCreateVMFSForm(MAASServerTestCase):
         partition_ids = [partition.id for partition in partitions]
         data = {"name": factory.make_name("name"), "partitions": partition_ids}
         form = CreateVMFSForm(node, data=data)
-        self.assertTrue(form.is_valid(), form._errors)
+        assert form.is_valid(), form._errors
         vmfs = form.save()
-        self.assertCountEqual(
-            partition_ids,
-            [fs.partition_id for fs in vmfs.filesystems.all()],
+        assert Counter(partition_ids) == Counter(
+            fs.partition_id for fs in vmfs.filesystems.all()
         )
 
     def test_creates_with_partitions_by_name(self):
@@ -209,44 +195,45 @@ class TestCreateVMFSForm(MAASServerTestCase):
             "partitions": partition_names,
         }
         form = CreateVMFSForm(node, data=data)
-        self.assertTrue(form.is_valid(), form._errors)
+        assert form.is_valid(), form._errors
         volume_group = form.save()
         partitions_in_vg = [
             filesystem.partition
             for filesystem in volume_group.filesystems.all()
         ]
-        self.assertCountEqual(partitions, partitions_in_vg)
+        assert Counter(partitions) == Counter(partitions_in_vg)
 
 
-class TestUpdateVMFSForm(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestUpdateVMFSForm:
     def test_requires_no_fields(self):
         vmfs = factory.make_VMFS()
         form = UpdateVMFSForm(vmfs, data={})
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
 
     def test_updates_name(self):
         vmfs = factory.make_VMFS()
         name = factory.make_name("name")
         form = UpdateVMFSForm(vmfs, data={"name": name})
-        self.assertTrue(form.is_valid(), form._errors)
+        assert form.is_valid(), form._errors
         vmfs = form.save()
-        self.assertEqual(name, vmfs.name)
+        assert name == vmfs.name
 
     def test_is_not_valid_if_invalid_uuid(self):
         vmfs = factory.make_VMFS()
         form = UpdateVMFSForm(vmfs, data={"uuid": factory.make_string(32)})
-        self.assertFalse(
-            form.is_valid(), "Should be invalid because of an invalid uuid."
+        assert not form.is_valid(), (
+            "Should be invalid because of an invalid uuid."
         )
-        self.assertEqual({"uuid": ["Enter a valid value."]}, form._errors)
+        assert {"uuid": ["Enter a valid value."]} == form._errors
 
     def test_updates_uuid(self):
         vmfs = factory.make_VMFS()
         new_uuid = str(uuid.uuid4())
         form = UpdateVMFSForm(vmfs, data={"uuid": new_uuid})
-        self.assertTrue(form.is_valid(), form._errors)
+        assert form.is_valid(), form._errors
         vmfs = form.save()
-        self.assertEqual(new_uuid, vmfs.uuid)
+        assert new_uuid == vmfs.uuid
 
     def test_adds_block_device(self):
         node = make_Node_with_VMFS_layout()
@@ -254,12 +241,10 @@ class TestUpdateVMFSForm(MAASServerTestCase):
         block_device = factory.make_PhysicalBlockDevice(node=node)
         data = {"add_block_devices": [block_device.id]}
         form = UpdateVMFSForm(vmfs, data=data)
-        self.assertTrue(form.is_valid(), form._errors)
+        assert form.is_valid(), form._errors
         vmfs = form.save()
         part = block_device.get_partitiontable().partitions.first()
-        self.assertEqual(
-            vmfs.id, part.get_effective_filesystem().filesystem_group_id
-        )
+        assert vmfs.id == part.get_effective_filesystem().filesystem_group_id
 
     def test_adds_block_device_by_name(self):
         node = make_Node_with_VMFS_layout()
@@ -267,12 +252,10 @@ class TestUpdateVMFSForm(MAASServerTestCase):
         block_device = factory.make_PhysicalBlockDevice(node=node)
         data = {"add_block_devices": [block_device.name]}
         form = UpdateVMFSForm(vmfs, data=data)
-        self.assertTrue(form.is_valid(), form._errors)
+        assert form.is_valid(), form._errors
         vmfs = form.save()
         part = block_device.get_partitiontable().partitions.first()
-        self.assertEqual(
-            vmfs.id, part.get_effective_filesystem().filesystem_group_id
-        )
+        assert vmfs.id == part.get_effective_filesystem().filesystem_group_id
 
     def test_adds_partition(self):
         node = make_Node_with_VMFS_layout()
@@ -284,10 +267,10 @@ class TestUpdateVMFSForm(MAASServerTestCase):
         partition = factory.make_Partition(partition_table=partition_table)
         data = {"add_partitions": [partition.id]}
         form = UpdateVMFSForm(vmfs, data=data)
-        self.assertTrue(form.is_valid(), form._errors)
+        assert form.is_valid(), form._errors
         vmfs = form.save()
-        self.assertEqual(
-            vmfs.id, partition.get_effective_filesystem().filesystem_group.id
+        assert (
+            vmfs.id == partition.get_effective_filesystem().filesystem_group.id
         )
 
     def test_adds_partition_by_name(self):
@@ -300,10 +283,10 @@ class TestUpdateVMFSForm(MAASServerTestCase):
         partition = factory.make_Partition(partition_table=partition_table)
         data = {"add_partitions": [partition.name]}
         form = UpdateVMFSForm(vmfs, data=data)
-        self.assertTrue(form.is_valid(), form._errors)
+        assert form.is_valid(), form._errors
         vmfs = form.save()
-        self.assertEqual(
-            vmfs.id, partition.get_effective_filesystem().filesystem_group.id
+        assert (
+            vmfs.id == partition.get_effective_filesystem().filesystem_group.id
         )
 
     def test_removes_partition(self):
@@ -321,9 +304,9 @@ class TestUpdateVMFSForm(MAASServerTestCase):
         )
         data = {"remove_partitions": [partition.id]}
         form = UpdateVMFSForm(vmfs, data=data)
-        self.assertTrue(form.is_valid(), form._errors)
+        assert form.is_valid(), form._errors
         vmfs = form.save()
-        self.assertIsNone(partition.get_effective_filesystem())
+        assert partition.get_effective_filesystem() is None
 
     def test_removes_partition_by_name(self):
         node = make_Node_with_VMFS_layout()
@@ -340,6 +323,6 @@ class TestUpdateVMFSForm(MAASServerTestCase):
         )
         data = {"remove_partitions": [partition.name]}
         form = UpdateVMFSForm(vmfs, data=data)
-        self.assertTrue(form.is_valid(), form._errors)
+        assert form.is_valid(), form._errors
         vmfs = form.save()
-        self.assertIsNone(partition.get_effective_filesystem())
+        assert partition.get_effective_filesystem() is None

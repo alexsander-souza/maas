@@ -3,21 +3,21 @@
 
 """Tests for the top-level cluster RPC API."""
 
-from maastesting.testcase import MAASTestCase
+import pytest
+
 import provisioningserver
 from provisioningserver.rpc.exceptions import NoConnectionsAvailable
 
 
-class TestUtilities(MAASTestCase):
-    def test_get_rpc_client_returns_client(self):
-        services = self.patch(provisioningserver, "services")
+class TestUtilities:
+    def test_get_rpc_client_returns_client(self, mocker):
+        services = mocker.patch.object(provisioningserver, "services")
 
         client = provisioningserver.rpc.getRegionClient()
-        self.assertEqual(services.getServiceNamed("rpc").getClient(), client)
+        assert services.getServiceNamed("rpc").getClient() == client
 
-    def test_error_when_cluster_services_are_down(self):
-        services = self.patch(provisioningserver, "services")
+    def test_error_when_cluster_services_are_down(self, mocker):
+        services = mocker.patch.object(provisioningserver, "services")
         services.getServiceNamed.side_effect = KeyError
-        self.assertRaises(
-            NoConnectionsAvailable, provisioningserver.rpc.getRegionClient
-        )
+        with pytest.raises(NoConnectionsAvailable):
+            provisioningserver.rpc.getRegionClient()

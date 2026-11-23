@@ -3,8 +3,11 @@
 
 """Tests for all forms that are used with `VolumeGroup`."""
 
+from collections import Counter
 import random
 import uuid
+
+import pytest
 
 from maasserver.enum import FILESYSTEM_TYPE
 from maasserver.forms import (
@@ -16,16 +19,16 @@ from maasserver.models.blockdevice import MIN_BLOCK_DEVICE_SIZE
 from maasserver.models.partition import PARTITION_ALIGNMENT_SIZE
 from maasserver.models.partitiontable import PARTITION_TABLE_EXTRA_SPACE
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from maasserver.utils.converters import round_size_to_nearest_block
 
 
-class TestCreateVolumeGroupForm(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestCreateVolumeGroupForm:
     def test_requires_fields(self):
         node = factory.make_Node()
         form = CreateVolumeGroupForm(node, data={})
-        self.assertFalse(form.is_valid(), form.errors)
-        self.assertEqual({"name"}, form.errors.keys())
+        assert not form.is_valid(), form.errors
+        assert {"name"} == form.errors.keys()
 
     def test_is_not_valid_if_invalid_uuid(self):
         node = factory.make_Node()
@@ -36,29 +39,25 @@ class TestCreateVolumeGroupForm(MAASServerTestCase):
             "block_devices": [block_device.id],
         }
         form = CreateVolumeGroupForm(node, data=data)
-        self.assertFalse(
-            form.is_valid(), "Should be invalid because of an invalid uuid."
+        assert not form.is_valid(), (
+            "Should be invalid because of an invalid uuid."
         )
-        self.assertEqual({"uuid": ["Enter a valid value."]}, form._errors)
+        assert {"uuid": ["Enter a valid value."]} == form._errors
 
     def test_is_not_valid_missing_block_devices_and_partitions(self):
         node = factory.make_Node()
         vguuid = "%s" % uuid.uuid4()
         data = {"name": factory.make_name("name"), "uuid": vguuid}
         form = CreateVolumeGroupForm(node, data=data)
-        self.assertFalse(
-            form.is_valid(),
+        assert not form.is_valid(), (
             "Should be invalid because of missing block_devices and "
-            "partitions.",
+            "partitions."
         )
-        self.assertEqual(
-            {
-                "__all__": [
-                    "At least one valid block device or partition is required."
-                ]
-            },
-            form._errors,
-        )
+        assert {
+            "__all__": [
+                "At least one valid block device or partition is required."
+            ]
+        } == form._errors
 
     def test_is_not_valid_if_block_device_does_not_belong_to_node(self):
         node = factory.make_Node()
@@ -68,20 +67,16 @@ class TestCreateVolumeGroupForm(MAASServerTestCase):
             "block_devices": [block_device.id],
         }
         form = CreateVolumeGroupForm(node, data=data)
-        self.assertFalse(
-            form.is_valid(),
+        assert not form.is_valid(), (
             "Should be invalid because of block device does not "
-            "belonging to node.",
+            "belonging to node."
         )
-        self.assertEqual(
-            {
-                "block_devices": [
-                    "Select a valid choice. %s is not one of the available "
-                    "choices." % block_device.id
-                ]
-            },
-            form._errors,
-        )
+        assert {
+            "block_devices": [
+                "Select a valid choice. %s is not one of the available "
+                "choices." % block_device.id
+            ]
+        } == form._errors
 
     def test_is_not_valid_if_partition_does_not_belong_to_node(self):
         node = factory.make_Node()
@@ -91,20 +86,16 @@ class TestCreateVolumeGroupForm(MAASServerTestCase):
             "partitions": [partition.id],
         }
         form = CreateVolumeGroupForm(node, data=data)
-        self.assertFalse(
-            form.is_valid(),
+        assert not form.is_valid(), (
             "Should be invalid because of partition does not "
-            "belonging to node.",
+            "belonging to node."
         )
-        self.assertEqual(
-            {
-                "partitions": [
-                    "Select a valid choice. %s is not one of the available "
-                    "choices." % partition.id
-                ]
-            },
-            form._errors,
-        )
+        assert {
+            "partitions": [
+                "Select a valid choice. %s is not one of the available "
+                "choices." % partition.id
+            ]
+        } == form._errors
 
     def test_creates_volume_group_with_name_and_uuid(self):
         node = factory.make_Node()
@@ -117,10 +108,10 @@ class TestCreateVolumeGroupForm(MAASServerTestCase):
             "block_devices": [block_device.id],
         }
         form = CreateVolumeGroupForm(node, data=data)
-        self.assertTrue(form.is_valid(), form._errors)
+        assert form.is_valid(), form._errors
         volume_group = form.save()
-        self.assertEqual(name, volume_group.name)
-        self.assertEqual(vguuid, volume_group.uuid)
+        assert name == volume_group.name
+        assert vguuid == volume_group.uuid
 
     def test_creates_volume_group_with_block_devices(self):
         node = factory.make_Node()
@@ -133,13 +124,13 @@ class TestCreateVolumeGroupForm(MAASServerTestCase):
             "block_devices": block_device_ids,
         }
         form = CreateVolumeGroupForm(node, data=data)
-        self.assertTrue(form.is_valid(), form._errors)
+        assert form.is_valid(), form._errors
         volume_group = form.save()
         block_devices_in_vg = [
             filesystem.block_device.actual_instance
             for filesystem in volume_group.filesystems.all()
         ]
-        self.assertCountEqual(block_devices, block_devices_in_vg)
+        assert Counter(block_devices) == Counter(block_devices_in_vg)
 
     def test_creates_volume_group_with_boot_disk(self):
         node = factory.make_Node(with_boot_disk=False)
@@ -149,12 +140,12 @@ class TestCreateVolumeGroupForm(MAASServerTestCase):
             "block_devices": [boot_disk.id],
         }
         form = CreateVolumeGroupForm(node, data=data)
-        self.assertTrue(form.is_valid(), form._errors)
+        assert form.is_valid(), form._errors
         volume_group = form.save()
         boot_partition = boot_disk.get_partitiontable().partitions.first()
-        self.assertEqual(
-            boot_partition.get_effective_filesystem().filesystem_group.id,
-            volume_group.id,
+        assert (
+            boot_partition.get_effective_filesystem().filesystem_group.id
+            == volume_group.id
         )
 
     def test_creates_volume_group_with_block_devices_by_name(self):
@@ -170,13 +161,13 @@ class TestCreateVolumeGroupForm(MAASServerTestCase):
             "block_devices": block_device_names,
         }
         form = CreateVolumeGroupForm(node, data=data)
-        self.assertTrue(form.is_valid(), form._errors)
+        assert form.is_valid(), form._errors
         volume_group = form.save()
         block_devices_in_vg = [
             filesystem.block_device.actual_instance
             for filesystem in volume_group.filesystems.all()
         ]
-        self.assertCountEqual(block_devices, block_devices_in_vg)
+        assert Counter(block_devices) == Counter(block_devices_in_vg)
 
     def test_creates_volume_group_with_partitions(self):
         node = factory.make_Node()
@@ -194,13 +185,13 @@ class TestCreateVolumeGroupForm(MAASServerTestCase):
         partition_ids = [partition.id for partition in partitions]
         data = {"name": factory.make_name("vg"), "partitions": partition_ids}
         form = CreateVolumeGroupForm(node, data=data)
-        self.assertTrue(form.is_valid(), form._errors)
+        assert form.is_valid(), form._errors
         volume_group = form.save()
         partitions_in_vg = [
             filesystem.partition
             for filesystem in volume_group.filesystems.all()
         ]
-        self.assertCountEqual(partitions, partitions_in_vg)
+        assert Counter(partitions) == Counter(partitions_in_vg)
 
     def test_creates_volume_group_with_partitions_by_name(self):
         node = factory.make_Node()
@@ -218,13 +209,13 @@ class TestCreateVolumeGroupForm(MAASServerTestCase):
         partition_names = [partition.name for partition in partitions]
         data = {"name": factory.make_name("vg"), "partitions": partition_names}
         form = CreateVolumeGroupForm(node, data=data)
-        self.assertTrue(form.is_valid(), form._errors)
+        assert form.is_valid(), form._errors
         volume_group = form.save()
         partitions_in_vg = [
             filesystem.partition
             for filesystem in volume_group.filesystems.all()
         ]
-        self.assertCountEqual(partitions, partitions_in_vg)
+        assert Counter(partitions) == Counter(partitions_in_vg)
 
     def test_creates_volume_group_with_block_devices_and_partitions(self):
         node = factory.make_Node()
@@ -250,7 +241,7 @@ class TestCreateVolumeGroupForm(MAASServerTestCase):
             "partitions": partition_ids,
         }
         form = CreateVolumeGroupForm(node, data=data)
-        self.assertTrue(form.is_valid(), form._errors)
+        assert form.is_valid(), form._errors
         volume_group = form.save()
         block_devices_in_vg = [
             filesystem.block_device.actual_instance
@@ -262,42 +253,43 @@ class TestCreateVolumeGroupForm(MAASServerTestCase):
             for filesystem in volume_group.filesystems.all()
             if filesystem.partition is not None
         ]
-        self.assertCountEqual(block_devices, block_devices_in_vg)
-        self.assertCountEqual(partitions, partitions_in_vg)
+        assert Counter(block_devices) == Counter(block_devices_in_vg)
+        assert Counter(partitions) == Counter(partitions_in_vg)
 
 
-class TestUpdateVolumeGroupForm(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestUpdateVolumeGroupForm:
     def test_requires_no_fields(self):
         volume_group = factory.make_VolumeGroup()
         form = UpdateVolumeGroupForm(volume_group, data={})
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
 
     def test_updates_name(self):
         volume_group = factory.make_VolumeGroup()
         name = factory.make_name("vg")
         data = {"name": name}
         form = UpdateVolumeGroupForm(volume_group, data=data)
-        self.assertTrue(form.is_valid(), form._errors)
+        assert form.is_valid(), form._errors
         volume_group = form.save()
-        self.assertEqual(name, volume_group.name)
+        assert name == volume_group.name
 
     def test_is_not_valid_if_invalid_uuid(self):
         volume_group = factory.make_VolumeGroup()
         data = {"uuid": factory.make_string(size=32)}
         form = UpdateVolumeGroupForm(volume_group, data=data)
-        self.assertFalse(
-            form.is_valid(), "Should be invalid because of an invalid uuid."
+        assert not form.is_valid(), (
+            "Should be invalid because of an invalid uuid."
         )
-        self.assertEqual({"uuid": ["Enter a valid value."]}, form._errors)
+        assert {"uuid": ["Enter a valid value."]} == form._errors
 
     def test_updates_uuid(self):
         volume_group = factory.make_VolumeGroup()
         vguuid = "%s" % uuid.uuid4()
         data = {"uuid": vguuid}
         form = UpdateVolumeGroupForm(volume_group, data=data)
-        self.assertTrue(form.is_valid(), form._errors)
+        assert form.is_valid(), form._errors
         volume_group = form.save()
-        self.assertEqual(vguuid, volume_group.uuid)
+        assert vguuid == volume_group.uuid
 
     def test_adds_block_device(self):
         node = factory.make_Node()
@@ -305,11 +297,11 @@ class TestUpdateVolumeGroupForm(MAASServerTestCase):
         block_device = factory.make_PhysicalBlockDevice(node=node)
         data = {"add_block_devices": [block_device.id]}
         form = UpdateVolumeGroupForm(volume_group, data=data)
-        self.assertTrue(form.is_valid(), form._errors)
+        assert form.is_valid(), form._errors
         volume_group = form.save()
-        self.assertEqual(
-            volume_group.id,
-            block_device.get_effective_filesystem().filesystem_group.id,
+        assert (
+            volume_group.id
+            == block_device.get_effective_filesystem().filesystem_group.id
         )
 
     def test_adds_boot_disk(self):
@@ -318,12 +310,12 @@ class TestUpdateVolumeGroupForm(MAASServerTestCase):
         volume_group = factory.make_VolumeGroup(node=node)
         data = {"add_block_devices": [boot_disk.id]}
         form = UpdateVolumeGroupForm(volume_group, data=data)
-        self.assertTrue(form.is_valid(), form._errors)
+        assert form.is_valid(), form._errors
         volume_group = form.save()
         boot_partition = boot_disk.get_partitiontable().partitions.first()
-        self.assertEqual(
-            boot_partition.get_effective_filesystem().filesystem_group.id,
-            volume_group.id,
+        assert (
+            boot_partition.get_effective_filesystem().filesystem_group.id
+            == volume_group.id
         )
 
     def test_adds_block_device_by_name(self):
@@ -332,11 +324,11 @@ class TestUpdateVolumeGroupForm(MAASServerTestCase):
         block_device = factory.make_PhysicalBlockDevice(node=node)
         data = {"add_block_devices": [block_device.name]}
         form = UpdateVolumeGroupForm(volume_group, data=data)
-        self.assertTrue(form.is_valid(), form._errors)
+        assert form.is_valid(), form._errors
         volume_group = form.save()
-        self.assertEqual(
-            volume_group.id,
-            block_device.get_effective_filesystem().filesystem_group.id,
+        assert (
+            volume_group.id
+            == block_device.get_effective_filesystem().filesystem_group.id
         )
 
     def test_removes_block_device(self):
@@ -350,9 +342,9 @@ class TestUpdateVolumeGroupForm(MAASServerTestCase):
         )
         data = {"remove_block_devices": [block_device.id]}
         form = UpdateVolumeGroupForm(volume_group, data=data)
-        self.assertTrue(form.is_valid(), form._errors)
+        assert form.is_valid(), form._errors
         volume_group = form.save()
-        self.assertIsNone(block_device.get_effective_filesystem())
+        assert block_device.get_effective_filesystem() is None
 
     def test_removes_block_device_by_name(self):
         node = factory.make_Node()
@@ -365,9 +357,9 @@ class TestUpdateVolumeGroupForm(MAASServerTestCase):
         )
         data = {"remove_block_devices": [block_device.name]}
         form = UpdateVolumeGroupForm(volume_group, data=data)
-        self.assertTrue(form.is_valid(), form._errors)
+        assert form.is_valid(), form._errors
         volume_group = form.save()
-        self.assertIsNone(block_device.get_effective_filesystem())
+        assert block_device.get_effective_filesystem() is None
 
     def test_adds_partition(self):
         node = factory.make_Node()
@@ -379,11 +371,11 @@ class TestUpdateVolumeGroupForm(MAASServerTestCase):
         partition = factory.make_Partition(partition_table=partition_table)
         data = {"add_partitions": [partition.id]}
         form = UpdateVolumeGroupForm(volume_group, data=data)
-        self.assertTrue(form.is_valid(), form._errors)
+        assert form.is_valid(), form._errors
         volume_group = form.save()
-        self.assertEqual(
-            volume_group.id,
-            partition.get_effective_filesystem().filesystem_group.id,
+        assert (
+            volume_group.id
+            == partition.get_effective_filesystem().filesystem_group.id
         )
 
     def test_adds_partition_by_name(self):
@@ -396,11 +388,11 @@ class TestUpdateVolumeGroupForm(MAASServerTestCase):
         partition = factory.make_Partition(partition_table=partition_table)
         data = {"add_partitions": [partition.name]}
         form = UpdateVolumeGroupForm(volume_group, data=data)
-        self.assertTrue(form.is_valid(), form._errors)
+        assert form.is_valid(), form._errors
         volume_group = form.save()
-        self.assertEqual(
-            volume_group.id,
-            partition.get_effective_filesystem().filesystem_group.id,
+        assert (
+            volume_group.id
+            == partition.get_effective_filesystem().filesystem_group.id
         )
 
     def test_removes_partition(self):
@@ -418,9 +410,9 @@ class TestUpdateVolumeGroupForm(MAASServerTestCase):
         )
         data = {"remove_partitions": [partition.id]}
         form = UpdateVolumeGroupForm(volume_group, data=data)
-        self.assertTrue(form.is_valid(), form._errors)
+        assert form.is_valid(), form._errors
         volume_group = form.save()
-        self.assertIsNone(partition.get_effective_filesystem())
+        assert partition.get_effective_filesystem() is None
 
     def test_removes_partition_by_name(self):
         node = factory.make_Node()
@@ -437,17 +429,18 @@ class TestUpdateVolumeGroupForm(MAASServerTestCase):
         )
         data = {"remove_partitions": [partition.name]}
         form = UpdateVolumeGroupForm(volume_group, data=data)
-        self.assertTrue(form.is_valid(), form._errors)
+        assert form.is_valid(), form._errors
         volume_group = form.save()
-        self.assertIsNone(partition.get_effective_filesystem())
+        assert partition.get_effective_filesystem() is None
 
 
-class TestCreateLogicalVolumeForm(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestCreateLogicalVolumeForm:
     def test_requires_no_fields(self):
         volume_group = factory.make_VolumeGroup()
         form = CreateLogicalVolumeForm(volume_group, data={})
-        self.assertFalse(form.is_valid(), form.errors)
-        self.assertEqual({"name"}, form.errors.keys())
+        assert not form.is_valid(), form.errors
+        assert {"name"} == form.errors.keys()
 
     def test_is_not_valid_if_invalid_uuid(self):
         volume_group = factory.make_VolumeGroup()
@@ -458,28 +451,25 @@ class TestCreateLogicalVolumeForm(MAASServerTestCase):
             "size": volume_group.get_size() - 1,
         }
         form = CreateLogicalVolumeForm(volume_group, data=data)
-        self.assertFalse(
-            form.is_valid(), "Should be invalid because of an invalid uuid."
+        assert not form.is_valid(), (
+            "Should be invalid because of an invalid uuid."
         )
-        self.assertEqual({"uuid": ["Enter a valid value."]}, form._errors)
+        assert {"uuid": ["Enter a valid value."]} == form._errors
 
     def test_is_not_valid_if_size_less_than_minimum_block_size(self):
         volume_group = factory.make_VolumeGroup()
         name = factory.make_name("lv")
         data = {"name": name, "size": MIN_BLOCK_DEVICE_SIZE - 1}
         form = CreateLogicalVolumeForm(volume_group, data=data)
-        self.assertFalse(
-            form.is_valid(), "Should be invalid because of an invalid size."
+        assert not form.is_valid(), (
+            "Should be invalid because of an invalid size."
         )
-        self.assertEqual(
-            {
-                "size": [
-                    "Ensure this value is greater than or equal to %s."
-                    % MIN_BLOCK_DEVICE_SIZE
-                ]
-            },
-            form._errors,
-        )
+        assert {
+            "size": [
+                "Ensure this value is greater than or equal to %s."
+                % MIN_BLOCK_DEVICE_SIZE
+            ]
+        } == form._errors
 
     def test_is_not_valid_if_size_greater_than_free_space(self):
         volume_group = factory.make_VolumeGroup()
@@ -491,18 +481,15 @@ class TestCreateLogicalVolumeForm(MAASServerTestCase):
         free_space = volume_group.get_lvm_free_space()
         data = {"name": name, "size": free_space + 2}
         form = CreateLogicalVolumeForm(volume_group, data=data)
-        self.assertFalse(
-            form.is_valid(), "Should be invalid because of an invalid size."
+        assert not form.is_valid(), (
+            "Should be invalid because of an invalid size."
         )
-        self.assertEqual(
-            {
-                "size": [
-                    "Ensure this value is less than or equal to %s."
-                    % (volume_group.get_lvm_free_space())
-                ]
-            },
-            form._errors,
-        )
+        assert {
+            "size": [
+                "Ensure this value is less than or equal to %s."
+                % (volume_group.get_lvm_free_space())
+            ]
+        } == form._errors
 
     def test_is_not_valid_if_free_space_less_than_min_size(self):
         volume_group = factory.make_VolumeGroup()
@@ -512,19 +499,16 @@ class TestCreateLogicalVolumeForm(MAASServerTestCase):
         name = factory.make_name("lv")
         data = {"name": name, "size": MIN_BLOCK_DEVICE_SIZE}
         form = CreateLogicalVolumeForm(volume_group, data=data)
-        self.assertFalse(
-            form.is_valid(), "Should be invalid because of an no free space."
+        assert not form.is_valid(), (
+            "Should be invalid because of an no free space."
         )
-        self.assertEqual(
-            {
-                "__all__": [
-                    "Volume group (%s) cannot hold any more logical volumes, "
-                    "because it doesn't have enough free space."
-                    % (volume_group.name)
-                ]
-            },
-            form._errors,
-        )
+        assert {
+            "__all__": [
+                "Volume group (%s) cannot hold any more logical volumes, "
+                "because it doesn't have enough free space."
+                % (volume_group.name)
+            ]
+        } == form._errors
 
     def test_creates_logical_volume(self):
         volume_group = factory.make_VolumeGroup()
@@ -533,11 +517,11 @@ class TestCreateLogicalVolumeForm(MAASServerTestCase):
         size = random.randint(MIN_BLOCK_DEVICE_SIZE, volume_group.get_size())
         data = {"name": name, "uuid": vguuid, "size": size}
         form = CreateLogicalVolumeForm(volume_group, data=data)
-        self.assertTrue(form.is_valid(), form._errors)
+        assert form.is_valid(), form._errors
         logical_volume = form.save()
         expected_size = round_size_to_nearest_block(
             size, PARTITION_ALIGNMENT_SIZE, False
         )
-        self.assertEqual(logical_volume.name, name)
-        self.assertEqual(logical_volume.uuid, vguuid)
-        self.assertEqual(logical_volume.size, expected_size)
+        assert logical_volume.name == name
+        assert logical_volume.uuid == vguuid
+        assert logical_volume.size == expected_size

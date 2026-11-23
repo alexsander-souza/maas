@@ -3,37 +3,44 @@
 
 """Tests for TFTP-specific logging stuff."""
 
+import pytest
 from twisted.logger import LogLevel
 
-from maastesting.testcase import MAASTestCase
 from maastesting.twisted import TwistedLoggerFixture
 from provisioningserver.logger._tftp import observe_tftp
 from provisioningserver.logger.testing import make_event
 
 
-class TestObserveTwistedInternetTCP_Informational(MAASTestCase):
+class TestObserveTwistedInternetTCP_Informational:
     """Tests for `observe_tftp` with informational messages."""
 
     def test_downgrades_informational_messages(self):
         event = make_event(log_level=LogLevel.info)
         with TwistedLoggerFixture() as logger:
             observe_tftp(event)
-        self.assertIn(event, logger.events)
-        self.assertIs(event["log_level"], LogLevel.debug)
+        assert event in logger.events
+        assert event["log_level"] is LogLevel.debug
 
 
-class TestObserveTwistedInternetTCP_Other(MAASTestCase):
+@pytest.mark.parametrize(
+    "log_level",
+    [
+        level
+        for level in LogLevel.iterconstants()
+        if level is not LogLevel.info
+    ],
+    ids=[
+        level.name
+        for level in LogLevel.iterconstants()
+        if level is not LogLevel.info
+    ],
+)
+class TestObserveTwistedInternetTCP_Other:
     """Tests for `observe_tftp` with non-informational messages."""
 
-    scenarios = tuple(
-        (log_level.name, {"log_level": log_level})
-        for log_level in LogLevel.iterconstants()
-        if log_level is not LogLevel.info
-    )
-
-    def test_propagates_other_events(self):
-        event = make_event(log_level=self.log_level)
+    def test_propagates_other_events(self, log_level):
+        event = make_event(log_level=log_level)
         with TwistedLoggerFixture() as logger:
             observe_tftp(event)
-        self.assertIn(event, logger.events)
-        self.assertIs(event["log_level"], self.log_level)
+        assert event in logger.events
+        assert event["log_level"] is log_level

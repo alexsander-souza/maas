@@ -3,12 +3,14 @@
 
 """Test the behaviour of dnsresource signals."""
 
+import pytest
+
 from maasserver.models import DNSPublication
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 
 
-class TestPostSaveDNSDataSignal(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestPostSaveDNSDataSignal:
     def test_save_dnsdata_creates_dnspublication(self):
         domain = factory.make_Domain("example.com", authoritative=True)
         dnsresource = factory.make_DNSResource(
@@ -20,13 +22,13 @@ class TestPostSaveDNSDataSignal(MAASServerTestCase):
             rrdata="U29ycnkgZm9yIHRoaXMh",
         )
         dnspublication = DNSPublication.objects.get_most_recent()
-        self.assertEqual(
-            "added TXT to resource maas on zone example.com",
-            dnspublication.source,
+        assert "added TXT to resource maas on zone example.com" == (
+            dnspublication.source
         )
 
 
-class TestPostDeleteSubnetSignal(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestPostDeleteSubnetSignal:
     def test_delete_dnsresource(self):
         domain = factory.make_Domain("example.com", authoritative=True)
         dnsresource = factory.make_DNSResource(
@@ -40,13 +42,13 @@ class TestPostDeleteSubnetSignal(MAASServerTestCase):
         dnsdata.delete()
 
         dnspublication = DNSPublication.objects.get_most_recent()
-        self.assertEqual(
-            "removed TXT from resource maas on zone example.com",
-            dnspublication.source,
+        assert "removed TXT from resource maas on zone example.com" == (
+            dnspublication.source
         )
 
 
-class TestUpdateDNSDataSignal(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestUpdateDNSDataSignal:
     def test_update_dnsdata_creates_dnspublication(self):
         domain = factory.make_Domain("example.com", authoritative=True)
         dnsresource = factory.make_DNSResource(
@@ -59,9 +61,8 @@ class TestUpdateDNSDataSignal(MAASServerTestCase):
         )
         dnsdata.rrdata = "a2l3aQ=="
         dnsdata.save()
-
         dnspublication = DNSPublication.objects.get_most_recent()
-        self.assertEqual(
-            "updated TXT in resource maas on zone example.com",
-            dnspublication.source,
+
+        assert "updated TXT in resource maas on zone example.com" == (
+            dnspublication.source
         )

@@ -4,16 +4,17 @@
 """Tests for the commissioning-related portions of the MAAS API."""
 
 from base64 import b64decode, b64encode
+from collections import Counter
 import http.client
 from itertools import chain
 import random
 
 from django.urls import reverse
 from piston3.utils import rc
+import pytest
 
 from maascommon.events import AUDIT
 from maasserver.models import Event, Script
-from maasserver.testing.api import APITestCase
 from maasserver.testing.factory import factory
 from maasserver.utils.converters import json_load_bytes
 from maasserver.utils.orm import reload_object
@@ -25,8 +26,18 @@ from metadataserver.enum import (
 from metadataserver.fields import Bin
 
 
-class TestAdminCommissioningScriptsAPI(APITestCase.ForAdmin):
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("admin=admin,client=oauth", id="user=admin,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestAdminCommissioningScriptsAPI:
     """Tests for `CommissioningScriptsHandler`."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, admin, admin_api_client):
+        self.user = admin
+        self.client = admin_api_client
 
     def get_url(self):
         return reverse("commissioning_scripts_handler")
@@ -39,9 +50,9 @@ class TestAdminCommissioningScriptsAPI(APITestCase.ForAdmin):
 
         response = self.client.get(self.get_url())
 
-        self.assertEqual(
-            (http.client.OK, sorted(names)),
-            (response.status_code, json_load_bytes(response.content)),
+        assert (http.client.OK, sorted(names)) == (
+            response.status_code,
+            json_load_bytes(response.content),
         )
 
     def test_POST_creates_commissioning_script(self):
@@ -59,17 +70,15 @@ class TestAdminCommissioningScriptsAPI(APITestCase.ForAdmin):
                 "content": factory.make_file_upload(content=content.encode()),
             },
         )
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
 
         returned_script = response.json()
-        self.assertEqual(name, returned_script["name"])
-        self.assertEqual(
-            content.encode(), b64decode(returned_script["content"])
-        )
+        assert name == returned_script["name"]
+        assert content.encode() == b64decode(returned_script["content"])
 
         stored_script = Script.objects.get(name=name)
-        self.assertEqual(content, stored_script.script.data)
-        self.assertEqual(SCRIPT_TYPE.COMMISSIONING, stored_script.script_type)
+        assert content == stored_script.script.data
+        assert SCRIPT_TYPE.COMMISSIONING == stored_script.script_type
 
     def test_POST_creates_errors(self):
         content = factory.make_script_content(
@@ -82,32 +91,51 @@ class TestAdminCommissioningScriptsAPI(APITestCase.ForAdmin):
                 "content": factory.make_file_upload(content=content.encode()),
             },
         )
-        self.assertEqual(response.status_code, http.client.BAD_REQUEST)
+        assert response.status_code == http.client.BAD_REQUEST
 
         ret = json_load_bytes(response.content)
-        self.assertDictEqual(
-            {"name": ["May not override values defined in embedded YAML."]},
-            ret,
-        )
+        assert {
+            "name": ["May not override values defined in embedded YAML."]
+        } == ret
 
 
-class TestCommissioningScriptsAPI(APITestCase.ForUser):
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user=user,client=oauth", id="user=user,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestCommissioningScriptsAPI:
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maas_user, api_client):
+        self.user = maas_user
+        self.client = api_client
+
     def get_url(self):
         return reverse("commissioning_scripts_handler")
 
     def test_GET_is_forbidden(self):
         response = self.client.get(self.get_url())
-        self.assertEqual(response.status_code, http.client.FORBIDDEN)
+        assert response.status_code == http.client.FORBIDDEN
 
     def test_POST_is_forbidden(self):
         response = self.client.post(
             self.get_url(), {"name": factory.make_name("script")}
         )
-        self.assertEqual(response.status_code, http.client.FORBIDDEN)
+        assert response.status_code == http.client.FORBIDDEN
 
 
-class TestAdminCommissioningScriptAPI(APITestCase.ForAdmin):
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("admin=admin,client=oauth", id="user=admin,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestAdminCommissioningScriptAPI:
     """Tests for `CommissioningScriptHandler`."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, admin, admin_api_client):
+        self.user = admin
+        self.client = admin_api_client
 
     def get_url(self, script_name):
         return reverse("commissioning_script_handler", args=[script_name])
@@ -115,8 +143,8 @@ class TestAdminCommissioningScriptAPI(APITestCase.ForAdmin):
     def test_GET_returns_script_contents(self):
         script = factory.make_Script(script_type=SCRIPT_TYPE.COMMISSIONING)
         response = self.client.get(self.get_url(script.name))
-        self.assertEqual(response.status_code, http.client.OK)
-        self.assertEqual(script.script.data, response.content.decode("utf-8"))
+        assert response.status_code == http.client.OK
+        assert script.script.data == response.content.decode("utf-8")
 
     def test_PUT_updates_contents(self):
         old_content = factory.make_script_content().encode("ascii")
@@ -129,12 +157,10 @@ class TestAdminCommissioningScriptAPI(APITestCase.ForAdmin):
             self.get_url(script.name),
             {"content": factory.make_file_upload(content=new_content)},
         )
-        self.assertEqual(response.status_code, http.client.OK)
-        self.assertEqual(rc.ALL_OK.content, response.content)
+        assert response.status_code == http.client.OK
+        assert rc.ALL_OK.content == response.content
 
-        self.assertEqual(
-            new_content.decode("utf-8"), reload_object(script).script.data
-        )
+        assert new_content.decode("utf-8") == reload_object(script).script.data
 
     def test_PUT_errors(self):
         old_content = factory.make_script_content(
@@ -156,26 +182,33 @@ class TestAdminCommissioningScriptAPI(APITestCase.ForAdmin):
                 "content": factory.make_file_upload(content=new_content),
             },
         )
-        self.assertEqual(response.status_code, http.client.BAD_REQUEST)
+        assert response.status_code == http.client.BAD_REQUEST
 
         ret = json_load_bytes(response.content)
-        self.assertDictEqual(
-            {"name": ["May not override values defined in embedded YAML."]},
-            ret,
-        )
+        assert {
+            "name": ["May not override values defined in embedded YAML."]
+        } == ret
 
     def test_DELETE_deletes_script(self):
         script = factory.make_Script(script_type=SCRIPT_TYPE.COMMISSIONING)
         self.client.delete(self.get_url(script.name))
-        self.assertCountEqual([], Script.objects.filter(name=script.name))
+        assert not Script.objects.filter(name=script.name).exists()
         event = Event.objects.get(type__level=AUDIT)
-        self.assertIsNotNone(event)
-        self.assertEqual(
-            event.description, "Deleted script '%s'." % script.name
-        )
+        assert event is not None
+        assert event.description == "Deleted script '%s'." % script.name
 
 
-class TestCommissioningScriptAPI(APITestCase.ForUser):
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user=user,client=oauth", id="user=user,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestCommissioningScriptAPI:
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maas_user, api_client):
+        self.user = maas_user
+        self.client = api_client
+
     def get_url(self, script_name):
         return reverse("commissioning_script_handler", args=[script_name])
 
@@ -185,22 +218,32 @@ class TestCommissioningScriptAPI(APITestCase.ForUser):
         # (consumers of the MAAS) to see these.
         script = factory.make_Script(script_type=SCRIPT_TYPE.COMMISSIONING)
         response = self.client.get(self.get_url(script.name))
-        self.assertEqual(response.status_code, http.client.FORBIDDEN)
+        assert response.status_code == http.client.FORBIDDEN
 
     def test_PUT_is_forbidden(self):
         script = factory.make_Script(script_type=SCRIPT_TYPE.COMMISSIONING)
         response = self.client.put(
             self.get_url(script.name), {"content": factory.make_string()}
         )
-        self.assertEqual(response.status_code, http.client.FORBIDDEN)
+        assert response.status_code == http.client.FORBIDDEN
 
     def test_DELETE_is_forbidden(self):
         script = factory.make_Script(script_type=SCRIPT_TYPE.COMMISSIONING)
         response = self.client.put(self.get_url(script.name))
-        self.assertEqual(response.status_code, http.client.FORBIDDEN)
+        assert response.status_code == http.client.FORBIDDEN
 
 
-class TestNodeCommissionResultHandlerAPI(APITestCase.ForUser):
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user=user,client=oauth", id="user=user,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestNodeCommissionResultHandlerAPI:
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maas_user, api_client):
+        self.user = maas_user
+        self.client = api_client
+
     def store_result(
         self, script_result, output=None, stdout=None, stderr=None, **kwargs
     ):
@@ -236,43 +279,36 @@ class TestNodeCommissionResultHandlerAPI(APITestCase.ForUser):
 
         url = reverse("node_results_handler")
         response = self.client.get(url, {"system_id": [node.system_id]})
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         parsed_results = json_load_bytes(response.content)
         for parsed_result in parsed_results:
             if parsed_result["name"] == script_result.name:
                 break
-        self.assertEqual(
+        assert (
             node.current_commissioning_script_set.scriptresult_set.count()
             + node.current_testing_script_set.scriptresult_set.count()
-            + node.current_installation_script_set.scriptresult_set.count(),
-            len(parsed_results),
+            + node.current_installation_script_set.scriptresult_set.count()
+            == len(parsed_results)
         )
-        self.assertEqual(
-            {
-                "created",
-                "updated",
-                "id",
-                "name",
-                "script_result",
-                "result_type",
-                "node",
-                "data",
-                "resource_uri",
-            },
-            parsed_result.keys(),
-        )
-        self.assertEqual(script_result.id, parsed_result["id"])
-        self.assertEqual(script_result.name, parsed_result["name"])
-        self.assertEqual(
-            script_result.exit_status, parsed_result["script_result"]
-        )
-        self.assertEqual(script_set.result_type, parsed_result["result_type"])
-        self.assertEqual(
-            {"system_id": script_set.node.system_id}, parsed_result["node"]
-        )
-        self.assertEqual(
-            script_result.stdout, b64decode(parsed_result["data"])
-        )
+        assert {
+            "created",
+            "updated",
+            "id",
+            "name",
+            "script_result",
+            "result_type",
+            "node",
+            "data",
+            "resource_uri",
+        } == parsed_result.keys()
+        assert script_result.id == parsed_result["id"]
+        assert script_result.name == parsed_result["name"]
+        assert script_result.exit_status == parsed_result["script_result"]
+        assert script_set.result_type == parsed_result["result_type"]
+        assert {"system_id": script_set.node.system_id} == parsed_result[
+            "node"
+        ]
+        assert script_result.stdout == b64decode(parsed_result["data"])
 
     def test_list_returns_with_multiple_empty_data(self):
         node = factory.make_Node(with_empty_script_sets=True)
@@ -287,18 +323,17 @@ class TestNodeCommissionResultHandlerAPI(APITestCase.ForUser):
 
         url = reverse("node_results_handler")
         response = self.client.get(url)
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         parsed_results = json_load_bytes(response.content)
-        self.assertCountEqual(
-            [
-                script_result.stdout.decode("utf-8")
-                for script_result in chain(
-                    node.current_commissioning_script_set,
-                    node.current_testing_script_set,
-                    node.current_installation_script_set,
-                )
-            ],
-            [parsed_result.get("data") for parsed_result in parsed_results],
+        assert Counter(
+            script_result.stdout.decode("utf-8")
+            for script_result in chain(
+                node.current_commissioning_script_set,
+                node.current_testing_script_set,
+                node.current_installation_script_set,
+            )
+        ) == Counter(
+            parsed_result.get("data") for parsed_result in parsed_results
         )
 
     def test_list_returns_stderr(self):
@@ -314,19 +349,16 @@ class TestNodeCommissionResultHandlerAPI(APITestCase.ForUser):
 
         url = reverse("node_results_handler")
         response = self.client.get(url, {"system_id": [node.system_id]})
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         parsed_results = json_load_bytes(response.content)
-        self.assertCountEqual(
-            [
-                script_result.stdout.decode("utf-8")
-                for script_result in chain(
-                    node.current_commissioning_script_set,
-                    node.current_testing_script_set,
-                    node.current_installation_script_set,
-                )
-            ],
-            [parsed_result["data"] for parsed_result in parsed_results],
-        )
+        assert Counter(
+            script_result.stdout.decode("utf-8")
+            for script_result in chain(
+                node.current_commissioning_script_set,
+                node.current_testing_script_set,
+                node.current_installation_script_set,
+            )
+        ) == Counter(parsed_result["data"] for parsed_result in parsed_results)
 
     def test_list_returns_output_if_stdout_empty(self):
         node = factory.make_Node(with_empty_script_sets=True)
@@ -341,19 +373,16 @@ class TestNodeCommissionResultHandlerAPI(APITestCase.ForUser):
 
         url = reverse("node_results_handler")
         response = self.client.get(url, {"system_id": [node.system_id]})
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         parsed_results = json_load_bytes(response.content)
-        self.assertCountEqual(
-            [
-                b64encode(script_result.output).decode()
-                for script_result in chain(
-                    node.current_commissioning_script_set,
-                    node.current_testing_script_set,
-                    node.current_installation_script_set,
-                )
-            ],
-            [parsed_result["data"] for parsed_result in parsed_results],
-        )
+        assert Counter(
+            b64encode(script_result.output).decode()
+            for script_result in chain(
+                node.current_commissioning_script_set,
+                node.current_testing_script_set,
+                node.current_installation_script_set,
+            )
+        ) == Counter(parsed_result["data"] for parsed_result in parsed_results)
 
     def test_list_shows_all_latest_results(self):
         # XXX ltrager 2017-01-23 - Needed until builtin tests are added.
@@ -374,12 +403,11 @@ class TestNodeCommissionResultHandlerAPI(APITestCase.ForUser):
 
         url = reverse("node_results_handler")
         response = self.client.get(url, {"system_id": [node.system_id]})
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         parsed_results = json_load_bytes(response.content)
-        self.assertCountEqual(
-            {script_result.id for script_result in script_results},
-            {parsed_result["id"] for parsed_result in parsed_results},
-        )
+        assert Counter(
+            script_result.id for script_result in script_results
+        ) == Counter(parsed_result["id"] for parsed_result in parsed_results)
 
     def test_list_can_be_filtered_by_name(self):
         node = factory.make_Node(with_empty_script_sets=True)
@@ -391,9 +419,9 @@ class TestNodeCommissionResultHandlerAPI(APITestCase.ForUser):
 
         url = reverse("node_results_handler")
         response = self.client.get(url, {"name": script_result.name})
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         parsed_results = json_load_bytes(response.content)
-        self.assertEqual(script_result.id, parsed_results[0]["id"])
+        assert script_result.id == parsed_results[0]["id"]
 
     def test_list_displays_only_visible_nodes(self):
         node = factory.make_Node(
@@ -404,9 +432,9 @@ class TestNodeCommissionResultHandlerAPI(APITestCase.ForUser):
 
         url = reverse("node_results_handler")
         response = self.client.get(url)
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         parsed_results = json_load_bytes(response.content)
-        self.assertEqual([], parsed_results)
+        assert [] == parsed_results
 
     def test_list_displays_all_results(self):
         script_results = []
@@ -424,12 +452,11 @@ class TestNodeCommissionResultHandlerAPI(APITestCase.ForUser):
 
         url = reverse("node_results_handler")
         response = self.client.get(url)
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         parsed_results = json_load_bytes(response.content)
-        self.assertCountEqual(
-            {script_result.id for script_result in script_results},
-            {parsed_result["id"] for parsed_result in parsed_results},
-        )
+        assert Counter(
+            script_result.id for script_result in script_results
+        ) == Counter(parsed_result["id"] for parsed_result in parsed_results)
 
     def test_list_only_displayed_completed_results(self):
         node = factory.make_Node(with_empty_script_sets=True)
@@ -441,7 +468,7 @@ class TestNodeCommissionResultHandlerAPI(APITestCase.ForUser):
         ):
             for status, _ in SCRIPT_STATUS_CHOICES:
                 script_result = factory.make_ScriptResult(
-                    script_set=script_set, status=status
+                    script_set=script_set, status=status, stderr=b""
                 )
                 if status in (
                     SCRIPT_STATUS.PASSED,
@@ -453,9 +480,8 @@ class TestNodeCommissionResultHandlerAPI(APITestCase.ForUser):
 
         url = reverse("node_results_handler")
         response = self.client.get(url)
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         parsed_results = json_load_bytes(response.content)
-        self.assertCountEqual(
-            {script_result.id for script_result in expected_results},
-            {parsed_result["id"] for parsed_result in parsed_results},
-        )
+        assert Counter(
+            script_result.id for script_result in expected_results
+        ) == Counter(parsed_result["id"] for parsed_result in parsed_results)

@@ -3,18 +3,11 @@
 
 """Testing helpers for Twisted code."""
 
-__all__ = [
-    "extract_result",
-]
-
 from copy import copy
 
-from fixtures import Fixture
-from testtools.content import Content, UTF8_TEXT
-from testtools.monkey import patch
-from testtools.twistedsupport._deferred import extract_result
+from fixtures import Fixture, MonkeyPatch
 from twisted.internet import defer
-from twisted.logger import formatEvent, globalLogPublisher, LogLevel
+from twisted.logger import formatEvent, LogLevel
 from twisted.python import log
 
 
@@ -80,22 +73,6 @@ class TwistedLoggerFixture(Fixture):
     # For compatibility with fixtures.FakeLogger.
     output = property(dump)
 
-    def getContent(self):
-        """Return a `Content` instance for this fixture.
-
-        `TwistedLoggerFixture` does not automatically add details to itself
-        because more often than not these logs are meant to be tested directly
-        and not kept.
-        """
-
-        def render(events=self.events):
-            for event in events:
-                rendered = formatEvent(event)
-                if rendered is not None:
-                    yield rendered.encode("utf-8")
-
-        return Content(UTF8_TEXT, render)
-
     def setUp(self):
         super().setUp()
         # First remove all observers via the legacy API.
@@ -103,7 +80,9 @@ class TwistedLoggerFixture(Fixture):
             self.addCleanup(log.theLogPublisher.addObserver, observer)
             log.theLogPublisher.removeObserver(observer)
         # Now remove any remaining modern observers.
-        self.addCleanup(patch(globalLogPublisher, "_observers", []))
+        self.useFixture(
+            MonkeyPatch("twisted.logger.globalLogPublisher._observers", [])
+        )
         # Now add our observer, again via the legacy API. This ensures that
         # it's wrapped with whatever legacy wrapper we've installed.
         self.addCleanup(log.theLogPublisher.removeObserver, self.events.append)

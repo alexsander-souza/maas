@@ -4,58 +4,45 @@
 """Tests for `provisioningserver.proxy.config`."""
 
 import os
-from pathlib import Path
 import random
 
-from fixtures import EnvironmentVariableFixture
+import pytest
 
-from maastesting.crochet import wait_for
 from maastesting.factory import factory
-from maastesting.testcase import MAASTestCase
 from provisioningserver.proxy import config
 
-wait_for_reactor = wait_for()
 
-
-class TestGetConfigDir(MAASTestCase):
+class TestGetConfigDir:
     """Tests for `get_proxy_config_path`."""
 
     def test_returns_default(self):
-        self.assertEqual(
-            "/var/lib/maas/maas-proxy.conf", config.get_proxy_config_path()
+        assert (
+            "/var/lib/maas/maas-proxy.conf" == config.get_proxy_config_path()
         )
 
-    def test_env_overrides_default(self):
-        os.environ["MAAS_PROXY_CONFIG_DIR"] = factory.make_name("env")
-        self.assertEqual(
-            os.sep.join(
-                [
-                    os.environ["MAAS_PROXY_CONFIG_DIR"],
-                    config.MAAS_PROXY_CONF_NAME,
-                ]
-            ),
-            config.get_proxy_config_path(),
+    def test_env_overrides_default(self, mocker):
+        env_dir = factory.make_name("env")
+        mocker.patch.dict(os.environ, {"MAAS_PROXY_CONFIG_DIR": env_dir})
+        assert (
+            os.sep.join([env_dir, config.MAAS_PROXY_CONF_NAME])
+            == config.get_proxy_config_path()
         )
-        del os.environ["MAAS_PROXY_CONFIG_DIR"]
 
 
-class TestWriteConfig(MAASTestCase):
+class TestWriteConfig:
     """Tests for `write_config`."""
 
-    def setUp(self):
-        super().setUp()
-        self.tmpdir = self.make_dir()
-        self.proxy_path = Path(self.tmpdir) / config.MAAS_PROXY_CONF_NAME
-        self.useFixture(
-            EnvironmentVariableFixture("MAAS_PROXY_CONFIG_DIR", self.tmpdir)
-        )
+    @pytest.fixture(autouse=True)
+    def _setup(self, tmp_path, mocker):
+        self.proxy_path = tmp_path / config.MAAS_PROXY_CONF_NAME
+        mocker.patch.dict(os.environ, {"MAAS_PROXY_CONFIG_DIR": str(tmp_path)})
 
     def test_adds_cidr(self):
         cidr = factory.make_ipv4_network()
         config.write_config([cidr])
         with self.proxy_path.open() as fh:
             contents = fh.read()
-        self.assertIn(f"acl localnet src {cidr}", contents)
+        assert f"acl localnet src {cidr}" in contents
 
     def test_peer_proxies(self):
         cidr = factory.make_ipv4_network()
@@ -69,9 +56,9 @@ class TestWriteConfig(MAASTestCase):
         )
         with self.proxy_path.open() as proxy_file:
             lines = [line.strip() for line in proxy_file.readlines()]
-            self.assertIn("never_direct allow all", lines)
-            self.assertIn(cache_peer1_line, lines)
-            self.assertIn(cache_peer2_line, lines)
+            assert "never_direct allow all" in lines
+            assert cache_peer1_line in lines
+            assert cache_peer2_line in lines
 
     def test_peer_proxies_with_auth(self):
         cidr = factory.make_ipv4_network()
@@ -84,30 +71,30 @@ class TestWriteConfig(MAASTestCase):
         cache_peer2_line = "cache_peer other.com parent 8001 0 no-query default login=other:other"
         with self.proxy_path.open() as proxy_file:
             lines = [line.strip() for line in proxy_file.readlines()]
-            self.assertIn(cache_peer1_line, lines)
-            self.assertIn(cache_peer2_line, lines)
+            assert cache_peer1_line in lines
+            assert cache_peer2_line in lines
 
     def test_without_use_peer_proxy(self):
         cidr = factory.make_ipv4_network()
         config.write_config([cidr])
         with self.proxy_path.open() as proxy_file:
             lines = [line.strip() for line in proxy_file.readlines()]
-            self.assertNotIn("never_direct allow all", lines)
-            self.assertNotIn("cache_peer", lines)
+            assert "never_direct allow all" not in lines
+            assert "cache_peer" not in lines
 
     def test_with_prefer_v4_proxy_False(self):
         cidr = factory.make_ipv4_network()
         config.write_config([cidr], prefer_v4_proxy=False)
         with self.proxy_path.open() as proxy_file:
             lines = [line.strip() for line in proxy_file.readlines()]
-            self.assertNotIn("dns_v4_first on", lines)
+            assert "dns_v4_first on" not in lines
 
     def test_with_prefer_v4_proxy_True(self):
         cidr = factory.make_ipv4_network()
         config.write_config([cidr], prefer_v4_proxy=True)
         with self.proxy_path.open() as proxy_file:
             lines = [line.strip() for line in proxy_file.readlines()]
-            self.assertIn("dns_v4_first on", lines)
+            assert "dns_v4_first on" in lines
 
     def test_port_changes_port(self):
         cidr = factory.make_ipv4_network()
@@ -115,33 +102,33 @@ class TestWriteConfig(MAASTestCase):
         config.write_config([cidr], maas_proxy_port=port)
         with self.proxy_path.open() as proxy_file:
             lines = [line.strip() for line in proxy_file.readlines()]
-            self.assertIn("http_port %s" % port, lines)
+            assert "http_port %s" % port in lines
 
     def test_http_proxy_bind_single_address(self):
         cidr = factory.make_ipv4_network()
         config.write_config([cidr], http_proxy_bind=["10.0.0.5"])
         with self.proxy_path.open() as proxy_file:
             lines = [line.strip() for line in proxy_file.readlines()]
-            self.assertIn("http_port 10.0.0.5:3128 transparent", lines)
-            self.assertIn("http_port 10.0.0.5:8000", lines)
+            assert "http_port 10.0.0.5:3128 transparent" in lines
+            assert "http_port 10.0.0.5:8000" in lines
 
     def test_http_proxy_bind_multiple_addresses(self):
         cidr = factory.make_ipv4_network()
         config.write_config([cidr], http_proxy_bind=["10.0.0.5", "10.0.0.6"])
         with self.proxy_path.open() as proxy_file:
             lines = [line.strip() for line in proxy_file.readlines()]
-            self.assertIn("http_port 10.0.0.5:3128 transparent", lines)
-            self.assertIn("http_port 10.0.0.6:3128 transparent", lines)
-            self.assertIn("http_port 10.0.0.5:8000", lines)
-            self.assertIn("http_port 10.0.0.6:8000", lines)
+            assert "http_port 10.0.0.5:3128 transparent" in lines
+            assert "http_port 10.0.0.6:3128 transparent" in lines
+            assert "http_port 10.0.0.5:8000" in lines
+            assert "http_port 10.0.0.6:8000" in lines
 
     def test_http_proxy_bind_ipv6_only_uses_bracketed_address(self):
         cidr = factory.make_ipv4_network()
         config.write_config([cidr], http_proxy_bind=["fd00::5"])
         with self.proxy_path.open() as proxy_file:
             lines = [line.strip() for line in proxy_file.readlines()]
-            self.assertIn("http_port [fd00::5]:3128 transparent", lines)
-            self.assertIn("http_port [fd00::5]:8000", lines)
+            assert "http_port [fd00::5]:3128 transparent" in lines
+            assert "http_port [fd00::5]:8000" in lines
 
     def test_http_proxy_bind_v4_and_v6_combined(self):
         cidr = factory.make_ipv4_network()
@@ -151,22 +138,22 @@ class TestWriteConfig(MAASTestCase):
         )
         with self.proxy_path.open() as proxy_file:
             lines = [line.strip() for line in proxy_file.readlines()]
-            self.assertIn("http_port 10.0.0.5:3128 transparent", lines)
-            self.assertIn("http_port [fd00::5]:3128 transparent", lines)
-            self.assertIn("http_port 10.0.0.5:8000", lines)
-            self.assertIn("http_port [fd00::5]:8000", lines)
+            assert "http_port 10.0.0.5:3128 transparent" in lines
+            assert "http_port [fd00::5]:3128 transparent" in lines
+            assert "http_port 10.0.0.5:8000" in lines
+            assert "http_port [fd00::5]:8000" in lines
 
     def test_no_http_proxy_bind_listens_on_all_interfaces(self):
         cidr = factory.make_ipv4_network()
         config.write_config([cidr])
         with self.proxy_path.open() as proxy_file:
             lines = [line.strip() for line in proxy_file.readlines()]
-            self.assertIn("http_port 3128 transparent", lines)
-            self.assertIn("http_port 8000", lines)
+            assert "http_port 3128 transparent" in lines
+            assert "http_port 8000" in lines
 
     def test_user_in_snap(self):
         config.write_config(allowed_cidrs=[])
         with self.proxy_path.open() as proxy_file:
             lines = [line.strip() for line in proxy_file.readlines()]
-            self.assertIn("cache_effective_user snap_daemon", lines)
-            self.assertIn("cache_effective_group snap_daemon", lines)
+            assert "cache_effective_user snap_daemon" in lines
+            assert "cache_effective_group snap_daemon" in lines

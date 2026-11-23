@@ -3,6 +3,7 @@
 
 from datetime import timedelta
 
+import pytest
 from twisted.internet import reactor
 from twisted.internet.defer import inlineCallbacks
 
@@ -15,7 +16,6 @@ from maasserver.regiondservices.certificate_expiration_check import (
 )
 from maasserver.secrets import SecretManager
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASTransactionServerTestCase
 from maasserver.utils.threads import deferToDatabase
 from maastesting.crochet import wait_for
 from provisioningserver.testing.certificates import get_sample_cert
@@ -23,7 +23,11 @@ from provisioningserver.testing.certificates import get_sample_cert
 wait_for_reactor = wait_for()
 
 
-class TestCertificateExpirationCheckService(MAASTransactionServerTestCase):
+@pytest.mark.allow_transactions
+@pytest.mark.usefixtures(
+    "maasdb", "transactional_maasdb", "maas_region_test", "factory"
+)
+class TestCertificateExpirationCheckService:
     def set_config(self, cert, enabled=True, interval=10):
         SecretManager().set_composite_secret(
             "tls",
@@ -68,7 +72,7 @@ class TestCertificateExpirationCheckService(MAASTransactionServerTestCase):
         yield service.stopService()
 
         notifications = yield deferToDatabase(self.get_notifications)
-        self.assertEqual(0, len(notifications))
+        assert len(notifications) == 0
 
     @wait_for_reactor
     @inlineCallbacks
@@ -81,14 +85,14 @@ class TestCertificateExpirationCheckService(MAASTransactionServerTestCase):
         yield service.stopService()
 
         notifications = yield deferToDatabase(self.get_notifications)
-        self.assertEqual(1, len(notifications))
+        assert len(notifications) == 1
         notification = notifications[0]
-        self.assertIsNotNone(notification)
-        self.assertEqual("info", notification.category)
-        self.assertTrue(notification.dismissable)
-        self.assertTrue(notification.admins)
-        self.assertFalse(notification.users)
-        self.assertEqual(4, notification.context["days"])
+        assert notification is not None
+        assert notification.category == "info"
+        assert notification.dismissable
+        assert notification.admins
+        assert not notification.users
+        assert notification.context["days"] == 4
 
     @wait_for_reactor
     @inlineCallbacks
@@ -108,14 +112,14 @@ class TestCertificateExpirationCheckService(MAASTransactionServerTestCase):
         yield service.stopService()
 
         notifications = yield deferToDatabase(self.get_notifications)
-        self.assertEqual(1, len(notifications))
+        assert len(notifications) == 1
         notification = notifications[0]
-        self.assertIsNotNone(notification)
-        self.assertEqual("info", notification.category)
-        self.assertTrue(notification.dismissable)
-        self.assertTrue(notification.admins)
-        self.assertFalse(notification.users)
-        self.assertEqual(4, notification.context["days"])
+        assert notification is not None
+        assert notification.category == "info"
+        assert notification.dismissable
+        assert notification.admins
+        assert not notification.users
+        assert notification.context["days"] == 4
 
     @wait_for_reactor
     @inlineCallbacks
@@ -133,16 +137,14 @@ class TestCertificateExpirationCheckService(MAASTransactionServerTestCase):
         yield service.stopService()
 
         notifications = yield deferToDatabase(self.get_notifications)
-        self.assertEqual(1, len(notifications))
+        assert len(notifications) == 1
         notification = notifications[0]
-        self.assertIsNotNone(notification)
-        self.assertEqual("warning", notification.category)
-        self.assertTrue(notification.dismissable)
-        self.assertTrue(notification.admins)
-        self.assertFalse(notification.users)
-        self.assertEqual(
-            REGIOND_CERT_EXPIRED_NOTIFICATION_IDENT, notification.ident
-        )
+        assert notification is not None
+        assert notification.category == "warning"
+        assert notification.dismissable
+        assert notification.admins
+        assert not notification.users
+        assert notification.ident == REGIOND_CERT_EXPIRED_NOTIFICATION_IDENT
 
     @wait_for_reactor
     @inlineCallbacks
@@ -160,7 +162,7 @@ class TestCertificateExpirationCheckService(MAASTransactionServerTestCase):
         yield service.stopService()
 
         notifications = yield deferToDatabase(self.get_notifications)
-        self.assertEqual(0, len(notifications))
+        assert len(notifications) == 0
 
     @wait_for_reactor
     @inlineCallbacks
@@ -178,4 +180,4 @@ class TestCertificateExpirationCheckService(MAASTransactionServerTestCase):
         yield service.stopService()
 
         notifications = yield deferToDatabase(self.get_notifications)
-        self.assertEqual(0, len(notifications))
+        assert len(notifications) == 0

@@ -4,20 +4,29 @@
 import http.client
 
 from django.urls import reverse
+import pytest
 
 from maasserver.enum import NODE_DEVICE_BUS_CHOICES
-from maasserver.testing.api import APITestCase
 from maasserver.testing.factory import factory
 from maasserver.utils.orm import reload_object
 from metadataserver.enum import HARDWARE_TYPE_CHOICES
 
 
-class TestNodeDevicesAPI(APITestCase.ForUser):
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user=user,client=oauth", id="user=user,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestNodeDevicesAPI:
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maas_user, api_client):
+        self.user = maas_user
+        self.client = api_client
+
     def test_hander_path(self):
         node = factory.make_Node()
-        self.assertEqual(
-            reverse("node_devices_handler", args=[node.system_id]),
-            f"/MAAS/api/2.0/nodes/{node.system_id}/devices/",
+        assert reverse("node_devices_handler", args=[node.system_id]) == (
+            f"/MAAS/api/2.0/nodes/{node.system_id}/devices/"
         )
 
     def test_GET(self):
@@ -29,78 +38,87 @@ class TestNodeDevicesAPI(APITestCase.ForUser):
         response = self.client.get(
             f"/MAAS/api/2.0/nodes/{node.system_id}/devices/",
         )
-        self.assertEqual(response.status_code, http.client.OK)
-        self.assertCountEqual(
-            [node_device.id for node_device in node_devices],
-            [node_device["id"] for node_device in response.json()],
-        )
+        assert response.status_code == http.client.OK
+        assert sorted(
+            node_device.id for node_device in node_devices
+        ) == sorted(node_device["id"] for node_device in response.json())
 
 
-class TestNodeDevicesAPIFilter(APITestCase.ForUser):
-    scenarios = [
-        ("filter=bus", {"choices": NODE_DEVICE_BUS_CHOICES, "key": "bus"}),
-        (
-            "filter=hardware_type",
-            {"choices": HARDWARE_TYPE_CHOICES, "key": "hardware_type"},
+@pytest.mark.parametrize(
+    "key,choices",
+    [
+        pytest.param("bus", NODE_DEVICE_BUS_CHOICES, id="filter=bus"),
+        pytest.param(
+            "hardware_type", HARDWARE_TYPE_CHOICES, id="filter=hardware_type"
         ),
-        (
-            "filter=vendor_id",
-            {
-                "choices": lambda: factory.make_hex_string(4),
-                "key": "vendor_id",
-            },
+        pytest.param(
+            "vendor_id",
+            lambda: factory.make_hex_string(4),
+            id="filter=vendor_id",
         ),
-        (
-            "filter=product_id",
-            {
-                "choices": lambda: factory.make_hex_string(4),
-                "key": "product_id",
-            },
+        pytest.param(
+            "product_id",
+            lambda: factory.make_hex_string(4),
+            id="filter=product_id",
         ),
-        (
-            "filter=vendor_name",
-            {"choices": factory.make_name, "key": "vendor_name"},
+        pytest.param(
+            "vendor_name", factory.make_name, id="filter=vendor_name"
         ),
-        (
-            "filter=product_name",
-            {"choices": factory.make_name, "key": "product_name"},
+        pytest.param(
+            "product_name", factory.make_name, id="filter=product_name"
         ),
-        (
-            "filter=commissioning_driver",
-            {"choices": factory.make_name, "key": "commissioning_driver"},
+        pytest.param(
+            "commissioning_driver",
+            factory.make_name,
+            id="filter=commissioning_driver",
         ),
-    ]
-
-    def setUp(self):
-        super().setUp()
+    ],
+)
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user=user,client=oauth", id="user=user,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestNodeDevicesAPIFilter:
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maas_user, api_client):
+        self.user = maas_user
+        self.client = api_client
         self.node = factory.make_Node()
         self.uri = reverse("node_devices_handler", args=[self.node.system_id])
 
-    def test_GET_filter(self):
-        if callable(self.choices):
-            choice1 = self.choices()
+    def test_GET_filter(self, key, choices):
+        if callable(choices):
+            choice1 = choices()
         else:
-            choice1 = factory.pick_choice(self.choices)
-        node_device = factory.make_NodeDevice(
-            node=self.node, **{self.key: choice1}
-        )
+            choice1 = factory.pick_choice(choices)
+        node_device = factory.make_NodeDevice(node=self.node, **{key: choice1})
         # create a device with different criteria
-        if callable(self.choices):
-            choice2 = self.choices()
+        if callable(choices):
+            choice2 = choices()
         else:
-            choice2 = factory.pick_choice(self.choices, but_not=[choice1])
-        factory.make_NodeDevice(node=self.node, **{self.key: choice2})
+            choice2 = factory.pick_choice(choices, but_not=[choice1])
+        factory.make_NodeDevice(node=self.node, **{key: choice2})
 
-        response = self.client.get(self.uri, {self.key: choice1})
-        self.assertEqual(response.status_code, http.client.OK)
-        self.assertEqual(
-            [node_device.id],
-            [node_device["id"] for node_device in response.json()],
-        )
+        response = self.client.get(self.uri, {key: choice1})
+        assert response.status_code == http.client.OK
+        assert [node_device.id] == [
+            node_device["id"] for node_device in response.json()
+        ]
 
 
-class TestNodeDeviceAPI(APITestCase.ForUser):
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user=user,client=oauth", id="user=user,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestNodeDeviceAPI:
     """Tests for /api/2.0/nodes/<system_id>/device/<id>."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maas_user, api_client):
+        self.user = maas_user
+        self.client = api_client
 
     def get_node_device_uri(self, node_device, force_id=False):
         """Return the script's URI on the API."""
@@ -117,54 +135,51 @@ class TestNodeDeviceAPI(APITestCase.ForUser):
 
     def test_hander_path(self):
         node_device = factory.make_NodeDevice()
-        self.assertEqual(
+        assert (
             "/MAAS/api/2.0/nodes/"
-            f"{node_device.node_config.node.system_id}/devices/{node_device.id}/",
-            self.get_node_device_uri(node_device, True),
-        )
+            f"{node_device.node_config.node.system_id}/devices/{node_device.id}/"
+        ) == self.get_node_device_uri(node_device, True)
 
     def test_GET(self):
         node_device = factory.make_NodeDevice()
 
         response = self.client.get(self.get_node_device_uri(node_device))
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         parsed_result = response.json()
 
-        self.assertEqual(
-            {
-                "id": node_device.id,
-                "bus": node_device.bus,
-                "bus_name": node_device.get_bus_display(),
-                "hardware_type": node_device.hardware_type,
-                "hardware_type_name": node_device.get_hardware_type_display(),
-                "system_id": node_device.node_config.node.system_id,
-                "numa_node": node_device.numa_node.index,
-                "physical_blockdevice": None,
-                "physical_interface": None,
-                "vendor_id": node_device.vendor_id,
-                "product_id": node_device.product_id,
-                "vendor_name": node_device.vendor_name,
-                "product_name": node_device.product_name,
-                "commissioning_driver": node_device.commissioning_driver,
-                "bus_number": node_device.bus_number,
-                "device_number": node_device.device_number,
-                "pci_address": node_device.pci_address,
-                "resource_uri": self.get_node_device_uri(node_device, True),
-            },
-            parsed_result,
-        )
+        assert {
+            "id": node_device.id,
+            "bus": node_device.bus,
+            "bus_name": node_device.get_bus_display(),
+            "hardware_type": node_device.hardware_type,
+            "hardware_type_name": node_device.get_hardware_type_display(),
+            "system_id": node_device.node_config.node.system_id,
+            "numa_node": node_device.numa_node.index,
+            "physical_blockdevice": None,
+            "physical_interface": None,
+            "vendor_id": node_device.vendor_id,
+            "product_id": node_device.product_id,
+            "vendor_name": node_device.vendor_name,
+            "product_name": node_device.product_name,
+            "commissioning_driver": node_device.commissioning_driver,
+            "bus_number": node_device.bus_number,
+            "device_number": node_device.device_number,
+            "pci_address": node_device.pci_address,
+            "resource_uri": self.get_node_device_uri(node_device, True),
+        } == parsed_result
 
     def test_DELETE(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node_device = factory.make_NodeDevice()
 
         response = self.client.delete(self.get_node_device_uri(node_device))
-        self.assertEqual(response.status_code, http.client.NO_CONTENT)
-        self.assertIsNone(reload_object(node_device))
+        assert response.status_code == http.client.NO_CONTENT
+        assert reload_object(node_device) is None
 
     def test_DELETE_admin_only(self):
         node_device = factory.make_NodeDevice()
 
         response = self.client.delete(self.get_node_device_uri(node_device))
-        self.assertEqual(response.status_code, http.client.FORBIDDEN)
-        self.assertIsNotNone(reload_object(node_device))
+        assert response.status_code == http.client.FORBIDDEN
+        assert reload_object(node_device) is not None

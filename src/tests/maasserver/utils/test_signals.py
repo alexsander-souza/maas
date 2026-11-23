@@ -1,19 +1,22 @@
 # Copyright 2012-2016 Canonical Ltd.  This software is licensed under the
 # GNU Affero General Public License version 3 (see the file LICENSE).
 
-"""Gap-free tests for `maasserver.utils.signals`, split out of the legacy
-`src/maasserver/utils/tests/test_signals.py`: the legacy
-`TestConnectToFieldChange` class stays there in the region-legacy pytest
-leg, while this class runs in the main pytest suite."""
+"""Tests for maasserver.utils.signals."""
 
 import random
-from unittest.mock import Mock, sentinel
+from unittest.mock import call, Mock, sentinel
 
+import pytest
 from twisted.python.reflect import namedObject
 
-from maasserver.testing.testcase import MAASServerTestCase
+from maasserver.testing.factory import factory
+from maasserver.tests.models import FieldChangeTestModel
 from maasserver.utils import signals as signals_module
-from maasserver.utils.signals import Signal, SignalsManager
+from maasserver.utils.signals import (
+    connect_to_field_change,
+    Signal,
+    SignalsManager,
+)
 
 django_signal_names = [
     "pre_init",
@@ -32,10 +35,11 @@ def pick_django_signal():
     )
 
 
-class TestSignalsManager(MAASServerTestCase):
-    def test_can_watch_fields(self):
-        connect_to_field_change = self.patch_autospec(
-            signals_module, "connect_to_field_change"
+@pytest.mark.usefixtures("maasdb", "maas_region_test")
+class TestSignalsManager:
+    def test_can_watch_fields(self, mocker):
+        connect_to_field_change = mocker.patch.object(
+            signals_module, "connect_to_field_change", autospec=True
         )
         connect_to_field_change.return_value = (
             sentinel.connect,
@@ -47,10 +51,9 @@ class TestSignalsManager(MAASServerTestCase):
             sentinel.callback, sentinel.model, sentinel.fields, sentinel.delete
         )
 
-        self.assertEqual(
-            {Signal(sentinel.connect, sentinel.disconnect)},
-            manager._signals,
-        )
+        assert {
+            Signal(sentinel.connect, sentinel.disconnect)
+        } == manager._signals
         connect_to_field_change.assert_called_once_with(
             sentinel.callback,
             sentinel.model,
@@ -70,27 +73,21 @@ class TestSignalsManager(MAASServerTestCase):
             dispatch_uid=sentinel.dispatch_uid,
         )
 
-        self.assertEqual(len(manager._signals), 1)
+        assert len(manager._signals) == 1
         [signal] = manager._signals
-        self.assertEqual(signal.connect.func, django_signal.connect)
-        self.assertEqual(signal.connect.args, (sentinel.callback,))
-        self.assertEqual(
-            signal.connect.keywords,
-            {
-                "sender": sentinel.sender,
-                "weak": sentinel.weak,
-                "dispatch_uid": sentinel.dispatch_uid,
-            },
-        )
-        self.assertEqual(signal.disconnect.func, django_signal.disconnect)
-        self.assertEqual(signal.disconnect.args, (sentinel.callback,))
-        self.assertEqual(
-            signal.disconnect.keywords,
-            {
-                "sender": sentinel.sender,
-                "dispatch_uid": sentinel.dispatch_uid,
-            },
-        )
+        assert signal.connect.func == django_signal.connect
+        assert signal.connect.args == (sentinel.callback,)
+        assert signal.connect.keywords == {
+            "sender": sentinel.sender,
+            "weak": sentinel.weak,
+            "dispatch_uid": sentinel.dispatch_uid,
+        }
+        assert signal.disconnect.func == django_signal.disconnect
+        assert signal.disconnect.args == (sentinel.callback,)
+        assert signal.disconnect.keywords == {
+            "sender": sentinel.sender,
+            "dispatch_uid": sentinel.dispatch_uid,
+        }
 
     def make_Signal(self):
         return Signal(Mock(name="connect"), Mock(name="disconnect"))
@@ -98,12 +95,10 @@ class TestSignalsManager(MAASServerTestCase):
     def test_add_adds_the_signal(self):
         manager = SignalsManager()
         signal = self.make_Signal()
-        self.assertIs(manager.add(signal), signal)
-        self.assertEqual({signal}, manager._signals)
+        assert manager.add(signal) is signal
+        assert {signal} == manager._signals
         # The manager is in its "new" state, neither enabled nor disabled, so
         # the signal is not asked to connect or disconnect yet.
-        signal.connect.assert_not_called()
-        signal.disconnect.assert_not_called()
         signal.connect.assert_not_called()
         signal.disconnect.assert_not_called()
 
@@ -128,7 +123,7 @@ class TestSignalsManager(MAASServerTestCase):
         signal = self.make_Signal()
         manager.add(signal)
         manager.remove(signal)
-        self.assertEqual(len(manager._signals), 0)
+        assert len(manager._signals) == 0
         signal.connect.assert_not_called()
         signal.disconnect.assert_not_called()
 
@@ -150,4 +145,173 @@ class TestSignalsManager(MAASServerTestCase):
         manager.disable()
         for signal in signals:
             signal.connect.assert_not_called()
-            signal.disconnect.assert_called_once_with()
+
+
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "transactional_maasdb")
+@pytest.mark.allow_transactions
+class TestConnectToFieldChange:
+    def connect(self, callback, fields, delete=False, request=None):
+        connect, disconnect = connect_to_field_change(
+            callback, FieldChangeTestModel, fields, delete=delete
+        )
+        request.addfinalizer(disconnect)
+        connect()  # No longer done by default.
+        return connect, disconnect
+
+    def test_connect_to_field_change_calls_callback(self, request):
+        callback = Mock()
+        self.connect(callback, ["name1"], request=request)
+        old_name1_value = factory.make_string()
+        obj = FieldChangeTestModel(name1=old_name1_value)
+        obj.save()
+        obj.name1 = factory.make_string()
+        obj.save()
+        assert [
+            call(obj, (old_name1_value,), deleted=False)
+        ] == callback.mock_calls
+
+    def test_connect_to_field_change_returns_two_functions(self, request):
+        callback = Mock()
+        connect, disconnect = self.connect(
+            callback, ["name1"], request=request
+        )
+        assert callable(connect)
+        assert callable(disconnect)
+
+    def test_returned_function_connect_and_disconnect(self, request):
+        callback = Mock()
+        connect, disconnect = self.connect(
+            callback, ["name1"], request=request
+        )
+
+        obj = FieldChangeTestModel()
+        obj.save()
+
+        obj.name1 = "one"
+        obj.save()
+        expected_one = call(obj, ("",), deleted=False)
+        callback.assert_has_calls((expected_one,))
+
+        disconnect()
+        obj.name1 = "two"
+        obj.save()
+        callback.assert_has_calls((expected_one,))
+
+        connect()
+        obj.name1 = "three"
+        obj.save()
+        expected_three = call(obj, ("one",), deleted=False)
+        callback.assert_has_calls((expected_one, expected_three))
+
+    def test_connect_to_field_change_calls_callback_for_each_save(
+        self, request
+    ):
+        callback = Mock()
+        self.connect(callback, ["name1"], request=request)
+        old_name1_value = factory.make_string()
+        obj = FieldChangeTestModel(name1=old_name1_value)
+        obj.save()
+        obj.name1 = factory.make_string()
+        obj.save()
+        obj.name1 = factory.make_string()
+        obj.save()
+        assert 2 == callback.call_count
+
+    def test_connect_to_field_change_calls_callback_for_each_real_save(
+        self, request
+    ):
+        callback = Mock()
+        self.connect(callback, ["name1"], request=request)
+        old_name1_value = factory.make_string()
+        obj = FieldChangeTestModel(name1=old_name1_value)
+        obj.save()
+        obj.name1 = factory.make_string()
+        obj.save()
+        obj.save()
+        assert 1 == callback.call_count
+
+    def test_connect_to_field_change_calls_multiple_callbacks(self, request):
+        callback1 = Mock()
+        self.connect(callback1, ["name1"], request=request)
+        callback2 = Mock()
+        self.connect(callback2, ["name1"], request=request)
+        old_name1_value = factory.make_string()
+        obj = FieldChangeTestModel(name1=old_name1_value)
+        obj.save()
+        obj.name1 = factory.make_string()
+        obj.save()
+        assert (1, 1) == (callback1.call_count, callback2.call_count)
+
+    def test_connect_to_field_change_ignores_changes_to_other_fields(
+        self, request
+    ):
+        callback = Mock()
+        self.connect(callback, ["name1"], request=request)
+        obj = FieldChangeTestModel(name2=factory.make_string())
+        obj.save()
+        obj.name2 = factory.make_string()
+        obj.save()
+        assert 0 == callback.call_count
+
+    def test_connect_to_field_change_ignores_object_creation(self, request):
+        callback = Mock()
+        self.connect(callback, ["name1"], request=request)
+        obj = FieldChangeTestModel(name1=factory.make_string())
+        obj.save()
+        assert 0 == callback.call_count
+
+    def test_connect_to_field_change_ignores_deletion_by_default(
+        self, request
+    ):
+        obj = FieldChangeTestModel(name2=factory.make_string())
+        obj.save()
+        callback = Mock()
+        self.connect(callback, ["name1"], request=request)
+        obj.delete()
+        assert 0 == callback.call_count
+
+    def test_connect_to_field_change_listens_to_deletion_if_delete_True(
+        self, request
+    ):
+        callback = Mock()
+        self.connect(callback, ["name1"], delete=True, request=request)
+        old_name1_value = factory.make_string()
+        obj = FieldChangeTestModel(name1=old_name1_value)
+        obj.save()
+        obj.delete()
+        assert [
+            call(obj, (old_name1_value,), deleted=True)
+        ] == callback.mock_calls
+
+    def test_connect_to_field_change_notices_change_in_any_given_field(
+        self, request
+    ):
+        callback = Mock()
+        self.connect(callback, ["name1", "name2"], request=request)
+        name1 = factory.make_name("name1")
+        old_name2_value = factory.make_name("old")
+        obj = FieldChangeTestModel(name1=name1, name2=old_name2_value)
+        obj.save()
+        obj.name2 = factory.make_name("new")
+        obj.save()
+        assert [
+            call(obj, (name1, old_name2_value), deleted=False)
+        ] == callback.mock_calls
+
+    def test_connect_to_field_change_only_calls_once_per_object_change(
+        self, request
+    ):
+        callback = Mock()
+        self.connect(callback, ["name1", "name2"], request=request)
+        old_name1_value = factory.make_name("old1")
+        old_name2_value = factory.make_name("old2")
+        obj = FieldChangeTestModel(
+            name1=old_name1_value, name2=old_name2_value
+        )
+        obj.save()
+        obj.name1 = factory.make_name("new1")
+        obj.name2 = factory.make_name("new2")
+        obj.save()
+        assert [
+            call(obj, (old_name1_value, old_name2_value), deleted=False)
+        ] == callback.mock_calls

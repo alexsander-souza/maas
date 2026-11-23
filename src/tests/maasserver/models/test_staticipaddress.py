@@ -4,7 +4,6 @@ from datetime import datetime
 import ipaddress
 from random import randint, shuffle
 import threading
-from unittest import TestCase
 from unittest.mock import call, sentinel
 
 from django.core.exceptions import ValidationError
@@ -12,6 +11,7 @@ from django.db import IntegrityError
 from django.utils import timezone
 from netaddr import IPAddress
 from psycopg2.errorcodes import FOREIGN_KEY_VIOLATION
+import pytest
 from twisted.python.failure import Failure
 
 from maascommon.dns import (
@@ -42,10 +42,6 @@ from maasserver.models.domain import Domain
 from maasserver.models.staticipaddress import StaticIPAddress
 from maasserver.sqlalchemy import service_layer
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import (
-    MAASServerTestCase,
-    MAASTransactionServerTestCase,
-)
 from maasserver.utils import orm
 from maasserver.utils.orm import (
     post_commit_hooks,
@@ -55,17 +51,14 @@ from maasserver.utils.orm import (
 from maasserver.websockets.base import dehydrate_datetime
 
 
-class TestStaticIPAddressManager(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "mock_openfga", "mock_start_workflows")
+class TestStaticIPAddressManager:
     def test_allocate_new_returns_ip_in_correct_range(self):
         subnet = factory.make_managed_Subnet()
         with post_commit_hooks:
             ipaddress = StaticIPAddress.objects.allocate_new(subnet)
-        self.assertIsInstance(ipaddress, StaticIPAddress)
-        self.assertTrue(
-            subnet.is_valid_static_ip(ipaddress.ip),
-            "%s: not valid for subnet with reserved IPs: %r"
-            % (ipaddress.ip, subnet.get_ipranges_in_use()),
-        )
+        assert isinstance(ipaddress, StaticIPAddress)
+        assert subnet.is_valid_static_ip(ipaddress.ip)
 
     def test_allocate_new_allocates_IPv6_address(self):
         subnet = factory.make_managed_Subnet(ipv6=True)
@@ -73,8 +66,8 @@ class TestStaticIPAddressManager(MAASServerTestCase):
         with post_commit_hooks:
             ipaddress = StaticIPAddress.objects.allocate_new(subnet)
 
-        self.assertIsInstance(ipaddress, StaticIPAddress)
-        self.assertTrue(subnet.is_valid_static_ip(ipaddress.ip))
+        assert isinstance(ipaddress, StaticIPAddress)
+        assert subnet.is_valid_static_ip(ipaddress.ip)
 
     def test_allocate_new_sets_user(self):
         subnet = factory.make_managed_Subnet()
@@ -87,7 +80,7 @@ class TestStaticIPAddressManager(MAASServerTestCase):
                 user=user,
             )
 
-        self.assertEqual(user, ipaddress.user)
+        assert user == ipaddress.user
 
     def test_allocate_new_with_user_disallows_wrong_alloc_types(self):
         subnet = factory.make_managed_Subnet()
@@ -100,22 +93,17 @@ class TestStaticIPAddressManager(MAASServerTestCase):
                 IPADDRESS_TYPE.USER_RESERVED,
             ],
         )
-        self.assertRaises(
-            AssertionError,
-            StaticIPAddress.objects.allocate_new,
-            subnet,
-            user=user,
-            alloc_type=alloc_type,
-        )
+        with pytest.raises(AssertionError):
+            StaticIPAddress.objects.allocate_new(
+                subnet, user=user, alloc_type=alloc_type
+            )
 
     def test_allocate_new_with_reserved_type_requires_a_user(self):
         subnet = factory.make_managed_Subnet()
-        self.assertRaises(
-            AssertionError,
-            StaticIPAddress.objects.allocate_new,
-            subnet,
-            alloc_type=IPADDRESS_TYPE.USER_RESERVED,
-        )
+        with pytest.raises(AssertionError):
+            StaticIPAddress.objects.allocate_new(
+                subnet, alloc_type=IPADDRESS_TYPE.USER_RESERVED
+            )
 
     def test_allocate_new_returns_lowest_available_ip(self):
         subnet = factory.make_Subnet(cidr="10.0.0.0/24", gateway_ip="10.0.0.1")
@@ -125,7 +113,7 @@ class TestStaticIPAddressManager(MAASServerTestCase):
         subnet = reload_object(subnet)
         with post_commit_hooks:
             ipaddress = StaticIPAddress.objects.allocate_new(subnet)
-        self.assertEqual(ipaddress.ip, "10.0.0.98")
+        assert ipaddress.ip == "10.0.0.98"
 
     def test_allocate_new_returns_requested_IP_if_available(self):
         subnet = factory.make_Subnet(cidr="10.0.0.0/24")
@@ -143,7 +131,7 @@ class TestStaticIPAddressManager(MAASServerTestCase):
                 ),
                 requested_address="10.0.0.1",
             )
-        self.assertEqual("10.0.0.1", ipaddress.ip)
+        assert "10.0.0.1" == ipaddress.ip
 
     def test_allocate_new_raises_when_requested_IP_unavailable(self):
         subnet = factory.make_ipv4_Subnet_with_IPRanges()
@@ -160,35 +148,32 @@ class TestStaticIPAddressManager(MAASServerTestCase):
                 ),
             ).ip
 
-        self.assertRaises(
-            StaticIPAddressUnavailable,
-            StaticIPAddress.objects.allocate_new,
-            subnet,
-            requested_address=requested_address,
-        )
+        with pytest.raises(StaticIPAddressUnavailable):
+            StaticIPAddress.objects.allocate_new(
+                subnet, requested_address=requested_address
+            )
 
     def test_allocate_new_raises_when_requested_IP_out_of_network(self):
         subnet = factory.make_Subnet(cidr="10.0.0.0/24")
         requested_address = "10.0.1.1"
-        e = self.assertRaises(
-            StaticIPAddressOutOfRange,
-            StaticIPAddress.objects.allocate_new,
-            subnet,
-            factory.pick_enum(
-                IPADDRESS_TYPE,
-                but_not=[
-                    IPADDRESS_TYPE.DHCP,
-                    IPADDRESS_TYPE.DISCOVERED,
-                    IPADDRESS_TYPE.USER_RESERVED,
-                ],
-            ),
-            requested_address=requested_address,
-        )
-        self.assertEqual(
+        with pytest.raises(StaticIPAddressOutOfRange) as _exc:
+            StaticIPAddress.objects.allocate_new(
+                subnet,
+                factory.pick_enum(
+                    IPADDRESS_TYPE,
+                    but_not=[
+                        IPADDRESS_TYPE.DHCP,
+                        IPADDRESS_TYPE.DISCOVERED,
+                        IPADDRESS_TYPE.USER_RESERVED,
+                    ],
+                ),
+                requested_address=requested_address,
+            )
+        e = _exc.value
+        assert (
             "%s is not within subnet CIDR: %s"
-            % (requested_address, str(subnet.get_ipnetwork())),
-            str(e),
-        )
+            % (requested_address, str(subnet.get_ipnetwork()))
+        ) == str(e)
 
     def test_allocate_new_raises_when_requested_IP_in_dynamic_range(self):
         subnet = factory.make_ipv4_Subnet_with_IPRanges()
@@ -196,47 +181,44 @@ class TestStaticIPAddressManager(MAASServerTestCase):
         requested_address = str(IPAddress(dynamic_range.netaddr_iprange.first))
         dynamic_range_end = str(IPAddress(dynamic_range.netaddr_iprange.last))
         subnet = reload_object(subnet)
-        e = self.assertRaises(
-            StaticIPAddressUnavailable,
-            StaticIPAddress.objects.allocate_new,
-            subnet,
-            factory.pick_enum(
-                IPADDRESS_TYPE,
-                but_not=[
-                    IPADDRESS_TYPE.DHCP,
-                    IPADDRESS_TYPE.DISCOVERED,
-                    IPADDRESS_TYPE.USER_RESERVED,
-                ],
-            ),
-            requested_address=requested_address,
-        )
-        self.assertEqual(
+        with pytest.raises(StaticIPAddressUnavailable) as _exc:
+            StaticIPAddress.objects.allocate_new(
+                subnet,
+                factory.pick_enum(
+                    IPADDRESS_TYPE,
+                    but_not=[
+                        IPADDRESS_TYPE.DHCP,
+                        IPADDRESS_TYPE.DISCOVERED,
+                        IPADDRESS_TYPE.USER_RESERVED,
+                    ],
+                ),
+                requested_address=requested_address,
+            )
+        e = _exc.value
+        assert (
             "%s is within the dynamic range from %s to %s"
-            % (requested_address, requested_address, dynamic_range_end),
-            str(e),
-        )
+            % (requested_address, requested_address, dynamic_range_end)
+        ) == str(e)
 
     def test_allocate_new_raises_when_alloc_type_is_None(self):
-        error = self.assertRaises(
-            ValueError,
-            StaticIPAddress.objects.allocate_new,
-            sentinel.subnet,
-            alloc_type=None,
-        )
-        self.assertEqual(
-            "IP address type None is not allowed to use allocate_new.",
-            str(error),
+        with pytest.raises(ValueError) as _exc:
+            StaticIPAddress.objects.allocate_new(
+                sentinel.subnet, alloc_type=None
+            )
+        error = _exc.value
+        assert (
+            "IP address type None is not allowed to use allocate_new."
+            == str(error)
         )
 
     def test_allocate_new_raises_when_alloc_type_is_not_allowed(self):
-        error = self.assertRaises(
-            ValueError,
-            StaticIPAddress.objects.allocate_new,
-            sentinel.subnet,
-            alloc_type=IPADDRESS_TYPE.DHCP,
-        )
-        self.assertEqual(
-            "IP address type 5 is not allowed to use allocate_new.", str(error)
+        with pytest.raises(ValueError) as _exc:
+            StaticIPAddress.objects.allocate_new(
+                sentinel.subnet, alloc_type=IPADDRESS_TYPE.DHCP
+            )
+        error = _exc.value
+        assert "IP address type 5 is not allowed to use allocate_new." == str(
+            error
         )
 
     def test_allocate_new_raises_when_addresses_exhausted(self):
@@ -248,62 +230,53 @@ class TestStaticIPAddressManager(MAASServerTestCase):
             "192.168.230.254",
             alloc_type=IPRANGE_TYPE.RESERVED,
         )
-        e = self.assertRaises(
-            StaticIPAddressExhaustion,
-            StaticIPAddress.objects.allocate_new,
-            subnet,
-        )
-        self.assertEqual(
-            "No more IPs available in subnet: %s." % subnet.cidr, str(e)
-        )
+        with pytest.raises(StaticIPAddressExhaustion) as _exc:
+            StaticIPAddress.objects.allocate_new(subnet)
+        e = _exc.value
+        assert "No more IPs available in subnet: %s." % subnet.cidr == str(e)
 
-    def test_allocate_new_requests_retry_when_free_address_taken(self):
-        set_ip_address = self.patch(StaticIPAddress, "set_ip_address")
+    def test_allocate_new_requests_retry_when_free_address_taken(self, mocker):
+        set_ip_address = mocker.patch.object(StaticIPAddress, "set_ip_address")
         set_ip_address.side_effect = orm.make_unique_violation()
         with orm.retry_context:
             # A retry has been requested.
-            self.assertRaises(
-                orm.RetryTransaction,
-                StaticIPAddress.objects.allocate_new,
-                subnet=factory.make_managed_Subnet(),
-            )
+            with pytest.raises(orm.RetryTransaction):
+                StaticIPAddress.objects.allocate_new(
+                    subnet=factory.make_managed_Subnet()
+                )
             # Aquisition of `address_allocation` is pending.
-            self.assertEqual(
-                [locks.address_allocation],
-                list(orm.retry_context.stack._cm_pending),
+            assert [locks.address_allocation] == list(
+                orm.retry_context.stack._cm_pending
             )
 
     def test_allocate_new_requests_retry_when_free_address_taken_ValidationError(
-        self,
+        self, mocker
     ):
-        set_ip_address = self.patch(StaticIPAddress, "set_ip_address")
+        set_ip_address = mocker.patch.object(StaticIPAddress, "set_ip_address")
         set_ip_address.side_effect = ValidationError("unique validation error")
         with orm.retry_context:
             # A retry has been requested.
-            self.assertRaises(
-                orm.RetryTransaction,
-                StaticIPAddress.objects.allocate_new,
-                subnet=factory.make_managed_Subnet(),
-            )
+            with pytest.raises(orm.RetryTransaction):
+                StaticIPAddress.objects.allocate_new(
+                    subnet=factory.make_managed_Subnet()
+                )
             # Aquisition of `address_allocation` is pending.
-            self.assertEqual(
-                [locks.address_allocation],
-                list(orm.retry_context.stack._cm_pending),
+            assert [locks.address_allocation] == list(
+                orm.retry_context.stack._cm_pending
             )
 
-    def test_allocate_new_propagates_other_integrity_errors(self):
-        set_ip_address = self.patch(StaticIPAddress, "set_ip_address")
+    def test_allocate_new_propagates_other_integrity_errors(self, mocker):
+        set_ip_address = mocker.patch.object(StaticIPAddress, "set_ip_address")
         set_ip_address.side_effect = orm.make_unique_violation()
         set_ip_address.side_effect.__cause__.pgcode = FOREIGN_KEY_VIOLATION
         with orm.retry_context:
             # An integrity error that's not `UNIQUE_VIOLATION` is propagated.
-            self.assertRaises(
-                IntegrityError,
-                StaticIPAddress.objects.allocate_new,
-                subnet=factory.make_managed_Subnet(),
-            )
+            with pytest.raises(IntegrityError):
+                StaticIPAddress.objects.allocate_new(
+                    subnet=factory.make_managed_Subnet()
+                )
             # There is no pending retry context.
-            self.assertEqual(len(orm.retry_context.stack._cm_pending), 0)
+            assert len(orm.retry_context.stack._cm_pending) == 0
 
     def test_allocate_new_returns_requested_IP_without_validation(self):
         subnet = factory.make_Subnet(cidr="10.0.0.0/24")
@@ -321,17 +294,23 @@ class TestStaticIPAddressManager(MAASServerTestCase):
                 restrict_ip_to_unreserved_ranges=False,
             )
 
-        self.assertEqual("10.0.0.101", ipaddress.ip)
+        assert "10.0.0.101" == ipaddress.ip
 
 
-class TestStaticIPAddressManagerTransactional(MAASTransactionServerTestCase):
+@pytest.mark.allow_transactions
+@pytest.mark.parametrize("ip_version", [4, 6], ids=["IPv4", "IPv6"])
+class TestStaticIPAddressManagerTransactional:
     """Transactional tests for `StaticIPAddressManager."""
 
-    scenarios = (("IPv4", dict(ip_version=4)), ("IPv6", dict(ip_version=6)))
+    @pytest.fixture(autouse=True)
+    def _setup(self, transactional_maasdb, mock_openfga, mock_start_workflows):
+        pass
 
-    def test_allocate_new_works_under_extreme_concurrency(self):
-        self.patch(static_ip_address_module, "post_commit_do")
-        ipv6 = self.ip_version == 6
+    def test_allocate_new_works_under_extreme_concurrency(
+        self, mocker, ip_version
+    ):
+        mocker.patch.object(static_ip_address_module, "post_commit_do")
+        ipv6 = ip_version == 6
         subnet = factory.make_managed_Subnet(ipv6=ipv6)
         count = 20  # Allocate this number of IP addresses.
         concurrency = threading.Semaphore(16)
@@ -368,14 +347,15 @@ class TestStaticIPAddressManagerTransactional(MAASTransactionServerTestCase):
             thread.join()
 
         for result in results:
-            self.assertIsInstance(result, StaticIPAddress)
+            assert isinstance(result, StaticIPAddress)
         ips = {sip.ip for sip in results}
-        self.assertEqual(len(ips), count)
+        assert len(ips) == count
         for ip in ips:
-            self.assertTrue(subnet.is_valid_static_ip(ip))
+            assert subnet.is_valid_static_ip(ip)
 
 
-class TestStaticIPAddressManagerMapping(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "mock_openfga", "mock_start_workflows")
+class TestStaticIPAddressManagerMapping:
     def test_get_hostname_ip_mapping_returns_mapping(self):
         domain = Domain.objects.get_default_domain()
         expected_mapping = {}
@@ -399,7 +379,7 @@ class TestStaticIPAddressManagerMapping(MAASServerTestCase):
         mapping = service_layer.services.domains.get_hostname_ip_mapping(
             domain.id
         )
-        self.assertEqual(expected_mapping, mapping)
+        assert expected_mapping == mapping
 
     def test_get_hostname_ip_mapping_includes_user_id(self):
         user = factory.make_User()
@@ -421,7 +401,7 @@ class TestStaticIPAddressManagerMapping(MAASServerTestCase):
             domain.id
         )
         fqdn = f"{node.hostname}.{domain.name}"
-        self.assertEqual(mapping[fqdn].user_id, user.id)
+        assert mapping[fqdn].user_id == user.id
 
     def test_get_hostname_ip_mapping_returns_all_mappings_for_subnet(self):
         domain = Domain.objects.get_default_domain()
@@ -447,7 +427,7 @@ class TestStaticIPAddressManagerMapping(MAASServerTestCase):
         # get all of them.
         # We don't pass subnets anymore.
         mapping = service_layer.services.domains.get_hostname_ip_mapping()
-        self.assertEqual(expected_mapping, mapping)
+        assert expected_mapping == mapping
 
     def test_get_hostname_ip_mapping_only_node_current_interfaces(self):
         domain = Domain.objects.get_default_domain()
@@ -470,8 +450,9 @@ class TestStaticIPAddressManagerMapping(MAASServerTestCase):
             subnet=subnet,
             interface=interface2,
         )
-        self.assertEqual(
-            dict(service_layer.services.domains.get_hostname_ip_mapping()),
+        assert dict(
+            service_layer.services.domains.get_hostname_ip_mapping()
+        ) == (
             {
                 f"{node.hostname}.{domain.name}": HostnameIPMapping(
                     node.system_id,
@@ -479,7 +460,7 @@ class TestStaticIPAddressManagerMapping(MAASServerTestCase):
                     {ipaddress.ip_address(staticip1.ip)},
                     node.node_type,
                 ),
-            },
+            }
         )
 
     def test_get_hostname_ip_mapping_ip_order(self):
@@ -499,8 +480,9 @@ class TestStaticIPAddressManagerMapping(MAASServerTestCase):
             subnet=subnet,
             interface=interface1,
         )
-        self.assertEqual(
-            dict(service_layer.services.domains.get_hostname_ip_mapping()),
+        assert dict(
+            service_layer.services.domains.get_hostname_ip_mapping()
+        ) == (
             {
                 f"{node.hostname}.{domain.name}": HostnameIPMapping(
                     node.system_id,
@@ -514,7 +496,7 @@ class TestStaticIPAddressManagerMapping(MAASServerTestCase):
                     {ipaddress.ip_address(staticip2.ip)},
                     node.node_type,
                 ),
-            },
+            }
         )
 
     def test_get_hostname_ip_mapping_returns_fqdn_and_other(self):
@@ -560,7 +542,7 @@ class TestStaticIPAddressManagerMapping(MAASServerTestCase):
                 node.node_type,
             ),
         }
-        self.assertEqual(expected, mapping)
+        assert expected == mapping
 
     def test_get_hostname_ip_mapping_sanitized_iface_name(self):
         hostname = factory.make_name("hostname")
@@ -606,7 +588,7 @@ class TestStaticIPAddressManagerMapping(MAASServerTestCase):
                 node.node_type,
             ),
         }
-        self.assertEqual(expected, mapping)
+        assert expected == mapping
 
     def make_mapping(self, node, raw_ttl=False):
         if raw_ttl or node.address_ttl is not None:
@@ -655,7 +637,7 @@ class TestStaticIPAddressManagerMapping(MAASServerTestCase):
             actual = service_layer.services.domains.get_hostname_ip_mapping(
                 dom.id
             )
-            self.assertEqual(expected_mapping, actual)
+            assert expected_mapping == actual
 
     def test_get_hostname_ip_mapping_returns_raw_ttl(self):
         # We create 2 domains, one with a ttl, one withoout.
@@ -692,7 +674,7 @@ class TestStaticIPAddressManagerMapping(MAASServerTestCase):
             actual = service_layer.services.domains.get_hostname_ip_mapping(
                 dom.id, raw_ttl=True
             )
-            self.assertEqual(expected_mapping, actual)
+            assert expected_mapping == actual
 
     def test_get_hostname_ip_mapping_picks_mac_with_static_address(self):
         node = factory.make_Node_with_Interface_on_Subnet(
@@ -709,7 +691,7 @@ class TestStaticIPAddressManagerMapping(MAASServerTestCase):
         mapping = service_layer.services.domains.get_hostname_ip_mapping(
             node.domain.id
         )
-        self.assertEqual(
+        assert (
             {
                 node.fqdn: HostnameIPMapping(
                     node.system_id,
@@ -717,9 +699,8 @@ class TestStaticIPAddressManagerMapping(MAASServerTestCase):
                     {ipaddress.ip_address(staticip.ip)},
                     node.node_type,
                 )
-            },
-            mapping,
-        )
+            }
+        ) == mapping
 
     def test_get_hostname_ip_mapping_considers_given_domain(self):
         domain = factory.make_Domain()
@@ -727,7 +708,7 @@ class TestStaticIPAddressManagerMapping(MAASServerTestCase):
         mapping = service_layer.services.domains.get_hostname_ip_mapping(
             factory.make_Domain().id
         )
-        self.assertEqual({}, mapping)
+        assert {} == mapping
 
     def test_get_hostname_ip_mapping_picks_oldest_nic_with_sticky_ip(self):
         subnet = factory.make_Subnet(
@@ -765,7 +746,7 @@ class TestStaticIPAddressManagerMapping(MAASServerTestCase):
                 node.node_type,
             ),
         }
-        self.assertEqual(expected_mapping, mapping)
+        assert expected_mapping == mapping
 
     def test_get_hostname_ip_mapping_picks_sticky_over_auto(self):
         subnet = factory.make_Subnet(
@@ -801,7 +782,7 @@ class TestStaticIPAddressManagerMapping(MAASServerTestCase):
                 node.node_type,
             ),
         }
-        self.assertEqual(expected_mapping, mapping)
+        assert expected_mapping == mapping
 
     def test_get_hostname_ip_mapping_combines_IPv4_and_IPv6_addresses(self):
         node = factory.make_Node(interface=True)
@@ -823,7 +804,7 @@ class TestStaticIPAddressManagerMapping(MAASServerTestCase):
         mapping = service_layer.services.domains.get_hostname_ip_mapping(
             node.domain.id
         )
-        self.assertEqual(
+        assert (
             {
                 node.fqdn: HostnameIPMapping(
                     node.system_id,
@@ -834,9 +815,8 @@ class TestStaticIPAddressManagerMapping(MAASServerTestCase):
                     },
                     node.node_type,
                 )
-            },
-            mapping,
-        )
+            }
+        ) == mapping
 
     def test_get_hostname_ip_mapping_combines_MACs_for_same_node(self):
         # A node's preferred static IPv4 and IPv6 addresses may be on
@@ -865,7 +845,7 @@ class TestStaticIPAddressManagerMapping(MAASServerTestCase):
         mapping = service_layer.services.domains.get_hostname_ip_mapping(
             node.domain.id
         )
-        self.assertEqual(
+        assert (
             {
                 node.fqdn: HostnameIPMapping(
                     node.system_id,
@@ -876,9 +856,8 @@ class TestStaticIPAddressManagerMapping(MAASServerTestCase):
                     },
                     node.node_type,
                 )
-            },
-            mapping,
-        )
+            }
+        ) == mapping
 
     def test_get_hostname_ip_mapping_prefers_non_discovered_addresses(self):
         subnet = factory.make_Subnet(
@@ -907,7 +886,7 @@ class TestStaticIPAddressManagerMapping(MAASServerTestCase):
                 node.node_type,
             )
         }
-        self.assertEqual(expected_mapping, mapping)
+        assert expected_mapping == mapping
 
     def test_get_hostname_ip_mapping_ignores_temp_ip_address(self):
         subnet = factory.make_Subnet(
@@ -939,7 +918,7 @@ class TestStaticIPAddressManagerMapping(MAASServerTestCase):
                 node.node_type,
             )
         }
-        self.assertEqual(expected_mapping, mapping)
+        assert expected_mapping == mapping
 
     def test_get_hostname_ip_mapping_prefers_non_ula_addresses(self):
         subnet = factory.make_Subnet(cidr="2001:db8::/64")
@@ -973,7 +952,7 @@ class TestStaticIPAddressManagerMapping(MAASServerTestCase):
                 node.node_type,
             ),
         }
-        self.assertEqual(expected_mapping, mapping)
+        assert expected_mapping == mapping
 
     def test_get_hostname_ip_mapping_prefers_bond_with_no_boot_interface(self):
         subnet = factory.make_Subnet(
@@ -1021,7 +1000,7 @@ class TestStaticIPAddressManagerMapping(MAASServerTestCase):
                 node.node_type,
             ),
         }
-        self.assertEqual(expected_mapping, mapping)
+        assert expected_mapping == mapping
 
     def test_get_hostname_ip_mapping_prefers_bond_with_boot_interface(self):
         subnet = factory.make_Subnet(
@@ -1055,7 +1034,7 @@ class TestStaticIPAddressManagerMapping(MAASServerTestCase):
                 node.node_type,
             )
         }
-        self.assertEqual(expected_mapping, mapping)
+        assert expected_mapping == mapping
 
     def test_get_hostname_ip_mapping_ignores_bond_without_boot_interface(self):
         subnet = factory.make_Subnet(
@@ -1099,7 +1078,7 @@ class TestStaticIPAddressManagerMapping(MAASServerTestCase):
                 node.node_type,
             ),
         }
-        self.assertEqual(expected_mapping, mapping)
+        assert expected_mapping == mapping
 
     def test_get_hostname_ip_mapping_prefers_boot_interface(self):
         subnet = factory.make_Subnet(
@@ -1140,7 +1119,7 @@ class TestStaticIPAddressManagerMapping(MAASServerTestCase):
                 node.node_type,
             ),
         }
-        self.assertEqual(expected_mapping, mapping)
+        assert expected_mapping == mapping
 
     def test_get_hostname_ip_mapping_prefers_boot_interface_to_alias(self):
         subnet = factory.make_Subnet(
@@ -1181,7 +1160,7 @@ class TestStaticIPAddressManagerMapping(MAASServerTestCase):
                 node.node_type,
             ),
         }
-        self.assertEqual(expected_mapping, mapping)
+        assert expected_mapping == mapping
 
     def test_get_hostname_ip_mapping_prefers_physical_interfaces_to_vlan(self):
         subnet = factory.make_Subnet(
@@ -1221,7 +1200,7 @@ class TestStaticIPAddressManagerMapping(MAASServerTestCase):
                 node.node_type,
             ),
         }
-        self.assertEqual(expected_mapping, mapping)
+        assert expected_mapping == mapping
 
     def test_get_hostname_ip_mapping_prefers_bridged_bond_pxe_interface(self):
         subnet = factory.make_Subnet(
@@ -1278,7 +1257,7 @@ class TestStaticIPAddressManagerMapping(MAASServerTestCase):
                 node.node_type,
             ),
         }
-        self.assertEqual(mapping, expected_mapping)
+        assert mapping == expected_mapping
 
     def test_get_hostname_ip_mapping_with_v4_and_v6_and_bridged_bonds(self):
         subnet_v4 = factory.make_Subnet(
@@ -1347,7 +1326,7 @@ class TestStaticIPAddressManagerMapping(MAASServerTestCase):
                 node.node_type,
             ),
         }
-        self.assertEqual(mapping, expected_mapping)
+        assert mapping == expected_mapping
 
     def test_get_hostname_ip_mapping_returns_domain_head_ips(self):
         parent = factory.make_Domain()
@@ -1362,7 +1341,7 @@ class TestStaticIPAddressManagerMapping(MAASServerTestCase):
         mapping = service_layer.services.domains.get_hostname_ip_mapping(
             parent.id
         )
-        self.assertEqual(
+        assert (
             {
                 node.fqdn: HostnameIPMapping(
                     node.system_id,
@@ -1370,13 +1349,12 @@ class TestStaticIPAddressManagerMapping(MAASServerTestCase):
                     {ipaddress.ip_address(sip1.ip)},
                     node.node_type,
                 )
-            },
-            mapping,
-        )
+            }
+        ) == mapping
         mapping = service_layer.services.domains.get_hostname_ip_mapping(
             child.id
         )
-        self.assertEqual(
+        assert (
             {
                 node.fqdn: HostnameIPMapping(
                     node.system_id,
@@ -1384,9 +1362,8 @@ class TestStaticIPAddressManagerMapping(MAASServerTestCase):
                     {ipaddress.ip_address(sip1.ip)},
                     node.node_type,
                 )
-            },
-            mapping,
-        )
+            }
+        ) == mapping
 
     def test_get_hostname_ip_mapping_does_not_return_discovered_and_auto(self):
         # Create a situation where we have an AUTO ip on the pxeboot interface,
@@ -1432,7 +1409,7 @@ class TestStaticIPAddressManagerMapping(MAASServerTestCase):
                 node.node_type,
             )
         }
-        self.assertEqual(expected_mapping, mapping)
+        assert expected_mapping == mapping
 
     def test_get_hostname_ip_mapping_returns_correct_bond_ip(self):
         # Create a situation where we have a STICKY ip on the pxeboot
@@ -1492,7 +1469,7 @@ class TestStaticIPAddressManagerMapping(MAASServerTestCase):
                 node.node_type,
             )
         }
-        self.assertEqual(expected_mapping, mapping)
+        assert expected_mapping == mapping
 
     def test_get_hostname_ip_mapping_handles_dnsrr_node_collision(self):
         hostname = factory.make_name("hostname")
@@ -1565,16 +1542,17 @@ class TestStaticIPAddressManagerMapping(MAASServerTestCase):
                 sip3.dnsresource_set.first().id,
             ),
         }
-        self.assertEqual(expected, mapping)
+        assert expected == mapping
 
 
-class TestStaticIPAddress(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "mock_openfga", "mock_start_workflows")
+class TestStaticIPAddress:
     def test_repr_with_valid_type(self):
         # Using USER_RESERVED here because it doesn't validate the Subnet.
         actual = "%s" % factory.make_StaticIPAddress(
             ip="10.0.0.1", alloc_type=IPADDRESS_TYPE.USER_RESERVED
         )
-        self.assertEqual("10.0.0.1:type=USER_RESERVED", actual)
+        assert "10.0.0.1:type=USER_RESERVED" == actual
 
     def test_repr_with_invalid_type(self):
         actual = "%s" % factory.make_StaticIPAddress(
@@ -1582,56 +1560,45 @@ class TestStaticIPAddress(MAASServerTestCase):
             alloc_type=99999,
             subnet=factory.make_Subnet(cidr="10.0.0.0/8"),
         )
-        self.assertEqual("10.0.0.1:type=99999", actual)
+        assert "10.0.0.1:type=99999" == actual
 
     def test_stores_to_database(self):
         ipaddress = factory.make_StaticIPAddress()
-        self.assertEqual([ipaddress], list(StaticIPAddress.objects.all()))
+        assert [ipaddress] == list(StaticIPAddress.objects.all())
 
     def test_invalid_address_raises_validation_error(self):
         ip = StaticIPAddress(ip="256.0.0.0.0")
-        self.assertRaises(ValidationError, ip.full_clean)
+        with pytest.raises(ValidationError):
+            ip.full_clean()
 
     def test_get_interface_link_type_returns_AUTO_for_AUTO(self):
         ip = StaticIPAddress(alloc_type=IPADDRESS_TYPE.AUTO)
-        self.assertEqual(
-            INTERFACE_LINK_TYPE.AUTO, ip.get_interface_link_type()
-        )
+        assert INTERFACE_LINK_TYPE.AUTO == ip.get_interface_link_type()
 
     def test_get_interface_link_type_returns_DHCP_for_DHCP(self):
         ip = StaticIPAddress(alloc_type=IPADDRESS_TYPE.DHCP)
-        self.assertEqual(
-            INTERFACE_LINK_TYPE.DHCP, ip.get_interface_link_type()
-        )
+        assert INTERFACE_LINK_TYPE.DHCP == ip.get_interface_link_type()
 
     def test_get_interface_link_type_returns_STATIC_for_USER_RESERVED(self):
         ip = StaticIPAddress(alloc_type=IPADDRESS_TYPE.USER_RESERVED)
-        self.assertEqual(
-            INTERFACE_LINK_TYPE.STATIC, ip.get_interface_link_type()
-        )
+        assert INTERFACE_LINK_TYPE.STATIC == ip.get_interface_link_type()
 
     def test_get_interface_link_type_returns_STATIC_for_DISCOVERED(self):
         ip = StaticIPAddress(alloc_type=IPADDRESS_TYPE.DISCOVERED)
-        self.assertEqual(
-            INTERFACE_LINK_TYPE.DHCP, ip.get_interface_link_type()
-        )
+        assert INTERFACE_LINK_TYPE.DHCP == ip.get_interface_link_type()
 
     def test_get_interface_link_type_returns_STATIC_for_STICKY_with_ip(self):
         ip = StaticIPAddress(
             alloc_type=IPADDRESS_TYPE.STICKY, ip=factory.make_ipv4_address()
         )
-        self.assertEqual(
-            INTERFACE_LINK_TYPE.STATIC, ip.get_interface_link_type()
-        )
+        assert INTERFACE_LINK_TYPE.STATIC == ip.get_interface_link_type()
 
     def test_get_interface_link_type_returns_LINK_UP_for_STICKY_no_ip(self):
         ip = StaticIPAddress(alloc_type=IPADDRESS_TYPE.STICKY, ip="")
-        self.assertEqual(
-            INTERFACE_LINK_TYPE.LINK_UP, ip.get_interface_link_type()
-        )
+        assert INTERFACE_LINK_TYPE.LINK_UP == ip.get_interface_link_type()
 
-    def test_save_create_calls_dhcp_configure_workflow(self):
-        mock_start_workflow = self.patch(
+    def test_save_create_calls_dhcp_configure_workflow(self, mocker):
+        mock_start_workflow = mocker.patch.object(
             static_ip_address_module, "start_workflow"
         )
         subnet = factory.make_Subnet(cidr="10.0.0.0/24")
@@ -1648,8 +1615,8 @@ class TestStaticIPAddress(MAASServerTestCase):
             task_queue="region",
         )
 
-    def test_save_new_subnet_calls_dhcp_configure_workflow(self):
-        mock_start_workflow = self.patch(
+    def test_save_new_subnet_calls_dhcp_configure_workflow(self, mocker):
+        mock_start_workflow = mocker.patch.object(
             static_ip_address_module, "start_workflow"
         )
         subnet1 = factory.make_Subnet(cidr="10.0.0.0/20")
@@ -1664,17 +1631,16 @@ class TestStaticIPAddress(MAASServerTestCase):
             ip.subnet = subnet2
             ip.save()
 
-        self.assertIn(
+        assert (
             call(
                 workflow_name=CONFIGURE_DHCP_WORKFLOW_NAME,
                 param=ConfigureDHCPParam(subnet_ids=[subnet1.id, subnet2.id]),
                 task_queue="region",
-            ),
-            mock_start_workflow.mock_calls,
-        )
+            )
+        ) in mock_start_workflow.mock_calls
 
-    def test_save_new_ip_calls_dhcp_configure_workflow(self):
-        mock_start_workflow = self.patch(
+    def test_save_new_ip_calls_dhcp_configure_workflow(self, mocker):
+        mock_start_workflow = mocker.patch.object(
             static_ip_address_module, "start_workflow"
         )
         subnet = factory.make_Subnet(cidr="10.0.0.0/24")
@@ -1693,8 +1659,10 @@ class TestStaticIPAddress(MAASServerTestCase):
             task_queue="region",
         )
 
-    def test_save_released_ip_calls_dhcp_configure_workflow_with_subnet(self):
-        mock_start_workflow = self.patch(
+    def test_save_released_ip_calls_dhcp_configure_workflow_with_subnet(
+        self, mocker
+    ):
+        mock_start_workflow = mocker.patch.object(
             static_ip_address_module, "start_workflow"
         )
         subnet = factory.make_Subnet(cidr="10.0.0.0/24")
@@ -1717,8 +1685,8 @@ class TestStaticIPAddress(MAASServerTestCase):
             task_queue="region",
         )
 
-    def test_save_released_ip_without_subnet_uses_static_ip_id(self):
-        mock_start_workflow = self.patch(
+    def test_save_released_ip_without_subnet_uses_static_ip_id(self, mocker):
+        mock_start_workflow = mocker.patch.object(
             static_ip_address_module, "start_workflow"
         )
         ip = StaticIPAddress(
@@ -1742,8 +1710,10 @@ class TestStaticIPAddress(MAASServerTestCase):
             task_queue="region",
         )
 
-    def test_save_new_temp_expires_on_calls_dhcp_configure_workflow(self):
-        mock_start_workflow = self.patch(
+    def test_save_new_temp_expires_on_calls_dhcp_configure_workflow(
+        self, mocker
+    ):
+        mock_start_workflow = mocker.patch.object(
             static_ip_address_module, "start_workflow"
         )
         subnet = factory.make_Subnet(cidr="10.0.0.0/24")
@@ -1756,17 +1726,16 @@ class TestStaticIPAddress(MAASServerTestCase):
             ip.temp_expires_on = datetime.now()
             ip.save()
 
-        self.assertIn(
+        assert (
             call(
                 workflow_name=CONFIGURE_DHCP_WORKFLOW_NAME,
                 param=ConfigureDHCPParam(static_ip_addr_ids=[ip.id]),
                 task_queue="region",
-            ),
-            mock_start_workflow.mock_calls,
-        )
+            )
+        ) in mock_start_workflow.mock_calls
 
-    def test_delete_calls_dhcp_configure_workflow(self):
-        mock_start_workflow = self.patch(
+    def test_delete_calls_dhcp_configure_workflow(self, mocker):
+        mock_start_workflow = mocker.patch.object(
             static_ip_address_module, "start_workflow"
         )
         subnet = factory.make_Subnet(cidr="10.0.0.0/24")
@@ -1781,17 +1750,18 @@ class TestStaticIPAddress(MAASServerTestCase):
             ip.save()
             ip.delete()
 
-        self.assertIn(
+        assert (
             call(
                 workflow_name=CONFIGURE_DHCP_WORKFLOW_NAME,
                 param=ConfigureDHCPParam(subnet_ids=[subnet.id]),
                 task_queue="region",
-            ),
-            mock_start_workflow.mock_calls,
-        )
+            )
+        ) in mock_start_workflow.mock_calls
 
-    def test_delete_temp_ip_does_not_call_dhcp_configure_workflow(self):
-        mock_start_workflow = self.patch(
+    def test_delete_temp_ip_does_not_call_dhcp_configure_workflow(
+        self, mocker
+    ):
+        mock_start_workflow = mocker.patch.object(
             static_ip_address_module, "start_workflow"
         )
         subnet = factory.make_Subnet(cidr="10.0.0.0/24")
@@ -1812,8 +1782,8 @@ class TestStaticIPAddress(MAASServerTestCase):
 
         mock_start_workflow.assert_not_called()
 
-    def test_discovered_ips_do_not_call_dhcp_configure_workflow(self):
-        mock_start_workflow = self.patch(
+    def test_discovered_ips_do_not_call_dhcp_configure_workflow(self, mocker):
+        mock_start_workflow = mocker.patch.object(
             static_ip_address_module, "start_workflow"
         )
         subnet = factory.make_Subnet(cidr="10.0.0.0/24")
@@ -1826,8 +1796,10 @@ class TestStaticIPAddress(MAASServerTestCase):
 
         mock_start_workflow.assert_not_called()
 
-    def test_delete_empty_ip_does_not_call_dhcp_configure_workflow(self):
-        mock_start_workflow = self.patch(
+    def test_delete_empty_ip_does_not_call_dhcp_configure_workflow(
+        self, mocker
+    ):
+        mock_start_workflow = mocker.patch.object(
             static_ip_address_module, "start_workflow"
         )
         subnet = factory.make_Subnet(cidr="10.0.0.0/24")
@@ -1844,7 +1816,8 @@ class TestStaticIPAddress(MAASServerTestCase):
         mock_start_workflow.assert_not_called()
 
 
-class TestUserReservedStaticIPAddress(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "mock_openfga", "mock_start_workflows")
+class TestUserReservedStaticIPAddress:
     def test_user_reserved_addresses_included_in_get_hostname_ip_mapping(self):
         # Generate several IPs, with names in domain0, and make sure they don't
         # show up in domain1.
@@ -1873,11 +1846,11 @@ class TestUserReservedStaticIPAddress(MAASServerTestCase):
         mappings = service_layer.services.domains.get_hostname_ip_mapping(
             domain0.id
         )
-        self.assertEqual(expected, mappings)
+        assert expected == mappings
         mappings = service_layer.services.domains.get_hostname_ip_mapping(
             domain1.id
         )
-        self.assertEqual(len(mappings), 0)
+        assert len(mappings) == 0
 
     def test_user_reserved_addresses_included_in_correct_domains(self):
         # Generate some addresses with no names attached, and some more in each
@@ -1920,7 +1893,7 @@ class TestUserReservedStaticIPAddress(MAASServerTestCase):
         mappings = service_layer.services.domains.get_hostname_ip_mapping(
             domain0.id
         )
-        self.assertEqual(expected, mappings)
+        assert expected == mappings
         expected = {
             ip.dnsresource_set.first().fqdn: HostnameIPMapping(
                 None,
@@ -1934,7 +1907,7 @@ class TestUserReservedStaticIPAddress(MAASServerTestCase):
         mappings = service_layer.services.domains.get_hostname_ip_mapping(
             domain1.id
         )
-        self.assertEqual(expected, mappings)
+        assert expected == mappings
         expected = {
             ip.dnsresource_set.first().fqdn: HostnameIPMapping(
                 None,
@@ -1948,7 +1921,7 @@ class TestUserReservedStaticIPAddress(MAASServerTestCase):
         mappings = service_layer.services.domains.get_hostname_ip_mapping(
             domain2.id
         )
-        self.assertEqual(expected, mappings)
+        assert expected == mappings
 
     def test_dns_resources_only_have_correct_domain(self):
         # Create two DNS resources pointing to the same IP, and make sure that
@@ -1966,32 +1939,29 @@ class TestUserReservedStaticIPAddress(MAASServerTestCase):
         mappings = service_layer.services.domains.get_hostname_ip_mapping(
             domain0.id
         )
-        self.assertEqual(len(mappings), 0)
+        assert len(mappings) == 0
         mappings = service_layer.services.domains.get_hostname_ip_mapping(
             domain1.id
         )
         domain1_rr_id = ip.dnsresource_set.filter(domain=domain1.id).first().id
         domain2_rr_id = ip.dnsresource_set.filter(domain=domain2.id).first().id
-        self.assertEqual(len(mappings), 1)
-        self.assertEqual(
-            mappings.get(f"{name1}.{domain1.name}"),
+        assert len(mappings) == 1
+        assert mappings.get(f"{name1}.{domain1.name}") == (
             HostnameIPMapping(
                 None, 30, {ipaddress.ip_address(ip.ip)}, None, domain1_rr_id
-            ),
+            )
         )
         mappings = service_layer.services.domains.get_hostname_ip_mapping(
             domain2.id
         )
-        self.assertEqual(len(mappings), 1)
-        self.assertEqual(
-            mappings.get(f"{name2}.{domain2.name}"),
+        assert len(mappings) == 1
+        assert mappings.get(f"{name2}.{domain2.name}") == (
             HostnameIPMapping(
                 None, 30, {ipaddress.ip_address(ip.ip)}, None, domain2_rr_id
-            ),
+            )
         )
         mappings = service_layer.services.domains.get_hostname_ip_mapping()
-        self.assertEqual(
-            mappings,
+        assert mappings == (
             {
                 "%s.%s" % (name1, domain1.name): HostnameIPMapping(
                     None,
@@ -2007,7 +1977,7 @@ class TestUserReservedStaticIPAddress(MAASServerTestCase):
                     None,
                     domain2_rr_id,
                 ),
-            },
+            }
         )
 
     def test_user_reserved_IP_on_node_or_default_domain_not_both(self):
@@ -2080,17 +2050,17 @@ class TestUserReservedStaticIPAddress(MAASServerTestCase):
         mappings = service_layer.services.domains.get_hostname_ip_mapping(
             domain0.id
         )
-        self.assertEqual(expected0, mappings)
+        assert expected0 == mappings
         mappings = service_layer.services.domains.get_hostname_ip_mapping(
             domain1.id
         )
-        self.assertEqual(expected1, mappings)
+        assert expected1 == mappings
         mappings = service_layer.services.domains.get_hostname_ip_mapping(
             domain2.id
         )
-        self.assertEqual(expected2, mappings)
+        assert expected2 == mappings
         mappings = service_layer.services.domains.get_hostname_ip_mapping()
-        self.assertEqual(expected_subnet, mappings)
+        assert expected_subnet == mappings
 
     def test_node_glue_correctly_generated(self):
         # Given node "foo.bar.com" and a "foo.bar.com" domain (in addition to
@@ -2109,35 +2079,33 @@ class TestUserReservedStaticIPAddress(MAASServerTestCase):
         mappings = service_layer.services.domains.get_hostname_ip_mapping(
             domain0.id
         )
-        self.assertEqual(len(mappings), 0)
+        assert len(mappings) == 0
         mappings = service_layer.services.domains.get_hostname_ip_mapping(
             parent.id
         )
-        self.assertEqual(len(mappings), 1)
-        self.assertEqual(
+        assert len(mappings) == 1
+        assert (
             HostnameIPMapping(
                 node.system_id,
                 30,
                 {ipaddress.ip_address(ip.ip)},
                 node.node_type,
-            ),
-            mappings.get(node.fqdn),
-        )
+            )
+        ) == mappings.get(node.fqdn)
         mappings = service_layer.services.domains.get_hostname_ip_mapping(
             domain.id
         )
-        self.assertEqual(len(mappings), 1)
-        self.assertEqual(
+        assert len(mappings) == 1
+        assert (
             HostnameIPMapping(
                 node.system_id,
                 30,
                 {ipaddress.ip_address(ip.ip)},
                 node.node_type,
-            ),
-            mappings.get(node.fqdn),
-        )
+            )
+        ) == mappings.get(node.fqdn)
         mappings = service_layer.services.domains.get_hostname_ip_mapping()
-        self.assertEqual(
+        assert (
             {
                 node.fqdn: HostnameIPMapping(
                     node.system_id,
@@ -2145,9 +2113,8 @@ class TestUserReservedStaticIPAddress(MAASServerTestCase):
                     {ipaddress.ip_address(ip.ip)},
                     node.node_type,
                 )
-            },
-            mappings,
-        )
+            }
+        ) == mappings
 
     def test_dnsrr_glue_correctly_generated(self):
         # Given DNSResource "foo.bar.com" and a "foo.bar.com" domain (in
@@ -2165,37 +2132,35 @@ class TestUserReservedStaticIPAddress(MAASServerTestCase):
         mappings = service_layer.services.domains.get_hostname_ip_mapping(
             domain0.id
         )
-        self.assertEqual(len(mappings), 0)
+        assert len(mappings) == 0
         mappings = service_layer.services.domains.get_hostname_ip_mapping(
             parent.id
         )
-        self.assertEqual(len(mappings), 1)
-        self.assertEqual(
+        assert len(mappings) == 1
+        assert (
             HostnameIPMapping(
                 None,
                 30,
                 {ipaddress.ip_address(ip.ip)},
                 None,
                 ip.dnsresource_set.first().id,
-            ),
-            mappings.get(dnsrr.fqdn),
-        )
+            )
+        ) == mappings.get(dnsrr.fqdn)
         mappings = service_layer.services.domains.get_hostname_ip_mapping(
             domain.id
         )
-        self.assertEqual(len(mappings), 1)
-        self.assertEqual(
+        assert len(mappings) == 1
+        assert (
             HostnameIPMapping(
                 None,
                 30,
                 {ipaddress.ip_address(ip.ip)},
                 None,
                 ip.dnsresource_set.first().id,
-            ),
-            mappings.get(dnsrr.fqdn),
-        )
+            )
+        ) == mappings.get(dnsrr.fqdn)
         mappings = service_layer.services.domains.get_hostname_ip_mapping()
-        self.assertEqual(
+        assert (
             {
                 dnsrr.fqdn: HostnameIPMapping(
                     None,
@@ -2204,20 +2169,20 @@ class TestUserReservedStaticIPAddress(MAASServerTestCase):
                     None,
                     ip.dnsresource_set.first().id,
                 )
-            },
-            mappings,
-        )
+            }
+        ) == mappings
 
 
-class TestRenderJSON(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "mock_openfga", "mock_start_workflows")
+class TestRenderJSON:
     def test_excludes_username_and_node_summary_by_default(self):
         ip = factory.make_StaticIPAddress(
             ip=factory.make_ipv4_address(),
             alloc_type=IPADDRESS_TYPE.USER_RESERVED,
         )
         json = ip.render_json()
-        self.assertNotIn("user", json)
-        self.assertNotIn("node_summary", json)
+        assert "user" not in json
+        assert "node_summary" not in json
 
     def test_includes_username_if_requested(self):
         user = factory.make_User()
@@ -2227,9 +2192,9 @@ class TestRenderJSON(MAASServerTestCase):
             alloc_type=IPADDRESS_TYPE.USER_RESERVED,
         )
         json = ip.render_json(with_username=True)
-        self.assertIn("user", json)
-        self.assertNotIn("node_summary", json)
-        self.assertEqual(json["user"], user.username)
+        assert "user" in json
+        assert "node_summary" not in json
+        assert json["user"] == user.username
 
     def test_includes_node_summary_if_requested(self):
         user = factory.make_User()
@@ -2241,14 +2206,14 @@ class TestRenderJSON(MAASServerTestCase):
             interface=node.get_boot_interface(),
         )
         json = ip.render_json(with_summary=True)
-        self.assertNotIn("user", json)
-        self.assertIn("node_summary", json)
+        assert "user" not in json
+        assert "node_summary" in json
 
     def test_node_summary_includes_interface_name(self):
         user = factory.make_User()
         subnet = factory.make_Subnet()
         node = factory.make_Node_with_Interface_on_Subnet(subnet=subnet)
-        self.assertEqual(node.current_config.interface_set.count(), 1)
+        assert node.current_config.interface_set.count() == 1
         iface = node.current_config.interface_set.first()
         ip = factory.make_StaticIPAddress(
             ip=factory.pick_ip_in_Subnet(subnet),
@@ -2256,9 +2221,9 @@ class TestRenderJSON(MAASServerTestCase):
             interface=node.get_boot_interface(),
         )
         json = ip.render_json(with_summary=True)
-        self.assertNotIn("user", json)
-        self.assertIn("node_summary", json)
-        self.assertEqual(json["node_summary"]["via"], iface.name)
+        assert "user" not in json
+        assert "node_summary" in json
+        assert json["node_summary"]["via"] == iface.name
 
     def test_data_is_accurate_and_complete(self):
         user = factory.make_User()
@@ -2273,32 +2238,29 @@ class TestRenderJSON(MAASServerTestCase):
             interface=node.get_boot_interface(),
         )
         json = ip.render_json(with_username=True, with_summary=True)
-        self.assertEqual(json["created"], dehydrate_datetime(ip.created))
-        self.assertEqual(json["updated"], dehydrate_datetime(ip.updated))
-        self.assertEqual(json["user"], user.username)
-        self.assertIn("node_summary", json)
+        assert json["created"] == dehydrate_datetime(ip.created)
+        assert json["updated"] == dehydrate_datetime(ip.updated)
+        assert json["user"] == user.username
+        assert "node_summary" in json
         node_summary = json["node_summary"]
-        self.assertEqual(node_summary["system_id"], node.system_id)
-        self.assertEqual(node_summary["node_type"], node.node_type)
+        assert node_summary["system_id"] == node.system_id
+        assert node_summary["node_type"] == node.node_type
 
 
-class TestAllocTypeName(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "mock_openfga", "mock_start_workflows")
+class TestAllocTypeName:
     def test_provides_human_readable_values_for_known_types(self):
         ip = factory.make_StaticIPAddress()
-        self.assertEqual(
-            IPADDRESS_TYPE_CHOICES_DICT[ip.alloc_type],
-            ip.alloc_type_name,
-        )
+        assert IPADDRESS_TYPE_CHOICES_DICT[ip.alloc_type] == ip.alloc_type_name
 
     def test_returns_empty_string_for_unknown_types(self):
         ip = factory.make_StaticIPAddress()
         ip.alloc_type = randint(2**16, 2**32)
-        self.assertEqual("", ip.alloc_type_name)
+        assert "" == ip.alloc_type_name
 
 
-class TestUniqueConstraints(MAASServerTestCase):
-    assertRaises = TestCase.assertRaises
-
+@pytest.mark.usefixtures("maasdb", "mock_openfga", "mock_start_workflows")
+class TestUniqueConstraints:
     def test_rejects_duplicate_address_of_same_type(self):
         subnet = factory.make_Subnet(cidr="10.0.0.0/8")
         factory.make_StaticIPAddress(
@@ -2306,7 +2268,7 @@ class TestUniqueConstraints(MAASServerTestCase):
             subnet=subnet,
             alloc_type=IPADDRESS_TYPE.USER_RESERVED,
         )
-        with self.assertRaises(ValidationError):
+        with pytest.raises(ValidationError):
             factory.make_StaticIPAddress(
                 ip="10.0.0.1", alloc_type=IPADDRESS_TYPE.USER_RESERVED
             )
@@ -2316,7 +2278,7 @@ class TestUniqueConstraints(MAASServerTestCase):
         factory.make_StaticIPAddress(
             ip="10.0.0.1", subnet=subnet, alloc_type=IPADDRESS_TYPE.STICKY
         )
-        with self.assertRaises(IntegrityError):
+        with pytest.raises(IntegrityError):
             factory.make_StaticIPAddress(
                 ip="10.0.0.1",
                 subnet=subnet,
@@ -2328,7 +2290,7 @@ class TestUniqueConstraints(MAASServerTestCase):
         factory.make_StaticIPAddress(
             ip="10.0.0.1", subnet=subnet, alloc_type=IPADDRESS_TYPE.DISCOVERED
         )
-        with self.assertRaises(ValidationError):
+        with pytest.raises(ValidationError):
             factory.make_StaticIPAddress(
                 ip="10.0.0.1",
                 subnet=subnet,
@@ -2343,6 +2305,4 @@ class TestUniqueConstraints(MAASServerTestCase):
         factory.make_StaticIPAddress(
             ip="10.0.0.1", subnet=subnet, alloc_type=IPADDRESS_TYPE.STICKY
         )
-        self.assertEqual(
-            2, StaticIPAddress.objects.filter(ip="10.0.0.1").count()
-        )
+        assert 2 == StaticIPAddress.objects.filter(ip="10.0.0.1").count()

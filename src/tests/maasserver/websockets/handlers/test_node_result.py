@@ -6,8 +6,9 @@
 import random
 from unittest.mock import sentinel
 
+import pytest
+
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from maasserver.utils.orm import reload_object
 from maasserver.websockets.base import (
     dehydrate_datetime,
@@ -15,7 +16,7 @@ from maasserver.websockets.base import (
     HandlerPKError,
 )
 from maasserver.websockets.handlers.node_result import NodeResultHandler
-from maastesting.djangotestcase import CountQueries
+from maastesting.querycounter import CountQueries
 from metadataserver.enum import (
     HARDWARE_TYPE,
     HARDWARE_TYPE_CHOICES,
@@ -25,7 +26,8 @@ from metadataserver.enum import (
 )
 
 
-class TestNodeResultHandler(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "factory", "maas_region_test")
+class TestNodeResultHandler:
     def dehydrate_script_result(self, script_result, handler):
         results = script_result.read_results().get("results", {})
         data = {
@@ -74,10 +76,8 @@ class TestNodeResultHandler(MAASServerTestCase):
         user = factory.make_User()
         handler = NodeResultHandler(user, {}, None)
         node = factory.make_Node()
-        self.assertEqual(node, handler.get_node({"system_id": node.system_id}))
-        self.assertDictEqual(
-            {node.system_id: node}, handler.cache["system_ids"]
-        )
+        assert node == handler.get_node({"system_id": node.system_id})
+        assert {node.system_id: node} == handler.cache["system_ids"]
 
     def test_get_node_from_cache(self):
         user = factory.make_User()
@@ -85,19 +85,17 @@ class TestNodeResultHandler(MAASServerTestCase):
         fake_system_id = factory.make_name("system_id")
         fake_node = factory.make_name("node")
         handler.cache["system_ids"][fake_system_id] = fake_node
-        self.assertEqual(
-            fake_node, handler.get_node({"system_id": fake_system_id})
-        )
+        assert fake_node == handler.get_node({"system_id": fake_system_id})
 
     def test_get_node_errors_no_system_id(self):
         user = factory.make_User()
         handler = NodeResultHandler(user, {}, None)
-        self.assertRaises(HandlerPKError, handler.get_node, {})
+        pytest.raises(HandlerPKError, handler.get_node, {})
 
     def test_get_node_errors_invalid_system_id(self):
         user = factory.make_User()
         handler = NodeResultHandler(user, {}, None)
-        self.assertRaises(
+        pytest.raises(
             HandlerDoesNotExistError,
             handler.get_node,
             {"system_id": factory.make_name("system_id")},
@@ -108,7 +106,7 @@ class TestNodeResultHandler(MAASServerTestCase):
         handler = NodeResultHandler(user, {}, None)
         node = factory.make_Node()
         node.delete()
-        self.assertRaises(
+        pytest.raises(
             HandlerDoesNotExistError,
             handler.list,
             {"system_id": node.system_id},
@@ -127,10 +125,9 @@ class TestNodeResultHandler(MAASServerTestCase):
         # Other script_results.
         for _ in range(3):
             factory.make_ScriptResult()
-        self.assertCountEqual(
-            self.dehydrate_script_results(script_results, handler),
-            handler.list({"system_id": node.system_id}),
-        )
+        assert sorted(
+            self.dehydrate_script_results(script_results, handler), key=repr
+        ) == sorted(handler.list({"system_id": node.system_id}), key=repr)
 
     def test_list_result_type(self):
         user = factory.make_User()
@@ -159,14 +156,11 @@ class TestNodeResultHandler(MAASServerTestCase):
         expected_output = [
             self.dehydrate_script_result(script_result, handler)
         ]
-        self.assertEqual(
-            expected_output,
-            handler.list(
-                {
-                    "system_id": node.system_id,
-                    "result_type": RESULT_TYPE.TESTING,
-                }
-            ),
+        assert expected_output == handler.list(
+            {
+                "system_id": node.system_id,
+                "result_type": RESULT_TYPE.TESTING,
+            }
         )
 
     def test_list_hardware_type(self):
@@ -195,14 +189,11 @@ class TestNodeResultHandler(MAASServerTestCase):
         expected_output = [
             self.dehydrate_script_result(script_result, handler)
         ]
-        self.assertEqual(
-            expected_output,
-            handler.list(
-                {
-                    "system_id": node.system_id,
-                    "hardware_type": HARDWARE_TYPE.STORAGE,
-                }
-            ),
+        assert expected_output == handler.list(
+            {
+                "system_id": node.system_id,
+                "hardware_type": HARDWARE_TYPE.STORAGE,
+            }
         )
 
     def test_list_physical_blockdevice_id(self):
@@ -226,14 +217,11 @@ class TestNodeResultHandler(MAASServerTestCase):
         expected_output = [
             self.dehydrate_script_result(script_result, handler)
         ]
-        self.assertEqual(
-            expected_output,
-            handler.list(
-                {
-                    "system_id": node.system_id,
-                    "physical_blockdevice_id": physical_blockdevice.id,
-                }
-            ),
+        assert expected_output == handler.list(
+            {
+                "system_id": node.system_id,
+                "physical_blockdevice_id": physical_blockdevice.id,
+            }
         )
 
     def test_list_interface_id(self):
@@ -255,11 +243,8 @@ class TestNodeResultHandler(MAASServerTestCase):
         expected_output = [
             self.dehydrate_script_result(script_result, handler)
         ]
-        self.assertEqual(
-            expected_output,
-            handler.list(
-                {"system_id": node.system_id, "interface_id": interface.id}
-            ),
+        assert expected_output == handler.list(
+            {"system_id": node.system_id, "interface_id": interface.id}
         )
 
     def test_list_has_surfaced(self):
@@ -278,9 +263,8 @@ class TestNodeResultHandler(MAASServerTestCase):
         expected_output = [
             self.dehydrate_script_result(script_result, handler)
         ]
-        self.assertEqual(
-            expected_output,
-            handler.list({"system_id": node.system_id, "has_surfaced": True}),
+        assert expected_output == handler.list(
+            {"system_id": node.system_id, "has_surfaced": True}
         )
 
     def test_list_start(self):
@@ -291,9 +275,8 @@ class TestNodeResultHandler(MAASServerTestCase):
         for _ in range(6):
             factory.make_ScriptResult(script_set=script_set)
         start = random.randint(0, 5)
-        self.assertEqual(
-            6 - start,
-            len(handler.list({"system_id": node.system_id, "start": start})),
+        assert 6 - start == len(
+            handler.list({"system_id": node.system_id, "start": start})
         )
 
     def test_list_limit(self):
@@ -304,9 +287,8 @@ class TestNodeResultHandler(MAASServerTestCase):
         for _ in range(6):
             factory.make_ScriptResult(script_set=script_set)
         limit = random.randint(0, 6)
-        self.assertEqual(
-            limit,
-            len(handler.list({"system_id": node.system_id, "limit": limit})),
+        assert limit == len(
+            handler.list({"system_id": node.system_id, "limit": limit})
         )
 
     def test_list_adds_to_loaded_pks(self):
@@ -319,7 +301,9 @@ class TestNodeResultHandler(MAASServerTestCase):
             for _ in range(3)
         ]
         handler.list({"system_id": node.system_id})
-        self.assertCountEqual(pks, handler.cache["loaded_pks"])
+        assert sorted(pks, key=repr) == sorted(
+            handler.cache["loaded_pks"], key=repr
+        )
 
     def test_list_redacts_password_parameter(self):
         user = factory.make_User()
@@ -347,26 +331,24 @@ class TestNodeResultHandler(MAASServerTestCase):
 
         for result in handler.list({"system_id": node.system_id}):
             if result["id"] == string_script_result.id:
-                self.assertEqual(
-                    {"string": {"type": "string", "value": string}},
-                    result["parameters"],
-                )
-                self.assertEqual(
-                    string,
-                    reload_object(string_script_result).parameters["string"][
-                        "value"
-                    ],
+                assert {
+                    "string": {"type": "string", "value": string}
+                } == result["parameters"]
+                assert (
+                    string
+                    == reload_object(string_script_result).parameters[
+                        "string"
+                    ]["value"]
                 )
             else:
-                self.assertEqual(
-                    {"password": {"type": "password", "value": "REDACTED"}},
-                    result["parameters"],
-                )
-                self.assertEqual(
-                    password,
-                    reload_object(password_script_result).parameters[
+                assert {
+                    "password": {"type": "password", "value": "REDACTED"}
+                } == result["parameters"]
+                assert (
+                    password
+                    == reload_object(password_script_result).parameters[
                         "password"
-                    ]["value"],
+                    ]["value"]
                 )
 
     def test_get_result_data_gets_output(self):
@@ -379,11 +361,8 @@ class TestNodeResultHandler(MAASServerTestCase):
             output=combined,
             script_set=factory.make_ScriptSet(node=node),
         )
-        self.assertEqual(
-            combined.decode(),
-            handler.get_result_data(
-                {"id": script_result.id, "data_type": "combined"}
-            ),
+        assert combined.decode() == handler.get_result_data(
+            {"id": script_result.id, "data_type": "combined"}
         )
 
     def test_get_result_data_gets_stdout(self):
@@ -396,11 +375,8 @@ class TestNodeResultHandler(MAASServerTestCase):
             stdout=stdout,
             script_set=factory.make_ScriptSet(node=node),
         )
-        self.assertEqual(
-            stdout.decode(),
-            handler.get_result_data(
-                {"id": script_result.id, "data_type": "stdout"}
-            ),
+        assert stdout.decode() == handler.get_result_data(
+            {"id": script_result.id, "data_type": "stdout"}
         )
 
     def test_get_result_data_gets_stderr(self):
@@ -413,11 +389,8 @@ class TestNodeResultHandler(MAASServerTestCase):
             stderr=stderr,
             script_set=factory.make_ScriptSet(node=node),
         )
-        self.assertEqual(
-            stderr.decode(),
-            handler.get_result_data(
-                {"id": script_result.id, "data_type": "stderr"}
-            ),
+        assert stderr.decode() == handler.get_result_data(
+            {"id": script_result.id, "data_type": "stderr"}
         )
 
     def test_get_result_data_gets_result(self):
@@ -430,20 +403,16 @@ class TestNodeResultHandler(MAASServerTestCase):
             result=result,
             script_set=factory.make_ScriptSet(node=node),
         )
-        self.assertEqual(
-            result.decode(),
-            handler.get_result_data(
-                {"id": script_result.id, "data_type": "result"}
-            ),
+        assert result.decode() == handler.get_result_data(
+            {"id": script_result.id, "data_type": "result"}
         )
 
     def test_get_result_data_unknown_id(self):
         user = factory.make_User()
         handler = NodeResultHandler(user, {}, None)
         id = random.randint(0, 100)
-        self.assertEqual(
-            "Unknown ScriptResult id %s" % id,
-            handler.get_result_data({"id": id}),
+        assert "Unknown ScriptResult id %s" % id == handler.get_result_data(
+            {"id": id}
         )
 
     def test_get_result_data_gets_unknown_data_type(self):
@@ -457,11 +426,11 @@ class TestNodeResultHandler(MAASServerTestCase):
             script_set=factory.make_ScriptSet(node=node),
         )
         unknown_data_type = factory.make_name("data_type")
-        self.assertEqual(
-            "Unknown data_type %s" % unknown_data_type,
-            handler.get_result_data(
+        assert (
+            "Unknown data_type %s" % unknown_data_type
+            == handler.get_result_data(
                 {"id": script_result.id, "data_type": unknown_data_type}
-            ),
+            )
         )
 
     def test_get_history(self):
@@ -486,22 +455,19 @@ class TestNodeResultHandler(MAASServerTestCase):
         queries = CountQueries()
         with queries:
             ret = handler.get_history({"id": latest_script_result.id})
-        self.assertEqual(4, queries.count)
+        assert 4 == queries.count
         for script_result, out in zip(script_results, ret, strict=True):
-            self.assertDictEqual(
-                {
-                    "id": script_result.id,
-                    "updated": dehydrate_datetime(script_result.updated),
-                    "status": script_result.status,
-                    "status_name": script_result.status_name,
-                    "runtime": script_result.runtime,
-                    "starttime": script_result.starttime,
-                    "endtime": script_result.endtime,
-                    "estimated_runtime": script_result.estimated_runtime,
-                    "suppressed": script_result.suppressed,
-                },
-                out,
-            )
+            assert {
+                "id": script_result.id,
+                "updated": dehydrate_datetime(script_result.updated),
+                "status": script_result.status,
+                "status_name": script_result.status_name,
+                "runtime": script_result.runtime,
+                "starttime": script_result.starttime,
+                "endtime": script_result.endtime,
+                "estimated_runtime": script_result.estimated_runtime,
+                "suppressed": script_result.suppressed,
+            } == out
 
     def test_clear_removes_system_id_from_cache(self):
         user = factory.make_User()
@@ -509,38 +475,41 @@ class TestNodeResultHandler(MAASServerTestCase):
         node = factory.make_Node()
         handler.list({"system_id": node.system_id})
         handler.clear({"system_id": node.system_id})
-        self.assertDictEqual({}, handler.cache["system_ids"])
+        assert {} == handler.cache["system_ids"]
 
-    def test_on_listen_returns_None_if_obj_no_longer_exists(self):
+    def test_on_listen_returns_None_if_obj_no_longer_exists(self, mocker):
         user = factory.make_User()
         handler = NodeResultHandler(user, {}, None)
-        mock_listen = self.patch(handler, "listen")
+        mock_listen = mocker.patch.object(handler, "listen")
         mock_listen.side_effect = HandlerDoesNotExistError()
-        self.assertIsNone(
+        assert (
             handler.on_listen(
                 sentinel.channel, sentinel.action, random.randint(1, 1000)
             )
+            is None
         )
 
-    def test_on_listen_returns_None_if_listen_returns_None(self):
+    def test_on_listen_returns_None_if_listen_returns_None(self, mocker):
         user = factory.make_User()
         handler = NodeResultHandler(user, {}, None)
-        mock_listen = self.patch(handler, "listen")
+        mock_listen = mocker.patch.object(handler, "listen")
         mock_listen.return_value = None
-        self.assertIsNone(
+        assert (
             handler.on_listen(
                 sentinel.channel, sentinel.action, random.randint(1, 1000)
             )
+            is None
         )
 
     def test_on_listen_returns_None_if_system_id_not_in_cache(self):
         user = factory.make_User()
         handler = NodeResultHandler(user, {}, None)
         script_result = factory.make_ScriptResult()
-        self.assertIsNone(
+        assert (
             handler.on_listen(
                 sentinel.channel, sentinel.action, script_result.id
             )
+            is None
         )
 
     def test_on_listen_returns_handler_name_action_and_event(self):
@@ -549,13 +518,10 @@ class TestNodeResultHandler(MAASServerTestCase):
         script_result = factory.make_ScriptResult()
         node = script_result.script_set.node
         handler.cache["system_ids"][node.system_id] = node
-        self.assertEqual(
-            (
-                handler._meta.handler_name,
-                sentinel.action,
-                self.dehydrate_script_result(script_result, handler),
-            ),
-            handler.on_listen(
-                sentinel.channel, sentinel.action, script_result.id
-            ),
+        assert (
+            handler._meta.handler_name,
+            sentinel.action,
+            self.dehydrate_script_result(script_result, handler),
+        ) == handler.on_listen(
+            sentinel.channel, sentinel.action, script_result.id
         )

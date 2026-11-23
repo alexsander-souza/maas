@@ -1,7 +1,10 @@
 # Copyright 2015 Canonical Ltd.  This software is licensed under the
 # GNU Affero General Public License version 3 (see the file LICENSE).
 
+from collections import Counter
 from uuid import uuid4
+
+import pytest
 
 from maasserver.enum import (
     CACHE_MODE_TYPE,
@@ -10,18 +13,16 @@ from maasserver.enum import (
 )
 from maasserver.forms import CreateBcacheForm, UpdateBcacheForm
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 
 
-class TestCreateBcacheForm(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestCreateBcacheForm:
     def test_required_fields(self):
         node = factory.make_Node()
         form = CreateBcacheForm(node=node, data={})
 
-        self.assertFalse(form.is_valid(), form.errors)
-        self.assertEqual(
-            form.errors["cache_mode"], ["This field is required."]
-        )
+        assert not form.is_valid(), form.errors
+        assert ["This field is required."] == form.errors["cache_mode"]
 
     def test_choices_are_being_populated_correctly(self):
         node = factory.make_Node(with_boot_disk=False)
@@ -48,17 +49,14 @@ class TestCreateBcacheForm(MAASServerTestCase):
             bd.id for bd in bds if bd.get_partitiontable() is None
         ] + [bd.name for bd in bds if bd.get_partitiontable() is None]
         form = CreateBcacheForm(node=node, data={})
-        self.assertCountEqual(
-            cache_set_choices,
-            [k for (k, v) in form.fields["cache_set"].choices],
+        assert Counter(cache_set_choices) == Counter(
+            k for k, _ in form.fields["cache_set"].choices
         )
-        self.assertCountEqual(
-            block_devices,
-            [k for (k, v) in form.fields["backing_device"].choices],
+        assert Counter(block_devices) == Counter(
+            k for k, _ in form.fields["backing_device"].choices
         )
-        self.assertCountEqual(
-            partition_choices,
-            [k for (k, v) in form.fields["backing_partition"].choices],
+        assert Counter(partition_choices) == Counter(
+            k for k, _ in form.fields["backing_partition"].choices
         )
 
     def test_bcache_creation_on_save(self):
@@ -80,17 +78,17 @@ class TestCreateBcacheForm(MAASServerTestCase):
             },
         )
 
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         bcache = form.save()
-        self.assertEqual("bcache0", bcache.name)
-        self.assertEqual(uuid, bcache.uuid)
-        self.assertEqual(cache_set, bcache.cache_set)
-        self.assertEqual(
-            backing_device.get_effective_filesystem(),
-            bcache.filesystems.get(fstype=FILESYSTEM_TYPE.BCACHE_BACKING),
+        assert bcache.name == "bcache0"
+        assert bcache.uuid == uuid
+        assert bcache.cache_set == cache_set
+        assert (
+            bcache.filesystems.get(fstype=FILESYSTEM_TYPE.BCACHE_BACKING)
+            == backing_device.get_effective_filesystem()
         )
-        self.assertEqual(backing_size, bcache.get_size())
-        self.assertEqual(FILESYSTEM_GROUP_TYPE.BCACHE, bcache.group_type)
+        assert bcache.get_size() == backing_size
+        assert bcache.group_type == FILESYSTEM_GROUP_TYPE.BCACHE
 
     def test_bcache_creation_with_names(self):
         node = factory.make_Node()
@@ -115,16 +113,16 @@ class TestCreateBcacheForm(MAASServerTestCase):
             },
         )
 
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         bcache = form.save()
-        self.assertEqual("bcache0", bcache.name)
-        self.assertEqual(uuid, bcache.uuid)
-        self.assertEqual(cache_set, bcache.cache_set)
-        self.assertEqual(
-            backing_partition.get_effective_filesystem(),
-            bcache.filesystems.get(fstype=FILESYSTEM_TYPE.BCACHE_BACKING),
+        assert bcache.name == "bcache0"
+        assert bcache.uuid == uuid
+        assert bcache.cache_set == cache_set
+        assert (
+            bcache.filesystems.get(fstype=FILESYSTEM_TYPE.BCACHE_BACKING)
+            == backing_partition.get_effective_filesystem()
         )
-        self.assertEqual(FILESYSTEM_GROUP_TYPE.BCACHE, bcache.group_type)
+        assert bcache.group_type == FILESYSTEM_GROUP_TYPE.BCACHE
 
     def test_bcache_creation_on_boot_disk(self):
         node = factory.make_Node(with_boot_disk=False)
@@ -140,15 +138,15 @@ class TestCreateBcacheForm(MAASServerTestCase):
             },
         )
 
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         bcache = form.save()
-        self.assertEqual("bcache0", bcache.name)
-        self.assertEqual(cache_set, bcache.cache_set)
-        self.assertEqual(FILESYSTEM_GROUP_TYPE.BCACHE, bcache.group_type)
+        assert bcache.name == "bcache0"
+        assert bcache.cache_set == cache_set
+        assert bcache.group_type == FILESYSTEM_GROUP_TYPE.BCACHE
         boot_partition = boot_disk.get_partitiontable().partitions.first()
-        self.assertEqual(
-            boot_partition.get_effective_filesystem(),
-            bcache.filesystems.get(fstype=FILESYSTEM_TYPE.BCACHE_BACKING),
+        assert (
+            bcache.filesystems.get(fstype=FILESYSTEM_TYPE.BCACHE_BACKING)
+            == boot_partition.get_effective_filesystem()
         )
 
     def test_bcache_creation_with_invalid_names_fails(self):
@@ -165,21 +163,18 @@ class TestCreateBcacheForm(MAASServerTestCase):
             },
         )
 
-        self.assertFalse(form.is_valid(), form.errors)
-        self.assertEqual(
-            {
-                "cache_set": [
-                    "Select a valid choice. sdapart1 is not one of the "
-                    "available choices."
-                ],
-                "backing_partition": [
-                    "Select a valid choice. sda-partXD is not one of the "
-                    "available choices."
-                ],
-                "__all__": ["Bcache requires a cache_set."],
-            },
-            form.errors,
-        )
+        assert not form.is_valid(), form.errors
+        assert form.errors == {
+            "cache_set": [
+                "Select a valid choice. sdapart1 is not one of the "
+                "available choices."
+            ],
+            "backing_partition": [
+                "Select a valid choice. sda-partXD is not one of the "
+                "available choices."
+            ],
+            "__all__": ["Bcache requires a cache_set."],
+        }
 
     def test_bcache_creation_without_storage_fails(self):
         node = factory.make_Node()
@@ -187,8 +182,8 @@ class TestCreateBcacheForm(MAASServerTestCase):
             node=node, data={"cache_mode": CACHE_MODE_TYPE.WRITEAROUND}
         )
 
-        self.assertFalse(form.is_valid(), form.errors)
-        self.assertEqual(form.errors["cache_set"], ["This field is required."])
+        assert not form.is_valid(), form.errors
+        assert ["This field is required."] == form.errors["cache_set"]
 
     def test_bcache_creation_without_cache_set_fails(self):
         node = factory.make_Node()
@@ -204,8 +199,8 @@ class TestCreateBcacheForm(MAASServerTestCase):
             },
         )
 
-        self.assertFalse(form.is_valid(), form.errors)
-        self.assertEqual(form.errors["cache_set"], ["This field is required."])
+        assert not form.is_valid(), form.errors
+        assert ["This field is required."] == form.errors["cache_set"]
 
     def test_bcache_creation_without_backing_fails(self):
         node = factory.make_Node()
@@ -218,14 +213,14 @@ class TestCreateBcacheForm(MAASServerTestCase):
             },
         )
 
-        self.assertFalse(form.is_valid(), form.errors)
-        self.assertEqual(
-            form.errors["__all__"],
-            ["Either backing_device or backing_partition must be specified."],
-        )
+        assert not form.is_valid(), form.errors
+        assert form.errors["__all__"] == [
+            "Either backing_device or backing_partition must be specified."
+        ]
 
 
-class TestUpdateBcacheForm(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestUpdateBcacheForm:
     def test_choices_are_being_populated_correctly(self):
         node = factory.make_Node(with_boot_disk=False)
         device_size = 1 * 1000**4
@@ -265,17 +260,14 @@ class TestUpdateBcacheForm(MAASServerTestCase):
         form = UpdateBcacheForm(bcache=bcache, data={})
         # Should allow all devices and partitions, including the ones currently
         # allocated for bcache.
-        self.assertCountEqual(
-            cache_set_choices,
-            [k for (k, v) in form.fields["cache_set"].choices],
+        assert Counter(cache_set_choices) == Counter(
+            k for k, _ in form.fields["cache_set"].choices
         )
-        self.assertCountEqual(
-            block_device_choices,
-            [k for (k, v) in form.fields["backing_device"].choices],
+        assert Counter(block_device_choices) == Counter(
+            k for k, _ in form.fields["backing_device"].choices
         )
-        self.assertCountEqual(
-            partition_choices,
-            [k for (k, v) in form.fields["backing_partition"].choices],
+        assert Counter(partition_choices) == Counter(
+            k for k, _ in form.fields["backing_partition"].choices
         )
 
     def test_lookup_by_name(self):
@@ -305,11 +297,11 @@ class TestUpdateBcacheForm(MAASServerTestCase):
         form = UpdateBcacheForm(
             bcache=bcache, data={"backing_device": disk.name}
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         bcache = form.save()
-        self.assertEqual(
-            disk.get_effective_filesystem(),
-            bcache.filesystems.get(fstype=FILESYSTEM_TYPE.BCACHE_BACKING),
+        assert (
+            bcache.filesystems.get(fstype=FILESYSTEM_TYPE.BCACHE_BACKING)
+            == disk.get_effective_filesystem()
         )
 
     def test_bcache_update_with_invalid_mode(self):
@@ -332,11 +324,11 @@ class TestUpdateBcacheForm(MAASServerTestCase):
         form = UpdateBcacheForm(
             bcache=bcache, data={"cache_mode": "Writeonly"}
         )
-        self.assertFalse(form.is_valid(), form.errors)
-        self.assertIn("Select a valid choice.", form.errors["cache_mode"][0])
-        self.assertIn(
-            "is not one of the available choices.",
-            form.errors["cache_mode"][0],
+        assert not form.is_valid(), form.errors
+        assert "Select a valid choice." in form.errors["cache_mode"][0]
+        assert (
+            "is not one of the available choices."
+            in form.errors["cache_mode"][0]
         )
 
     def test_bcache_with_invalid_block_device_fails(self):
@@ -360,13 +352,11 @@ class TestUpdateBcacheForm(MAASServerTestCase):
         form = UpdateBcacheForm(
             bcache=bcache, data={"backing_device": backing_device.id}
         )
-        self.assertFalse(form.is_valid(), form.errors)
-        self.assertIn(
-            "Select a valid choice.", form.errors["backing_device"][0]
-        )
-        self.assertIn(
-            "is not one of the available choices.",
-            form.errors["backing_device"][0],
+        assert not form.is_valid(), form.errors
+        assert "Select a valid choice." in form.errors["backing_device"][0]
+        assert (
+            "is not one of the available choices."
+            in form.errors["backing_device"][0]
         )
 
     def test_bcache_update_with_boot_disk(self):
@@ -389,10 +379,10 @@ class TestUpdateBcacheForm(MAASServerTestCase):
         form = UpdateBcacheForm(
             bcache=bcache, data={"backing_device": boot_disk.id}
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         bcache = form.save()
         boot_partition = boot_disk.get_partitiontable().partitions.first()
-        self.assertEqual(
-            boot_partition.get_effective_filesystem(),
-            bcache.filesystems.get(fstype=FILESYSTEM_TYPE.BCACHE_BACKING),
+        assert (
+            bcache.filesystems.get(fstype=FILESYSTEM_TYPE.BCACHE_BACKING)
+            == boot_partition.get_effective_filesystem()
         )

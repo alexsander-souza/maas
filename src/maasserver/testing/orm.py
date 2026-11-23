@@ -6,7 +6,6 @@
 from contextlib import contextmanager
 
 from django.db import transaction
-import testtools
 
 from maasserver.utils.orm import gen_description_of_hooks, post_commit_hooks
 
@@ -31,7 +30,7 @@ def reload_objects(model_class, model_objects):
     return model_class.objects.filter(id__in=[obj.id for obj in model_objects])
 
 
-class PostCommitHooksTestMixin(testtools.TestCase):
+class PostCommitHooksTestMixin:
     """Reset all post-commit hooks.
 
     This also adds an expectation to `test` that there aren't any leaking

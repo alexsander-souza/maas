@@ -13,10 +13,10 @@ import tarfile
 import time
 
 from django.urls import reverse
+import pytest
 
 from maasserver.api.scriptresults import fmt_time
 from maasserver.preseed import CURTIN_ERROR_TARFILE
-from maasserver.testing.api import APITestCase
 from maasserver.testing.factory import factory
 from maasserver.utils.converters import json_load_bytes
 from maasserver.utils.orm import reload_object
@@ -27,8 +27,18 @@ from metadataserver.enum import (
 )
 
 
-class TestNodeScriptResultsAPI(APITestCase.ForUser):
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user=user,client=oauth", id="user=user,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestNodeScriptResultsAPI:
     """Tests for /api/2.0/nodes/<system_id>/results/."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maas_user, api_client):
+        self.user = maas_user
+        self.client = api_client
 
     @staticmethod
     def get_script_results_uri(node):
@@ -37,9 +47,9 @@ class TestNodeScriptResultsAPI(APITestCase.ForUser):
 
     def test_hander_path(self):
         node = factory.make_Node()
-        self.assertEqual(
-            "/MAAS/api/2.0/nodes/%s/results/" % node.system_id,
-            self.get_script_results_uri(node),
+        assert (
+            "/MAAS/api/2.0/nodes/%s/results/" % node.system_id
+            == self.get_script_results_uri(node)
         )
 
     def test_GET(self):
@@ -56,16 +66,16 @@ class TestNodeScriptResultsAPI(APITestCase.ForUser):
             factory.make_ScriptSet()
 
         response = self.client.get(self.get_script_results_uri(node))
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         parsed_results = json_load_bytes(response.content)
 
-        self.assertCountEqual(
-            script_set_ids, [result["id"] for result in parsed_results]
+        assert sorted(script_set_ids) == sorted(
+            [result["id"] for result in parsed_results]
         )
         for script_set in parsed_results:
             for result in script_set["results"]:
                 for key in ["output", "stdout", "stderr", "result"]:
-                    self.assertNotIn(key, result)
+                    assert key not in result
 
     def test_GET_filters_by_type(self):
         node = factory.make_Node()
@@ -86,12 +96,11 @@ class TestNodeScriptResultsAPI(APITestCase.ForUser):
         response = self.client.get(
             self.get_script_results_uri(node), {"type": result_type}
         )
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         parsed_results = json_load_bytes(response.content)
 
-        self.assertCountEqual(
-            [script_set.id for script_set in script_sets],
-            [parsed_result["id"] for parsed_result in parsed_results],
+        assert sorted([script_set.id for script_set in script_sets]) == sorted(
+            [parsed_result["id"] for parsed_result in parsed_results]
         )
 
     def test_GET_filters_by_hardware_type(self):
@@ -115,15 +124,14 @@ class TestNodeScriptResultsAPI(APITestCase.ForUser):
             self.get_script_results_uri(script_set.node),
             {"hardware_type": hardware_type},
         )
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         parsed_results = json_load_bytes(response.content)
 
-        self.assertCountEqual(
-            [script.id for script in scripts],
+        assert sorted([script.id for script in scripts]) == sorted(
             [
                 parsed_result["script_id"]
                 for parsed_result in parsed_results[0]["results"]
-            ],
+            ]
         )
 
     def test_GET_include_output(self):
@@ -142,16 +150,16 @@ class TestNodeScriptResultsAPI(APITestCase.ForUser):
         response = self.client.get(
             self.get_script_results_uri(node), {"include_output": True}
         )
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         parsed_results = json_load_bytes(response.content)
 
-        self.assertCountEqual(
-            script_set_ids, [result["id"] for result in parsed_results]
+        assert sorted(script_set_ids) == sorted(
+            [result["id"] for result in parsed_results]
         )
         for script_set in parsed_results:
             for result in script_set["results"]:
                 for key in ["output", "stdout", "stderr", "result"]:
-                    self.assertIn(key, result)
+                    assert key in result
 
     def test_GET_filters(self):
         node = factory.make_Node()
@@ -186,49 +194,64 @@ class TestNodeScriptResultsAPI(APITestCase.ForUser):
                 )
             },
         )
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         parsed_results = json_load_bytes(response.content)
 
-        self.assertCountEqual(
-            script_set_ids, [result["id"] for result in parsed_results]
+        assert sorted(script_set_ids) == sorted(
+            [result["id"] for result in parsed_results]
         )
         for script_set in parsed_results:
             for result in script_set["results"]:
-                self.assertIn(
-                    result["name"],
-                    {name_filter_script.name, tag_filter_script.name},
-                )
+                assert result["name"] in {
+                    name_filter_script.name,
+                    tag_filter_script.name,
+                }
                 for key in ["output", "stdout", "stderr", "result"]:
-                    self.assertNotIn(key, result)
+                    assert key not in result
 
 
-class TestNodeScriptResultAPI(APITestCase.ForUser):
+@pytest.mark.parametrize(
+    "_id_value,_key",
+    [
+        pytest.param(None, None, id="id"),
+        pytest.param(
+            "current-commissioning",
+            "current_commissioning_script_set",
+            id="commissioning",
+        ),
+        pytest.param(
+            "current-testing",
+            "current_testing_script_set",
+            id="testing",
+        ),
+        pytest.param(
+            "current-installation",
+            "current_installation_script_set",
+            id="installation",
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user=user,client=oauth", id="user=user,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestNodeScriptResultAPI:
     """Tests for /api/2.0/nodes/<system_id>/results/<id>."""
 
-    scenarios = (
-        ("id", {"id_value": None, "key": None}),
-        (
-            "commissioning",
-            {
-                "id_value": "current-commissioning",
-                "key": "current_commissioning_script_set",
-            },
-        ),
-        (
-            "testing",
-            {
-                "id_value": "current-testing",
-                "key": "current_testing_script_set",
-            },
-        ),
-        (
-            "installation",
-            {
-                "id_value": "current-installation",
-                "key": "current_installation_script_set",
-            },
-        ),
-    )
+    @pytest.fixture(autouse=True)
+    def _setup(
+        self,
+        _id_value,
+        _key,
+        api_identity,
+        maas_user,
+        api_client,
+    ):
+        self.user = maas_user
+        self.client = api_client
+        self._id_value = _id_value
+        self._key = _key
 
     def get_script_result_uri(self, script_set):
         """Return the script's URI on the API."""
@@ -239,24 +262,23 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
 
     def make_scriptset(self, *args, **kwargs):
         script_set = factory.make_ScriptSet(*args, **kwargs)
-        if self.key is not None:
-            setattr(script_set.node, self.key, script_set)
+        if self._key is not None:
+            setattr(script_set.node, self._key, script_set)
             script_set.node.save()
         return script_set
 
     def get_id(self, script_set):
-        if self.id_value is None:
+        if self._id_value is None:
             return script_set.id
         else:
-            return self.id_value
+            return self._id_value
 
     def test_hander_path(self):
         script_set = self.make_scriptset()
-        self.assertEqual(
-            "/MAAS/api/2.0/nodes/%s/results/%s/"
-            % (script_set.node.system_id, self.get_id(script_set)),
-            self.get_script_result_uri(script_set),
-        )
+        assert "/MAAS/api/2.0/nodes/%s/results/%s/" % (
+            script_set.node.system_id,
+            self.get_id(script_set),
+        ) == self.get_script_result_uri(script_set)
 
     def test_GET(self):
         script_set = self.make_scriptset()
@@ -264,53 +286,45 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
         for _ in range(3):
             script_result = factory.make_ScriptResult(script_set=script_set)
             script_results[script_result.name] = script_result
-
         response = self.client.get(self.get_script_result_uri(script_set))
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         parsed_result = json_load_bytes(response.content)
         results = parsed_result.pop("results")
-
-        self.assertDictEqual(
-            {
-                "id": script_set.id,
-                "system_id": script_set.node.system_id,
-                "type": script_set.result_type,
-                "type_name": script_set.result_type_name,
-                "last_ping": fmt_time(script_set.last_ping),
-                "status": script_set.status,
-                "status_name": script_set.status_name,
-                "started": fmt_time(script_set.started),
-                "ended": fmt_time(script_set.ended),
-                "runtime": script_set.runtime,
-                "resource_uri": "/MAAS/api/2.0/nodes/%s/results/%d/"
-                % (script_set.node.system_id, script_set.id),
-            },
-            parsed_result,
-        )
+        assert {
+            "id": script_set.id,
+            "system_id": script_set.node.system_id,
+            "type": script_set.result_type,
+            "type_name": script_set.result_type_name,
+            "last_ping": fmt_time(script_set.last_ping),
+            "status": script_set.status,
+            "status_name": script_set.status_name,
+            "started": fmt_time(script_set.started),
+            "ended": fmt_time(script_set.ended),
+            "runtime": script_set.runtime,
+            "resource_uri": "/MAAS/api/2.0/nodes/%s/results/%d/"
+            % (script_set.node.system_id, script_set.id),
+        } == parsed_result
         for result in results:
             script_result = script_results[result["name"]]
-            self.assertDictEqual(
-                {
-                    "id": script_result.id,
-                    "name": script_result.name,
-                    "created": fmt_time(script_result.created),
-                    "updated": fmt_time(script_result.updated),
-                    "status": script_result.status,
-                    "status_name": script_result.status_name,
-                    "exit_status": script_result.exit_status,
-                    "started": fmt_time(script_result.started),
-                    "ended": fmt_time(script_result.ended),
-                    "runtime": script_result.runtime,
-                    "starttime": script_result.starttime,
-                    "endtime": script_result.endtime,
-                    "estimated_runtime": script_result.estimated_runtime,
-                    "parameters": script_result.parameters,
-                    "script_id": script_result.script_id,
-                    "script_revision_id": script_result.script_version_id,
-                    "suppressed": script_result.suppressed,
-                },
-                result,
-            )
+            assert {
+                "id": script_result.id,
+                "name": script_result.name,
+                "created": fmt_time(script_result.created),
+                "updated": fmt_time(script_result.updated),
+                "status": script_result.status,
+                "status_name": script_result.status_name,
+                "exit_status": script_result.exit_status,
+                "started": fmt_time(script_result.started),
+                "ended": fmt_time(script_result.ended),
+                "runtime": script_result.runtime,
+                "starttime": script_result.starttime,
+                "endtime": script_result.endtime,
+                "estimated_runtime": script_result.estimated_runtime,
+                "parameters": script_result.parameters,
+                "script_id": script_result.script_id,
+                "script_revision_id": script_result.script_version_id,
+                "suppressed": script_result.suppressed,
+            } == result
 
     def test_GET_redacts_password_parameter(self):
         string_script = factory.make_Script(
@@ -332,33 +346,32 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
             script=password_script,
             parameters={"password": {"type": "password", "value": password}},
         )
-
         response = self.client.get(self.get_script_result_uri(script_set))
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         parsed_result = json_load_bytes(response.content)
-
         for result in parsed_result["results"]:
             if result["id"] == string_script_result.id:
-                self.assertEqual(
-                    {"string": {"type": "string", "value": string}},
-                    result["parameters"],
-                )
-                self.assertEqual(
-                    string,
-                    reload_object(string_script_result).parameters["string"][
-                        "value"
-                    ],
+                assert {
+                    "string": {"type": "string", "value": string}
+                } == result["parameters"]
+                assert (
+                    string
+                    == reload_object(string_script_result).parameters[
+                        "string"
+                    ]["value"]
                 )
             else:
-                self.assertEqual(
-                    {"password": {"type": "password", "value": "REDACTED"}},
-                    result["parameters"],
-                )
-                self.assertEqual(
-                    password,
-                    reload_object(password_script_result).parameters[
+                assert {
+                    "password": {
+                        "type": "password",
+                        "value": "REDACTED",
+                    }
+                } == result["parameters"]
+                assert (
+                    password
+                    == reload_object(password_script_result).parameters[
                         "password"
-                    ]["value"],
+                    ]["value"]
                 )
 
     def test_GET_include_output(self):
@@ -367,59 +380,51 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
         for _ in range(3):
             script_result = factory.make_ScriptResult(script_set=script_set)
             script_results[script_result.name] = script_result
-
         response = self.client.get(
             self.get_script_result_uri(script_set), {"include_output": True}
         )
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         parsed_result = json_load_bytes(response.content)
         results = parsed_result.pop("results")
-
-        self.assertDictEqual(
-            {
-                "id": script_set.id,
-                "system_id": script_set.node.system_id,
-                "type": script_set.result_type,
-                "type_name": script_set.result_type_name,
-                "last_ping": fmt_time(script_set.last_ping),
-                "status": script_set.status,
-                "status_name": script_set.status_name,
-                "started": fmt_time(script_set.started),
-                "ended": fmt_time(script_set.ended),
-                "runtime": script_set.runtime,
-                "resource_uri": "/MAAS/api/2.0/nodes/%s/results/%d/"
-                % (script_set.node.system_id, script_set.id),
-            },
-            parsed_result,
-        )
+        assert {
+            "id": script_set.id,
+            "system_id": script_set.node.system_id,
+            "type": script_set.result_type,
+            "type_name": script_set.result_type_name,
+            "last_ping": fmt_time(script_set.last_ping),
+            "status": script_set.status,
+            "status_name": script_set.status_name,
+            "started": fmt_time(script_set.started),
+            "ended": fmt_time(script_set.ended),
+            "runtime": script_set.runtime,
+            "resource_uri": "/MAAS/api/2.0/nodes/%s/results/%d/"
+            % (script_set.node.system_id, script_set.id),
+        } == parsed_result
         for result in results:
             script_result = script_results[result["name"]]
-            self.assertDictEqual(
-                {
-                    "id": script_result.id,
-                    "name": script_result.name,
-                    "created": fmt_time(script_result.created),
-                    "updated": fmt_time(script_result.updated),
-                    "status": script_result.status,
-                    "status_name": script_result.status_name,
-                    "exit_status": script_result.exit_status,
-                    "started": fmt_time(script_result.started),
-                    "ended": fmt_time(script_result.ended),
-                    "runtime": script_result.runtime,
-                    "starttime": script_result.starttime,
-                    "endtime": script_result.endtime,
-                    "estimated_runtime": script_result.estimated_runtime,
-                    "parameters": script_result.parameters,
-                    "script_id": script_result.script_id,
-                    "script_revision_id": script_result.script_version_id,
-                    "suppressed": script_result.suppressed,
-                    "output": b64encode(script_result.output).decode(),
-                    "stdout": b64encode(script_result.stdout).decode(),
-                    "stderr": b64encode(script_result.stderr).decode(),
-                    "result": b64encode(script_result.result).decode(),
-                },
-                result,
-            )
+            assert {
+                "id": script_result.id,
+                "name": script_result.name,
+                "created": fmt_time(script_result.created),
+                "updated": fmt_time(script_result.updated),
+                "status": script_result.status,
+                "status_name": script_result.status_name,
+                "exit_status": script_result.exit_status,
+                "started": fmt_time(script_result.started),
+                "ended": fmt_time(script_result.ended),
+                "runtime": script_result.runtime,
+                "starttime": script_result.starttime,
+                "endtime": script_result.endtime,
+                "estimated_runtime": script_result.estimated_runtime,
+                "parameters": script_result.parameters,
+                "script_id": script_result.script_id,
+                "script_revision_id": script_result.script_version_id,
+                "suppressed": script_result.suppressed,
+                "output": b64encode(script_result.output).decode(),
+                "stdout": b64encode(script_result.stdout).decode(),
+                "stderr": b64encode(script_result.stderr).decode(),
+                "result": b64encode(script_result.result).decode(),
+            } == result
 
     def test_GET_filters(self):
         scripts = [factory.make_Script() for _ in range(10)]
@@ -432,7 +437,6 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
             script_results[script_result.name] = script_result
         results_list = list(script_results.values())
         filtered_results = [random.choice(results_list) for _ in range(3)]
-
         response = self.client.get(
             self.get_script_result_uri(script_set),
             {
@@ -450,55 +454,47 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
                 )
             },
         )
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         parsed_result = json_load_bytes(response.content)
         results = parsed_result.pop("results")
-
-        self.assertDictEqual(
-            {
-                "id": script_set.id,
-                "system_id": script_set.node.system_id,
-                "type": script_set.result_type,
-                "type_name": script_set.result_type_name,
-                "last_ping": fmt_time(script_set.last_ping),
-                "status": script_set.status,
-                "status_name": script_set.status_name,
-                "started": fmt_time(script_set.started),
-                "ended": fmt_time(script_set.ended),
-                "runtime": script_set.runtime,
-                "resource_uri": "/MAAS/api/2.0/nodes/%s/results/%d/"
-                % (script_set.node.system_id, script_set.id),
-            },
-            parsed_result,
-        )
+        assert {
+            "id": script_set.id,
+            "system_id": script_set.node.system_id,
+            "type": script_set.result_type,
+            "type_name": script_set.result_type_name,
+            "last_ping": fmt_time(script_set.last_ping),
+            "status": script_set.status,
+            "status_name": script_set.status_name,
+            "started": fmt_time(script_set.started),
+            "ended": fmt_time(script_set.ended),
+            "runtime": script_set.runtime,
+            "resource_uri": "/MAAS/api/2.0/nodes/%s/results/%d/"
+            % (script_set.node.system_id, script_set.id),
+        } == parsed_result
         for result in results:
-            self.assertIn(
-                result["name"],
-                [script_result.name for script_result in filtered_results],
-            )
+            assert result["name"] in {
+                script_result.name for script_result in filtered_results
+            }
             script_result = script_results[result["name"]]
-            self.assertDictEqual(
-                {
-                    "id": script_result.id,
-                    "name": script_result.name,
-                    "created": fmt_time(script_result.created),
-                    "updated": fmt_time(script_result.updated),
-                    "status": script_result.status,
-                    "status_name": script_result.status_name,
-                    "exit_status": script_result.exit_status,
-                    "started": fmt_time(script_result.started),
-                    "ended": fmt_time(script_result.ended),
-                    "runtime": script_result.runtime,
-                    "starttime": script_result.starttime,
-                    "endtime": script_result.endtime,
-                    "estimated_runtime": script_result.estimated_runtime,
-                    "parameters": script_result.parameters,
-                    "script_id": script_result.script_id,
-                    "script_revision_id": script_result.script_version_id,
-                    "suppressed": script_result.suppressed,
-                },
-                result,
-            )
+            assert {
+                "id": script_result.id,
+                "name": script_result.name,
+                "created": fmt_time(script_result.created),
+                "updated": fmt_time(script_result.updated),
+                "status": script_result.status,
+                "status_name": script_result.status_name,
+                "exit_status": script_result.exit_status,
+                "started": fmt_time(script_result.started),
+                "ended": fmt_time(script_result.ended),
+                "runtime": script_result.runtime,
+                "starttime": script_result.starttime,
+                "endtime": script_result.endtime,
+                "estimated_runtime": script_result.estimated_runtime,
+                "parameters": script_result.parameters,
+                "script_id": script_result.script_id,
+                "script_revision_id": script_result.script_version_id,
+                "suppressed": script_result.suppressed,
+            } == result
 
     def test_GET_filters_no_duplicates_when_multiple_tokens_match(self):
         script = factory.make_Script()
@@ -507,18 +503,14 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
             script_set=script_set, script=script
         )
         tag = random.choice([tag for tag in script.tags if "tag" in tag])
-
         response = self.client.get(
             self.get_script_result_uri(script_set),
             {"filters": "%s,%s" % (script_result.name, tag)},
         )
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         parsed_result = json_load_bytes(response.content)
         results = parsed_result["results"]
-        self.assertEqual(
-            1,
-            len([r for r in results if r["id"] == script_result.id]),
-        )
+        assert 1 == len([r for r in results if r["id"] == script_result.id])
 
     def test_GET_filters_by_hardware_type(self):
         script_set = self.make_scriptset()
@@ -535,105 +527,98 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
                 )
             )
             factory.make_ScriptResult(script_set=script_set, script=script)
-
         response = self.client.get(
             self.get_script_result_uri(script_set),
             {"hardware_type": hardware_type},
         )
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         parsed_result = json_load_bytes(response.content)
         results = parsed_result.pop("results")
-        self.assertCountEqual(
-            [script.id for script in scripts],
-            [result["script_id"] for result in results],
+        assert sorted([script.id for script in scripts]) == sorted(
+            [result["script_id"] for result in results]
         )
 
     def test_DELETE(self):
         # Users are unable to delete the current-commissioning or
         # current-installation script sets.
-        if self.id_value in ("current-commissioning", "current-installation"):
+        if self._id_value in ("current-commissioning", "current-installation"):
             return
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         script_set = self.make_scriptset()
         response = self.client.delete(self.get_script_result_uri(script_set))
-        self.assertEqual(response.status_code, http.client.NO_CONTENT)
-        self.assertIsNone(reload_object(script_set))
+        assert response.status_code == http.client.NO_CONTENT
+        assert reload_object(script_set) is None
 
     def test_DELETE_admin_only(self):
         script_set = self.make_scriptset()
         response = self.client.delete(self.get_script_result_uri(script_set))
-        self.assertEqual(response.status_code, http.client.FORBIDDEN)
-        self.assertIsNotNone(reload_object(script_set))
+        assert response.status_code == http.client.FORBIDDEN
+        assert reload_object(script_set) is not None
 
     def test_PUT_admin_only(self):
         script_set = self.make_scriptset()
         response = self.client.put(self.get_script_result_uri(script_set))
-        self.assertEqual(response.status_code, http.client.FORBIDDEN)
-        self.assertIsNotNone(reload_object(script_set))
+        assert response.status_code == http.client.FORBIDDEN
+        assert reload_object(script_set) is not None
 
     def test_PUT_include_output(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         script_set = self.make_scriptset()
         script_results = {}
         for _ in range(3):
             script_result = factory.make_ScriptResult(script_set=script_set)
             script_results[script_result.name] = script_result
-
         response = self.client.put(
             self.get_script_result_uri(script_set), {"include_output": True}
         )
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         parsed_result = json_load_bytes(response.content)
         results = parsed_result.pop("results")
-
-        self.assertDictEqual(
-            {
-                "id": script_set.id,
-                "system_id": script_set.node.system_id,
-                "type": script_set.result_type,
-                "type_name": script_set.result_type_name,
-                "last_ping": fmt_time(script_set.last_ping),
-                "status": script_set.status,
-                "status_name": script_set.status_name,
-                "started": fmt_time(script_set.started),
-                "ended": fmt_time(script_set.ended),
-                "runtime": script_set.runtime,
-                "resource_uri": "/MAAS/api/2.0/nodes/%s/results/%d/"
-                % (script_set.node.system_id, script_set.id),
-            },
-            parsed_result,
-        )
+        assert {
+            "id": script_set.id,
+            "system_id": script_set.node.system_id,
+            "type": script_set.result_type,
+            "type_name": script_set.result_type_name,
+            "last_ping": fmt_time(script_set.last_ping),
+            "status": script_set.status,
+            "status_name": script_set.status_name,
+            "started": fmt_time(script_set.started),
+            "ended": fmt_time(script_set.ended),
+            "runtime": script_set.runtime,
+            "resource_uri": "/MAAS/api/2.0/nodes/%s/results/%d/"
+            % (script_set.node.system_id, script_set.id),
+        } == parsed_result
         for result in results:
             script_result = script_results[result["name"]]
-            self.assertDictEqual(
-                {
-                    "id": script_result.id,
-                    "name": script_result.name,
-                    "created": fmt_time(script_result.created),
-                    "updated": fmt_time(script_result.updated),
-                    "status": script_result.status,
-                    "status_name": script_result.status_name,
-                    "exit_status": script_result.exit_status,
-                    "started": fmt_time(script_result.started),
-                    "ended": fmt_time(script_result.ended),
-                    "runtime": script_result.runtime,
-                    "starttime": script_result.starttime,
-                    "endtime": script_result.endtime,
-                    "estimated_runtime": script_result.estimated_runtime,
-                    "parameters": script_result.parameters,
-                    "script_id": script_result.script_id,
-                    "script_revision_id": script_result.script_version_id,
-                    "suppressed": script_result.suppressed,
-                    "output": b64encode(script_result.output).decode(),
-                    "stdout": b64encode(script_result.stdout).decode(),
-                    "stderr": b64encode(script_result.stderr).decode(),
-                    "result": b64encode(script_result.result).decode(),
-                },
-                result,
-            )
+            assert {
+                "id": script_result.id,
+                "name": script_result.name,
+                "created": fmt_time(script_result.created),
+                "updated": fmt_time(script_result.updated),
+                "status": script_result.status,
+                "status_name": script_result.status_name,
+                "exit_status": script_result.exit_status,
+                "started": fmt_time(script_result.started),
+                "ended": fmt_time(script_result.ended),
+                "runtime": script_result.runtime,
+                "starttime": script_result.starttime,
+                "endtime": script_result.endtime,
+                "estimated_runtime": script_result.estimated_runtime,
+                "parameters": script_result.parameters,
+                "script_id": script_result.script_id,
+                "script_revision_id": script_result.script_version_id,
+                "suppressed": script_result.suppressed,
+                "output": b64encode(script_result.output).decode(),
+                "stdout": b64encode(script_result.stdout).decode(),
+                "stderr": b64encode(script_result.stderr).decode(),
+                "result": b64encode(script_result.result).decode(),
+            } == result
 
     def test_PUT_filters(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         scripts = [factory.make_Script() for _ in range(10)]
         script_set = self.make_scriptset()
         script_results = {}
@@ -644,7 +629,6 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
             script_results[script_result.name] = script_result
         results_list = list(script_results.values())
         filtered_results = [random.choice(results_list) for _ in range(3)]
-
         response = self.client.get(
             self.get_script_result_uri(script_set),
             {
@@ -662,62 +646,55 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
                 )
             },
         )
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         parsed_result = json_load_bytes(response.content)
         results = parsed_result.pop("results")
-
-        self.assertDictEqual(
-            {
-                "id": script_set.id,
-                "system_id": script_set.node.system_id,
-                "type": script_set.result_type,
-                "type_name": script_set.result_type_name,
-                "last_ping": fmt_time(script_set.last_ping),
-                "status": script_set.status,
-                "status_name": script_set.status_name,
-                "started": fmt_time(script_set.started),
-                "ended": fmt_time(script_set.ended),
-                "runtime": script_set.runtime,
-                "resource_uri": "/MAAS/api/2.0/nodes/%s/results/%d/"
-                % (script_set.node.system_id, script_set.id),
-            },
-            parsed_result,
-        )
+        assert {
+            "id": script_set.id,
+            "system_id": script_set.node.system_id,
+            "type": script_set.result_type,
+            "type_name": script_set.result_type_name,
+            "last_ping": fmt_time(script_set.last_ping),
+            "status": script_set.status,
+            "status_name": script_set.status_name,
+            "started": fmt_time(script_set.started),
+            "ended": fmt_time(script_set.ended),
+            "runtime": script_set.runtime,
+            "resource_uri": "/MAAS/api/2.0/nodes/%s/results/%d/"
+            % (script_set.node.system_id, script_set.id),
+        } == parsed_result
         for result in results:
-            self.assertIn(
-                result["name"],
-                [script_result.name for script_result in filtered_results],
-            )
+            assert result["name"] in {
+                script_result.name for script_result in filtered_results
+            }
             script_result = script_results[result["name"]]
-            self.assertDictEqual(
-                {
-                    "id": script_result.id,
-                    "name": script_result.name,
-                    "created": fmt_time(script_result.created),
-                    "updated": fmt_time(script_result.updated),
-                    "status": script_result.status,
-                    "status_name": script_result.status_name,
-                    "exit_status": script_result.exit_status,
-                    "started": fmt_time(script_result.started),
-                    "ended": fmt_time(script_result.ended),
-                    "runtime": script_result.runtime,
-                    "starttime": script_result.starttime,
-                    "endtime": script_result.endtime,
-                    "estimated_runtime": script_result.estimated_runtime,
-                    "parameters": script_result.parameters,
-                    "script_id": script_result.script_id,
-                    "script_revision_id": script_result.script_version_id,
-                    "suppressed": script_result.suppressed,
-                },
-                result,
-            )
+            assert {
+                "id": script_result.id,
+                "name": script_result.name,
+                "created": fmt_time(script_result.created),
+                "updated": fmt_time(script_result.updated),
+                "status": script_result.status,
+                "status_name": script_result.status_name,
+                "exit_status": script_result.exit_status,
+                "started": fmt_time(script_result.started),
+                "ended": fmt_time(script_result.ended),
+                "runtime": script_result.runtime,
+                "starttime": script_result.starttime,
+                "endtime": script_result.endtime,
+                "estimated_runtime": script_result.estimated_runtime,
+                "parameters": script_result.parameters,
+                "script_id": script_result.script_id,
+                "script_revision_id": script_result.script_version_id,
+                "suppressed": script_result.suppressed,
+            } == result
 
     def test_PUT_updates_suppressed(self):
         # This test does two passes.
         # On the first pass, we set the default false suppressed field
         # of all the script results to True, while on the second pass
         # we set them all back to False.
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node()
         hardware_type = factory.pick_choice(HARDWARE_TYPE_CHOICES)
         script_set = self.make_scriptset(node=node)
@@ -729,38 +706,39 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
         response = self.client.put(
             self.get_script_result_uri(script_set), {"suppressed": True}
         )
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         script_set = reload_object(script_set)
-        self.assertIsNotNone(script_set)
+        assert script_set is not None
         for script_result in script_set:
-            self.assertTrue(script_result.suppressed)
+            assert script_result.suppressed
         response = self.client.put(
             self.get_script_result_uri(script_set), {"suppressed": False}
         )
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         script_set = reload_object(script_set)
-        self.assertIsNotNone(script_set)
+        assert script_set is not None
         for script_result in script_set:
-            self.assertFalse(script_result.suppressed)
+            assert not script_result.suppressed
 
     def test_PUT_suppressed_raises_validation_error(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node()
         factory.pick_choice(HARDWARE_TYPE_CHOICES)
         script_set = self.make_scriptset(node=node)
         response = self.client.put(
             self.get_script_result_uri(script_set), {"suppressed": "testing"}
         )
-        self.assertEqual(response.status_code, http.client.BAD_REQUEST)
+        assert response.status_code == http.client.BAD_REQUEST
 
     def test_PUT_suppressed_and_filters_by_script_result_id(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node()
         hardware_type = factory.pick_choice(HARDWARE_TYPE_CHOICES)
         script_set = self.make_scriptset(node=node)
         script = factory.make_Script(hardware_type=hardware_type)
         script_result = factory.make_ScriptResult(script_set, script=script)
-
         # Make some additional scripts and script results
         scripts = [
             factory.make_Script(hardware_type=hardware_type) for _ in range(3)
@@ -770,29 +748,28 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
             script_results.append(
                 factory.make_ScriptResult(script_set=script_set, script=script)
             )
-
         response = self.client.put(
             self.get_script_result_uri(script_set),
             {"suppressed": True, "filters": script_result.id},
         )
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         script_set = reload_object(script_set)
-        self.assertIsNotNone(script_set)
-        self.assertEqual(script_set.id, script_result.script_set.id)
+        assert script_set is not None
+        assert script_set.id == script_result.script_set.id
         script_result = reload_object(script_result)
-        self.assertTrue(script_result.suppressed)
+        assert script_result.suppressed
         for script_result in script_results:
             script_result = reload_object(script_result)
-            self.assertFalse(script_result.suppressed)
+            assert not script_result.suppressed
 
     def test_PUT_suppressed_and_filters_by_script_result_script_name(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node()
         hardware_type = factory.pick_choice(HARDWARE_TYPE_CHOICES)
         script_set = self.make_scriptset(node=node)
         script = factory.make_Script(hardware_type=hardware_type)
         script_result = factory.make_ScriptResult(script_set, script=script)
-
         # Make some additional scripts and script results
         scripts = [
             factory.make_Script(hardware_type=hardware_type) for _ in range(3)
@@ -802,29 +779,28 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
             script_results.append(
                 factory.make_ScriptResult(script_set=script_set, script=script)
             )
-
         response = self.client.put(
             self.get_script_result_uri(script_set),
             {"suppressed": True, "filters": script_result.script_name},
         )
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         script_set = reload_object(script_set)
-        self.assertIsNotNone(script_set)
-        self.assertEqual(script_set.id, script_result.script_set.id)
+        assert script_set is not None
+        assert script_set.id == script_result.script_set.id
         script_result = reload_object(script_result)
-        self.assertTrue(script_result.suppressed)
+        assert script_result.suppressed
         for script_result in script_results:
             script_result = reload_object(script_result)
-            self.assertFalse(script_result.suppressed)
+            assert not script_result.suppressed
 
     def test_PUT_suppressed_and_filters_by_hardware_type(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node()
         hardware_type = factory.pick_choice(HARDWARE_TYPE_CHOICES)
         script_set = self.make_scriptset(node=node)
         script = factory.make_Script(hardware_type=hardware_type)
         script_result = factory.make_ScriptResult(script_set, script=script)
-
         # Make some additional scripts and script results
         scripts = [
             factory.make_Script(
@@ -839,33 +815,30 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
             script_results.append(
                 factory.make_ScriptResult(script_set=script_set, script=script)
             )
-
         response = self.client.put(
             self.get_script_result_uri(script_set),
             {"suppressed": True, "hardware_type": hardware_type},
         )
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         script_set = reload_object(script_set)
-        self.assertIsNotNone(script_set)
-        self.assertEqual(script_set.id, script_result.script_set.id)
+        assert script_set is not None
+        assert script_set.id == script_result.script_set.id
         script_result = reload_object(script_result)
-        self.assertTrue(script_result.suppressed)
-        self.assertEqual(hardware_type, script_result.script.hardware_type)
+        assert script_result.suppressed
+        assert hardware_type == script_result.script.hardware_type
         for script_result in script_results:
             script_result = reload_object(script_result)
-            self.assertFalse(script_result.suppressed)
+            assert not script_result.suppressed
 
     def test_download(self):
         script_set = self.make_scriptset()
         script_results = [
             factory.make_ScriptResult(script_set=script_set) for _ in range(3)
         ]
-
         response = self.client.get(
             self.get_script_result_uri(script_set), {"op": "download"}
         )
-        self.assertEqual(response.status_code, http.client.OK)
-
+        assert response.status_code == http.client.OK
         binary = BytesIO()
         for script_result in sorted(
             list(script_results), key=lambda script_result: script_result.name
@@ -876,42 +849,38 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
             )
             binary.write(script_result.output)
             binary.write(b"\n")
-        self.assertEqual(binary.getvalue(), response.content)
+        assert binary.getvalue() == response.content
 
     def test_download_single(self):
         script_set = self.make_scriptset()
         script_result = factory.make_ScriptResult(script_set=script_set)
-
         response = self.client.get(
             self.get_script_result_uri(script_set),
             {"op": "download", "filter": script_result.id},
         )
-        self.assertEqual(response.status_code, http.client.OK)
-        self.assertEqual(script_result.output, response.content)
+        assert response.status_code == http.client.OK
+        assert script_result.output == response.content
 
     def test_download_filetype_txt(self):
         script_set = self.make_scriptset()
         script_result = factory.make_ScriptResult(script_set=script_set)
-
         response = self.client.get(
             self.get_script_result_uri(script_set),
             {"op": "download", "filetype": "txt", "filters": script_result.id},
         )
-        self.assertEqual(response.status_code, http.client.OK)
-        self.assertEqual(script_result.output, response.content)
+        assert response.status_code == http.client.OK
+        assert script_result.output == response.content
 
     def test_download_filetype_tar_xz(self):
         script_set = self.make_scriptset()
         script_results = [
             factory.make_ScriptResult(script_set=script_set) for _ in range(3)
         ]
-
         response = self.client.get(
             self.get_script_result_uri(script_set),
             {"op": "download", "filetype": "tar.xz"},
         )
-        self.assertEqual(response.status_code, http.client.OK)
-
+        assert response.status_code == http.client.OK
         root_dir = "{}-{}-{}".format(
             script_set.node.hostname,
             script_set.result_type_name.lower(),
@@ -921,29 +890,25 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
             for script_result in script_results:
                 path = os.path.join(root_dir, script_result.name)
                 member = tar.getmember(path)
-                self.assertEqual(
-                    time.mktime(script_result.updated.timetuple()),
-                    member.mtime,
+                assert (
+                    time.mktime(script_result.updated.timetuple())
+                    == member.mtime
                 )
-                self.assertEqual(0o644, member.mode)
-                self.assertEqual(
-                    script_result.output, tar.extractfile(path).read()
-                )
+                assert 0o644 == member.mode
+                assert script_result.output == tar.extractfile(path).read()
 
     def test_download_filetype_unknown(self):
         script_set = self.make_scriptset()
         factory.make_ScriptResult(script_set=script_set)
-
         response = self.client.get(
             self.get_script_result_uri(script_set),
             {"op": "download", "filetype": factory.make_name("filetype")},
         )
-        self.assertEqual(response.status_code, http.client.BAD_REQUEST)
+        assert response.status_code == http.client.BAD_REQUEST
 
     def test_download_output_combined(self):
         script_set = self.make_scriptset()
         script_result = factory.make_ScriptResult(script_set=script_set)
-
         response = self.client.get(
             self.get_script_result_uri(script_set),
             {
@@ -952,52 +917,47 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
                 "output": "combined",
             },
         )
-        self.assertEqual(response.status_code, http.client.OK)
-        self.assertEqual(script_result.output, response.content)
+        assert response.status_code == http.client.OK
+        assert script_result.output == response.content
 
     def test_download_output_stdout(self):
         script_set = self.make_scriptset()
         script_result = factory.make_ScriptResult(script_set=script_set)
-
         response = self.client.get(
             self.get_script_result_uri(script_set),
             {"op": "download", "filter": script_result.id, "output": "stdout"},
         )
-        self.assertEqual(response.status_code, http.client.OK)
-        self.assertEqual(script_result.stdout, response.content)
+        assert response.status_code == http.client.OK
+        assert script_result.stdout == response.content
 
     def test_download_output_stderr(self):
         script_set = self.make_scriptset()
         script_result = factory.make_ScriptResult(script_set=script_set)
-
         response = self.client.get(
             self.get_script_result_uri(script_set),
             {"op": "download", "filter": script_result.id, "output": "stderr"},
         )
-        self.assertEqual(response.status_code, http.client.OK)
-        self.assertEqual(script_result.stderr, response.content)
+        assert response.status_code == http.client.OK
+        assert script_result.stderr == response.content
 
     def test_download_output_result(self):
         script_set = self.make_scriptset()
         script_result = factory.make_ScriptResult(script_set=script_set)
-
         response = self.client.get(
             self.get_script_result_uri(script_set),
             {"op": "download", "filter": script_result.id, "output": "result"},
         )
-        self.assertEqual(response.status_code, http.client.OK)
-        self.assertEqual(script_result.result, response.content)
+        assert response.status_code == http.client.OK
+        assert script_result.result == response.content
 
     def test_download_output_all(self):
         script_set = self.make_scriptset()
         script_result = factory.make_ScriptResult(script_set=script_set)
-
         response = self.client.get(
             self.get_script_result_uri(script_set),
             {"op": "download", "filter": script_result.id, "output": "all"},
         )
-        self.assertEqual(response.status_code, http.client.OK)
-
+        assert response.status_code == http.client.OK
         binary = BytesIO()
         dashes = "-" * int((80.0 - (2 + len(script_result.name))) / 2)
         binary.write(f"{dashes} {script_result.name} {dashes}\n".encode())
@@ -1018,7 +978,7 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
         binary.write((f"{dashes} {filename} {dashes}\n").encode())
         binary.write(script_result.result)
         binary.write(b"\n")
-        self.assertEqual(binary.getvalue(), response.content)
+        assert binary.getvalue() == response.content
 
     def test_download_filters(self):
         scripts = [factory.make_Script() for _ in range(10)]
@@ -1031,7 +991,6 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
             script_results[script_result.name] = script_result
         results_list = list(script_results.values())
         filtered_results = [random.choice(results_list) for _ in range(3)]
-
         response = self.client.get(
             self.get_script_result_uri(script_set),
             {
@@ -1051,26 +1010,23 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
                 ),
             },
         )
-        self.assertEqual(response.status_code, http.client.OK)
-
+        assert response.status_code == http.client.OK
         root_dir = "{}-{}-{}".format(
             script_set.node.hostname,
             script_set.result_type_name.lower(),
             script_set.id,
         )
         with tarfile.open(mode="r", fileobj=BytesIO(response.content)) as tar:
-            self.assertEqual(len(set(filtered_results)), len(tar.getmembers()))
+            assert len(set(filtered_results)) == len(tar.getmembers())
             for script_result in filtered_results:
                 path = os.path.join(root_dir, script_result.name)
                 member = tar.getmember(path)
-                self.assertEqual(
-                    time.mktime(script_result.updated.timetuple()),
-                    member.mtime,
+                assert (
+                    time.mktime(script_result.updated.timetuple())
+                    == member.mtime
                 )
-                self.assertEqual(0o644, member.mode)
-                self.assertEqual(
-                    script_result.output, tar.extractfile(path).read()
-                )
+                assert 0o644 == member.mode
+                assert script_result.output == tar.extractfile(path).read()
 
     def test_download_filters_by_hardware_type(self):
         hardware_type = factory.pick_choice(HARDWARE_TYPE_CHOICES)
@@ -1085,7 +1041,6 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
             script_set=script_set, script=script
         )
         factory.make_ScriptResult(script_set=script_set, script=other_script)
-
         response = self.client.get(
             self.get_script_result_uri(script_set),
             {
@@ -1094,11 +1049,10 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
                 "hardware_type": hardware_type,
             },
         )
-        self.assertEqual(response.status_code, http.client.OK)
-        self.assertEqual(script_result.output, response.content)
+        assert response.status_code == http.client.OK
+        assert script_result.output == response.content
 
     def test_download_shows_results_from_all_disks(self):
-        # Regression test for #LP:1755060
         script = factory.make_Script(hardware_type=HARDWARE_TYPE.STORAGE)
         script_set = self.make_scriptset()
         script_results = []
@@ -1111,26 +1065,28 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
                     physical_blockdevice=bd,
                 )
             )
-
         response = self.client.get(
             self.get_script_result_uri(script_set), {"op": "download"}
         )
-
-        self.assertCountEqual(
-            re.findall(r"(name-\w+ - /dev/[\w-]+)", response.content.decode()),
+        assert sorted(
+            re.findall(r"(name-\w+ - /dev/[\w-]+)", response.content.decode())
+        ) == sorted(
             [
                 "%s - /dev/%s"
-                % (script_result.name, script_result.physical_blockdevice.name)
+                % (
+                    script_result.name,
+                    script_result.physical_blockdevice.name,
+                )
                 for script_result in sorted(
                     script_results,
                     key=lambda script_result: (
                         script_result.physical_blockdevice.name
                     ),
                 )
-            ],
+            ]
         )
         for script_result in script_results:
-            self.assertIn(script_result.output, response.content)
+            assert script_result.output in response.content
 
     def test_download_shows_results_from_all_interfaces(self):
         script = factory.make_Script(hardware_type=HARDWARE_TYPE.NETWORK)
@@ -1143,23 +1099,22 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
                     script_set=script_set, script=script, interface=interface
                 )
             )
-
         response = self.client.get(
             self.get_script_result_uri(script_set), {"op": "download"}
         )
-
-        self.assertCountEqual(
-            re.findall(r"(name-\w+ - [\w-]+)", response.content.decode()),
+        assert sorted(
+            re.findall(r"(name-\w+ - [\w-]+)", response.content.decode())
+        ) == sorted(
             [
                 f"{script_result.name} - {script_result.interface.name}"
                 for script_result in sorted(
                     script_results,
                     key=lambda script_result: script_result.interface.name,
                 )
-            ],
+            ]
         )
         for script_result in script_results:
-            self.assertIn(script_result.output, response.content)
+            assert script_result.output in response.content
 
     def test_download_binary(self):
         script_set = self.make_scriptset()
@@ -1171,12 +1126,11 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
             script_set=script_set, script_name=CURTIN_ERROR_TARFILE
         )
         other_result = factory.make_ScriptResult(script_set=script_set)
-
         response = self.client.get(
             self.get_script_result_uri(script_set),
             {"op": "download", "output": "all"},
         )
-        self.assertEqual(response.status_code, http.client.OK)
+        assert response.status_code == http.client.OK
         binary = BytesIO()
         dashes = "-" * int((80.0 - (2 + len(curtin_error_tarfile.name))) / 2)
         binary.write(
@@ -1202,52 +1156,47 @@ class TestNodeScriptResultAPI(APITestCase.ForUser):
         binary.write((f"{dashes} {filename} {dashes}\n").encode())
         binary.write(other_result.result)
         binary.write(b"\n")
-        self.assertEqual(binary.getvalue(), response.content)
+        assert binary.getvalue() == response.content
 
     def test_GET_raises_error_when_script_set_is_none(self):
-        if self.id_value is None:
+        if self._id_value is None:
             return
-
         node = factory.make_Node()
-        setattr(node, self.key, None)
+        setattr(node, self._key, None)
         node.save()
-
         response = self.client.get(
             reverse(
                 "script_result_handler",
-                args=[node.system_id, self.id_value],
+                args=[node.system_id, self._id_value],
             )
         )
-        self.assertEqual(response.status_code, http.client.BAD_REQUEST)
-        expected_message = f"No {self.id_value.replace('-', ' ')} script set exists for this node."
-        self.assertIn(expected_message, response.content.decode())
+        assert response.status_code == http.client.BAD_REQUEST
+        expected_message = f"No {self._id_value.replace('-', ' ')} script set exists for this node."
+        assert expected_message in response.content.decode()
 
     def test_GET_raises_error_for_invalid_id(self):
         node = factory.make_Node()
         invalid_id = "invalid-script-set"
-
         response = self.client.get(
             reverse(
                 "script_result_handler",
                 args=[node.system_id, invalid_id],
             )
         )
-        self.assertEqual(response.status_code, http.client.BAD_REQUEST)
-        self.assertIn(
+        assert response.status_code == http.client.BAD_REQUEST
+        assert (
             'Unknown id "invalid-script-set" must be current-commissioning, '
             "current-testing, current-installation, or the id number of a "
-            "specific result.",
-            response.content.decode(),
-        )
+            "specific result."
+        ) in response.content.decode()
 
     def test_GET_returns_404_for_nonexistent_numeric_id(self):
         node = factory.make_Node()
         nonexistent_id = 999999
-
         response = self.client.get(
             reverse(
                 "script_result_handler",
                 args=[node.system_id, nonexistent_id],
             )
         )
-        self.assertEqual(response.status_code, http.client.NOT_FOUND)
+        assert response.status_code == http.client.NOT_FOUND

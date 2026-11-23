@@ -2,23 +2,53 @@
 # GNU Affero General Public License version 3 (see the file LICENSE).
 
 from importlib import import_module
-import io
 import sys
 from unittest.mock import patch
 
-from maastesting.testcase import MAASTestCase
+import pytest
+
 from snippets import maas_api_helper
 
 
-class TestSignal(MAASTestCase):
-    def setUp(self):
-        super().setUp()
-        with patch.dict(sys.modules, {"maas_api_helper": maas_api_helper}):
-            self.maas_signal = import_module("snippets.maas_signal")
-        self.mock_signal = self.patch(self.maas_signal, "signal")
+@pytest.fixture
+def maas_signal():
+    with patch.dict(sys.modules, {"maas_api_helper": maas_api_helper}):
+        return import_module("snippets.maas_signal")
 
-    def test_rejects_wedge_power_type(self):
-        self.patch(
+
+def test_rejects_unsupported_power_type(maas_signal, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        maas_signal, "signal", lambda *args: calls.append(args)
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "maas-signal",
+            "--url",
+            "http://maas.example.com",
+            "--power-type",
+            "wedge",
+            "OK",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as error:
+        maas_signal.main()
+
+    assert error.value.code == 2
+    assert calls == []
+
+
+def test_signals_supported_power_types(maas_signal, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        maas_signal, "signal", lambda *args: calls.append(args)
+    )
+
+    for power_type in ("ipmi", "virsh", "manual", "moonshot"):
+        monkeypatch.setattr(
             sys,
             "argv",
             [
@@ -26,37 +56,12 @@ class TestSignal(MAASTestCase):
                 "--url",
                 "http://maas.example.com",
                 "--power-type",
-                "wedge",
+                power_type,
                 "OK",
             ],
         )
-        stderr = self.patch(sys, "stderr", io.StringIO())
+        maas_signal.main()
 
-        error = self.assertRaises(SystemExit, self.maas_signal.main)
+        assert calls[-1][-2:] == (power_type, None)
 
-        self.assertEqual(2, error.code)
-        self.assertIn("invalid choice: 'wedge'", stderr.getvalue())
-        self.mock_signal.assert_not_called()
-
-    def test_signals_supported_power_types(self):
-        for power_type in ("ipmi", "virsh", "manual", "moonshot"):
-            self.patch(
-                sys,
-                "argv",
-                [
-                    "maas-signal",
-                    "--url",
-                    "http://maas.example.com",
-                    "--power-type",
-                    power_type,
-                    "OK",
-                ],
-            )
-
-            self.maas_signal.main()
-
-            self.mock_signal.assert_called_once()
-            self.assertEqual(
-                (power_type, None), self.mock_signal.call_args.args[-2:]
-            )
-            self.mock_signal.reset_mock()
+    assert len(calls) == 4

@@ -9,9 +9,9 @@ from textwrap import dedent
 from unittest.mock import call, sentinel
 
 from lxml import etree
+import pytest
 
 from maastesting.factory import factory
-from maastesting.testcase import MAASTestCase
 from provisioningserver.drivers.power import amt as amt_module
 from provisioningserver.drivers.power import (
     PowerActionError,
@@ -26,7 +26,7 @@ from provisioningserver.drivers.power.amt import (
     AMT_HTTPS_PORT,
     AMTPowerDriver,
 )
-from provisioningserver.utils.shell import has_command_available, ProcessResult
+from provisioningserver.utils.shell import ProcessResult
 from provisioningserver.utils.snap import SnapPaths
 
 AMTTOOL_OUTPUT = dedent(
@@ -88,10 +88,11 @@ def make_context():
     }
 
 
-class TestAMTPowerDriver(MAASTestCase):
-    def setUp(self):
-        super().setUp()
-        self.patch(amt_module, "sleep")
+class TestAMTPowerDriver:
+    @pytest.fixture(autouse=True)
+    def _setup(self, mocker):
+        self.mocker = mocker
+        self.mocker.patch.object(amt_module, "sleep")
 
     def _expected_connection_args(
         self, ip_address, power_user, power_pass, port
@@ -118,21 +119,18 @@ class TestAMTPowerDriver(MAASTestCase):
         args = amt_power_driver._get_wsman_connection_args(
             "192.168.1.10", "admin", "p@ss:w/rd!", AMT_HTTP_PORT
         )
-        self.assertEqual(
-            args,
-            (
-                "--hostname",
-                "192.168.1.10",
-                "--port",
-                AMT_HTTP_PORT,
-                "--username",
-                "admin",
-                "--password",
-                "p@ss:w/rd!",
-                "--noverifypeer",
-                "--noverifyhost",
-                "--non-interactive",
-            ),
+        assert args == (
+            "--hostname",
+            "192.168.1.10",
+            "--port",
+            AMT_HTTP_PORT,
+            "--username",
+            "admin",
+            "--password",
+            "p@ss:w/rd!",
+            "--noverifypeer",
+            "--noverifyhost",
+            "--non-interactive",
         )
 
     def test_get_wsman_connection_args_forces_https_with_cacert(self):
@@ -140,14 +138,14 @@ class TestAMTPowerDriver(MAASTestCase):
         args = amt_power_driver._get_wsman_connection_args(
             "192.168.1.10", "admin", "p@ss", AMT_HTTPS_PORT
         )
-        self.assertEqual(
-            args[-2:], ("--cacert", "/etc/ssl/certs/ca-certificates.crt")
-        )
+        assert args[-2:] == ("--cacert", "/etc/ssl/certs/ca-certificates.crt")
 
     def patch_run_command(
         self, stdout=b"", stderr=b"", returncode=0, decode=False
     ):
-        mock_run_command = self.patch(amt_module.shell, "run_command")
+        mock_run_command = self.mocker.patch.object(
+            amt_module.shell, "run_command"
+        )
         if decode:
             stdout = stdout.decode()
             stderr = stderr.decode()
@@ -156,19 +154,21 @@ class TestAMTPowerDriver(MAASTestCase):
         )
         return mock_run_command
 
-    def test_missing_packages(self):
-        mock = self.patch(has_command_available)
-        mock.return_value = False
+    def test_missing_packages(self, mocker):
+        mocker.patch.object(
+            amt_module.shell, "has_command_available", return_value=False
+        )
         driver = amt_module.AMTPowerDriver()
         missing = driver.detect_missing_packages()
-        self.assertEqual(["wsmancli"], missing)
+        assert ["wsmancli"] == missing
 
-    def test_no_missing_packages(self):
-        mock = self.patch(has_command_available)
-        mock.return_value = True
+    def test_no_missing_packages(self, mocker):
+        mocker.patch.object(
+            amt_module.shell, "has_command_available", return_value=True
+        )
         driver = amt_module.AMTPowerDriver()
         missing = driver.detect_missing_packages()
-        self.assertEqual([], missing)
+        assert [] == missing
 
     def test_render_wsman_state_xml_renders_xml(self):
         amt_power_driver = AMTPowerDriver()
@@ -183,7 +183,7 @@ class TestAMTPowerDriver(MAASTestCase):
             [state] = tree.xpath("//p:PowerState", namespaces=tree.nsmap)
             state.text = power_states[power_change]
 
-            self.assertEqual(result, etree.tostring(tree))
+            assert result == etree.tostring(tree)
 
     def test_get_power_state_gets_state(self):
         amt_power_driver = AMTPowerDriver()
@@ -212,9 +212,9 @@ class TestAMTPowerDriver(MAASTestCase):
             xml % namespaces["h"].encode("utf-8")
         )
 
-        self.assertEqual(result, "8")
+        assert result == "8"
 
-    def test_run_runs_command(self):
+    def test_run_runs_command(self, mocker):
         amt_power_driver = AMTPowerDriver()
         amt_power_driver.env = None
         command = (factory.make_name("command"),)
@@ -230,9 +230,11 @@ class TestAMTPowerDriver(MAASTestCase):
             extra_environ={"AMT_PASSWORD": power_pass},
             decode=False,
         )
-        self.assertEqual(result, b"stdout")
+        assert result == b"stdout"
 
-    def test_run_sets_openssl_conf_when_legacy_renegotiation_allowed(self):
+    def test_run_sets_openssl_conf_when_legacy_renegotiation_allowed(
+        self, mocker
+    ):
         amt_power_driver = AMTPowerDriver()
         command = (factory.make_name("command"),)
         power_pass = factory.make_name("power_pass")
@@ -252,18 +254,17 @@ class TestAMTPowerDriver(MAASTestCase):
             decode=False,
         )
 
-    def test_run_raises_power_action_error(self):
+    def test_run_raises_power_action_error(self, mocker):
         amt_power_driver = AMTPowerDriver()
         self.patch_run_command(returncode=1)
-        self.assertRaises(
-            PowerActionError,
-            amt_power_driver._run,
-            (),
-            factory.make_name("power-pass"),
-            None,
-        )
+        with pytest.raises(PowerActionError):
+            amt_power_driver._run(
+                (),
+                factory.make_name("power-pass"),
+                None,
+            )
 
-    def test_set_pxe_boot_sets_pxe(self):
+    def test_set_pxe_boot_sets_pxe(self, mocker):
         amt_power_driver = AMTPowerDriver()
         ip_address = factory.make_ipv4_address()
         power_user = factory.make_name("power_user")
@@ -300,7 +301,7 @@ class TestAMTPowerDriver(MAASTestCase):
             "--input",
             "-",
         )
-        _run_mock = self.patch(amt_power_driver, "_run")
+        _run_mock = self.mocker.patch.object(amt_power_driver, "_run")
         amt_power_driver._set_pxe_boot(
             ip_address, power_user, power_pass, port
         )
@@ -330,7 +331,7 @@ class TestAMTPowerDriver(MAASTestCase):
             ]
         )
 
-    def test_issue_amttool_command_calls__run(self):
+    def test_issue_amttool_command_calls__run(self, mocker):
         amt_power_driver = AMTPowerDriver()
         ip_address = factory.make_ipv4_address()
         port = factory.pick_port()
@@ -338,7 +339,7 @@ class TestAMTPowerDriver(MAASTestCase):
         stdin = factory.make_name("stdin").encode("utf-8")
         cmd = choice(["power-cycle", "powerup"])
         command = "amttool", f"{ip_address}:{port}", cmd, "pxe"
-        _run_mock = self.patch(amt_power_driver, "_run")
+        _run_mock = self.mocker.patch.object(amt_power_driver, "_run")
         _run_mock.return_value = b"output"
 
         result = amt_power_driver._issue_amttool_command(
@@ -352,9 +353,9 @@ class TestAMTPowerDriver(MAASTestCase):
         _run_mock.assert_called_once_with(
             command, power_pass, stdin=stdin, allow_legacy_renegotiation=False
         )
-        self.assertEqual(result, b"output")
+        assert result == b"output"
 
-    def test_issue_wsman_command_calls__run_for_power(self):
+    def test_issue_wsman_command_calls__run_for_power(self, mocker):
         amt_power_driver = AMTPowerDriver()
         power_change = choice(["on", "off", "restart"])
         ip_address = factory.make_ipv4_address()
@@ -382,11 +383,11 @@ class TestAMTPowerDriver(MAASTestCase):
             "RequestPowerStateChange",
             wsman_power_schema_uri,
         )
-        _render_wsman_state_xml_mock = self.patch(
+        _render_wsman_state_xml_mock = self.mocker.patch.object(
             amt_power_driver, "_render_wsman_state_xml"
         )
         _render_wsman_state_xml_mock.return_value = b"stdin"
-        _run_mock = self.patch(amt_power_driver, "_run")
+        _run_mock = self.mocker.patch.object(amt_power_driver, "_run")
         _run_mock.return_value = b"output"
 
         result = amt_power_driver._issue_wsman_command(
@@ -399,9 +400,9 @@ class TestAMTPowerDriver(MAASTestCase):
             stdin=b"stdin",
             allow_legacy_renegotiation=False,
         )
-        self.assertEqual(result, b"output")
+        assert result == b"output"
 
-    def test_issue_wsman_command_calls__run_for_query(self):
+    def test_issue_wsman_command_calls__run_for_query(self, mocker):
         amt_power_driver = AMTPowerDriver()
         ip_address = factory.make_ipv4_address()
         power_user = factory.make_name("power_user")
@@ -421,7 +422,7 @@ class TestAMTPowerDriver(MAASTestCase):
         wsman_query_opts = wsman_opts + ("--optimize", "--encoding", "utf-8")
         action = ("enumerate", wsman_query_schema_uri)
         command = ("wsman",) + wsman_query_opts + action
-        _run_mock = self.patch(amt_power_driver, "_run")
+        _run_mock = self.mocker.patch.object(amt_power_driver, "_run")
         _run_mock.return_value = b"ignored"
 
         amt_power_driver._issue_wsman_command(
@@ -432,8 +433,8 @@ class TestAMTPowerDriver(MAASTestCase):
             command, power_pass, stdin=None, allow_legacy_renegotiation=False
         )
 
-    def test_issue_wsman_has_config_file_from_snap(self):
-        self.patch(
+    def test_issue_wsman_has_config_file_from_snap(self, mocker):
+        self.mocker.patch.object(
             amt_module.snap.SnapPaths, "from_environ"
         ).return_value = SnapPaths(snap=Path("/snap/maas/current"))
         ip_address = factory.make_ipv4_address()
@@ -441,27 +442,24 @@ class TestAMTPowerDriver(MAASTestCase):
         power_pass = factory.make_name("power_pass")
         port = factory.pick_port()
         amt_power_driver = AMTPowerDriver()
-        _run_mock = self.patch(amt_power_driver, "_run")
+        _run_mock = self.mocker.patch.object(amt_power_driver, "_run")
         amt_power_driver._issue_wsman_command(
             "query", ip_address, power_user, power_pass, port
         )
-        [call] = _run_mock.mock_calls
-        self.assertEqual(
-            call.args[0][:3],
-            (
-                "wsman",
-                "-C",
-                "/snap/maas/current/etc/openwsman/openwsman_client.conf",
-            ),
+        [call_] = _run_mock.mock_calls
+        assert call_.args[0][:3] == (
+            "wsman",
+            "-C",
+            "/snap/maas/current/etc/openwsman/openwsman_client.conf",
         )
 
-    def test_amttool_query_state_queries_on(self):
+    def test_amttool_query_state_queries_on(self, mocker):
         amt_power_driver = AMTPowerDriver()
         ip_address = factory.make_ipv4_address()
         power_user = factory.make_name("power_user")
         power_pass = factory.make_name("power_pass")
         port = factory.pick_port()
-        _issue_amttool_command_mock = self.patch(
+        _issue_amttool_command_mock = self.mocker.patch.object(
             amt_power_driver, "_issue_amttool_command"
         )
         _issue_amttool_command_mock.return_value = AMTTOOL_OUTPUT % (
@@ -480,15 +478,15 @@ class TestAMTPowerDriver(MAASTestCase):
             port,
             allow_legacy_renegotiation=False,
         )
-        self.assertEqual(result, "on")
+        assert result == "on"
 
-    def test_amttool_query_state_queries_off(self):
+    def test_amttool_query_state_queries_off(self, mocker):
         amt_power_driver = AMTPowerDriver()
         ip_address = factory.make_ipv4_address()
         power_user = factory.make_name("power_user")
         power_pass = factory.make_name("power_pass")
         port = factory.pick_port()
-        _issue_amttool_command_mock = self.patch(
+        _issue_amttool_command_mock = self.mocker.patch.object(
             amt_power_driver, "_issue_amttool_command"
         )
         _issue_amttool_command_mock.return_value = AMTTOOL_OUTPUT % (
@@ -507,16 +505,16 @@ class TestAMTPowerDriver(MAASTestCase):
             port,
             allow_legacy_renegotiation=False,
         )
-        self.assertEqual(result, "off")
+        assert result == "off"
 
-    def test_amttool_query_state_queries_unknown(self):
+    def test_amttool_query_state_queries_unknown(self, mocker):
         amt_power_driver = AMTPowerDriver()
         ip_address = factory.make_ipv4_address()
         power_user = factory.make_name("power_user")
         power_pass = factory.make_name("power_pass")
         port = factory.pick_port()
         amt_power_driver.ip_address = factory.make_name("ip_address")
-        _issue_amttool_command_mock = self.patch(
+        _issue_amttool_command_mock = self.mocker.patch.object(
             amt_power_driver, "_issue_amttool_command"
         )
         _issue_amttool_command_mock.return_value = AMTTOOL_OUTPUT % (
@@ -524,14 +522,13 @@ class TestAMTPowerDriver(MAASTestCase):
             b"error",
         )
 
-        self.assertRaises(
-            PowerActionError,
-            amt_power_driver.amttool_query_state,
-            ip_address,
-            power_user,
-            power_pass,
-            port,
-        )
+        with pytest.raises(PowerActionError):
+            amt_power_driver.amttool_query_state(
+                ip_address,
+                power_user,
+                power_pass,
+                port,
+            )
         _issue_amttool_command_mock.assert_called_once_with(
             "info",
             ip_address,
@@ -540,31 +537,30 @@ class TestAMTPowerDriver(MAASTestCase):
             allow_legacy_renegotiation=False,
         )
 
-    def test_amttool_query_state_runs_query_loop(self):
+    def test_amttool_query_state_runs_query_loop(self, mocker):
         amt_power_driver = AMTPowerDriver()
         ip_address = factory.make_ipv4_address()
         power_user = factory.make_name("power_user")
         power_pass = factory.make_name("power_pass")
         port = factory.pick_port()
-        self.patch(
+        self.mocker.patch.object(
             amt_power_driver, "_issue_amttool_command"
         ).return_value = b""
-        self.assertRaises(
-            PowerActionError,
-            amt_power_driver.amttool_query_state,
-            ip_address,
-            power_user,
-            power_pass,
-            port,
-        )
+        with pytest.raises(PowerActionError):
+            amt_power_driver.amttool_query_state(
+                ip_address,
+                power_user,
+                power_pass,
+                port,
+            )
 
-    def test_amttool_restart_power_cycles(self):
+    def test_amttool_restart_power_cycles(self, mocker):
         amt_power_driver = AMTPowerDriver()
         ip_address = factory.make_ipv4_address()
         power_user = factory.make_name("power_user")
         power_pass = factory.make_name("power_pass")
         port = factory.pick_port()
-        _issue_amttool_command_mock = self.patch(
+        _issue_amttool_command_mock = self.mocker.patch.object(
             amt_power_driver, "_issue_amttool_command"
         )
 
@@ -581,16 +577,16 @@ class TestAMTPowerDriver(MAASTestCase):
             allow_legacy_renegotiation=False,
         )
 
-    def test_amttool_power_on_powers_on(self):
+    def test_amttool_power_on_powers_on(self, mocker):
         amt_power_driver = AMTPowerDriver()
         ip_address = factory.make_ipv4_address()
         power_user = factory.make_name("power_user")
         power_pass = factory.make_name("power_pass")
         port = factory.pick_port()
-        _issue_amttool_command_mock = self.patch(
+        _issue_amttool_command_mock = self.mocker.patch.object(
             amt_power_driver, "_issue_amttool_command"
         )
-        amttool_query_state_mock = self.patch(
+        amttool_query_state_mock = self.mocker.patch.object(
             amt_power_driver, "amttool_query_state"
         )
         amttool_query_state_mock.return_value = "on"
@@ -615,34 +611,33 @@ class TestAMTPowerDriver(MAASTestCase):
             allow_legacy_renegotiation=False,
         )
 
-    def test_amttool_power_on_raises_power_action_error(self):
+    def test_amttool_power_on_raises_power_action_error(self, mocker):
         amt_power_driver = AMTPowerDriver()
         ip_address = factory.make_ipv4_address()
         power_user = factory.make_name("power_user")
         power_pass = factory.make_name("power_pass")
         port = factory.pick_port()
-        self.patch(amt_power_driver, "_issue_amttool_command")
-        amttool_query_state_mock = self.patch(
+        self.mocker.patch.object(amt_power_driver, "_issue_amttool_command")
+        amttool_query_state_mock = self.mocker.patch.object(
             amt_power_driver, "amttool_query_state"
         )
         amttool_query_state_mock.return_value = "error"
 
-        self.assertRaises(
-            PowerActionError,
-            amt_power_driver.amttool_power_on,
-            ip_address,
-            power_user,
-            power_pass,
-            port,
-        )
+        with pytest.raises(PowerActionError):
+            amt_power_driver.amttool_power_on(
+                ip_address,
+                power_user,
+                power_pass,
+                port,
+            )
 
-    def test_amttool_power_off_powers_off(self):
+    def test_amttool_power_off_powers_off(self, mocker):
         amt_power_driver = AMTPowerDriver()
         ip_address = factory.make_ipv4_address()
         power_user = factory.make_name("power_user")
         power_pass = factory.make_name("power_pass")
         port = factory.pick_port()
-        amttool_query_state_mock = self.patch(
+        amttool_query_state_mock = self.mocker.patch.object(
             amt_power_driver, "amttool_query_state"
         )
         amttool_query_state_mock.return_value = "off"
@@ -659,36 +654,37 @@ class TestAMTPowerDriver(MAASTestCase):
             allow_legacy_renegotiation=False,
         )
 
-    def test_amttool_power_off_raises_power_action_error(self):
+    def test_amttool_power_off_raises_power_action_error(self, mocker):
         amt_power_driver = AMTPowerDriver()
         ip_address = factory.make_ipv4_address()
         power_user = factory.make_name("power_user")
         power_pass = factory.make_name("power_pass")
         port = factory.pick_port()
-        amttool_query_state_mock = self.patch(
+        amttool_query_state_mock = self.mocker.patch.object(
             amt_power_driver, "amttool_query_state"
         )
         amttool_query_state_mock.return_value = "error"
-        self.patch(amt_power_driver, "_issue_amttool_command")
+        self.mocker.patch.object(amt_power_driver, "_issue_amttool_command")
 
-        self.assertRaises(
-            PowerActionError,
-            amt_power_driver.amttool_power_off,
-            ip_address,
-            power_user,
-            power_pass,
-            port,
-        )
+        with pytest.raises(PowerActionError):
+            amt_power_driver.amttool_power_off(
+                ip_address,
+                power_user,
+                power_pass,
+                port,
+            )
 
-    def test_wsman_query_state_queries_on(self):
+    def test_wsman_query_state_queries_on(self, mocker):
         amt_power_driver = AMTPowerDriver()
         ip_address = factory.make_ipv4_address()
         power_user = factory.make_name("power_user")
         power_pass = factory.make_name("power_pass")
         port = factory.pick_port()
-        get_power_state_mock = self.patch(amt_power_driver, "get_power_state")
+        get_power_state_mock = self.mocker.patch.object(
+            amt_power_driver, "get_power_state"
+        )
         get_power_state_mock.return_value = "2"
-        _issue_wsman_command_mock = self.patch(
+        _issue_wsman_command_mock = self.mocker.patch.object(
             amt_power_driver, "_issue_wsman_command"
         )
         _issue_wsman_command_mock.return_value = WSMAN_OUTPUT % b"2"
@@ -705,17 +701,19 @@ class TestAMTPowerDriver(MAASTestCase):
             port,
             allow_legacy_renegotiation=False,
         )
-        self.assertEqual(result, "on")
+        assert result == "on"
 
-    def test_wsman_query_state_queries_off(self):
+    def test_wsman_query_state_queries_off(self, mocker):
         amt_power_driver = AMTPowerDriver()
         ip_address = factory.make_ipv4_address()
         power_user = factory.make_name("power_user")
         power_pass = factory.make_name("power_pass")
         port = factory.pick_port()
-        get_power_state_mock = self.patch(amt_power_driver, "get_power_state")
+        get_power_state_mock = self.mocker.patch.object(
+            amt_power_driver, "get_power_state"
+        )
         get_power_state_mock.return_value = "6"
-        _issue_wsman_command_mock = self.patch(
+        _issue_wsman_command_mock = self.mocker.patch.object(
             amt_power_driver, "_issue_wsman_command"
         )
         _issue_wsman_command_mock.return_value = WSMAN_OUTPUT % b"6"
@@ -732,29 +730,30 @@ class TestAMTPowerDriver(MAASTestCase):
             port,
             allow_legacy_renegotiation=False,
         )
-        self.assertEqual(result, "off")
+        assert result == "off"
 
-    def test_wsman_query_state_queries_unknown(self):
+    def test_wsman_query_state_queries_unknown(self, mocker):
         amt_power_driver = AMTPowerDriver()
         ip_address = factory.make_ipv4_address()
         power_user = factory.make_name("power_user")
         power_pass = factory.make_name("power_pass")
         port = factory.pick_port()
-        get_power_state_mock = self.patch(amt_power_driver, "get_power_state")
+        get_power_state_mock = self.mocker.patch.object(
+            amt_power_driver, "get_power_state"
+        )
         get_power_state_mock.return_value = "unknown"
-        _issue_wsman_command_mock = self.patch(
+        _issue_wsman_command_mock = self.mocker.patch.object(
             amt_power_driver, "_issue_wsman_command"
         )
         _issue_wsman_command_mock.return_value = WSMAN_OUTPUT % b"error"
 
-        self.assertRaises(
-            PowerActionError,
-            amt_power_driver.wsman_query_state,
-            ip_address,
-            power_user,
-            power_pass,
-            port,
-        )
+        with pytest.raises(PowerActionError):
+            amt_power_driver.wsman_query_state(
+                ip_address,
+                power_user,
+                power_pass,
+                port,
+            )
         _issue_wsman_command_mock.assert_called_once_with(
             "query",
             ip_address,
@@ -764,34 +763,37 @@ class TestAMTPowerDriver(MAASTestCase):
             allow_legacy_renegotiation=False,
         )
 
-    def test_wsman_query_state_runs_query_loop(self):
+    def test_wsman_query_state_runs_query_loop(self, mocker):
         amt_power_driver = AMTPowerDriver()
         ip_address = factory.make_ipv4_address()
         power_user = factory.make_name("power_user")
         power_pass = factory.make_name("power_pass")
         port = factory.pick_port()
-        self.patch(amt_power_driver, "_issue_wsman_command").return_value = b""
+        self.mocker.patch.object(
+            amt_power_driver, "_issue_wsman_command"
+        ).return_value = b""
 
-        self.assertRaises(
-            PowerActionError,
-            amt_power_driver.wsman_query_state,
-            ip_address,
-            power_user,
-            power_pass,
-            port,
+        with pytest.raises(PowerActionError):
+            amt_power_driver.wsman_query_state(
+                ip_address,
+                power_user,
+                power_pass,
+                port,
+            )
+
+    def test_wsman_power_on_powers_on(self, mocker):
+        amt_power_driver = AMTPowerDriver()
+        ip_address = factory.make_ipv4_address()
+        power_user = factory.make_name("power_user")
+        power_pass = factory.make_name("power_pass")
+        port = factory.pick_port()
+        _set_pxe_boot_mock = self.mocker.patch.object(
+            amt_power_driver, "_set_pxe_boot"
         )
-
-    def test_wsman_power_on_powers_on(self):
-        amt_power_driver = AMTPowerDriver()
-        ip_address = factory.make_ipv4_address()
-        power_user = factory.make_name("power_user")
-        power_pass = factory.make_name("power_pass")
-        port = factory.pick_port()
-        _set_pxe_boot_mock = self.patch(amt_power_driver, "_set_pxe_boot")
-        _issue_wsman_command_mock = self.patch(
+        _issue_wsman_command_mock = self.mocker.patch.object(
             amt_power_driver, "_issue_wsman_command"
         )
-        wsman_query_state_mock = self.patch(
+        wsman_query_state_mock = self.mocker.patch.object(
             amt_power_driver, "wsman_query_state"
         )
         wsman_query_state_mock.return_value = "on"
@@ -823,17 +825,19 @@ class TestAMTPowerDriver(MAASTestCase):
             allow_legacy_renegotiation=False,
         )
 
-    def test_wsman_power_on_powers_restart(self):
+    def test_wsman_power_on_powers_restart(self, mocker):
         amt_power_driver = AMTPowerDriver()
         ip_address = factory.make_ipv4_address()
         power_user = factory.make_name("power_user")
         power_pass = factory.make_name("power_pass")
         port = factory.pick_port()
-        _set_pxe_boot_mock = self.patch(amt_power_driver, "_set_pxe_boot")
-        _issue_wsman_command_mock = self.patch(
+        _set_pxe_boot_mock = self.mocker.patch.object(
+            amt_power_driver, "_set_pxe_boot"
+        )
+        _issue_wsman_command_mock = self.mocker.patch.object(
             amt_power_driver, "_issue_wsman_command"
         )
-        wsman_query_state_mock = self.patch(
+        wsman_query_state_mock = self.mocker.patch.object(
             amt_power_driver, "wsman_query_state"
         )
         wsman_query_state_mock.return_value = "on"
@@ -865,38 +869,37 @@ class TestAMTPowerDriver(MAASTestCase):
             allow_legacy_renegotiation=False,
         )
 
-    def test_wsman_power_on_raises_power_action_error(self):
+    def test_wsman_power_on_raises_power_action_error(self, mocker):
         amt_power_driver = AMTPowerDriver()
         ip_address = factory.make_ipv4_address()
         power_user = factory.make_name("power_user")
         power_pass = factory.make_name("power_pass")
         port = factory.pick_port()
-        self.patch(amt_power_driver, "_set_pxe_boot")
-        self.patch(amt_power_driver, "_issue_wsman_command")
-        wsman_query_state_mock = self.patch(
+        self.mocker.patch.object(amt_power_driver, "_set_pxe_boot")
+        self.mocker.patch.object(amt_power_driver, "_issue_wsman_command")
+        wsman_query_state_mock = self.mocker.patch.object(
             amt_power_driver, "wsman_query_state"
         )
         wsman_query_state_mock.return_value = "error"
 
-        self.assertRaises(
-            PowerActionError,
-            amt_power_driver.wsman_power_on,
-            ip_address,
-            power_user,
-            power_pass,
-            port,
-        )
+        with pytest.raises(PowerActionError):
+            amt_power_driver.wsman_power_on(
+                ip_address,
+                power_user,
+                power_pass,
+                port,
+            )
 
-    def test_wsman_power_on_powers_off(self):
+    def test_wsman_power_on_powers_off(self, mocker):
         amt_power_driver = AMTPowerDriver()
         ip_address = factory.make_ipv4_address()
         power_user = factory.make_name("power_user")
         power_pass = factory.make_name("power_pass")
         port = factory.pick_port()
-        _issue_wsman_command_mock = self.patch(
+        _issue_wsman_command_mock = self.mocker.patch.object(
             amt_power_driver, "_issue_wsman_command"
         )
-        wsman_query_state_mock = self.patch(
+        wsman_query_state_mock = self.mocker.patch.object(
             amt_power_driver, "wsman_query_state"
         )
         wsman_query_state_mock.return_value = "off"
@@ -921,28 +924,27 @@ class TestAMTPowerDriver(MAASTestCase):
             allow_legacy_renegotiation=False,
         )
 
-    def test_wsman_power_off_raises_power_action_error(self):
+    def test_wsman_power_off_raises_power_action_error(self, mocker):
         amt_power_driver = AMTPowerDriver()
         ip_address = factory.make_ipv4_address()
         power_user = factory.make_name("power_user")
         power_pass = factory.make_name("power_pass")
         port = factory.pick_port()
-        self.patch(amt_power_driver, "_issue_wsman_command")
-        wsman_query_state_mock = self.patch(
+        self.mocker.patch.object(amt_power_driver, "_issue_wsman_command")
+        wsman_query_state_mock = self.mocker.patch.object(
             amt_power_driver, "wsman_query_state"
         )
         wsman_query_state_mock.return_value = "error"
 
-        self.assertRaises(
-            PowerActionError,
-            amt_power_driver.wsman_power_off,
-            ip_address,
-            power_user,
-            power_pass,
-            port,
-        )
+        with pytest.raises(PowerActionError):
+            amt_power_driver.wsman_power_off(
+                ip_address,
+                power_user,
+                power_pass,
+                port,
+            )
 
-    def test_get_amt_command_returns_amttool(self):
+    def test_get_amt_command_returns_amttool(self, mocker):
         amt_power_driver = AMTPowerDriver()
         ip_address = factory.make_ipv4_address()
         power_user = factory.make_name("power_user")
@@ -975,9 +977,9 @@ class TestAMTPowerDriver(MAASTestCase):
             "--non-interactive",
             extra_environ={},
         )
-        self.assertEqual(result, "amttool")
+        assert result == "amttool"
 
-    def test_get_amt_command_returns_wsman(self):
+    def test_get_amt_command_returns_wsman(self, mocker):
         amt_power_driver = AMTPowerDriver()
         ip_address = factory.make_ipv4_address()
         power_user = factory.make_name("power_user")
@@ -1010,9 +1012,11 @@ class TestAMTPowerDriver(MAASTestCase):
             "--non-interactive",
             extra_environ={},
         )
-        self.assertEqual(result, "wsman")
+        assert result == "wsman"
 
-    def test_get_amt_command_sets_openssl_conf_when_legacy_allowed(self):
+    def test_get_amt_command_sets_openssl_conf_when_legacy_allowed(
+        self, mocker
+    ):
         amt_power_driver = AMTPowerDriver()
         mock_run_command = self.patch_run_command(
             stdout=WSMAN_IDENTIFY_OUTPUT % b"10.0.47",
@@ -1027,83 +1031,80 @@ class TestAMTPowerDriver(MAASTestCase):
             allow_legacy_renegotiation=True,
         )
 
-        self.assertEqual(
-            mock_run_command.call_args.kwargs["extra_environ"],
-            {"OPENSSL_CONF": amt_module.AMT_OPENSSL_CONF},
-        )
+        assert mock_run_command.call_args.kwargs["extra_environ"] == {
+            "OPENSSL_CONF": amt_module.AMT_OPENSSL_CONF,
+        }
 
-    def test_get_amt_command_crashes_when_amttool_has_no_output(self):
+    def test_get_amt_command_crashes_when_amttool_has_no_output(self, mocker):
         amt_power_driver = AMTPowerDriver()
         self.patch_run_command(decode=True)
-        self.assertRaises(
-            PowerConnError,
-            amt_power_driver._get_amt_command,
-            sentinel.ip_address,
-            sentinel.power_user,
-            sentinel.power_pass,
-            sentinel.port,
-        )
+        with pytest.raises(PowerConnError):
+            amt_power_driver._get_amt_command(
+                sentinel.ip_address,
+                sentinel.power_user,
+                sentinel.power_pass,
+                sentinel.port,
+            )
 
-    def test_get_amt_command_crashes_when_no_version_found(self):
+    def test_get_amt_command_crashes_when_no_version_found(self, mocker):
         amt_power_driver = AMTPowerDriver()
         self.patch_run_command(stdout=b"No match here", decode=True)
-        self.assertRaises(
-            PowerActionError,
-            amt_power_driver._get_amt_command,
-            sentinel.ip_address,
-            sentinel.power_user,
-            sentinel.power_pass,
-            sentinel.port,
-        )
+        with pytest.raises(PowerActionError):
+            amt_power_driver._get_amt_command(
+                sentinel.ip_address,
+                sentinel.power_user,
+                sentinel.power_pass,
+                sentinel.port,
+            )
 
-    def test_get_amt_command_raises_power_error(self):
+    def test_get_amt_command_raises_power_error(self, mocker):
         amt_power_driver = AMTPowerDriver()
         for error, error_info in AMT_ERRORS.items():
             self.patch_run_command(stderr=error.encode("utf-8"), decode=True)
-            self.assertRaises(
-                error_info.get("exception"),
-                amt_power_driver._get_amt_command,
-                factory.make_ipv4_address(),
-                factory.make_name("power_user"),
-                factory.make_name("power_pass"),
-                factory.pick_port(),
-            )
+            with pytest.raises(error_info.get("exception")):
+                amt_power_driver._get_amt_command(
+                    factory.make_ipv4_address(),
+                    factory.make_name("power_user"),
+                    factory.make_name("power_pass"),
+                    factory.pick_port(),
+                )
 
     def test_get_ip_address_returns_ip_address(self):
         amt_power_driver = AMTPowerDriver()
         power_address = factory.make_name("power_address")
         ip_address = factory.make_ipv4_address()
         result = amt_power_driver._get_ip_address(power_address, ip_address)
-        self.assertEqual(result, ip_address)
+        assert result == ip_address
 
     def test_get_ip_address_returns_power_address(self):
         amt_power_driver = AMTPowerDriver()
         power_address = factory.make_name("power_address")
         result = amt_power_driver._get_ip_address(power_address, None)
-        self.assertEqual(result, power_address)
+        assert result == power_address
 
     def test_get_ip_address_raises_no_host_provided(self):
         amt_power_driver = AMTPowerDriver()
-        self.assertRaises(
-            PowerFatalError, amt_power_driver._get_ip_address, None, None
-        )
+        with pytest.raises(PowerFatalError):
+            amt_power_driver._get_ip_address(None, None)
 
-    def test_power_on_without_user_port(self):
+    def test_power_on_without_user_port(self, mocker):
         # user and port were introduced in 3.6.
         amt_power_driver = AMTPowerDriver()
         context = make_context()
         context["power_user"] = None
         context["port"] = None
         del context["allow_legacy_renegotiation"]
-        _get_amt_command_mock = self.patch(
+        _get_amt_command_mock = self.mocker.patch.object(
             amt_power_driver, "_get_amt_command"
         )
         _get_amt_command_mock.return_value = "amttool"
-        amttool_query_state_mock = self.patch(
+        amttool_query_state_mock = self.mocker.patch.object(
             amt_power_driver, "amttool_query_state"
         )
         amttool_query_state_mock.return_value = "on"
-        amttool_restart_mock = self.patch(amt_power_driver, "amttool_restart")
+        amttool_restart_mock = self.mocker.patch.object(
+            amt_power_driver, "amttool_restart"
+        )
 
         amt_power_driver.power_on(context["system_id"], context)
 
@@ -1129,18 +1130,20 @@ class TestAMTPowerDriver(MAASTestCase):
             allow_legacy_renegotiation=False,
         )
 
-    def test_power_on_powers_on_with_amttool_when_already_on(self):
+    def test_power_on_powers_on_with_amttool_when_already_on(self, mocker):
         amt_power_driver = AMTPowerDriver()
         context = make_context()
-        _get_amt_command_mock = self.patch(
+        _get_amt_command_mock = self.mocker.patch.object(
             amt_power_driver, "_get_amt_command"
         )
         _get_amt_command_mock.return_value = "amttool"
-        amttool_query_state_mock = self.patch(
+        amttool_query_state_mock = self.mocker.patch.object(
             amt_power_driver, "amttool_query_state"
         )
         amttool_query_state_mock.return_value = "on"
-        amttool_restart_mock = self.patch(amt_power_driver, "amttool_restart")
+        amttool_restart_mock = self.mocker.patch.object(
+            amt_power_driver, "amttool_restart"
+        )
 
         amt_power_driver.power_on(context["system_id"], context)
 
@@ -1166,18 +1169,18 @@ class TestAMTPowerDriver(MAASTestCase):
             allow_legacy_renegotiation=True,
         )
 
-    def test_power_on_powers_on_with_amttool_when_already_off(self):
+    def test_power_on_powers_on_with_amttool_when_already_off(self, mocker):
         amt_power_driver = AMTPowerDriver()
         context = make_context()
-        _get_amt_command_mock = self.patch(
+        _get_amt_command_mock = self.mocker.patch.object(
             amt_power_driver, "_get_amt_command"
         )
         _get_amt_command_mock.return_value = "amttool"
-        amttool_query_state_mock = self.patch(
+        amttool_query_state_mock = self.mocker.patch.object(
             amt_power_driver, "amttool_query_state"
         )
         amttool_query_state_mock.return_value = "off"
-        amttool_power_on_mock = self.patch(
+        amttool_power_on_mock = self.mocker.patch.object(
             amt_power_driver, "amttool_power_on"
         )
 
@@ -1205,18 +1208,20 @@ class TestAMTPowerDriver(MAASTestCase):
             allow_legacy_renegotiation=True,
         )
 
-    def test_power_on_powers_on_with_wsman_when_already_on(self):
+    def test_power_on_powers_on_with_wsman_when_already_on(self, mocker):
         amt_power_driver = AMTPowerDriver()
         context = make_context()
-        _get_amt_command_mock = self.patch(
+        _get_amt_command_mock = self.mocker.patch.object(
             amt_power_driver, "_get_amt_command"
         )
         _get_amt_command_mock.return_value = "wsman"
-        wsman_query_state_mock = self.patch(
+        wsman_query_state_mock = self.mocker.patch.object(
             amt_power_driver, "wsman_query_state"
         )
         wsman_query_state_mock.return_value = "on"
-        wsman_power_on_mock = self.patch(amt_power_driver, "wsman_power_on")
+        wsman_power_on_mock = self.mocker.patch.object(
+            amt_power_driver, "wsman_power_on"
+        )
 
         amt_power_driver.power_on(context["system_id"], context)
 
@@ -1243,18 +1248,20 @@ class TestAMTPowerDriver(MAASTestCase):
             allow_legacy_renegotiation=True,
         )
 
-    def test_power_on_powers_on_with_wsman_when_already_off(self):
+    def test_power_on_powers_on_with_wsman_when_already_off(self, mocker):
         amt_power_driver = AMTPowerDriver()
         context = make_context()
-        _get_amt_command_mock = self.patch(
+        _get_amt_command_mock = self.mocker.patch.object(
             amt_power_driver, "_get_amt_command"
         )
         _get_amt_command_mock.return_value = "wsman"
-        wsman_query_state_mock = self.patch(
+        wsman_query_state_mock = self.mocker.patch.object(
             amt_power_driver, "wsman_query_state"
         )
         wsman_query_state_mock.return_value = "off"
-        wsman_power_on_mock = self.patch(amt_power_driver, "wsman_power_on")
+        wsman_power_on_mock = self.mocker.patch.object(
+            amt_power_driver, "wsman_power_on"
+        )
 
         amt_power_driver.power_on(context["system_id"], context)
 
@@ -1280,18 +1287,18 @@ class TestAMTPowerDriver(MAASTestCase):
             allow_legacy_renegotiation=True,
         )
 
-    def test_power_off_powers_off_with_amttool(self):
+    def test_power_off_powers_off_with_amttool(self, mocker):
         amt_power_driver = AMTPowerDriver()
         context = make_context()
-        _get_amt_command_mock = self.patch(
+        _get_amt_command_mock = self.mocker.patch.object(
             amt_power_driver, "_get_amt_command"
         )
         _get_amt_command_mock.return_value = "amttool"
-        amttool_query_state_mock = self.patch(
+        amttool_query_state_mock = self.mocker.patch.object(
             amt_power_driver, "amttool_query_state"
         )
         amttool_query_state_mock.return_value = "on"
-        amttool_power_off_mock = self.patch(
+        amttool_power_off_mock = self.mocker.patch.object(
             amt_power_driver, "amttool_power_off"
         )
 
@@ -1318,18 +1325,20 @@ class TestAMTPowerDriver(MAASTestCase):
             allow_legacy_renegotiation=True,
         )
 
-    def test_power_off_powers_off_with_wsman(self):
+    def test_power_off_powers_off_with_wsman(self, mocker):
         amt_power_driver = AMTPowerDriver()
         context = make_context()
-        _get_amt_command_mock = self.patch(
+        _get_amt_command_mock = self.mocker.patch.object(
             amt_power_driver, "_get_amt_command"
         )
         _get_amt_command_mock.return_value = "wsman"
-        wsman_query_state_mock = self.patch(
+        wsman_query_state_mock = self.mocker.patch.object(
             amt_power_driver, "wsman_query_state"
         )
         wsman_query_state_mock.return_value = "on"
-        wsman_power_off_mock = self.patch(amt_power_driver, "wsman_power_off")
+        wsman_power_off_mock = self.mocker.patch.object(
+            amt_power_driver, "wsman_power_off"
+        )
 
         amt_power_driver.power_off(context["system_id"], context)
         _get_amt_command_mock.assert_called_once_with(
@@ -1354,14 +1363,14 @@ class TestAMTPowerDriver(MAASTestCase):
             allow_legacy_renegotiation=True,
         )
 
-    def test_power_query_queries_with_amttool(self):
+    def test_power_query_queries_with_amttool(self, mocker):
         amt_power_driver = AMTPowerDriver()
         context = make_context()
-        _get_amt_command_mock = self.patch(
+        _get_amt_command_mock = self.mocker.patch.object(
             amt_power_driver, "_get_amt_command"
         )
         _get_amt_command_mock.return_value = "amttool"
-        amttool_query_state_mock = self.patch(
+        amttool_query_state_mock = self.mocker.patch.object(
             amt_power_driver, "amttool_query_state"
         )
         amttool_query_state_mock.return_value = "off"
@@ -1382,16 +1391,16 @@ class TestAMTPowerDriver(MAASTestCase):
             context["port"],
             allow_legacy_renegotiation=True,
         )
-        self.assertEqual(state, "off")
+        assert state == "off"
 
-    def test_power_query_queries_with_wsman(self):
+    def test_power_query_queries_with_wsman(self, mocker):
         amt_power_driver = AMTPowerDriver()
         context = make_context()
-        _get_amt_command_mock = self.patch(
+        _get_amt_command_mock = self.mocker.patch.object(
             amt_power_driver, "_get_amt_command"
         )
         _get_amt_command_mock.return_value = "wsman"
-        wsman_query_state_mock = self.patch(
+        wsman_query_state_mock = self.mocker.patch.object(
             amt_power_driver, "wsman_query_state"
         )
         wsman_query_state_mock.return_value = "on"
@@ -1412,4 +1421,4 @@ class TestAMTPowerDriver(MAASTestCase):
             context["port"],
             allow_legacy_renegotiation=True,
         )
-        self.assertEqual(state, "on")
+        assert state == "on"

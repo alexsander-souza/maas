@@ -15,78 +15,64 @@ from maasserver.exceptions import (
 )
 from maasserver.testing import extract_redirect
 from maastesting.factory import factory
-from maastesting.testcase import MAASTestCase
 
 
-class TestExceptions(MAASTestCase):
+class TestExceptions:
     def test_MAASAPIException_produces_http_response(self):
         error = factory.make_string()
         exception = MAASAPIBadRequest(error)
         response = exception.make_http_response()
-        self.assertEqual(
-            (http.client.BAD_REQUEST, error),
-            (
-                response.status_code,
-                response.content.decode(settings.DEFAULT_CHARSET),
-            ),
-        )
+        assert (
+            response.status_code,
+            response.content.decode(settings.DEFAULT_CHARSET),
+        ) == (http.client.BAD_REQUEST, error)
 
     def test_Redirect_produces_redirect_to_given_URL(self):
         target = factory.make_string()
         exception = Redirect(target)
         response = exception.make_http_response()
-        self.assertEqual(target, extract_redirect(response))
+        assert target == extract_redirect(response)
 
 
-class TestMAASAPIValidationError(MAASTestCase):
+class TestMAASAPIValidationError:
     """Tests for the `MAASAPIValidationError` exception class."""
 
     def test_returns_http_response(self):
         error = factory.make_string()
         exception = MAASAPIValidationError(error)
         response = exception.make_http_response()
-        self.assertEqual(
-            (http.client.BAD_REQUEST, error),
-            (
-                response.status_code,
-                response.content.decode(settings.DEFAULT_CHARSET),
-            ),
-        )
+        assert (
+            response.status_code,
+            response.content.decode(settings.DEFAULT_CHARSET),
+        ) == (http.client.BAD_REQUEST, error)
 
     def test_returns_textual_response_if_message_is_a_string(self):
         error = factory.make_string()
         exception = MAASAPIValidationError(error)
         response = exception.make_http_response()
-        self.assertEqual(
-            "text/plain; charset=%s" % settings.DEFAULT_CHARSET,
-            response.get("Content-Type"),
+        assert response.get("Content-Type") == (
+            "text/plain; charset=%s" % settings.DEFAULT_CHARSET
         )
 
     def test_returns_json_response_if_message_is_a_list(self):
         errors = [factory.make_string(), factory.make_string()]
         exception = MAASAPIValidationError(errors)
         response = exception.make_http_response()
-        self.assertEqual(
-            response.get("Content-Type"),
-            f"application/json; charset={settings.DEFAULT_CHARSET}",
+        assert response.get("Content-Type") == (
+            f"application/json; charset={settings.DEFAULT_CHARSET}"
         )
-        self.assertEqual(
-            response.content.decode(settings.DEFAULT_CHARSET),
-            json.dumps(errors),
+        assert response.content.decode(settings.DEFAULT_CHARSET) == json.dumps(
+            errors
         )
 
     def test_if_message_is_single_item_list_returns_only_first_message(self):
         errors = [factory.make_string()]
         exception = MAASAPIValidationError(errors)
         response = exception.make_http_response()
-        self.assertEqual(
-            response.get("Content-Type"),
-            f"text/plain; charset={settings.DEFAULT_CHARSET}",
+        assert response.get("Content-Type") == (
+            f"text/plain; charset={settings.DEFAULT_CHARSET}"
         )
-        self.assertEqual(
-            response.content.decode(settings.DEFAULT_CHARSET),
-            errors[0],
-        )
+        assert response.content.decode(settings.DEFAULT_CHARSET) == errors[0]
 
     def test_returns_json_response_if_message_is_a_dict(self):
         errors = {
@@ -95,11 +81,9 @@ class TestMAASAPIValidationError(MAASTestCase):
         }
         exception = MAASAPIValidationError(errors)
         response = exception.make_http_response()
-        self.assertEqual(
-            response.get("Content-Type"),
-            f"application/json; charset={settings.DEFAULT_CHARSET}",
+        assert response.get("Content-Type") == (
+            f"application/json; charset={settings.DEFAULT_CHARSET}"
         )
-        self.assertEqual(
-            response.content.decode(settings.DEFAULT_CHARSET),
-            json.dumps(errors),
+        assert response.content.decode(settings.DEFAULT_CHARSET) == json.dumps(
+            errors
         )

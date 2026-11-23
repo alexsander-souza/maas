@@ -5,10 +5,11 @@
 
 import random
 
+import pytest
+
 from maasserver.models import Event
 from maasserver.preseed import CURTIN_INSTALL_LOG
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from metadataserver.enum import (
     RESULT_TYPE,
     SCRIPT_STATUS,
@@ -20,7 +21,8 @@ from metadataserver.enum import (
 from provisioningserver.events import EVENT_DETAILS, EVENT_TYPES
 
 
-class TestStatusTransitionEvent(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestStatusTransitionEvent:
     def test_running_or_installing_emits_event(self):
         script = factory.make_Script(script_type=SCRIPT_TYPE.TESTING)
         script_result = factory.make_ScriptResult(
@@ -31,17 +33,14 @@ class TestStatusTransitionEvent(MAASServerTestCase):
         script_result.save()
 
         latest_event = Event.objects.last()
-        self.assertEqual(
-            (
-                EVENT_TYPES.RUNNING_TEST,
-                EVENT_DETAILS[EVENT_TYPES.RUNNING_TEST].description,
-                script_result.name,
-            ),
-            (
-                latest_event.type.name,
-                latest_event.type.description,
-                latest_event.description,
-            ),
+        assert (
+            EVENT_TYPES.RUNNING_TEST,
+            EVENT_DETAILS[EVENT_TYPES.RUNNING_TEST].description,
+            script_result.name,
+        ) == (
+            latest_event.type.name,
+            latest_event.type.description,
+            latest_event.description,
         )
 
     def test_running_or_installing_emits_event_with_storage_parameter(self):
@@ -61,17 +60,14 @@ class TestStatusTransitionEvent(MAASServerTestCase):
         script_result.save()
 
         latest_event = Event.objects.last()
-        self.assertEqual(
-            (
-                EVENT_TYPES.RUNNING_TEST,
-                EVENT_DETAILS[EVENT_TYPES.RUNNING_TEST].description,
-                f"{script_result.name} on {node.boot_disk.name}",
-            ),
-            (
-                latest_event.type.name,
-                latest_event.type.description,
-                latest_event.description,
-            ),
+        assert (
+            EVENT_TYPES.RUNNING_TEST,
+            EVENT_DETAILS[EVENT_TYPES.RUNNING_TEST].description,
+            f"{script_result.name} on {node.boot_disk.name}",
+        ) == (
+            latest_event.type.name,
+            latest_event.type.description,
+            latest_event.description,
         )
 
     def test_running_or_installing_emits_event_with_interface_parameter(self):
@@ -91,17 +87,14 @@ class TestStatusTransitionEvent(MAASServerTestCase):
         script_result.save()
 
         latest_event = Event.objects.last()
-        self.assertEqual(
-            (
-                EVENT_TYPES.RUNNING_TEST,
-                EVENT_DETAILS[EVENT_TYPES.RUNNING_TEST].description,
-                f"{script_result.name} on {node.boot_interface.name}",
-            ),
-            (
-                latest_event.type.name,
-                latest_event.type.description,
-                latest_event.description,
-            ),
+        assert (
+            EVENT_TYPES.RUNNING_TEST,
+            EVENT_DETAILS[EVENT_TYPES.RUNNING_TEST].description,
+            f"{script_result.name} on {node.boot_interface.name}",
+        ) == (
+            latest_event.type.name,
+            latest_event.type.description,
+            latest_event.description,
         )
 
     def test_running_or_installing_emits_event_with_nic_disk_param(self):
@@ -122,22 +115,19 @@ class TestStatusTransitionEvent(MAASServerTestCase):
         script_result.save()
 
         latest_event = Event.objects.last()
-        self.assertEqual(
-            (
-                EVENT_TYPES.RUNNING_TEST,
-                EVENT_DETAILS[EVENT_TYPES.RUNNING_TEST].description,
-                "%s on %s and %s"
-                % (
-                    script_result.name,
-                    node.boot_disk.name,
-                    node.boot_interface.name,
-                ),
+        assert (
+            EVENT_TYPES.RUNNING_TEST,
+            EVENT_DETAILS[EVENT_TYPES.RUNNING_TEST].description,
+            "%s on %s and %s"
+            % (
+                script_result.name,
+                node.boot_disk.name,
+                node.boot_interface.name,
             ),
-            (
-                latest_event.type.name,
-                latest_event.type.description,
-                latest_event.description,
-            ),
+        ) == (
+            latest_event.type.name,
+            latest_event.type.description,
+            latest_event.description,
         )
 
     def test_script_did_not_complete_emits_event(self):
@@ -152,21 +142,18 @@ class TestStatusTransitionEvent(MAASServerTestCase):
         script_result.save()
 
         latest_event = Event.objects.last()
-        self.assertEqual(
-            (
-                EVENT_TYPES.SCRIPT_DID_NOT_COMPLETE,
-                EVENT_DETAILS[EVENT_TYPES.SCRIPT_DID_NOT_COMPLETE].description,
-                "%s %s"
-                % (
-                    script_result.name,
-                    SCRIPT_STATUS_CHOICES[script_result.status][1].lower(),
-                ),
+        assert (
+            EVENT_TYPES.SCRIPT_DID_NOT_COMPLETE,
+            EVENT_DETAILS[EVENT_TYPES.SCRIPT_DID_NOT_COMPLETE].description,
+            "%s %s"
+            % (
+                script_result.name,
+                SCRIPT_STATUS_CHOICES[script_result.status][1].lower(),
             ),
-            (
-                latest_event.type.name,
-                latest_event.type.description,
-                latest_event.description,
-            ),
+        ) == (
+            latest_event.type.name,
+            latest_event.type.description,
+            latest_event.description,
         )
 
     def test_script_changed_status_emits_event(self):
@@ -183,24 +170,21 @@ class TestStatusTransitionEvent(MAASServerTestCase):
         script_result.save()
 
         latest_event = Event.objects.last()
-        self.assertEqual(
-            (
-                EVENT_TYPES.SCRIPT_RESULT_CHANGED_STATUS,
-                EVENT_DETAILS[
-                    EVENT_TYPES.SCRIPT_RESULT_CHANGED_STATUS
-                ].description,
-                "%s changed status from '%s' to '%s'"
-                % (
-                    script_result.name,
-                    SCRIPT_STATUS_CHOICES[old_status][1],
-                    SCRIPT_STATUS_CHOICES[new_status][1],
-                ),
+        assert (
+            EVENT_TYPES.SCRIPT_RESULT_CHANGED_STATUS,
+            EVENT_DETAILS[
+                EVENT_TYPES.SCRIPT_RESULT_CHANGED_STATUS
+            ].description,
+            "%s changed status from '%s' to '%s'"
+            % (
+                script_result.name,
+                SCRIPT_STATUS_CHOICES[old_status][1],
+                SCRIPT_STATUS_CHOICES[new_status][1],
             ),
-            (
-                latest_event.type.name,
-                latest_event.type.description,
-                latest_event.description,
-            ),
+        ) == (
+            latest_event.type.name,
+            latest_event.type.description,
+            latest_event.description,
         )
 
     def test_install_log_emits_event(self):
@@ -217,15 +201,12 @@ class TestStatusTransitionEvent(MAASServerTestCase):
         script_result.save()
 
         latest_event = Event.objects.last()
-        self.assertEqual(
-            (
-                EVENT_TYPES.REBOOTING,
-                EVENT_DETAILS[EVENT_TYPES.REBOOTING].description,
-                "",
-            ),
-            (
-                latest_event.type.name,
-                latest_event.type.description,
-                latest_event.description,
-            ),
+        assert (
+            EVENT_TYPES.REBOOTING,
+            EVENT_DETAILS[EVENT_TYPES.REBOOTING].description,
+            "",
+        ) == (
+            latest_event.type.name,
+            latest_event.type.description,
+            latest_event.description,
         )

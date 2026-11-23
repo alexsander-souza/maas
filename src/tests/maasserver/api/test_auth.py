@@ -9,6 +9,7 @@ from unittest import mock
 
 from django.contrib.auth.models import AnonymousUser
 from piston3 import oauth
+import pytest
 
 from maasserver.api import auth as api_auth
 from maasserver.api.auth import (
@@ -18,11 +19,10 @@ from maasserver.api.auth import (
     RequestValidityReport,
 )
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
-from maastesting.testcase import MAASTestCase
 
 
-class TestMAASAPIAuthentication(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestMAASAPIAuthentication:
     def make_request(
         self,
         user=None,
@@ -43,10 +43,10 @@ class TestMAASAPIAuthentication(MAASServerTestCase):
         user = factory.make_User()
         request = self.make_request(user=user)
         auth = MAASAPIAuthentication()
-        self.assertTrue(auth.is_authenticated(request))
+        assert auth.is_authenticated(request)
 
-    def test_is_authenticated_oidc_user_active(self):
-        mock_service_layer = self.patch(api_auth, "service_layer")
+    def test_is_authenticated_oidc_user_active(self, mocker):
+        mock_service_layer = mocker.patch.object(api_auth, "service_layer")
         mock_service_layer.services.external_oauth.is_active_oidc_user.return_value = True
 
         auth = MAASAPIAuthentication()
@@ -58,13 +58,13 @@ class TestMAASAPIAuthentication(MAASServerTestCase):
         auth.check_validity = lambda request: RequestValidityReport({}, {}, {})
         auth.validate_token = lambda request: (mock.Mock(), mock_token, None)
 
-        self.assertTrue(auth.is_authenticated(request))
+        assert auth.is_authenticated(request)
         mock_service_layer.services.external_oauth.is_active_oidc_user.assert_called_once_with(
             user.username
         )
 
-    def test_is_authenticated_oidc_user_inactive(self):
-        mock_service_layer = self.patch(api_auth, "service_layer")
+    def test_is_authenticated_oidc_user_inactive(self, mocker):
+        mock_service_layer = mocker.patch.object(api_auth, "service_layer")
         mock_service_layer.services.external_oauth.is_active_oidc_user.return_value = False
 
         auth = MAASAPIAuthentication()
@@ -76,13 +76,13 @@ class TestMAASAPIAuthentication(MAASServerTestCase):
         auth.check_validity = lambda request: RequestValidityReport({}, {}, {})
         auth.validate_token = lambda request: (mock.Mock(), mock_token, None)
 
-        self.assertFalse(auth.is_authenticated(request))
+        assert not auth.is_authenticated(request)
         mock_service_layer.services.external_oauth.is_active_oidc_user.assert_called_once_with(
             user.username
         )
 
-    def test_is_authenticated_local_user_skips_oidc_check(self):
-        mock_service_layer = self.patch(api_auth, "service_layer")
+    def test_is_authenticated_local_user_skips_oidc_check(self, mocker):
+        mock_service_layer = mocker.patch.object(api_auth, "service_layer")
 
         auth = MAASAPIAuthentication()
         user = factory.make_User()
@@ -93,7 +93,7 @@ class TestMAASAPIAuthentication(MAASServerTestCase):
         auth.check_validity = lambda request: RequestValidityReport({}, {}, {})
         auth.validate_token = lambda request: (mock.Mock(), mock_token, None)
 
-        self.assertTrue(auth.is_authenticated(request))
+        assert auth.is_authenticated(request)
         mock_service_layer.services.external_oauth.is_active_oidc_user.assert_not_called()
 
     def test_validity_report(self):
@@ -122,46 +122,26 @@ class TestMAASAPIAuthentication(MAASServerTestCase):
             "oauth_nonce": "_",
         }
         for method, is_valid in params:
-            with self.subTest(method=method, is_valid=is_valid):
-                if method == "AUTH" and is_valid:
-                    request = self.make_request(
-                        headers=valid_auth_headers,
-                    )
-                    validity_report = MAASAPIAuthentication.check_validity(
-                        request
-                    )
-                    self.assertTrue(validity_report.represents_valid_request())
-                elif method == "AUTH" and not is_valid:
-                    request = self.make_request(
-                        headers=invalid_auth_headers,
-                    )
-                    validity_report = MAASAPIAuthentication.check_validity(
-                        request
-                    )
-                    self.assertFalse(
-                        validity_report.represents_valid_request()
-                    )
-                else:
-                    if is_valid:
-                        request = self.make_request(
-                            method=method, data=valid_request_params
-                        )
-                        validity_report = MAASAPIAuthentication.check_validity(
-                            request
-                        )
-                        self.assertTrue(
-                            validity_report.represents_valid_request()
-                        )
-                    else:
-                        request = self.make_request(
-                            method=method, data=invalid_request_params
-                        )
-                        validity_report = MAASAPIAuthentication.check_validity(
-                            request
-                        )
-                        self.assertFalse(
-                            validity_report.represents_valid_request()
-                        )
+            if method == "AUTH" and is_valid:
+                request = self.make_request(headers=valid_auth_headers)
+                validity_report = MAASAPIAuthentication.check_validity(request)
+                assert validity_report.represents_valid_request()
+            elif method == "AUTH" and not is_valid:
+                request = self.make_request(headers=invalid_auth_headers)
+                validity_report = MAASAPIAuthentication.check_validity(request)
+                assert not validity_report.represents_valid_request()
+            elif is_valid:
+                request = self.make_request(
+                    method=method, data=valid_request_params
+                )
+                validity_report = MAASAPIAuthentication.check_validity(request)
+                assert validity_report.represents_valid_request()
+            else:
+                request = self.make_request(
+                    method=method, data=invalid_request_params
+                )
+                validity_report = MAASAPIAuthentication.check_validity(request)
+                assert not validity_report.represents_valid_request()
 
     def test_error_message_when_failing_oauth_validation(self):
         request = self.make_request(
@@ -171,43 +151,28 @@ class TestMAASAPIAuthentication(MAASServerTestCase):
         )
         report = MAASAPIAuthentication.check_validity(request)
 
-        with self.subTest(param_should_be_in_message=True):
-            self.assertTrue(
-                "oauth_timestamp" in report.generate_error_message()
-            )
-        with self.subTest(param_should_be_in_message=False):
-            self.assertFalse(
-                "oauth_consumer_key" in report.generate_error_message()
-            )
+        assert "oauth_timestamp" in report.generate_error_message()
+        assert "oauth_consumer_key" not in report.generate_error_message()
 
 
-class TestOAuthUnauthorized(MAASTestCase):
+class TestOAuthUnauthorized:
     def test_exception_unicode_includes_original_failure_message(self):
         error_msg = factory.make_name("error-message")
         original_exception = oauth.OAuthError(error_msg)
         maas_exception = OAuthUnauthorized(original_exception)
-        self.assertIn(
-            "Authorization Error: %r" % error_msg,
-            str(maas_exception),
-        )
+        assert ("Authorization Error: %r" % error_msg) in str(maas_exception)
 
     def test_exception_unicode_includes_user_friendly_message(self):
         # When the error is an authentication error, the message is more
         # user-friendly than the default 'Invalid consumer.'.
         original_exception = oauth.OAuthError("Invalid consumer.")
         maas_exception = OAuthUnauthorized(original_exception)
-        self.assertIn(
-            "Authorization Error: Invalid API key.",
-            str(maas_exception),
-        )
+        assert "Authorization Error: Invalid API key." in str(maas_exception)
 
 
-class TestOAuthBadRequest(MAASTestCase):
+class TestOAuthBadRequest:
     def test_exception_unicode_includes_original_failure_message(self):
         error_msg = factory.make_name("error-message")
         original_exception = oauth.OAuthMissingParam(error_msg)
         maas_exception = OAuthBadRequest(original_exception)
-        self.assertIn(
-            f"Bad Request: {error_msg}",
-            str(maas_exception),
-        )
+        assert f"Bad Request: {error_msg}" in str(maas_exception)

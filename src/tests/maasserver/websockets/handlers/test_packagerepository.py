@@ -3,10 +3,11 @@
 
 """Tests for `maasserver.websockets.handlers.packagerepository`"""
 
+import pytest
+
 from maascommon.events import AUDIT
 from maasserver.models import Event, PackageRepository
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from maasserver.utils.orm import reload_object
 from maasserver.websockets.base import (
     dehydrate_datetime,
@@ -15,13 +16,11 @@ from maasserver.websockets.base import (
 from maasserver.websockets.handlers.packagerepository import (
     PackageRepositoryHandler,
 )
-from tests.maasserver.auth.test_auth import OpenFGAMockMixin
+from tests.maasserver.auth.test_auth import PytestOpenFGAMockMixin
 
 
-class TestPackageRepositoryHandler(MAASServerTestCase):
-    def setUp(self):
-        super().setUp()
-
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestPackageRepositoryHandler:
     def dehydrate(self, package_repository):
         return {
             "id": package_repository.id,
@@ -47,12 +46,15 @@ class TestPackageRepositoryHandler(MAASServerTestCase):
         expected_package_repositories = [
             self.dehydrate(factory.make_PackageRepository()) for _ in range(3)
         ]
-        self.assertCountEqual(expected_package_repositories, handler.list({}))
+
+        assert sorted(expected_package_repositories, key=repr) == sorted(
+            handler.list({}), key=repr
+        )
 
     def test_create_is_admin_only(self):
         user = factory.make_User()
         handler = PackageRepositoryHandler(user, {}, None)
-        self.assertRaises(HandlerPermissionError, handler.create, {})
+        pytest.raises(HandlerPermissionError, handler.create, {})
 
     def test_create(self):
         user = factory.make_admin()
@@ -64,20 +66,21 @@ class TestPackageRepositoryHandler(MAASServerTestCase):
                 "url": factory.make_url(scheme="http"),
             }
         )
-        self.assertIsNotNone(
+        assert (
             PackageRepository.objects.get(name=package_repository_name)
+            is not None
         )
         event = Event.objects.get(type__level=AUDIT)
-        self.assertIsNotNone(event)
-        self.assertEqual(
-            event.description,
-            "Created package repository '%s'." % package_repository_name,
+        assert event is not None
+        assert (
+            event.description
+            == "Created package repository '%s'." % package_repository_name
         )
 
     def test_update_is_admin_only(self):
         user = factory.make_User()
         handler = PackageRepositoryHandler(user, {}, None)
-        self.assertRaises(HandlerPermissionError, handler.update, {})
+        pytest.raises(HandlerPermissionError, handler.update, {})
 
     def test_update(self):
         user = factory.make_admin()
@@ -86,34 +89,33 @@ class TestPackageRepositoryHandler(MAASServerTestCase):
         url = factory.make_url(scheme="http")
         handler.update({"id": package_repository.id, "url": url})
         package_repository = reload_object(package_repository)
-        self.assertEqual(url, package_repository.url)
+        assert url == package_repository.url
         event = Event.objects.get(type__level=AUDIT)
-        self.assertIsNotNone(event)
-        self.assertEqual(
-            event.description,
-            "Updated package repository '%s'." % package_repository.name,
+        assert event is not None
+        assert (
+            event.description
+            == "Updated package repository '%s'." % package_repository.name
         )
 
     def test_delete_is_admin_only(self):
         user = factory.make_User()
         handler = PackageRepositoryHandler(user, {}, None)
-        self.assertRaises(HandlerPermissionError, handler.delete, {})
+        pytest.raises(HandlerPermissionError, handler.delete, {})
 
     def test_delete(self):
         user = factory.make_admin()
         handler = PackageRepositoryHandler(user, {}, None)
         package_repository = factory.make_PackageRepository()
         handler.delete({"id": package_repository.id})
-        self.assertRaises(
+        pytest.raises(
             PackageRepository.DoesNotExist,
             PackageRepository.objects.get,
             id=package_repository.id,
         )
 
 
-class TestPackageRepositoryHandlerOpenFGAIntegration(
-    OpenFGAMockMixin, MAASServerTestCase
-):
+@pytest.mark.usefixtures("maasdb", "factory")
+class TestPackageRepositoryHandlerOpenFGAIntegration(PytestOpenFGAMockMixin):
     def test_create_requires_can_edit_global_entities(self):
         self.openfga_client.can_edit_global_entities.return_value = True
         user = factory.make_User()

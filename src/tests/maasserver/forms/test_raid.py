@@ -3,14 +3,16 @@
 
 """Tests for all forms that are used with `RAID`."""
 
+from collections import Counter
 import random
 from uuid import uuid4
+
+import pytest
 
 from maasserver.enum import FILESYSTEM_GROUP_TYPE, FILESYSTEM_TYPE
 from maasserver.forms import CreateRaidForm, UpdateRaidForm
 from maasserver.models.filesystemgroup import RAID, RAID_SUPERBLOCK_OVERHEAD
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 
 
 def _make_interesting_RAID(
@@ -51,12 +53,13 @@ def _make_interesting_RAID(
     )
 
 
-class TestCreateRaidForm(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestCreateRaidForm:
     def test_requires_fields(self):
         node = factory.make_Node()
         form = CreateRaidForm(node=node, data={})
-        self.assertFalse(form.is_valid(), form.errors)
-        self.assertEqual(form.errors["level"], ["This field is required."])
+        assert not form.is_valid(), form.errors
+        assert form.errors["level"] == ["This field is required."]
 
     def test_choices_are_being_populated_correctly(self):
         node = factory.make_Node(with_boot_disk=False)
@@ -76,21 +79,17 @@ class TestCreateRaidForm(MAASServerTestCase):
             part.name for part in partitions
         ]
         form = CreateRaidForm(node=node, data={})
-        self.assertCountEqual(
-            block_devices_choices,
-            [k for (k, v) in form.fields["block_devices"].choices],
+        assert Counter(block_devices_choices) == Counter(
+            k for k, _ in form.fields["block_devices"].choices
         )
-        self.assertCountEqual(
-            partitions_choices,
-            [k for (k, v) in form.fields["partitions"].choices],
+        assert Counter(partitions_choices) == Counter(
+            k for k, _ in form.fields["partitions"].choices
         )
-        self.assertCountEqual(
-            block_devices_choices,
-            [k for (k, v) in form.fields["spare_devices"].choices],
+        assert Counter(block_devices_choices) == Counter(
+            k for k, _ in form.fields["spare_devices"].choices
         )
-        self.assertCountEqual(
-            partitions_choices,
-            [k for (k, v) in form.fields["spare_partitions"].choices],
+        assert Counter(partitions_choices) == Counter(
+            k for k, _ in form.fields["spare_partitions"].choices
         )
 
     def test_raid_creation_on_save(self):
@@ -118,27 +117,19 @@ class TestCreateRaidForm(MAASServerTestCase):
                 "partitions": partitions,
             },
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         raid = form.save()
-        self.assertEqual("md1", raid.name)
-        self.assertEqual(
-            (8 * partition_objs[0].size) - RAID_SUPERBLOCK_OVERHEAD,
-            raid.get_size(),
+        assert "md1" == raid.name
+        assert (8 * partition_objs[0].size) - RAID_SUPERBLOCK_OVERHEAD == (
+            raid.get_size()
         )
-        self.assertEqual(FILESYSTEM_GROUP_TYPE.RAID_6, raid.group_type)
-        self.assertCountEqual(
-            block_devices,
-            [
-                fs.block_device.id
-                for fs in raid.filesystems.exclude(block_device=None)
-            ],
+        assert FILESYSTEM_GROUP_TYPE.RAID_6 == raid.group_type
+        assert Counter(block_devices) == Counter(
+            fs.block_device.id
+            for fs in raid.filesystems.exclude(block_device=None)
         )
-        self.assertCountEqual(
-            partitions,
-            [
-                fs.partition.id
-                for fs in raid.filesystems.exclude(partition=None)
-            ],
+        assert Counter(partitions) == Counter(
+            fs.partition.id for fs in raid.filesystems.exclude(partition=None)
         )
 
     def test_raid_creation_with_names(self):
@@ -170,27 +161,24 @@ class TestCreateRaidForm(MAASServerTestCase):
                 "partitions": partition_names,
             },
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         raid = form.save()
-        self.assertEqual("md1", raid.name)
-        self.assertEqual(
-            (8 * partitions[0].size) - RAID_SUPERBLOCK_OVERHEAD,
-            raid.get_size(),
-        )
-        self.assertEqual(FILESYSTEM_GROUP_TYPE.RAID_6, raid.group_type)
-        self.assertCountEqual(
-            block_devices_ids,
+        assert "md1" == raid.name
+        assert (
+            8 * partitions[0].size
+        ) - RAID_SUPERBLOCK_OVERHEAD == raid.get_size()
+        assert FILESYSTEM_GROUP_TYPE.RAID_6 == raid.group_type
+        assert Counter(block_devices_ids) == Counter(
             [
                 fs.block_device.id
                 for fs in raid.filesystems.exclude(block_device=None)
-            ],
+            ]
         )
-        self.assertCountEqual(
-            partition_ids,
+        assert Counter(partition_ids) == Counter(
             [
                 fs.partition.id
                 for fs in raid.filesystems.exclude(partition=None)
-            ],
+            ]
         )
 
     def test_raid_creation_on_boot_disk(self):
@@ -214,12 +202,12 @@ class TestCreateRaidForm(MAASServerTestCase):
                 "partitions": partitions,
             },
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         raid = form.save()
-        self.assertEqual("md1", raid.name)
-        self.assertEqual(FILESYSTEM_GROUP_TYPE.RAID_6, raid.group_type)
-        self.assertCountEqual(raid.filesystems.exclude(block_device=None), [])
-        self.assertEqual(raid.filesystems.exclude(partition=None).count(), 10)
+        assert "md1" == raid.name
+        assert FILESYSTEM_GROUP_TYPE.RAID_6 == raid.group_type
+        assert not raid.filesystems.exclude(block_device=None).exists()
+        assert raid.filesystems.exclude(partition=None).count() == 10
 
     def test_raid_creation_without_storage_fails(self):
         node = factory.make_Node()
@@ -239,17 +227,15 @@ class TestCreateRaidForm(MAASServerTestCase):
                     "partitions": [],
                 },
             )
-            self.assertFalse(form.is_valid())
-        self.assertEqual(
-            form.errors["__all__"],
-            [
-                "At least one block device or partition must "
-                "be added to the array."
-            ],
-        )
+            assert not form.is_valid()
+        assert form.errors["__all__"] == [
+            "At least one block device or partition must "
+            "be added to the array."
+        ]
 
 
-class TestUpdateRaidForm(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestUpdateRaidForm:
     # Add devices and partitions
     def test_add_valid_blockdevice(self):
         raid = factory.make_FilesystemGroup(
@@ -260,7 +246,7 @@ class TestUpdateRaidForm(MAASServerTestCase):
             factory.make_BlockDevice(node=raid.get_node()).id for _ in range(5)
         ]
         form = UpdateRaidForm(raid, data={"add_block_devices": bd_ids})
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
 
     def test_add_valid_blockdevice_by_name(self):
         raid = factory.make_FilesystemGroup(
@@ -272,7 +258,7 @@ class TestUpdateRaidForm(MAASServerTestCase):
             for _ in range(5)
         ]
         form = UpdateRaidForm(raid, data={"add_block_devices": bd_names})
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
 
     def test_add_valid_boot_disk(self):
         node = factory.make_Node(with_boot_disk=False)
@@ -282,12 +268,12 @@ class TestUpdateRaidForm(MAASServerTestCase):
         )
         raid = RAID.objects.get(id=raid.id)
         form = UpdateRaidForm(raid, data={"add_block_devices": [boot_disk.id]})
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         raid = form.save()
         boot_partition = boot_disk.get_partitiontable().partitions.first()
-        self.assertEqual(
-            boot_partition.get_effective_filesystem().filesystem_group.id,
-            raid.id,
+        assert (
+            boot_partition.get_effective_filesystem().filesystem_group.id
+            == raid.id
         )
 
     def test_add_valid_partition(self):
@@ -299,7 +285,7 @@ class TestUpdateRaidForm(MAASServerTestCase):
             factory.make_Partition(node=raid.get_node()).id for _ in range(5)
         ]
         form = UpdateRaidForm(raid, data={"add_partitions": part_ids})
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
 
     def test_add_valid_spare_device(self):
         raid = factory.make_FilesystemGroup(
@@ -310,7 +296,7 @@ class TestUpdateRaidForm(MAASServerTestCase):
             factory.make_BlockDevice(node=raid.get_node()).id for _ in range(5)
         ]
         form = UpdateRaidForm(raid, data={"add_spare_devices": bd_ids})
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
 
     def test_add_valid_spare_boot_disk(self):
         node = factory.make_Node(with_boot_disk=False)
@@ -320,12 +306,12 @@ class TestUpdateRaidForm(MAASServerTestCase):
         )
         raid = RAID.objects.get(id=raid.id)
         form = UpdateRaidForm(raid, data={"add_spare_devices": [boot_disk.id]})
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         raid = form.save()
         boot_partition = boot_disk.get_partitiontable().partitions.first()
-        self.assertEqual(
-            boot_partition.get_effective_filesystem().filesystem_group.id,
-            raid.id,
+        assert (
+            boot_partition.get_effective_filesystem().filesystem_group.id
+            == raid.id
         )
 
     def test_add_valid_spare_partition(self):
@@ -337,7 +323,7 @@ class TestUpdateRaidForm(MAASServerTestCase):
             factory.make_Partition(node=raid.get_node()).id for _ in range(5)
         ]
         form = UpdateRaidForm(raid, data={"add_spare_partitions": part_ids})
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
 
     def test_add_invalid_blockdevice_fails(self):
         raid = factory.make_FilesystemGroup(
@@ -346,11 +332,11 @@ class TestUpdateRaidForm(MAASServerTestCase):
         # Add 5 new blockdevices to other nodes.
         bd_ids = [factory.make_BlockDevice().id for _ in range(5)]
         form = UpdateRaidForm(raid, data={"add_block_devices": bd_ids})
-        self.assertFalse(form.is_valid(), form.errors)
-        self.assertIn("add_block_devices", form.errors)
-        self.assertIn(
-            "is not one of the available choices.",
-            form.errors["add_block_devices"][0],
+        assert not form.is_valid(), form.errors
+        assert "add_block_devices" in form.errors
+        assert (
+            "is not one of the available choices."
+            in form.errors["add_block_devices"][0]
         )
 
     def test_add_invalid_spare_blockdevice_fails(self):
@@ -360,11 +346,11 @@ class TestUpdateRaidForm(MAASServerTestCase):
         # Add 5 new blockdevices to other nodes.
         bd_ids = [factory.make_BlockDevice().id for _ in range(5)]
         form = UpdateRaidForm(raid, data={"add_spare_devices": bd_ids})
-        self.assertFalse(form.is_valid(), form.errors)
-        self.assertIn("add_spare_devices", form.errors)
-        self.assertIn(
-            "is not one of the available choices.",
-            form.errors["add_spare_devices"][0],
+        assert not form.is_valid(), form.errors
+        assert "add_spare_devices" in form.errors
+        assert (
+            "is not one of the available choices."
+            in form.errors["add_spare_devices"][0]
         )
 
     def test_add_invalid_partition_fails(self):
@@ -374,11 +360,11 @@ class TestUpdateRaidForm(MAASServerTestCase):
         # Add 5 new partitions to other nodes.
         part_ids = [factory.make_Partition().id for _ in range(5)]
         form = UpdateRaidForm(raid, data={"add_partitions": part_ids})
-        self.assertFalse(form.is_valid(), form.errors)
-        self.assertIn("add_partitions", form.errors)
-        self.assertIn(
-            "is not one of the available choices.",
-            form.errors["add_partitions"][0],
+        assert not form.is_valid(), form.errors
+        assert "add_partitions" in form.errors
+        assert (
+            "is not one of the available choices."
+            in form.errors["add_partitions"][0]
         )
 
     def test_add_invalid_spare_partition_fails(self):
@@ -388,11 +374,11 @@ class TestUpdateRaidForm(MAASServerTestCase):
         # Add 5 new partitions to other nodes.
         part_ids = [factory.make_Partition().id for _ in range(5)]
         form = UpdateRaidForm(raid, data={"add_spare_partitions": part_ids})
-        self.assertFalse(form.is_valid(), form.errors)
-        self.assertIn("add_spare_partitions", form.errors)
-        self.assertIn(
-            "is not one of the available choices.",
-            form.errors["add_spare_partitions"][0],
+        assert not form.is_valid(), form.errors
+        assert "add_spare_partitions" in form.errors
+        assert (
+            "is not one of the available choices."
+            in form.errors["add_spare_partitions"][0]
         )
 
     # Removal tests
@@ -406,7 +392,7 @@ class TestUpdateRaidForm(MAASServerTestCase):
             ).exclude(block_device=None)[:2]
         ]  # Select 2 items for removal
         form = UpdateRaidForm(raid, data={"remove_block_devices": ids})
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
 
     def test_remove_valid_partition(self):
         raid = _make_interesting_RAID(node=factory.make_Node())
@@ -417,7 +403,7 @@ class TestUpdateRaidForm(MAASServerTestCase):
             ).exclude(partition=None)[:2]
         ]  # Select 2 items for removal
         form = UpdateRaidForm(raid, data={"remove_partitions": ids})
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
 
     def test_remove_valid_spare_device(self):
         raid = _make_interesting_RAID(node=factory.make_Node())
@@ -428,7 +414,7 @@ class TestUpdateRaidForm(MAASServerTestCase):
             ).exclude(block_device=None)[:2]
         ]  # Select 2 items for removal
         form = UpdateRaidForm(raid, data={"remove_block_devices": ids})
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
 
     def test_remove_valid_spare_partition(self):
         raid = _make_interesting_RAID(node=factory.make_Node())
@@ -439,48 +425,48 @@ class TestUpdateRaidForm(MAASServerTestCase):
             ).exclude(partition=None)[:2]
         ]  # Select 2 items for removal
         form = UpdateRaidForm(raid, data={"remove_partitions": ids})
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
 
     def test_remove_invalid_blockdevice_fails(self):
         raid = _make_interesting_RAID(node=factory.make_Node())
         ids = [factory.make_BlockDevice().id for _ in range(2)]
         form = UpdateRaidForm(raid, data={"remove_block_devices": ids})
-        self.assertFalse(form.is_valid(), form.errors)
-        self.assertIn("remove_block_devices", form.errors)
-        self.assertIn(
-            "is not one of the available choices.",
-            form.errors["remove_block_devices"][0],
+        assert not form.is_valid(), form.errors
+        assert "remove_block_devices" in form.errors
+        assert (
+            "is not one of the available choices."
+            in form.errors["remove_block_devices"][0]
         )
 
     def test_remove_invalid_spare_blockdevice_fails(self):
         raid = _make_interesting_RAID(node=factory.make_Node())
         ids = [factory.make_BlockDevice().id for _ in range(2)]
         form = UpdateRaidForm(raid, data={"remove_spare_devices": ids})
-        self.assertFalse(form.is_valid(), form.errors)
-        self.assertIn("remove_spare_devices", form.errors)
-        self.assertIn(
-            "is not one of the available choices.",
-            form.errors["remove_spare_devices"][0],
+        assert not form.is_valid(), form.errors
+        assert "remove_spare_devices" in form.errors
+        assert (
+            "is not one of the available choices."
+            in form.errors["remove_spare_devices"][0]
         )
 
     def test_remove_invalid_partition_fails(self):
         raid = _make_interesting_RAID(node=factory.make_Node())
         ids = [factory.make_Partition().id for _ in range(2)]
         form = UpdateRaidForm(raid, data={"remove_partitions": ids})
-        self.assertFalse(form.is_valid(), form.errors)
-        self.assertIn("remove_partitions", form.errors)
-        self.assertIn(
-            "is not one of the available choices.",
-            form.errors["remove_partitions"][0],
+        assert not form.is_valid(), form.errors
+        assert "remove_partitions" in form.errors
+        assert (
+            "is not one of the available choices."
+            in form.errors["remove_partitions"][0]
         )
 
     def test_remove_invalid_spare_partition_fails(self):
         raid = _make_interesting_RAID(node=factory.make_Node())
         ids = [factory.make_Partition().id for _ in range(2)]
         form = UpdateRaidForm(raid, data={"remove_spare_partitions": ids})
-        self.assertFalse(form.is_valid(), form.errors)
-        self.assertIn("remove_spare_partitions", form.errors)
-        self.assertIn(
-            "is not one of the available choices.",
-            form.errors["remove_spare_partitions"][0],
+        assert not form.is_valid(), form.errors
+        assert "remove_spare_partitions" in form.errors
+        assert (
+            "is not one of the available choices."
+            in form.errors["remove_spare_partitions"][0]
         )

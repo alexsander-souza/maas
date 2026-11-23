@@ -8,9 +8,9 @@ import sys
 from textwrap import dedent
 from unittest.mock import ANY, patch, sentinel
 
+import pytest
+
 from maastesting.factory import factory
-from maastesting.fixtures import TempDirectory
-from maastesting.testcase import MAASTestCase
 from provisioningserver import refresh
 from provisioningserver.path import get_maas_data_path
 from provisioningserver.refresh import maas_api_helper
@@ -30,19 +30,20 @@ class FakeResponse:
         pass
 
 
-class TestRefresh(MAASTestCase):
-    def setUp(self):
-        super().setUp()
+class TestRefresh:
+    @pytest.fixture(autouse=True)
+    def _setup(self, mocker, tmp_path):
         # When running scripts in a tty MAAS outputs the results to help with
         # debug. Quiet the output when running in tests.
-        self.patch(sys, "stdout")
+        mocker.patch.object(sys, "stdout")
         self.urlopen_calls = []
-        self.patch(
+        mocker.patch.object(
             maas_api_helper.urllib.request, "urlopen"
         ).side_effect = self._fake_urlopen
 
-        self.tmpdir = self.useFixture(TempDirectory()).path
-        self.patch(refresh, "SCRIPTS_BASE_PATH", self.tmpdir)
+        self.tmpdir = str(tmp_path)
+        mocker.patch.object(refresh, "SCRIPTS_BASE_PATH", self.tmpdir)
+        self.mocker = mocker
 
     def _fake_urlopen(self, request, post_data=None, data=None):
         self.urlopen_calls.append((request, post_data, data))
@@ -96,29 +97,20 @@ class TestRefresh(MAASTestCase):
         requests = [call[0] for call in self.urlopen_calls]
 
         for request in requests:
-            self.assertEqual(
-                f"{base_url}/metadata/{MD_VERSION}/", request.full_url
-            )
+            assert request.full_url == f"{base_url}/metadata/{MD_VERSION}/"
             auth_header = request.get_header("Authorization")
-            self.assertTrue(
-                auth_header.startswith("OAuth oauth_nonce="), auth_header
-            )
-            self.assertIn(f'oauth_consumer_key="{consumer_key}"', auth_header)
-            self.assertIn(f'oauth_token="{token_key}"', auth_header)
+            assert auth_header.startswith("OAuth oauth_nonce="), auth_header
+            assert f'oauth_consumer_key="{consumer_key}"' in auth_header
+            assert f'oauth_token="{token_key}"' in auth_header
 
-        self.assertIn(
-            f"Starting {script_name}", requests[0].data.decode("ascii")
-        )
-        self.assertIn(
-            f'filename="{script_name}"', requests[1].data.decode("ascii")
-        )
-        self.assertIn(
-            f"Finished refreshing {system_id}",
-            requests[2].data.decode("ascii"),
+        assert f"Starting {script_name}" in requests[0].data.decode("ascii")
+        assert f'filename="{script_name}"' in requests[1].data.decode("ascii")
+        assert f"Finished refreshing {system_id}" in requests[2].data.decode(
+            "ascii"
         )
 
     def test_refresh_signals_results(self):
-        signal = self.patch(refresh, "signal")
+        signal = self.mocker.patch.object(refresh, "signal")
         script_name = factory.make_name("script_name")
         script_content = dedent(
             """\
@@ -157,10 +149,10 @@ class TestRefresh(MAASTestCase):
         )
 
     def test_refresh_sets_env_vars(self):
-        self.patch(refresh, "signal")
+        self.mocker.patch.object(refresh, "signal")
         script_name = factory.make_name("script_name")
         info_scripts = self.create_scripts_failure(script_name)
-        mock_popen = self.patch(refresh, "Popen")
+        mock_popen = self.mocker.patch.object(refresh, "Popen")
         mock_popen.side_effect = OSError(8, "Exec format error")
 
         system_id = factory.make_name("system_id")
@@ -181,14 +173,14 @@ class TestRefresh(MAASTestCase):
             "OUTPUT_STDERR_PATH",
             "RESULT_PATH",
         ]:
-            self.assertIn(name, env)
-            self.assertIn(script_name, env[name])
+            assert name in env
+            assert script_name in env[name]
 
     def test_refresh_signals_failure_on_unexecutable_script(self):
-        signal = self.patch(refresh, "signal")
+        signal = self.mocker.patch.object(refresh, "signal")
         script_name = factory.make_name("script_name")
         info_scripts = self.create_scripts_failure(script_name)
-        mock_popen = self.patch(refresh, "Popen")
+        mock_popen = self.mocker.patch.object(refresh, "Popen")
         mock_popen.side_effect = OSError(8, "Exec format error")
 
         system_id = factory.make_name("system_id")
@@ -215,10 +207,10 @@ class TestRefresh(MAASTestCase):
         )
 
     def test_refresh_signals_failure_on_unexecutable_script_no_errno(self):
-        signal = self.patch(refresh, "signal")
+        signal = self.mocker.patch.object(refresh, "signal")
         script_name = factory.make_name("script_name")
         info_scripts = self.create_scripts_failure(script_name)
-        mock_popen = self.patch(refresh, "Popen")
+        mock_popen = self.mocker.patch.object(refresh, "Popen")
         mock_popen.side_effect = OSError()
 
         system_id = factory.make_name("system_id")
@@ -245,10 +237,10 @@ class TestRefresh(MAASTestCase):
         )
 
     def test_refresh_signals_failure_on_unexecutable_script_baderrno(self):
-        signal = self.patch(refresh, "signal")
+        signal = self.mocker.patch.object(refresh, "signal")
         script_name = factory.make_name("script_name")
         info_scripts = self.create_scripts_failure(script_name)
-        mock_popen = self.patch(refresh, "Popen")
+        mock_popen = self.mocker.patch.object(refresh, "Popen")
         mock_popen.side_effect = OSError(0, "Exec format error")
 
         system_id = factory.make_name("system_id")
@@ -275,7 +267,7 @@ class TestRefresh(MAASTestCase):
         )
 
     def test_refresh_signals_failure_on_timeout(self):
-        signal = self.patch(refresh, "signal")
+        signal = self.mocker.patch.object(refresh, "signal")
         script_name = factory.make_name("script_name")
         info_scripts = self.create_scripts_failure(script_name)
 
@@ -293,7 +285,7 @@ class TestRefresh(MAASTestCase):
                 open(path, "w").close()
             raise TimeoutExpired(proc.args, timeout_seconds)
 
-        mock_capture_script_output = self.patch(
+        mock_capture_script_output = self.mocker.patch.object(
             refresh, "capture_script_output"
         )
         mock_capture_script_output.side_effect = timeout_run
@@ -316,7 +308,7 @@ class TestRefresh(MAASTestCase):
         )
 
     def test_refresh_signals_failure(self):
-        signal = self.patch(refresh, "signal")
+        signal = self.mocker.patch.object(refresh, "signal")
         info_scripts = self.create_scripts_failure()
 
         system_id = factory.make_name("system_id")
@@ -338,7 +330,7 @@ class TestRefresh(MAASTestCase):
         )
 
     def test_refresh_executes_lxd_binary_in_snap(self):
-        signal = self.patch(refresh, "signal")
+        signal = self.mocker.patch.object(refresh, "signal")
         script_name = COMMISSIONING_OUTPUT_NAME
         info_scripts = self.create_scripts_success(script_name)
         path = factory.make_name()
@@ -377,33 +369,32 @@ class TestRefresh(MAASTestCase):
         tmpdir_during = None
 
         def runscripts(*args, tmpdir, **kwargs):
-            self.assertTrue(Path(tmpdir).exists())
+            assert Path(tmpdir).exists()
             nonlocal tmpdirs_during, tmpdir_during
             tmpdirs_during |= find_temporary_directories()
             tmpdir_during = tmpdir
             raise ScriptsBroken("Foom")
 
-        self.patch(refresh, "runscripts", runscripts)
+        self.mocker.patch.object(refresh, "runscripts", runscripts)
 
         tmpdirs_before = find_temporary_directories()
-        self.assertRaises(
-            ScriptsBroken,
-            refresh.refresh,
-            sentinel.system_id,
-            sentinel.consumer_key,
-            sentinel.token_key,
-            sentinel.token_secret,
-        )
+        with pytest.raises(ScriptsBroken):
+            refresh.refresh(
+                sentinel.system_id,
+                sentinel.consumer_key,
+                sentinel.token_key,
+                sentinel.token_secret,
+            )
         tmpdirs_after = find_temporary_directories()
 
-        self.assertNotIn(tmpdir_during, tmpdirs_before)
-        self.assertIn(tmpdir_during, tmpdirs_during)
-        self.assertNotIn(tmpdir_during, tmpdirs_after)
+        assert tmpdir_during not in tmpdirs_before
+        assert tmpdir_during in tmpdirs_during
+        assert tmpdir_during not in tmpdirs_after
 
     def test_refresh_runs_script_no_sudo_snap(self):
-        mock_popen = self.patch(refresh, "Popen")
+        mock_popen = self.mocker.patch.object(refresh, "Popen")
         mock_popen.side_effect = OSError()
-        self.patch(refresh, "signal")
+        self.mocker.patch.object(refresh, "signal")
         script_name = factory.make_name("script_name")
         script_content = dedent(
             """\

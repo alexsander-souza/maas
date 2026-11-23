@@ -1,12 +1,18 @@
+from collections import Counter
+
+import pytest
+
 from maasserver.enum import FILESYSTEM_GROUP_TYPE, INTERFACE_TYPE
 from maasserver.models import PhysicalBlockDevice, VirtualBlockDevice
 from maasserver.models.nodeconfig import NODE_CONFIG_TYPE
 from maasserver.nodeconfig import duplicate_nodeconfig
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 
 
-class TestDuplicateNodeConfig(MAASServerTestCase):
+@pytest.mark.usefixtures(
+    "maasdb", "factory", "mock_openfga", "mock_start_workflows"
+)
+class TestDuplicateNodeConfig:
     def test_interfaces(self):
         src_config = factory.make_NodeConfig()
         if1 = factory.make_Interface(node_config=src_config)
@@ -27,31 +33,27 @@ class TestDuplicateNodeConfig(MAASServerTestCase):
             new_if2,
             new_vlan,
         ) = new_config.interface_set.order_by("id")
-        self.assertEqual(new_if1.type, INTERFACE_TYPE.PHYSICAL)
-        self.assertEqual(new_if1.name, if1.name)
-        self.assertNotEqual(new_if1.id, if1.id)
+        assert new_if1.type == INTERFACE_TYPE.PHYSICAL
+        assert new_if1.name == if1.name
+        assert new_if1.id != if1.id
 
-        self.assertEqual(new_if2.type, INTERFACE_TYPE.PHYSICAL)
-        self.assertEqual(new_if2.name, if2.name)
-        self.assertNotEqual(new_if2.id, if2.id)
+        assert new_if2.type == INTERFACE_TYPE.PHYSICAL
+        assert new_if2.name == if2.name
+        assert new_if2.id != if2.id
 
-        self.assertEqual(new_bridge.type, INTERFACE_TYPE.BRIDGE)
-        self.assertEqual(new_bridge.name, bridge.name)
-        self.assertNotEqual(new_bridge.id, bridge.id)
-        self.assertCountEqual(
-            new_bridge.parent_relationships.values_list(
-                "parent_id", flat=True
-            ),
-            [new_if1.id],
-        )
+        assert new_bridge.type == INTERFACE_TYPE.BRIDGE
+        assert new_bridge.name == bridge.name
+        assert new_bridge.id != bridge.id
+        assert Counter(
+            new_bridge.parent_relationships.values_list("parent_id", flat=True)
+        ) == Counter([new_if1.id])
 
-        self.assertEqual(new_vlan.type, INTERFACE_TYPE.VLAN)
-        self.assertEqual(new_vlan.name, vlan.name)
-        self.assertNotEqual(new_vlan.id, vlan.id)
-        self.assertCountEqual(
-            new_vlan.parent_relationships.values_list("parent_id", flat=True),
-            [new_if1.id],
-        )
+        assert new_vlan.type == INTERFACE_TYPE.VLAN
+        assert new_vlan.name == vlan.name
+        assert new_vlan.id != vlan.id
+        assert Counter(
+            new_vlan.parent_relationships.values_list("parent_id", flat=True)
+        ) == Counter([new_if1.id])
 
     def test_physicalblockdevices(self):
         node = factory.make_Node(with_boot_disk=False)
@@ -66,20 +68,14 @@ class TestDuplicateNodeConfig(MAASServerTestCase):
         new_disk1, new_disk2 = PhysicalBlockDevice.objects.filter(
             node_config=new_config
         ).order_by("id")
-        self.assertEqual(new_disk1.name, disk1.name)
-        self.assertEqual(new_disk1.model, disk1.model)
-        self.assertNotEqual(new_disk1.id, disk1.id)
-        self.assertEqual(
-            new_disk1.get_partitiontable().table_type,
-            ptable1.table_type,
-        )
-        self.assertEqual(new_disk2.name, disk2.name)
-        self.assertEqual(new_disk2.model, disk2.model)
-        self.assertNotEqual(new_disk2.id, disk2.id)
-        self.assertEqual(
-            new_disk2.get_partitiontable().table_type,
-            ptable2.table_type,
-        )
+        assert new_disk1.name == disk1.name
+        assert new_disk1.model == disk1.model
+        assert new_disk1.id != disk1.id
+        assert new_disk1.get_partitiontable().table_type == ptable1.table_type
+        assert new_disk2.name == disk2.name
+        assert new_disk2.model == disk2.model
+        assert new_disk2.id != disk2.id
+        assert new_disk2.get_partitiontable().table_type == ptable2.table_type
 
     def test_virtualblockdevice(self):
         node = factory.make_Node(with_boot_disk=False)
@@ -103,22 +99,14 @@ class TestDuplicateNodeConfig(MAASServerTestCase):
         new_vbdev1, new_vbdev2 = VirtualBlockDevice.objects.filter(
             node_config=new_config
         ).order_by("id")
-        self.assertNotEqual(new_vbdev1.id, vbdev1.id)
-        self.assertEqual(new_vbdev1.uuid, vbdev1.uuid)
-        self.assertEqual(
-            new_vbdev1.filesystem_group.uuid, vbdev1.filesystem_group.uuid
-        )
-        self.assertEqual(
-            new_vbdev1.filesystem_group.name, vbdev1.filesystem_group.name
-        )
-        self.assertNotEqual(new_vbdev2.id, vbdev2.id)
-        self.assertEqual(new_vbdev2.uuid, vbdev2.uuid)
-        self.assertEqual(
-            new_vbdev2.filesystem_group.uuid, vbdev2.filesystem_group.uuid
-        )
-        self.assertEqual(
-            new_vbdev2.filesystem_group.name, vbdev2.filesystem_group.name
-        )
+        assert new_vbdev1.id != vbdev1.id
+        assert new_vbdev1.uuid == vbdev1.uuid
+        assert new_vbdev1.filesystem_group.uuid == vbdev1.filesystem_group.uuid
+        assert new_vbdev1.filesystem_group.name == vbdev1.filesystem_group.name
+        assert new_vbdev2.id != vbdev2.id
+        assert new_vbdev2.uuid == vbdev2.uuid
+        assert new_vbdev2.filesystem_group.uuid == vbdev2.filesystem_group.uuid
+        assert new_vbdev2.filesystem_group.name == vbdev2.filesystem_group.name
 
     def test_partitions_filesystems(self):
         node = factory.make_Node(with_boot_disk=False)
@@ -134,13 +122,13 @@ class TestDuplicateNodeConfig(MAASServerTestCase):
             src_config, NODE_CONFIG_TYPE.DEPLOYMENT
         )
         new_fs1, new_fs2 = new_config.filesystem_set.order_by("id")
-        self.assertNotEqual(new_fs1.id, fs1.id)
-        self.assertEqual(new_fs1.fstype, fs1.fstype)
-        self.assertEqual(new_fs1.partition.uuid, fs1.partition.uuid)
-        self.assertIsNone(new_fs1.block_device)
-        self.assertNotEqual(new_fs2.id, fs2.id)
-        self.assertEqual(new_fs2.fstype, fs2.fstype)
-        self.assertEqual(new_fs2.block_device.name, fs2.block_device.name)
+        assert new_fs1.id != fs1.id
+        assert new_fs1.fstype == fs1.fstype
+        assert new_fs1.partition.uuid == fs1.partition.uuid
+        assert new_fs1.block_device is None
+        assert new_fs2.id != fs2.id
+        assert new_fs2.fstype == fs2.fstype
+        assert new_fs2.block_device.name == fs2.block_device.name
 
     def test_nodedevices(self):
         node = factory.make_Node(with_boot_disk=False)
@@ -156,9 +144,9 @@ class TestDuplicateNodeConfig(MAASServerTestCase):
         [new_disk] = new_config.blockdevice_set.all()
         [new_iface] = new_config.interface_set.all()
         new_nodedev1, new_nodedev2 = new_config.nodedevice_set.order_by("id")
-        self.assertEqual(new_nodedev1.physical_blockdevice_id, new_disk.id)
-        self.assertEqual(new_nodedev1.bus, nodedev1.bus)
-        self.assertEqual(new_nodedev1.hardware_type, nodedev1.hardware_type)
-        self.assertEqual(new_nodedev2.physical_interface_id, new_iface.id)
-        self.assertEqual(new_nodedev2.bus, nodedev2.bus)
-        self.assertEqual(new_nodedev2.hardware_type, nodedev2.hardware_type)
+        assert new_nodedev1.physical_blockdevice_id == new_disk.id
+        assert new_nodedev1.bus == nodedev1.bus
+        assert new_nodedev1.hardware_type == nodedev1.hardware_type
+        assert new_nodedev2.physical_interface_id == new_iface.id
+        assert new_nodedev2.bus == nodedev2.bus
+        assert new_nodedev2.hardware_type == nodedev2.hardware_type

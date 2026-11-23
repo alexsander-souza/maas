@@ -3,12 +3,13 @@
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from maascommon.events import AUDIT
 from maasserver import openfga
 from maasserver.enum import NODE_TYPE
 from maasserver.models import Event, Tag
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from maasserver.utils.orm import reload_object
 from maasserver.websockets.base import (
     dehydrate_datetime,
@@ -19,7 +20,8 @@ from maasserver.websockets.handlers.tag import TagHandler
 from provisioningserver.events import EVENT_TYPES
 
 
-class TestTagHandler(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestTagHandler:
     def dehydrate_tag(self, tag):
         data = {
             "id": tag.id,
@@ -49,7 +51,7 @@ class TestTagHandler(MAASServerTestCase):
         user = factory.make_User()
         handler = TagHandler(user, {}, None)
         tag = factory.make_Tag()
-        self.assertEqual(self.dehydrate_tag(tag), handler.get({"id": tag.id}))
+        assert self.dehydrate_tag(tag) == handler.get({"id": tag.id})
 
     def test_get_include_counts(self):
         tag = factory.make_Tag()
@@ -63,19 +65,21 @@ class TestTagHandler(MAASServerTestCase):
         )
         handler = TagHandler(factory.make_admin(), {}, None)
         details = handler.get({"id": tag.id})
-        self.assertEqual(details["machine_count"], 1)
-        self.assertEqual(details["device_count"], 2)
-        self.assertEqual(details["controller_count"], 3)
+        assert details["machine_count"] == 1
+        assert details["device_count"] == 2
+        assert details["controller_count"] == 3
 
     def test_list(self):
         user = factory.make_User()
         handler = TagHandler(user, {}, None)
         factory.make_Tag()
         expected_tags = [self.dehydrate_tag(tag) for tag in Tag.objects.all()]
-        self.assertCountEqual(expected_tags, handler.list({}))
+        assert sorted(expected_tags, key=repr) == sorted(
+            handler.list({}), key=repr
+        )
 
-    def test_create(self):
-        mock_populate_nodes = self.patch(Tag, "populate_nodes")
+    def test_create(self, mocker):
+        mock_populate_nodes = mocker.patch.object(Tag, "populate_nodes")
         handler = TagHandler(factory.make_admin(), {}, None)
         result = handler.create(
             {
@@ -86,16 +90,16 @@ class TestTagHandler(MAASServerTestCase):
             }
         )
         [tag] = Tag.objects.all()
-        self.assertEqual(self.dehydrate_tag(tag), result)
+        assert self.dehydrate_tag(tag) == result
         mock_populate_nodes.assert_called_once()
         # an audit log entry is created
         event = Event.objects.get(type__level=AUDIT)
-        self.assertEqual(event.type.name, EVENT_TYPES.TAG)
-        self.assertEqual(event.description, f"Tag '{tag.name}' created.")
+        assert event.type.name == EVENT_TYPES.TAG
+        assert event.description == f"Tag '{tag.name}' created."
 
     def test_create_no_admin(self):
         handler = TagHandler(factory.make_User(), {}, None)
-        self.assertRaises(
+        pytest.raises(
             HandlerPermissionError,
             handler.create,
             {
@@ -105,10 +109,10 @@ class TestTagHandler(MAASServerTestCase):
                 "definition": '//node[@id="memory"]/size = 1073741824',
             },
         )
-        self.assertFalse(Tag.objects.exists())
+        assert not Tag.objects.exists()
 
-    def test_update(self):
-        mock_populate_nodes = self.patch(Tag, "populate_nodes")
+    def test_update(self, mocker):
+        mock_populate_nodes = mocker.patch.object(Tag, "populate_nodes")
         handler = TagHandler(factory.make_admin(), {}, None)
         tag = factory.make_Tag()
         old_name = tag.name
@@ -122,14 +126,14 @@ class TestTagHandler(MAASServerTestCase):
             }
         )
         tag = reload_object(tag)
-        self.assertEqual(self.dehydrate_tag(tag), result)
-        self.assertEqual(tag.name, new_name)
-        self.assertEqual(tag.definition, new_definition)
+        assert self.dehydrate_tag(tag) == result
+        assert tag.name == new_name
+        assert tag.definition == new_definition
         mock_populate_nodes.assert_called_once()
         event = Event.objects.get(type__level=AUDIT)
-        self.assertEqual(event.type.name, EVENT_TYPES.TAG)
-        self.assertEqual(
-            event.description, f"Tag '{old_name}' renamed to '{new_name}'."
+        assert event.type.name == EVENT_TYPES.TAG
+        assert (
+            event.description == f"Tag '{old_name}' renamed to '{new_name}'."
         )
 
     def test_update_no_admin(self):
@@ -137,7 +141,7 @@ class TestTagHandler(MAASServerTestCase):
         tag = factory.make_Tag()
         new_name = factory.make_name("name")
         new_definition = '//node[@id="memory"]/size = 1073741824'
-        self.assertRaises(
+        pytest.raises(
             HandlerPermissionError,
             handler.update,
             {
@@ -147,13 +151,13 @@ class TestTagHandler(MAASServerTestCase):
             },
         )
         tag = reload_object(tag)
-        self.assertNotEqual(tag.name, new_name)
-        self.assertNotEqual(tag.definition, new_definition)
+        assert tag.name != new_name
+        assert tag.definition != new_definition
 
     def test_update_validate_xpath(self):
         handler = TagHandler(factory.make_admin(), {}, None)
         tag = factory.make_Tag()
-        error = self.assertRaises(
+        error = pytest.raises(
             HandlerValidationError,
             handler.update,
             {
@@ -161,27 +165,24 @@ class TestTagHandler(MAASServerTestCase):
                 "definition": "invalid::tag",
             },
         )
-        self.assertEqual(
-            error.message_dict,
-            {"definition": ["Invalid xpath expression: Invalid expression"]},
-        )
+        assert error.value.message_dict == {
+            "definition": ["Invalid xpath expression: Invalid expression"]
+        }
 
     def test_delete(self):
         handler = TagHandler(factory.make_admin(), {}, None)
         tag = factory.make_Tag()
         handler.delete({"id": tag.id})
-        self.assertFalse(Tag.objects.exists())
+        assert not Tag.objects.exists()
         event = Event.objects.get(type__level=AUDIT)
-        self.assertEqual(event.type.name, EVENT_TYPES.TAG)
-        self.assertEqual(event.description, f"Tag '{tag.name}' deleted.")
+        assert event.type.name == EVENT_TYPES.TAG
+        assert event.description == f"Tag '{tag.name}' deleted."
 
     def test_delete_no_admin(self):
         handler = TagHandler(factory.make_User(), {}, None)
         tag = factory.make_Tag()
-        self.assertRaises(
-            HandlerPermissionError, handler.delete, {"id": tag.id}
-        )
-        self.assertIsNotNone(reload_object(tag))
+        pytest.raises(HandlerPermissionError, handler.delete, {"id": tag.id})
+        assert reload_object(tag) is not None
 
     def test_node_filter(self):
         tag = factory.make_Tag()
@@ -202,9 +203,9 @@ class TestTagHandler(MAASServerTestCase):
                 }
             }
         )
-        self.assertEqual(len(listing), 1, listing)
-        self.assertEqual(listing[0]["name"], tag2.name)
-        self.assertEqual(listing[0]["machine_count"], 1)
+        assert len(listing) == 1, listing
+        assert listing[0]["name"] == tag2.name
+        assert listing[0]["machine_count"] == 1
 
     def test_node_filter_by_physical_disk_count(self):
         tag = factory.make_Tag()
@@ -221,12 +222,13 @@ class TestTagHandler(MAASServerTestCase):
                 }
             }
         )
-        self.assertEqual(len(listing), 1, listing)
-        self.assertEqual(listing[0]["name"], tag.name)
-        self.assertEqual(listing[0]["machine_count"], 1)
+        assert len(listing) == 1, listing
+        assert listing[0]["name"] == tag.name
+        assert listing[0]["machine_count"] == 1
 
 
-class TestTagHandlerViewPermission(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestTagHandlerViewPermission:
     def deny_global_view(self):
         client = openfga.get_openfga_client()
         client.can_view_global_entities = MagicMock(return_value=False)
@@ -235,10 +237,10 @@ class TestTagHandlerViewPermission(MAASServerTestCase):
         self.deny_global_view()
         handler = TagHandler(factory.make_User(), {}, None)
         factory.make_Tag()
-        self.assertRaises(HandlerPermissionError, handler.list, {})
+        pytest.raises(HandlerPermissionError, handler.list, {})
 
     def test_get_requires_view_permission(self):
         self.deny_global_view()
         tag = factory.make_Tag()
         handler = TagHandler(factory.make_User(), {}, None)
-        self.assertRaises(HandlerPermissionError, handler.get, {"id": tag.id})
+        pytest.raises(HandlerPermissionError, handler.get, {"id": tag.id})

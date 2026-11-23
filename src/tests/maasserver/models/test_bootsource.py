@@ -4,6 +4,7 @@
 """Tests for `BootSource`."""
 
 from django.core.exceptions import ValidationError
+import pytest
 
 from maascommon.workflows.bootresource import (
     FETCH_MANIFEST_AND_UPDATE_CACHE_WORKFLOW_NAME,
@@ -14,7 +15,6 @@ import maasserver.models.bootsource as boot_source_module
 from maasserver.models.bootsource import BootSource
 from maasserver.models.signals import bootsources
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 
 
 def make_BootSource():
@@ -22,27 +22,28 @@ def make_BootSource():
     return factory.make_BootSource(keyring_data=factory.make_bytes())
 
 
-class TestBootSource(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test")
+class TestBootSource:
     """Tests for the `BootSource` model."""
 
-    def setUp(self):
-        super().setUp()
+    @pytest.fixture(autouse=True)
+    def disable_boot_source_cache_signals(self):
         # Disable boot source cache signals.
-        self.addCleanup(bootsources.signals.enable)
         bootsources.signals.disable()
+        yield
+        bootsources.signals.enable()
 
     def test_valid_boot_source_is_valid(self):
         boot_source = BootSource(
             url="http://example.com", keyring_filename="/path/to/something"
         )
         boot_source.save()
-        self.assertTrue(BootSource.objects.filter(id=boot_source.id).exists())
+        assert BootSource.objects.filter(id=boot_source.id).exists()
 
     def test_url_is_unqiue(self):
         boot_source = factory.make_BootSource()
-        self.assertRaises(
-            ValidationError, factory.make_BootSource, url=boot_source.url
-        )
+        with pytest.raises(ValidationError):
+            factory.make_BootSource(url=boot_source.url)
 
     def test_cannot_set_keyring_data_and_filename(self):
         # A BootSource cannot have both a keyring filename and keyring
@@ -52,13 +53,15 @@ class TestBootSource(MAASServerTestCase):
             keyring_filename="/path/to/something",
             keyring_data=b"blahblahblahblah",
         )
-        self.assertRaises(ValidationError, boot_source.clean)
+        with pytest.raises(ValidationError):
+            boot_source.clean()
 
     def test_cannot_leave_keyring_data_and_filename_unset(self):
         boot_source = BootSource(
             url="http://example.com", keyring_filename="", keyring_data=b""
         )
-        self.assertRaises(ValidationError, boot_source.clean)
+        with pytest.raises(ValidationError):
+            boot_source.clean()
 
     def test_keyring_data_and_filename_can_be_unset_if_stream_is_unsigned(
         self,
@@ -109,16 +112,12 @@ class TestBootSource(MAASServerTestCase):
             url="http://example.com", keyring_filename="/path/to/something"
         )
         boot_source.save()
-        self.assertEqual(boot_source.name, "http://example.com")
+        assert boot_source.name == "http://example.com"
 
     def test_name_is_unique(self):
         factory.make_BootSource(name="source1", url="http://foo.com")
-        self.assertRaises(
-            ValidationError,
-            factory.make_BootSource,
-            name="source1",
-            url="http://bar.com",
-        )
+        with pytest.raises(ValidationError):
+            factory.make_BootSource(name="source1", url="http://bar.com")
 
     def test_url_trailing_slash_is_stripped(self):
         boot_source = BootSource(
@@ -126,17 +125,19 @@ class TestBootSource(MAASServerTestCase):
             keyring_filename="/path/to/something",
         )
         boot_source.save()
-        self.assertEqual(boot_source.url, "http://example.com/path")
+        assert boot_source.url == "http://example.com/path"
 
     def test_enabled_defaults_to_true(self):
         boot_source = BootSource(
             url="http://example.com", keyring_filename="/path/to/something"
         )
         boot_source.save()
-        self.assertTrue(boot_source.enabled)
+        assert boot_source.enabled
 
-    def test_verify_selection_after_url_update(self):
-        mock_start_workflow = self.patch(boot_source_module, "start_workflow")
+    def test_verify_selection_after_url_update(self, mocker):
+        mock_start_workflow = mocker.patch.object(
+            boot_source_module, "start_workflow"
+        )
         boot_source = make_BootSource()
         boot_source.verify_selections_after_url_update()
         mock_start_workflow.assert_called_once_with(
@@ -144,8 +145,10 @@ class TestBootSource(MAASServerTestCase):
             param=PostUpdateBootSourceUrlParam(boot_source.id),
         )
 
-    def test_refetch_manifest(self):
-        mock_start_workflow = self.patch(boot_source_module, "start_workflow")
+    def test_refetch_manifest(self, mocker):
+        mock_start_workflow = mocker.patch.object(
+            boot_source_module, "start_workflow"
+        )
         boot_source = make_BootSource()
         boot_source.refetch_manifest()
         mock_start_workflow.assert_called_once_with(

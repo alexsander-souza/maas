@@ -3,14 +3,16 @@
 
 """Tests for `ResourcePoolForm`."""
 
+import pytest
+
 from maasserver.forms import ResourcePoolForm
 from maasserver.models import ResourcePool
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from maasserver.utils.orm import reload_object
 
 
-class TestResourcePost(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestResourcePost:
     """Tests for `ResourcePoolForm`."""
 
     def test_creates_pool(self):
@@ -21,8 +23,8 @@ class TestResourcePost(MAASServerTestCase):
         )
         form.save()
         pool = ResourcePool.objects.get(name=name)
-        self.assertIsNotNone(pool)
-        self.assertEqual(pool.description, description)
+        assert pool is not None
+        assert pool.description == description
 
     def test_updates_pool(self):
         pool = factory.make_ResourcePool()
@@ -32,7 +34,7 @@ class TestResourcePost(MAASServerTestCase):
         )
         form.save()
         pool = reload_object(pool)
-        self.assertEqual(pool.description, new_description)
+        assert pool.description == new_description
 
     def test_renames_pool(self):
         pool = factory.make_ResourcePool()
@@ -40,4 +42,4 @@ class TestResourcePost(MAASServerTestCase):
         form = ResourcePoolForm(data={"name": new_name}, instance=pool)
         form.save()
         pool = reload_object(pool)
-        self.assertEqual(pool.name, new_name)
+        assert pool.name == new_name

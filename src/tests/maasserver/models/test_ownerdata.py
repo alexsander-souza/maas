@@ -3,12 +3,14 @@
 
 """Tests for `OwnerData`."""
 
+import pytest
+
 from maasserver.models.ownerdata import OwnerData
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 
 
-class TestOwnerData(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestOwnerData:
     def get_owner_data(self, node):
         return {
             data.key: data.value
@@ -22,14 +24,13 @@ class TestOwnerData(MAASServerTestCase):
             for _ in range(3)
         }
         OwnerData.objects.set_owner_data(node, owner_data)
-        self.assertEqual(owner_data, self.get_owner_data(node))
+        assert owner_data == self.get_owner_data(node)
 
     def test_set_owner_data_invalid_name(self):
         node = factory.make_Node()
         owner_data = {"this is invalid": factory.make_name("value")}
-        self.assertRaises(
-            ValueError, OwnerData.objects.set_owner_data, node, owner_data
-        )
+        with pytest.raises(ValueError):
+            OwnerData.objects.set_owner_data(node, owner_data)
 
     def test_set_owner_data_updates_data(self):
         node = factory.make_Node()
@@ -41,7 +42,7 @@ class TestOwnerData(MAASServerTestCase):
         for key in owner_data:
             owner_data[key] = factory.make_name("value")
         OwnerData.objects.set_owner_data(node, owner_data)
-        self.assertEqual(owner_data, self.get_owner_data(node))
+        assert owner_data == self.get_owner_data(node)
 
     def test_set_owner_data_removes_data(self):
         node = factory.make_Node()
@@ -53,4 +54,4 @@ class TestOwnerData(MAASServerTestCase):
         for key in owner_data:
             owner_data[key] = None
         OwnerData.objects.set_owner_data(node, owner_data)
-        self.assertEqual({}, self.get_owner_data(node))
+        assert {} == self.get_owner_data(node)

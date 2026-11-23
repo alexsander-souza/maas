@@ -9,6 +9,7 @@ import json
 from django.conf import settings
 from django.contrib.auth.models import User
 from django.urls import reverse
+import pytest
 
 from maascommon.events import AUDIT
 import maascommon.hardening as _hardening
@@ -16,10 +17,9 @@ from maasserver.enum import IPADDRESS_TYPE, NODE_STATUS
 from maasserver.models import Node, SSHKey, SSLKey, StaticIPAddress
 from maasserver.models.event import Event
 from maasserver.testing import get_data
-from maasserver.testing.api import APITestCase
 from maasserver.testing.factory import factory
 from maasserver.utils.orm import get_one
-from tests.maasserver.auth.test_auth import OpenFGAMockMixin
+from tests.maasserver.auth.test_auth import PytestOpenFGAMockMixin
 
 
 def get_user_uri(user):
@@ -27,12 +27,23 @@ def get_user_uri(user):
     return reverse("user_handler", args=[user.username])
 
 
-class TestUsers(APITestCase.ForUser):
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user=user,client=oauth", id="user=user,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestUsers:
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maas_user, api_client):
+        self.user = maas_user
+        self.client = api_client
+
     def test_handler_path(self):
-        self.assertEqual("/MAAS/api/2.0/users/", reverse("users_handler"))
+        assert "/MAAS/api/2.0/users/" == reverse("users_handler")
 
     def test_POST_creates_user(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         username = factory.make_name("user")
         email = factory.make_email_address()
         password = factory.make_string()
@@ -46,24 +57,24 @@ class TestUsers(APITestCase.ForUser):
                 "is_superuser": "0",
             },
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
 
-        self.assertEqual(
-            username,
-            json.loads(response.content.decode(settings.DEFAULT_CHARSET))[
+        assert (
+            username
+            == json.loads(response.content.decode(settings.DEFAULT_CHARSET))[
                 "username"
-            ],
+            ]
         )
         created_user = User.objects.get(username=username)
-        self.assertEqual(
-            (email, False), (created_user.email, created_user.is_superuser)
+        assert (email, False) == (
+            created_user.email,
+            created_user.is_superuser,
         )
-        self.assertTrue(created_user.userprofile.is_local)
+        assert created_user.userprofile.is_local
 
     def test_POST_creates_admin(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         username = factory.make_name("user")
         email = factory.make_email_address()
         password = factory.make_string()
@@ -77,23 +88,20 @@ class TestUsers(APITestCase.ForUser):
                 "is_superuser": "1",
             },
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
 
-        self.assertEqual(
-            username,
-            json.loads(response.content.decode(settings.DEFAULT_CHARSET))[
+        assert (
+            username
+            == json.loads(response.content.decode(settings.DEFAULT_CHARSET))[
                 "username"
-            ],
+            ]
         )
         created_user = User.objects.get(username=username)
-        self.assertEqual(
-            (email, True), (created_user.email, created_user.is_superuser)
-        )
+        assert (email, True) == (created_user.email, created_user.is_superuser)
 
     def test_POST_creates_admin_with_ssh_key(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         username = factory.make_name("user")
         email = factory.make_email_address()
         password = factory.make_string()
@@ -108,22 +116,18 @@ class TestUsers(APITestCase.ForUser):
                 "key": key_string,
             },
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
 
-        self.assertEqual(
-            username,
-            json.loads(response.content.decode(settings.DEFAULT_CHARSET))[
+        assert (
+            username
+            == json.loads(response.content.decode(settings.DEFAULT_CHARSET))[
                 "username"
-            ],
+            ]
         )
         created_user = User.objects.get(username=username)
-        self.assertEqual(
-            (email, True), (created_user.email, created_user.is_superuser)
-        )
+        assert (email, True) == (created_user.email, created_user.is_superuser)
         added_key = get_one(SSHKey.objects.filter(user=created_user))
-        self.assertEqual(key_string, added_key.key)
+        assert key_string == added_key.key
 
     def test_POST_requires_admin(self):
         response = self.client.post(
@@ -135,12 +139,11 @@ class TestUsers(APITestCase.ForUser):
                 "is_superuser": "1" if factory.pick_bool() else "0",
             },
         )
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content
 
     def test_POST_creates_audit_event_for_user(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         username = factory.make_name("user")
         self.client.post(
             reverse("users_handler"),
@@ -152,11 +155,12 @@ class TestUsers(APITestCase.ForUser):
             },
         )
         event = Event.objects.get(type__level=AUDIT)
-        self.assertIsNotNone(event)
-        self.assertEqual(event.description, "Created user '%s'." % username)
+        assert event is not None
+        assert event.description == "Created user '%s'." % username
 
     def test_POST_creates_audit_event_for_admin(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         username = factory.make_name("user")
         self.client.post(
             reverse("users_handler"),
@@ -168,13 +172,14 @@ class TestUsers(APITestCase.ForUser):
             },
         )
         event = Event.objects.get(type__level=AUDIT)
-        self.assertIsNotNone(event)
-        self.assertEqual(event.description, "Created admin '%s'." % username)
+        assert event is not None
+        assert event.description == "Created admin '%s'." % username
 
-    def test_POST_rejects_weak_password_when_hardening_active(self):
-        self.become_admin()
+    def test_POST_rejects_weak_password_when_hardening_active(self, mocker):
+        self.user.is_superuser = True
+        self.user.save()
         username = factory.make_name("user")
-        self.patch(_hardening, "_hardening_active", True)
+        mocker.patch.object(_hardening, "_hardening_active", True)
         response = self.client.post(
             reverse("users_handler"),
             {
@@ -184,19 +189,19 @@ class TestUsers(APITestCase.ForUser):
                 "is_superuser": "0",
             },
         )
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
-        self.assertIn(
-            "password",
-            json.loads(response.content.decode(settings.DEFAULT_CHARSET)),
+        assert "password" in json.loads(
+            response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertFalse(User.objects.filter(username=username).exists())
+        assert not User.objects.filter(username=username).exists()
 
-    def test_POST_accepts_strong_password_when_hardening_active(self):
-        self.become_admin()
+    def test_POST_accepts_strong_password_when_hardening_active(self, mocker):
+        self.user.is_superuser = True
+        self.user.save()
         username = factory.make_name("user")
-        self.patch(_hardening, "_hardening_active", True)
+        mocker.patch.object(_hardening, "_hardening_active", True)
         response = self.client.post(
             reverse("users_handler"),
             {
@@ -206,40 +211,33 @@ class TestUsers(APITestCase.ForUser):
                 "is_superuser": "0",
             },
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
-        self.assertTrue(User.objects.filter(username=username).exists())
+        assert http.client.OK == response.status_code, response.content
+        assert User.objects.filter(username=username).exists()
 
     def test_GET_lists_users(self):
         users = [factory.make_User() for counter in range(2)]
 
         response = self.client.get(reverse("users_handler"))
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
 
         listing = json.loads(response.content.decode(settings.DEFAULT_CHARSET))
-        self.assertGreater(
-            {user["username"] for user in listing},
-            {user.username for user in users},
-        )
+        assert {user["username"] for user in listing} > {
+            user.username for user in users
+        }
 
     def test_whoami_returns_user(self):
         factory.make_User()
         response = self.client.get(reverse("users_handler"), {"op": "whoami"})
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         result = json.loads(response.content.decode(settings.DEFAULT_CHARSET))
-        self.assertEqual(self.user.username, result["username"])
+        assert self.user.username == result["username"]
 
     def test_whoami_returns_forbidden_if_not_logged_in(self):
         self.client.logout()
         factory.make_User()
         response = self.client.get(reverse("users_handler"), {"op": "whoami"})
-        self.assertEqual(
-            http.client.UNAUTHORIZED, response.status_code, response.content
+        assert http.client.UNAUTHORIZED == response.status_code, (
+            response.content
         )
 
     def test_GET_orders_by_name(self):
@@ -252,9 +250,7 @@ class TestUsers(APITestCase.ForUser):
             factory.make_User(username=user)
 
         response = self.client.get(reverse("users_handler"))
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
 
         listing = json.loads(response.content.decode(settings.DEFAULT_CHARSET))
         # The listing may also contain built-in users and/or a test user.
@@ -262,14 +258,23 @@ class TestUsers(APITestCase.ForUser):
         users_as_returned = [
             user["username"] for user in listing if user["username"] in users
         ]
-        self.assertEqual(sorted(users), users_as_returned)
+        assert sorted(users) == users_as_returned
 
 
-class TestUser(APITestCase.ForUser):
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user=user,client=oauth", id="user=user,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestUser:
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maas_user, api_client):
+        self.user = maas_user
+        self.client = api_client
+
     def test_handler_path(self):
-        self.assertEqual(
-            "/MAAS/api/2.0/users/username/",
-            reverse("user_handler", args=["username"]),
+        assert "/MAAS/api/2.0/users/username/" == reverse(
+            "user_handler", args=["username"]
         )
 
     def test_GET_finds_user(self):
@@ -278,18 +283,16 @@ class TestUser(APITestCase.ForUser):
         response = self.client.get(
             reverse("user_handler", args=[user.username])
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
 
         returned_user = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertEqual(user.username, returned_user["username"])
-        self.assertEqual(user.email, returned_user["email"])
-        self.assertFalse(returned_user["is_superuser"])
-        self.assertTrue(returned_user["is_local"])
-        self.assertEqual(get_user_uri(user), returned_user["resource_uri"])
+        assert user.username == returned_user["username"]
+        assert user.email == returned_user["email"]
+        assert not returned_user["is_superuser"]
+        assert returned_user["is_local"]
+        assert get_user_uri(user) == returned_user["resource_uri"]
 
     def test_GET_shows_expected_fields(self):
         user = factory.make_User()
@@ -297,17 +300,18 @@ class TestUser(APITestCase.ForUser):
         response = self.client.get(
             reverse("user_handler", args=[user.username])
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
 
         returned_user = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertEqual(
-            {"username", "email", "resource_uri", "is_superuser", "is_local"},
-            returned_user.keys(),
-        )
+        assert {
+            "username",
+            "email",
+            "resource_uri",
+            "is_superuser",
+            "is_local",
+        } == returned_user.keys()
 
     def test_GET_identifies_superuser_as_such(self):
         user = factory.make_admin()
@@ -315,113 +319,111 @@ class TestUser(APITestCase.ForUser):
         response = self.client.get(
             reverse("user_handler", args=[user.username])
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
 
-        self.assertTrue(
-            json.loads(response.content.decode(settings.DEFAULT_CHARSET))[
-                "is_superuser"
-            ]
-        )
+        assert json.loads(response.content.decode(settings.DEFAULT_CHARSET))[
+            "is_superuser"
+        ]
 
     def test_GET_identifies_non_local_user_as_such(self):
         user = factory.make_User(is_local=False)
         response = self.client.get(
             reverse("user_handler", args=[user.username])
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
-        self.assertFalse(
-            json.loads(response.content.decode(settings.DEFAULT_CHARSET))[
-                "is_local"
-            ]
-        )
+        assert http.client.OK == response.status_code, response.content
+        assert not json.loads(
+            response.content.decode(settings.DEFAULT_CHARSET)
+        )["is_local"]
 
     def test_GET_returns_404_if_user_not_found(self):
         nonuser = factory.make_name("nonuser")
         response = self.client.get(reverse("user_handler", args=[nonuser]))
-        self.assertEqual(
-            http.client.NOT_FOUND, response.status_code, response.status_code
+        assert http.client.NOT_FOUND == response.status_code, (
+            response.status_code
         )
-        self.assertCountEqual([], User.objects.filter(username=nonuser))
+        assert not User.objects.filter(username=nonuser).exists()
 
     def test_DELETE_requires_admin_privileges(self):
         user = factory.make_User()
         response = self.client.delete(
             reverse("user_handler", args=[user.username])
         )
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.status_code
+        assert http.client.FORBIDDEN == response.status_code, (
+            response.status_code
         )
-        self.assertTrue(User.objects.filter(username=user.username).exists())
+        assert User.objects.filter(username=user.username).exists()
 
     def test_DELETE_requires_admin_privileges_with_invalid_user(self):
         """If the user has no admin privileges, it doesn't matter if the user
         being deleted exists or not, we will return a 403."""
         nonuser = factory.make_name("nonuser")
         response = self.client.delete(reverse("user_handler", args=[nonuser]))
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.status_code
+        assert http.client.FORBIDDEN == response.status_code, (
+            response.status_code
         )
 
     def test_DELETE_keeps_quiet_if_user_not_found(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         nonuser = factory.make_name("nonuser")
         response = self.client.delete(reverse("user_handler", args=[nonuser]))
-        self.assertEqual(
-            http.client.NO_CONTENT, response.status_code, response.status_code
+        assert http.client.NO_CONTENT == response.status_code, (
+            response.status_code
         )
 
     def test_DELETE_admin_cannot_delete_self(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         user = self.user
         response = self.client.delete(
             reverse("user_handler", args=[user.username])
         )
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.status_code
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.status_code
         )
-        self.assertTrue(User.objects.filter(username=user.username).exists())
-        self.assertIn(b"cannot self-delete", response.content)
+        assert User.objects.filter(username=user.username).exists()
+        assert b"cannot self-delete" in response.content
 
     def test_DELETE_deletes_user(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         user = factory.make_User()
         response = self.client.delete(
             reverse("user_handler", args=[user.username])
         )
-        self.assertEqual(
-            http.client.NO_CONTENT, response.status_code, response.status_code
+        assert http.client.NO_CONTENT == response.status_code, (
+            response.status_code
         )
-        self.assertCountEqual([], User.objects.filter(username=user.username))
+        assert not User.objects.filter(username=user.username).exists()
 
     def test_DELETE_deletes_admin(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         user = factory.make_admin()
         response = self.client.delete(
             reverse("user_handler", args=[user.username])
         )
-        self.assertEqual(
-            http.client.NO_CONTENT, response.status_code, response.status_code
+        assert http.client.NO_CONTENT == response.status_code, (
+            response.status_code
         )
-        self.assertCountEqual([], User.objects.filter(username=user.username))
+        assert not User.objects.filter(username=user.username).exists()
 
     def test_DELETE_user_with_node_fails(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         user = factory.make_User()
         factory.make_Node(owner=user, status=NODE_STATUS.DEPLOYED)
         response = self.client.delete(
             reverse("user_handler", args=[user.username])
         )
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.status_code
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.status_code
         )
-        self.assertIn(b"1 node(s) are still allocated", response.content)
+        assert b"1 node(s) are still allocated" in response.content
 
     def test_DELETE_user_with_node_and_transfer(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         user = factory.make_User()
         new_owner = factory.make_User()
         node = factory.make_Node(owner=user, status=NODE_STATUS.DEPLOYED)
@@ -429,14 +431,15 @@ class TestUser(APITestCase.ForUser):
             reverse("user_handler", args=[user.username]),
             query={"transfer_resources_to": new_owner.username},
         )
-        self.assertEqual(
-            http.client.NO_CONTENT, response.status_code, response.status_code
+        assert http.client.NO_CONTENT == response.status_code, (
+            response.status_code
         )
-        self.assertCountEqual([], User.objects.filter(username=user.username))
-        self.assertEqual(Node.objects.get(owner=new_owner), node)
+        assert not User.objects.filter(username=user.username).exists()
+        assert Node.objects.get(owner=new_owner) == node
 
     def test_DELETE_user_with_staticaddress_fails(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         user = factory.make_User()
         factory.make_StaticIPAddress(
             user=user, alloc_type=IPADDRESS_TYPE.USER_RESERVED
@@ -444,27 +447,29 @@ class TestUser(APITestCase.ForUser):
         response = self.client.delete(
             reverse("user_handler", args=[user.username])
         )
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.status_code
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.status_code
         )
-        self.assertIn(
-            b"1 static IP address(es) are still allocated", response.content
+        assert (
+            b"1 static IP address(es) are still allocated" in response.content
         )
 
     def test_DELETE_user_with_iprange_fails(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         user = factory.make_User()
         factory.make_IPRange(user=user)
         response = self.client.delete(
             reverse("user_handler", args=[user.username])
         )
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.status_code
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.status_code
         )
-        self.assertIn(b"1 IP range(s) are still allocated", response.content)
+        assert b"1 IP range(s) are still allocated" in response.content
 
     def test_DELETE_user_with_staticaddress_and_transfer(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         user = factory.make_User()
         new_owner = factory.make_User()
         ip_address = factory.make_StaticIPAddress(
@@ -474,73 +479,82 @@ class TestUser(APITestCase.ForUser):
             reverse("user_handler", args=[user.username]),
             query={"transfer_resources_to": new_owner.username},
         )
-        self.assertEqual(
-            http.client.NO_CONTENT, response.status_code, response.status_code
+        assert http.client.NO_CONTENT == response.status_code, (
+            response.status_code
         )
-        self.assertCountEqual([], User.objects.filter(username=user.username))
-        self.assertEqual(
-            StaticIPAddress.objects.get(user=new_owner), ip_address
-        )
+        assert not User.objects.filter(username=user.username).exists()
+        assert StaticIPAddress.objects.get(user=new_owner) == ip_address
 
     def test_DELETE_user_with_transfer_unknown_user(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         user = factory.make_User()
         factory.make_Node(owner=user, status=NODE_STATUS.DEPLOYED)
         response = self.client.delete(
             reverse("user_handler", args=[user.username]),
             query={"transfer_resources_to": "unknown-user"},
         )
-        self.assertEqual(
-            http.client.NOT_FOUND, response.status_code, response.status_code
+        assert http.client.NOT_FOUND == response.status_code, (
+            response.status_code
         )
-        self.assertEqual(user, User.objects.get(username=user.username))
+        assert user == User.objects.get(username=user.username)
 
     def test_DELETE_user_with_sslkey_deletes_key(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         user = factory.make_User()
         key_id = factory.make_SSLKey(user=user).id
         response = self.client.delete(
             reverse("user_handler", args=[user.username])
         )
-        self.assertEqual(
-            http.client.NO_CONTENT, response.status_code, response.status_code
+        assert http.client.NO_CONTENT == response.status_code, (
+            response.status_code
         )
-        self.assertFalse(SSLKey.objects.filter(id=key_id).exists())
+        assert not SSLKey.objects.filter(id=key_id).exists()
 
     def test_DELETE_user_with_sshkey_deletes_key(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         user = factory.make_User()
         key_id = factory.make_SSHKey(user=user).id
         response = self.client.delete(
             reverse("user_handler", args=[user.username])
         )
-        self.assertEqual(
-            http.client.NO_CONTENT, response.status_code, response.status_code
+        assert http.client.NO_CONTENT == response.status_code, (
+            response.status_code
         )
-        self.assertFalse(SSHKey.objects.filter(id=key_id).exists())
+        assert not SSHKey.objects.filter(id=key_id).exists()
 
     def test_DELETE_user_creates_audit_event(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         user = factory.make_User()
         self.client.delete(reverse("user_handler", args=[user.username]))
         event = Event.objects.get(type__level=AUDIT)
-        self.assertIsNotNone(event)
-        self.assertEqual(
-            event.description, "Deleted user '%s'." % user.username
-        )
+        assert event is not None
+        assert event.description == "Deleted user '%s'." % user.username
 
     def test_DELETE_admin_creates_audit_event(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         user = factory.make_admin()
         self.client.delete(reverse("user_handler", args=[user.username]))
         event = Event.objects.get(type__level=AUDIT)
-        self.assertIsNotNone(event)
-        self.assertEqual(
-            event.description, "Deleted admin '%s'." % user.username
-        )
+        assert event is not None
+        assert event.description == "Deleted admin '%s'." % user.username
 
 
-class TestUsersAPIOpenFGAIntegration(OpenFGAMockMixin, APITestCase.ForUser):
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user=user,client=oauth", id="user=user,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestUsersAPIOpenFGAIntegration(PytestOpenFGAMockMixin):
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maas_user, api_client):
+        self.user = maas_user
+        self.client = api_client
+
     def test_create_requires_can_edit_identities(self):
         self.openfga_client.can_edit_identities.return_value = True
         response = self.client.post(
@@ -552,23 +566,31 @@ class TestUsersAPIOpenFGAIntegration(OpenFGAMockMixin, APITestCase.ForUser):
                 "is_superuser": "1" if factory.pick_bool() else "0",
             },
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         self.openfga_client.can_edit_identities.assert_called_once_with(
             self.user
         )
 
 
-class TestUserAPIOpenFGAIntegration(OpenFGAMockMixin, APITestCase.ForUser):
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user=user,client=oauth", id="user=user,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestUserAPIOpenFGAIntegration(PytestOpenFGAMockMixin):
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maas_user, api_client):
+        self.user = maas_user
+        self.client = api_client
+
     def test_delete_requires_can_edit_identities(self):
         self.openfga_client.can_edit_identities.return_value = True
         user = factory.make_User()
         response = self.client.delete(
             reverse("user_handler", args=[user.username])
         )
-        self.assertEqual(
-            http.client.NO_CONTENT, response.status_code, response.status_code
+        assert http.client.NO_CONTENT == response.status_code, (
+            response.status_code
         )
         self.openfga_client.can_edit_identities.assert_called_once_with(
             self.user

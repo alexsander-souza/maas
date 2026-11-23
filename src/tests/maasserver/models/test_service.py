@@ -5,6 +5,8 @@
 
 import random
 
+import pytest
+
 from maasserver.enum import NODE_TYPE, SERVICE_STATUS, SERVICE_STATUS_CHOICES
 from maasserver.models.service import (
     DEAD_STATUSES,
@@ -13,35 +15,33 @@ from maasserver.models.service import (
     Service,
 )
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from maasserver.utils.orm import reload_object
 
 
-class TestServiceManager(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestServiceManager:
     def test_create_services_for_machine(self):
         machine = factory.make_Node()
         Service.objects.create_services_for(machine)
-        self.assertFalse(Service.objects.filter(node=machine).exists())
+        assert not (Service.objects.filter(node=machine).exists())
 
     def test_create_services_for_device(self):
         device = factory.make_Device()
         Service.objects.create_services_for(device)
-        self.assertFalse(Service.objects.filter(node=device).exists())
+        assert not (Service.objects.filter(node=device).exists())
 
     def test_create_services_for_rack_controller(self):
         controller = factory.make_RackController()
         Service.objects.create_services_for(controller)
-        self.assertEqual(
-            Service.objects.filter(node=controller).count(),
-            len(RACK_SERVICES),
+        assert Service.objects.filter(node=controller).count() == len(
+            RACK_SERVICES
         )
 
     def test_create_services_for_region_controller(self):
         controller = factory.make_RegionController()
         Service.objects.create_services_for(controller)
-        self.assertEqual(
-            Service.objects.filter(node=controller).count(),
-            len(REGION_SERVICES),
+        assert Service.objects.filter(node=controller).count() == len(
+            REGION_SERVICES
         )
 
     def test_create_services_for_region_rack_controller(self):
@@ -50,38 +50,33 @@ class TestServiceManager(MAASServerTestCase):
         controller.save()
         Service.objects.create_services_for(controller)
         services = Service.objects.filter(node=controller)
-        self.assertEqual(
-            REGION_SERVICES | RACK_SERVICES,
-            {service.name for service in services},
-        )
+        assert REGION_SERVICES | RACK_SERVICES == {
+            service.name for service in services
+        }
 
     def test_create_services_removes_services(self):
         controller = factory.make_RegionController()
         Service.objects.create_services_for(controller)
         services = Service.objects.filter(node=controller)
-        self.assertEqual(
-            REGION_SERVICES, {service.name for service in services}
-        )
+        assert REGION_SERVICES == {service.name for service in services}
 
         controller.node_type = NODE_TYPE.MACHINE
         controller.save()
         Service.objects.create_services_for(controller)
         services = Service.objects.filter(node=controller)
-        self.assertEqual({service.name for service in services}, set())
+        assert {service.name for service in services} == set()
 
     def test_create_services_replaces_services(self):
         controller = factory.make_RegionController()
         Service.objects.create_services_for(controller)
         services = Service.objects.filter(node=controller)
-        self.assertEqual(
-            REGION_SERVICES, {service.name for service in services}
-        )
+        assert REGION_SERVICES == {service.name for service in services}
 
         controller.node_type = NODE_TYPE.RACK_CONTROLLER
         controller.save()
         Service.objects.create_services_for(controller)
         services = Service.objects.filter(node=controller)
-        self.assertEqual(RACK_SERVICES, {service.name for service in services})
+        assert RACK_SERVICES == {service.name for service in services}
 
     def test_update_service_for_updates_service_status_and_info(self):
         controller = factory.make_RegionController()
@@ -95,19 +90,19 @@ class TestServiceManager(MAASServerTestCase):
             )
         )
 
-        self.assertEqual(observed.node, controller)
-        self.assertEqual(observed.name, service)
-        self.assertEqual(observed.status, status)
-        self.assertEqual(observed.status_info, info)
+        assert observed.node == controller
+        assert observed.name == service
+        assert observed.status == status
+        assert observed.status_info == info
 
     def test_mark_dead_for_region_controller(self):
         controller = factory.make_RegionController()
         Service.objects.create_services_for(controller)
         Service.objects.mark_dead(controller, dead_region=True)
         for service in Service.objects.filter(node=controller):
-            self.assertEqual(
-                (service.status, service.status_info),
-                (DEAD_STATUSES[service.name], ""),
+            assert (service.status, service.status_info) == (
+                DEAD_STATUSES[service.name],
+                "",
             )
 
     def test_mark_dead_for_rack_controller(self):
@@ -115,9 +110,9 @@ class TestServiceManager(MAASServerTestCase):
         Service.objects.create_services_for(controller)
         Service.objects.mark_dead(controller, dead_rack=True)
         for service in Service.objects.filter(node=controller):
-            self.assertEqual(
-                (service.status, service.status_info),
-                (DEAD_STATUSES[service.name], ""),
+            assert (service.status, service.status_info) == (
+                DEAD_STATUSES[service.name],
+                "",
             )
 
     def test_mark_dead_for_region_rack_controller_dead_rack_only(self):
@@ -128,14 +123,14 @@ class TestServiceManager(MAASServerTestCase):
         Service.objects.mark_dead(controller, dead_rack=True)
         for service in Service.objects.filter(node=controller):
             if service.name in RACK_SERVICES:
-                self.assertEqual(
-                    (service.status, service.status_info),
-                    (DEAD_STATUSES[service.name], ""),
+                assert (service.status, service.status_info) == (
+                    DEAD_STATUSES[service.name],
+                    "",
                 )
             else:
-                self.assertEqual(
-                    (service.status, service.status_info),
-                    (SERVICE_STATUS.UNKNOWN, ""),
+                assert (service.status, service.status_info) == (
+                    SERVICE_STATUS.UNKNOWN,
+                    "",
                 )
 
     def test_mark_dead_for_region_rack_controller_dead_region_only(self):
@@ -146,14 +141,14 @@ class TestServiceManager(MAASServerTestCase):
         Service.objects.mark_dead(controller, dead_region=True)
         for service in Service.objects.filter(node=controller):
             if service.name in REGION_SERVICES:
-                self.assertEqual(
-                    (service.status, service.status_info),
-                    (DEAD_STATUSES[service.name], ""),
+                assert (service.status, service.status_info) == (
+                    DEAD_STATUSES[service.name],
+                    "",
                 )
             else:
-                self.assertEqual(
-                    (service.status, service.status_info),
-                    (SERVICE_STATUS.UNKNOWN, ""),
+                assert (service.status, service.status_info) == (
+                    SERVICE_STATUS.UNKNOWN,
+                    "",
                 )
 
     def test_mark_dead_for_region_rack_controller_region_and_rack_dead(self):
@@ -163,7 +158,7 @@ class TestServiceManager(MAASServerTestCase):
         Service.objects.create_services_for(controller)
         Service.objects.mark_dead(controller, dead_region=True, dead_rack=True)
         for service in Service.objects.filter(node=controller):
-            self.assertEqual(
-                (service.status, service.status_info),
-                (DEAD_STATUSES[service.name], ""),
+            assert (service.status, service.status_info) == (
+                DEAD_STATUSES[service.name],
+                "",
             )

@@ -5,13 +5,15 @@
 
 from io import BytesIO
 
+import pytest
+
 from maasserver.models import FileStorage
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from maastesting.utils import sample_binary_data
 
 
-class TestFileStorage(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestFileStorage:
     def make_data(self, including_text="data"):
         """Return arbitrary data.
 
@@ -33,9 +35,10 @@ class TestFileStorage(MAASServerTestCase):
         storage = FileStorage.objects.save_file(
             filename, BytesIO(content), user
         )
-        self.assertEqual(
-            (filename, content, user),
-            (storage.filename, storage.content, storage.owner),
+        assert (filename, content, user) == (
+            storage.filename,
+            storage.content,
+            storage.owner,
         )
 
     def test_storage_can_be_retrieved(self):
@@ -43,13 +46,11 @@ class TestFileStorage(MAASServerTestCase):
         content = self.make_data()
         factory.make_FileStorage(filename=filename, content=content)
         storage = FileStorage.objects.get(filename=filename)
-        self.assertEqual(
-            (filename, content), (storage.filename, storage.content)
-        )
+        assert (filename, content) == (storage.filename, storage.content)
 
     def test_stores_binary_data(self):
         storage = factory.make_FileStorage(content=sample_binary_data)
-        self.assertEqual(sample_binary_data, storage.content)
+        assert sample_binary_data == storage.content
 
     def test_overwrites_file(self):
         # If a file of the same name has already been stored, the
@@ -63,17 +64,15 @@ class TestFileStorage(MAASServerTestCase):
         new_storage = factory.make_FileStorage(
             filename=filename, content=new_data
         )
-        self.assertEqual(old_storage.filename, new_storage.filename)
-        self.assertEqual(
-            new_data, FileStorage.objects.get(filename=filename).content
-        )
+        assert old_storage.filename == new_storage.filename
+        assert new_data == FileStorage.objects.get(filename=filename).content
 
     def test_key_gets_generated(self):
         # The generated system_id looks good.
         storage = factory.make_FileStorage()
-        self.assertEqual(len(storage.key), 36)
+        assert len(storage.key) == 36
 
     def test_key_includes_random_part(self):
         storage1 = factory.make_FileStorage()
         storage2 = factory.make_FileStorage()
-        self.assertNotEqual(storage1.key, storage2.key)
+        assert storage1.key != storage2.key

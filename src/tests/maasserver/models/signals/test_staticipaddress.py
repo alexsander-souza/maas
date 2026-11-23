@@ -2,11 +2,11 @@
 # GNU Affero General Public License version 3 (see the file LICENSE).
 
 from django.utils import timezone
+import pytest
 
 from maasserver.enum import IPADDRESS_TYPE
 from maasserver.models import DNSPublication
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from maasserver.utils.orm import post_commit_hooks
 
 """
@@ -20,7 +20,8 @@ Tests related to DNS resources are in:
 """
 
 
-class TestUpdateStaticIPAddressSignal(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestUpdateStaticIPAddressSignal:
     def test_update_staticipaddress_creates_dnspublication_if_domain_authoritative(
         self,
     ):
@@ -38,11 +39,9 @@ class TestUpdateStaticIPAddressSignal(MAASServerTestCase):
             static_ip.save()
 
         dnspublication = DNSPublication.objects.get_most_recent()
-        self.assertIn(
-            "ip 192.168.1.1 changed to 192.168.1.2", dnspublication.source
-        )
-        self.assertIn("temp_expires_on changed to", dnspublication.source)
-        self.assertIn("alloc_type changed to", dnspublication.source)
+        assert "ip 192.168.1.1 changed to 192.168.1.2" in dnspublication.source
+        assert "temp_expires_on changed to" in dnspublication.source
+        assert "alloc_type changed to" in dnspublication.source
 
     def test_update_staticipaddress_does_not_create_dnspublication_if_domain_is_not_authoritative(
         self,
@@ -59,6 +58,7 @@ class TestUpdateStaticIPAddressSignal(MAASServerTestCase):
             static_ip.save()
 
         dnspublication = DNSPublication.objects.get_most_recent()
-        self.assertNotIn(
-            "ip 192.168.1.1 changed to 192.168.1.2", dnspublication.source
+        assert (
+            "ip 192.168.1.1 changed to 192.168.1.2"
+            not in dnspublication.source
         )

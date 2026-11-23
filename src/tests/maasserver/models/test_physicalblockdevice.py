@@ -2,14 +2,15 @@
 # GNU Affero General Public License version 3 (see the file LICENSE).
 
 from django.core.exceptions import ValidationError
+import pytest
 
 from maasserver.models import PhysicalBlockDevice
 from maasserver.models.blockdevice import MIN_BLOCK_DEVICE_SIZE
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 
 
-class TestPhysicalBlockDeviceManager(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestPhysicalBlockDeviceManager:
     def test_model_serial_and_no_id_path_requirements_should_save(self):
         node_config = factory.make_NodeConfig()
         blockdevice = PhysicalBlockDevice(
@@ -44,7 +45,8 @@ class TestPhysicalBlockDeviceManager(MAASServerTestCase):
             size=MIN_BLOCK_DEVICE_SIZE,
             model="A2M0003",
         )
-        self.assertRaises(ValidationError, blockdevice.save)
+        with pytest.raises(ValidationError):
+            blockdevice.save()
 
     def test_no_id_path_and_no_model(self):
         node_config = factory.make_NodeConfig()
@@ -55,7 +57,8 @@ class TestPhysicalBlockDeviceManager(MAASServerTestCase):
             size=MIN_BLOCK_DEVICE_SIZE,
             serial="001",
         )
-        self.assertRaises(ValidationError, blockdevice.save)
+        with pytest.raises(ValidationError):
+            blockdevice.save()
 
     def test_default_numa_node_from_node(self):
         node = factory.make_Node()
@@ -67,7 +70,7 @@ class TestPhysicalBlockDeviceManager(MAASServerTestCase):
             block_size=1024,
             node_config=node.current_config,
         )
-        self.assertEqual(bdev.numa_node, node.default_numanode)
+        assert bdev.numa_node == node.default_numanode
 
     def test_node_from_numa_node(self):
         numa_node = factory.make_NUMANode()
@@ -80,32 +83,28 @@ class TestPhysicalBlockDeviceManager(MAASServerTestCase):
             block_size=1024,
             numa_node=numa_node,
         )
-        self.assertEqual(bdev.get_node(), numa_node.node)
+        assert bdev.get_node() == numa_node.node
 
     def test_node_and_numa_node_fail(self):
         node_config = factory.make_NodeConfig()
         numa_node = factory.make_NUMANode()
-        self.assertRaises(
-            ValidationError,
-            PhysicalBlockDevice.objects.create,
-            serial="123",
-            model="disk",
-            name="sda",
-            size=MIN_BLOCK_DEVICE_SIZE,
-            block_size=1024,
-            node_config=node_config,
-            numa_node=numa_node,
-        )
+        with pytest.raises(ValidationError):
+            PhysicalBlockDevice.objects.create(
+                serial="123",
+                model="disk",
+                name="sda",
+                size=MIN_BLOCK_DEVICE_SIZE,
+                block_size=1024,
+                node_config=node_config,
+                numa_node=numa_node,
+            )
 
     def test_serialize(self):
         block_device = factory.make_PhysicalBlockDevice()
-        self.assertEqual(
-            {
-                "id": block_device.id,
-                "name": block_device.name,
-                "id_path": block_device.id_path,
-                "model": block_device.model,
-                "serial": block_device.serial,
-            },
-            block_device.serialize(),
-        )
+        assert {
+            "id": block_device.id,
+            "name": block_device.name,
+            "id_path": block_device.id_path,
+            "model": block_device.model,
+            "serial": block_device.serial,
+        } == block_device.serialize()

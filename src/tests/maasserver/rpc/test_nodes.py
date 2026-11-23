@@ -3,6 +3,7 @@
 
 """Test for RPC utility functions for Nodes."""
 
+from contextlib import ExitStack
 from datetime import timedelta
 import json
 from operator import attrgetter
@@ -11,6 +12,7 @@ from random import randint
 from unittest.mock import sentinel
 
 from django.core.exceptions import ValidationError
+import pytest
 
 from maasserver import ntp
 from maasserver.enum import INTERFACE_TYPE, NODE_STATUS, NODE_TYPE
@@ -33,10 +35,6 @@ from maasserver.testing.eventloop import (
     RunningEventLoopFixture,
 )
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import (
-    MAASServerTestCase,
-    MAASTransactionServerTestCase,
-)
 from maasserver.utils.orm import post_commit_hooks, reload_object
 from metadataserver.builtin_scripts import load_builtin_scripts
 from provisioningserver.drivers.power.registry import PowerDriverRegistry
@@ -50,20 +48,70 @@ from provisioningserver.rpc.exceptions import (
 )
 
 
-class TestCreateNode(MAASTransactionServerTestCase):
+class _PytestTestHelpers:
+    @pytest.fixture(autouse=True)
+    def _setup_pytest_test_helpers(self, mocker, request):
+        self._request = request
+        self.patch = lambda target, attribute: mocker.patch.object(
+            target, attribute
+        )
+
+    def assertEqual(self, expected, actual):
+        assert expected == actual
+
+    def assertIn(self, member, container):
+        assert member in container
+
+    def assertIsNotNone(self, value):
+        assert value is not None
+
+    def assertCountEqual(self, expected, actual):
+        from collections import Counter
+
+        assert Counter(expected) == Counter(actual)
+
+    def assertLess(self, left, right):
+        assert left < right
+
+    def assertGreater(self, left, right):
+        assert left > right
+
+    def assertRaises(self, exception, function, *args, **kwargs):
+        with pytest.raises(exception):
+            function(*args, **kwargs)
+
+    def addCleanup(self, callback):
+        self._request.addfinalizer(callback)
+
+
+class _PytestRPCStack(_PytestTestHelpers):
+    @pytest.fixture(autouse=True)
+    def _setup_rpc_stack(self, request):
+        self._stack = ExitStack()
+        request.addfinalizer(self._stack.close)
+
     def prepare_rack_rpc(self):
         rack_controller = factory.make_RackController()
-        self.useFixture(RegionEventLoopFixture("rpc"))
-        self.useFixture(RunningEventLoopFixture())
+        self._stack.enter_context(RegionEventLoopFixture("rpc"))
+        self._stack.enter_context(RunningEventLoopFixture())
+        fixture = self._stack.enter_context(
+            MockLiveRegionToClusterRPCFixture()
+        )
+        return fixture.makeCluster(rack_controller)
 
-        fixture = self.useFixture(MockLiveRegionToClusterRPCFixture())
-        protocol = fixture.makeCluster(rack_controller)
+
+@pytest.mark.allow_transactions
+@pytest.mark.usefixtures(
+    "maasdb", "maas_region_test", "factory", "transactional_maasdb"
+)
+class TestCreateNode(_PytestRPCStack):
+    def prepare_rack_rpc(self):
+        protocol = super().prepare_rack_rpc()
         self.power_types = PowerDriverRegistry.get_schema()
         return protocol
 
     def test_creates_node(self):
         self.prepare_rack_rpc()
-
         mac_addresses = [factory.make_mac_address() for _ in range(3)]
         architecture = make_usable_architecture(self)
 
@@ -248,16 +296,11 @@ class TestCreateNode(MAASTransactionServerTestCase):
         self.assertEqual(architecture, node.architecture)
 
 
-class TestCommissionNode(MAASTransactionServerTestCase):
-    def prepare_rack_rpc(self):
-        rack_controller = factory.make_RackController()
-        self.useFixture(RegionEventLoopFixture("rpc"))
-        self.useFixture(RunningEventLoopFixture())
-
-        fixture = self.useFixture(MockLiveRegionToClusterRPCFixture())
-        protocol = fixture.makeCluster(rack_controller)
-        return protocol
-
+@pytest.mark.allow_transactions
+@pytest.mark.usefixtures(
+    "maasdb", "maas_region_test", "factory", "transactional_maasdb"
+)
+class TestCommissionNode(_PytestRPCStack):
     def test_raises_NoSuchNode_if_node_doesnt_exist(self):
         self.assertRaises(
             NoSuchNode,
@@ -290,7 +333,8 @@ class TestCommissionNode(MAASTransactionServerTestCase):
         )
 
 
-class TestMarkNodeFailed(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestMarkNodeFailed(_PytestTestHelpers):
     def test_marks_node_as_failed(self):
         from maasserver.models import signals  # Circular import.
 
@@ -321,7 +365,8 @@ class TestMarkNodeFailed(MAASServerTestCase):
         )
 
 
-class TestRequestNodeInfoByMACAddress(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestRequestNodeInfoByMACAddress(_PytestTestHelpers):
     def test_request_node_info_by_mac_address_raises_exception_no_mac(self):
         self.assertRaises(
             NoSuchNode,
@@ -337,7 +382,8 @@ class TestRequestNodeInfoByMACAddress(MAASServerTestCase):
         self.assertEqual(node, interface.node_config.node)
 
 
-class TestListClusterNodesPowerParameters(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestListClusterNodesPowerParameters(_PytestTestHelpers):
     """Tests for the `list_cluster_nodes_power_parameters()` function."""
 
     # Note that there are other, one-level-removed tests for this
@@ -531,7 +577,8 @@ class TestListClusterNodesPowerParameters(MAASServerTestCase):
         )
 
 
-class TestUpdateNodePowerState(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestUpdateNodePowerState(_PytestTestHelpers):
     def test_raises_NoSuchNode_if_node_doesnt_exist(self):
         self.assertRaises(
             NoSuchNode,
@@ -546,7 +593,8 @@ class TestUpdateNodePowerState(MAASServerTestCase):
         self.assertEqual(reload_object(node).power_state, POWER_STATE.ON)
 
 
-class TestGetControllerType(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestGetControllerType(_PytestTestHelpers):
     """Tests for `get_controller_type`."""
 
     def test_raises_NoSuchNode_if_node_doesnt_exist(self):
@@ -555,49 +603,30 @@ class TestGetControllerType(MAASServerTestCase):
         )
 
 
-class TestGetControllerType_Scenarios(MAASServerTestCase):
+@pytest.mark.parametrize(
+    ("node_type", "is_region", "is_rack"),
+    [
+        (NODE_TYPE.RACK_CONTROLLER, False, True),
+        (NODE_TYPE.REGION_CONTROLLER, True, False),
+        (NODE_TYPE.REGION_AND_RACK_CONTROLLER, True, True),
+        (NODE_TYPE.MACHINE, False, False),
+    ],
+    ids=["2-False-True", "3-True-False", "4-True-True", "0-False-False"],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestGetControllerType_Scenarios(_PytestTestHelpers):
     """Scenario tests for `get_controller_type`."""
 
-    scenarios = (
-        (
-            "rack",
-            dict(
-                node_type=NODE_TYPE.RACK_CONTROLLER,
-                is_region=False,
-                is_rack=True,
-            ),
-        ),
-        (
-            "region",
-            dict(
-                node_type=NODE_TYPE.REGION_CONTROLLER,
-                is_region=True,
-                is_rack=False,
-            ),
-        ),
-        (
-            "region+rack",
-            dict(
-                node_type=NODE_TYPE.REGION_AND_RACK_CONTROLLER,
-                is_region=True,
-                is_rack=True,
-            ),
-        ),
-        (
-            "machine",
-            dict(node_type=NODE_TYPE.MACHINE, is_region=False, is_rack=False),
-        ),
-    )
-
-    def test_returns_node_type(self):
-        node = factory.make_Node(node_type=self.node_type)
+    def test_returns_node_type(self, node_type, is_region, is_rack):
+        node = factory.make_Node(node_type=node_type)
         self.assertEqual(
-            {"is_region": self.is_region, "is_rack": self.is_rack},
+            {"is_region": is_region, "is_rack": is_rack},
             get_controller_type(node.system_id),
         )
 
 
-class TestGetTimeConfiguration(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestGetTimeConfiguration(_PytestTestHelpers):
     """Tests for `get_controller_type`."""
 
     def test_raises_NoSuchNode_if_node_doesnt_exist(self):
@@ -606,23 +635,29 @@ class TestGetTimeConfiguration(MAASServerTestCase):
         )
 
 
-class TestGetTimeConfiguration_Scenarios(MAASServerTestCase):
+@pytest.mark.parametrize(
+    "node_type",
+    [
+        NODE_TYPE.RACK_CONTROLLER,
+        NODE_TYPE.REGION_CONTROLLER,
+        NODE_TYPE.REGION_AND_RACK_CONTROLLER,
+        NODE_TYPE.MACHINE,
+        NODE_TYPE.DEVICE,
+    ],
+    ids=lambda node_type: str(node_type),
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestGetTimeConfiguration_Scenarios(_PytestTestHelpers):
     """Scenario tests for `get_time_configuration`."""
 
-    scenarios = (
-        ("rack", dict(node_type=NODE_TYPE.RACK_CONTROLLER)),
-        ("region", dict(node_type=NODE_TYPE.REGION_CONTROLLER)),
-        ("region+rack", dict(node_type=NODE_TYPE.REGION_AND_RACK_CONTROLLER)),
-        ("machine", dict(node_type=NODE_TYPE.MACHINE)),
-        ("device", dict(node_type=NODE_TYPE.DEVICE)),
-    )
-
-    def test_calls_through_to_ntp_module_returns_servers_and_peers(self):
-        get_servers_for = self.patch(ntp, "get_servers_for")
+    def test_calls_through_to_ntp_module_returns_servers_and_peers(
+        self, node_type, mocker
+    ):
+        get_servers_for = mocker.patch.object(ntp, "get_servers_for")
         get_servers_for.return_value = frozenset({sentinel.server})
-        get_peers_for = self.patch(ntp, "get_peers_for")
+        get_peers_for = mocker.patch.object(ntp, "get_peers_for")
         get_peers_for.return_value = frozenset({sentinel.peer})
-        node = factory.make_Node(node_type=self.node_type)
+        node = factory.make_Node(node_type=node_type)
         self.assertEqual(
             get_time_configuration(node.system_id),
             {

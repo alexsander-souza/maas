@@ -1,33 +1,14 @@
 # Copyright 2026 Canonical Ltd.  This software is licensed under the
 # GNU Affero General Public License version 3 (see the file LICENSE).
 
-"""Self-contained test-resource management, replacing `testresources`.
+"""Self-contained test-resource managers used by pytest database fixtures.
 
-This is a faithful reimplementation of the `testresources` contract that
-MAAS's shared DB resource managers (`maasserver.testing.resources`) and
-`MAASTestCase.setUpResources`/`tearDownResources` depend on, with the
-nose-specific result-reporting plumbing (`_call_result_method_if_exists`,
-the `result` parameter) dropped — under pytest there is no nose
-`TestResult` proxy to report resource lifecycle to.
-
-The contract, kept identical to `testresources`:
-
-- A manager holds at most one current resource, reference-counted by
-  `getResource`/`finishedWith`. The first `getResource` builds it (via
-  `make`, after building any declared dependencies); the last
-  `finishedWith` cleans it (via `clean`). This reference counting is what
-  lets a shared singleton (the pristine test database) be built once and
-  reused across many tests instead of once per test.
-- A resource is "dirty" when a test has marked it unsuitable for reuse
-  (e.g. a shared DB with mutated rows). The next `getResource` on a dirty
-  manager `reset`s the resource instead of reusing it.
+This replaces the `testresources` manager contract. Nose-specific result
+reporting and unittest `setUpResources`/`tearDownResources` adapters are not
+part of the pytest resource-manager API.
 """
 
-__all__ = [
-    "TestResourceManager",
-    "setUpResources",
-    "tearDownResources",
-]
+__all__ = ["TestResourceManager"]
 
 
 class TestResourceManager:
@@ -126,16 +107,3 @@ class TestResourceManager:
         if self._uses == 0:
             self._clean_all(resource)
             self._setResource(None)
-
-
-def setUpResources(test, resources):
-    """Assign each declared resource to an attribute on `test`."""
-    for name, manager in resources:
-        setattr(test, name, manager.getResource())
-
-
-def tearDownResources(test, resources):
-    """Release each resource held by `test` and remove the attribute."""
-    for name, manager in resources:
-        manager.finishedWith(getattr(test, name))
-        delattr(test, name)

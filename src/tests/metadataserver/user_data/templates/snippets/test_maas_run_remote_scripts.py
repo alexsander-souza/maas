@@ -1,7 +1,6 @@
 # Copyright 2017-2020 Canonical Ltd.  This software is licensed under the
 # GNU Affero General Public License version 3 (see the file LICENSE).
 
-
 import argparse
 import copy
 from datetime import timedelta
@@ -18,11 +17,10 @@ import time
 from unittest.mock import ANY, call, MagicMock, mock_open
 from zipfile import ZipFile
 
+import pytest
 import yaml
 
 from maastesting.factory import factory
-from maastesting.fixtures import TempDirectory
-from maastesting.testcase import MAASTestCase
 from snippets import maas_run_remote_scripts
 from snippets.maas_api_helper import Config, Credentials, SignalException
 from snippets.maas_run_remote_scripts import (
@@ -211,7 +209,7 @@ def make_scripts(
         ]
 
 
-def make_fake_os_path_exists(testcase, exists=True):
+def make_fake_os_path_exists(mocker, exists=True):
     orig_os_path_exists = os.path.exists
 
     def fake_os_path_exists(path):
@@ -219,49 +217,60 @@ def make_fake_os_path_exists(testcase, exists=True):
             return exists
         return orig_os_path_exists(path)
 
-    testcase.patch(
+    mocker.patch.object(
         maas_run_remote_scripts.os.path, "exists"
     ).side_effect = fake_os_path_exists
 
 
-class TestOutputAndSend(MAASTestCase):
-    def setUp(self):
-        super().setUp()
-        self.stderr_write = self.patch(
+class TestOutputAndSend:
+    def test_output_and_send_outputs(self, mocker):
+        stderr_write = mocker.patch.object(
             maas_run_remote_scripts.sys.stderr, "write"
         )
-        self.signal_wrapper = self.patch(
+        signal_wrapper = mocker.patch.object(
             maas_run_remote_scripts, "signal_wrapper"
         )
-
-    def test_output_and_send_outputs(self):
         error = factory.make_string()
         output_and_send(error)
 
-        self.stderr_write.assert_called_once_with(f"{error}\n")
-        self.signal_wrapper.assert_called_once_with(error=error)
+        stderr_write.assert_called_once_with(f"{error}\n")
+        signal_wrapper.assert_called_once_with(error=error)
 
-    def test_output_and_send_doesnt_send_when_false(self):
+    def test_output_and_send_doesnt_send_when_false(self, mocker):
+        stderr_write = mocker.patch.object(
+            maas_run_remote_scripts.sys.stderr, "write"
+        )
+        signal_wrapper = mocker.patch.object(
+            maas_run_remote_scripts, "signal_wrapper"
+        )
         error = factory.make_string()
-        self.assertFalse(output_and_send(error, False))
-        self.stderr_write.assert_called_once_with(f"{error}\n")
-        self.signal_wrapper.assert_not_called()
+        assert not output_and_send(error, False)
+        stderr_write.assert_called_once_with(f"{error}\n")
+        signal_wrapper.assert_not_called()
 
-    def test_output_and_send_scripts(self):
+    def test_output_and_send_scripts(self, mocker):
+        stderr_write = mocker.patch.object(
+            maas_run_remote_scripts.sys.stderr, "write"
+        )
+        mocker.patch.object(maas_run_remote_scripts, "signal_wrapper")
         scripts = make_scripts()
         error = "{msg_name} %s" % factory.make_string()
         output_and_send_scripts(error, scripts)
-        self.stderr_write.assert_has_calls(
+        stderr_write.assert_has_calls(
             [call("%s\n" % error.format(**script)) for script in scripts]
         )
 
-    def test_output_and_send_scripts_sets_error_as_stderr(self):
-        scripts_dir = self.useFixture(TempDirectory()).path
-        scripts = make_scripts(scripts_dir=scripts_dir, with_output=False)
+    def test_output_and_send_scripts_sets_error_as_stderr(
+        self, mocker, tmp_path
+    ):
+        signal_wrapper = mocker.patch.object(
+            maas_run_remote_scripts, "signal_wrapper"
+        )
+        scripts = make_scripts(scripts_dir=str(tmp_path), with_output=False)
         error = "{msg_name} %s" % factory.make_string()
         output_and_send_scripts(error, scripts, error_is_stderr=True)
 
-        self.signal_wrapper.assert_has_calls(
+        signal_wrapper.assert_has_calls(
             [
                 call(
                     error=error.format(**script),
@@ -280,76 +289,58 @@ class TestOutputAndSend(MAASTestCase):
         )
         for script in scripts:
             script_error = "%s\n" % error.format(**script)
-            self.assertEqual(
-                script_error,
-                open(script["combined_path"]).read(),
-            )
-            self.assertEqual(script_error, open(script["stderr_path"]).read())
+            assert script_error == open(script["combined_path"]).read()
+            assert script_error == open(script["stderr_path"]).read()
 
 
-class TestInstallDependencies(MAASTestCase):
-    def setUp(self):
-        super().setUp()
-        self.mock_output_and_send = self.patch(
-            maas_run_remote_scripts, "output_and_send"
-        )
-        self.mock_output_and_send_scripts = self.patch(
-            maas_run_remote_scripts, "output_and_send_scripts"
-        )
-        self.patch(maas_run_remote_scripts.sys.stdout, "write")
-        self.patch(maas_run_remote_scripts.sys.stderr, "write")
-
-    def test_run_and_check(self):
-        scripts_dir = self.useFixture(TempDirectory()).path
+class TestInstallDependencies:
+    def test_run_and_check(self, tmp_path):
+        scripts_dir = str(tmp_path)
         scripts = make_scripts(scripts_dir=scripts_dir, with_output=False)
         script = scripts[0]
 
-        self.assertTrue(
-            run_and_check(
-                [
-                    "/bin/bash",
-                    "-c",
-                    "echo %s;echo %s >&2"
-                    % (script["stdout"].strip(), script["stderr"].strip()),
-                ],
-                scripts,
-                factory.make_name("status"),
-            )
+        assert run_and_check(
+            [
+                "/bin/bash",
+                "-c",
+                "echo %s;echo %s >&2"
+                % (script["stdout"].strip(), script["stderr"].strip()),
+            ],
+            scripts,
+            factory.make_name("status"),
         )
-        self.assertEqual(script["stdout"], open(script["stdout_path"]).read())
-        self.assertEqual(script["stderr"], open(script["stderr_path"]).read())
-        self.assertEqual(
-            script["combined"],
-            open(script["combined_path"]).read(),
-        )
+        assert script["stdout"] == open(script["stdout_path"]).read()
+        assert script["stderr"] == open(script["stderr_path"]).read()
+        assert script["combined"] == open(script["combined_path"]).read()
 
-    def test_run_and_check_errors(self):
-        scripts_dir = self.useFixture(TempDirectory()).path
+    def test_run_and_check_errors(self, mocker, tmp_path):
+        mock_output_and_send = mocker.patch.object(
+            maas_run_remote_scripts, "output_and_send"
+        )
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+        mocker.patch.object(maas_run_remote_scripts.sys.stderr, "write")
+        mocker.patch.object(maas_run_remote_scripts, "output_and_send_scripts")
+        scripts_dir = str(tmp_path)
         scripts = make_scripts(scripts_dir=scripts_dir, with_output=False)
         script = scripts[0]
         status = factory.make_name("status")
-        self.mock_output_and_send.return_value = False
+        mock_output_and_send.return_value = False
 
-        self.assertFalse(
-            run_and_check(
-                [
-                    "/bin/bash",
-                    "-c",
-                    "echo %s;echo %s >&2;false"
-                    % (script["stdout"].strip(), script["stderr"].strip()),
-                ],
-                scripts,
-                status,
-            )
+        assert not run_and_check(
+            [
+                "/bin/bash",
+                "-c",
+                "echo %s;echo %s >&2;false"
+                % (script["stdout"].strip(), script["stderr"].strip()),
+            ],
+            scripts,
+            status,
         )
-        self.assertEqual(script["stdout"], open(script["stdout_path"]).read())
-        self.assertEqual(script["stderr"], open(script["stderr_path"]).read())
-        self.assertEqual(
-            script["combined"],
-            open(script["combined_path"]).read(),
-        )
+        assert script["stdout"] == open(script["stdout_path"]).read()
+        assert script["stderr"] == open(script["stderr_path"]).read()
+        assert script["combined"] == open(script["combined_path"]).read()
         for script in scripts:
-            self.mock_output_and_send.assert_any_call(
+            mock_output_and_send.assert_any_call(
                 "Failed installing package(s) for %s" % script["msg_name"],
                 exit_status=1,
                 status=status,
@@ -362,36 +353,31 @@ class TestInstallDependencies(MAASTestCase):
                     scripts[0]["stderr_name"]: scripts[0]["stderr"].encode(),
                 },
             )
-            self.assertFalse(script["result_sent"])
+            assert not script["result_sent"]
 
-    def test_run_and_check_ignores_errors(self):
-        scripts_dir = self.useFixture(TempDirectory()).path
+    def test_run_and_check_ignores_errors(self, tmp_path):
+        scripts_dir = str(tmp_path)
         scripts = make_scripts(scripts_dir=scripts_dir, with_output=False)
         script = scripts[0]
 
-        self.assertTrue(
-            run_and_check(
-                [
-                    "/bin/bash",
-                    "-c",
-                    "echo %s;echo %s >&2;false"
-                    % (script["stdout"].strip(), script["stderr"].strip()),
-                ],
-                scripts,
-                factory.make_name("status"),
-                False,
-            )
+        assert run_and_check(
+            [
+                "/bin/bash",
+                "-c",
+                "echo %s;echo %s >&2;false"
+                % (script["stdout"].strip(), script["stderr"].strip()),
+            ],
+            scripts,
+            factory.make_name("status"),
+            False,
         )
-        self.assertEqual(script["stdout"], open(script["stdout_path"]).read())
-        self.assertEqual(script["stderr"], open(script["stderr_path"]).read())
-        self.assertEqual(
-            script["combined"],
-            open(script["combined_path"]).read(),
-        )
+        assert script["stdout"] == open(script["stdout_path"]).read()
+        assert script["stderr"] == open(script["stderr_path"]).read()
+        assert script["combined"] == open(script["combined_path"]).read()
 
-    def test_sudo_run_and_check(self):
-        mock_popen = self.patch(maas_run_remote_scripts, "Popen")
-        self.patch(maas_run_remote_scripts, "capture_script_output")
+    def test_sudo_run_and_check(self, mocker):
+        mock_popen = mocker.patch.object(maas_run_remote_scripts, "Popen")
+        mocker.patch.object(maas_run_remote_scripts, "capture_script_output")
         cmd = factory.make_name("cmd")
 
         run_and_check(
@@ -407,50 +393,70 @@ class TestInstallDependencies(MAASTestCase):
             stderr=PIPE,
         )
 
-    def test_run_and_check_calls_hook_on_failure(self):
-        scripts_dir = self.useFixture(TempDirectory()).path
+    def test_run_and_check_calls_hook_on_failure(self, mocker, tmp_path):
+        mocker.patch.object(maas_run_remote_scripts, "output_and_send")
+        mocker.patch.object(maas_run_remote_scripts, "output_and_send_scripts")
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+        mocker.patch.object(maas_run_remote_scripts.sys.stderr, "write")
+        scripts_dir = str(tmp_path)
         scripts = make_scripts(scripts_dir=scripts_dir, with_output=False)
         script = scripts[0]
         status = factory.make_name("status")
         mock_failure_hook = MagicMock()
 
-        self.assertFalse(
-            run_and_check(
-                [
-                    "/bin/bash",
-                    "-c",
-                    "echo %s;echo %s >&2;false"
-                    % (script["stdout"], script["stderr"]),
-                ],
-                scripts,
-                status,
-                failure_hook=mock_failure_hook,
-            )
+        assert not run_and_check(
+            [
+                "/bin/bash",
+                "-c",
+                "echo %s;echo %s >&2;false"
+                % (script["stdout"], script["stderr"]),
+            ],
+            scripts,
+            status,
+            failure_hook=mock_failure_hook,
         )
         mock_failure_hook.assert_called_once_with()
 
-    def test_install_dependencies_does_nothing_when_empty(self):
-        self.assertTrue(install_dependencies([]))
-        self.mock_output_and_send.assert_not_called()
+    def test_install_dependencies_does_nothing_when_empty(self, mocker):
+        mock_output_and_send = mocker.patch.object(
+            maas_run_remote_scripts, "output_and_send"
+        )
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+        mocker.patch.object(maas_run_remote_scripts.sys.stderr, "write")
+        mocker.patch.object(maas_run_remote_scripts, "output_and_send_scripts")
+        assert install_dependencies([])
+        mock_output_and_send.assert_not_called()
 
-    def test_install_dependencies_does_nothing_when_no_packages(self):
-        self.assertTrue(install_dependencies(make_scripts()))
-        self.mock_output_and_send.assert_not_called()
+    def test_install_dependencies_does_nothing_when_no_packages(self, mocker):
+        mock_output_and_send = mocker.patch.object(
+            maas_run_remote_scripts, "output_and_send"
+        )
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+        mocker.patch.object(maas_run_remote_scripts.sys.stderr, "write")
+        mocker.patch.object(maas_run_remote_scripts, "output_and_send_scripts")
+        assert install_dependencies(make_scripts())
+        mock_output_and_send.assert_not_called()
 
-    def test_install_dependencies_apt(self):
-        mock_run_and_check = self.patch(
+    def test_install_dependencies_apt(self, mocker, tmp_path):
+        mocker.patch.object(maas_run_remote_scripts, "output_and_send")
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+        mocker.patch.object(maas_run_remote_scripts.sys.stderr, "write")
+        mock_output_and_send_scripts = mocker.patch.object(
+            maas_run_remote_scripts, "output_and_send_scripts"
+        )
+        mock_run_and_check = mocker.patch.object(
             maas_run_remote_scripts, "run_and_check"
         )
-        make_fake_os_path_exists(self)
-        scripts_dir = self.useFixture(TempDirectory()).path
+        make_fake_os_path_exists(mocker)
+        scripts_dir = str(tmp_path)
         scripts = make_scripts(scripts_dir=scripts_dir, with_output=False)
         packages = [factory.make_name("apt_pkg") for _ in range(3)]
         for script in scripts:
             script["packages"] = {"apt": packages}
 
-        self.assertTrue(install_dependencies(scripts))
+        assert install_dependencies(scripts)
         for script in scripts:
-            self.mock_output_and_send_scripts.assert_any_call(
+            mock_output_and_send_scripts.assert_any_call(
                 "Installing apt packages for {msg_name}",
                 scripts,
                 True,
@@ -465,27 +471,35 @@ class TestInstallDependencies(MAASTestCase):
                 True,
             )
             # Verify cleanup
-            self.assertFalse(os.path.exists(script["combined_path"]))
-            self.assertFalse(os.path.exists(script["stdout_path"]))
-            self.assertFalse(os.path.exists(script["stderr_path"]))
+            assert not os.path.exists(script["combined_path"])
+            assert not os.path.exists(script["stdout_path"])
+            assert not os.path.exists(script["stderr_path"])
 
-    def test_install_dependencies_runs_apt_get_update_when_required(self):
-        mock_run_and_check = self.patch(
+    def test_install_dependencies_runs_apt_get_update_when_required(
+        self, mocker, tmp_path
+    ):
+        mocker.patch.object(maas_run_remote_scripts, "output_and_send")
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+        mocker.patch.object(maas_run_remote_scripts.sys.stderr, "write")
+        mock_output_and_send_scripts = mocker.patch.object(
+            maas_run_remote_scripts, "output_and_send_scripts"
+        )
+        mock_run_and_check = mocker.patch.object(
             maas_run_remote_scripts, "run_and_check"
         )
-        make_fake_os_path_exists(self, False)
-        scripts_dir = self.useFixture(TempDirectory()).path
+        make_fake_os_path_exists(mocker, False)
+        scripts_dir = str(tmp_path)
         scripts = make_scripts(scripts_dir=scripts_dir, with_output=False)
         packages = [factory.make_name("apt_pkg") for _ in range(3)]
         for script in scripts:
             script["packages"] = {"apt": packages}
 
-        self.assertTrue(install_dependencies(scripts))
+        assert install_dependencies(scripts)
         mock_run_and_check.assert_any_call(
             ["apt-get", "-qy", "update"], scripts, "INSTALLING", True, True
         )
         for script in scripts:
-            self.mock_output_and_send_scripts.assert_any_call(
+            mock_output_and_send_scripts.assert_any_call(
                 "Installing apt packages for {msg_name}",
                 scripts,
                 True,
@@ -500,25 +514,31 @@ class TestInstallDependencies(MAASTestCase):
                 True,
             )
             # Verify cleanup
-            self.assertFalse(os.path.exists(script["combined_path"]))
-            self.assertFalse(os.path.exists(script["stdout_path"]))
-            self.assertFalse(os.path.exists(script["stderr_path"]))
+            assert not os.path.exists(script["combined_path"])
+            assert not os.path.exists(script["stdout_path"])
+            assert not os.path.exists(script["stderr_path"])
 
-    def test_install_dependencies_apt_errors(self):
-        mock_run_and_check = self.patch(
+    def test_install_dependencies_apt_errors(self, mocker, tmp_path):
+        mocker.patch.object(maas_run_remote_scripts, "output_and_send")
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+        mocker.patch.object(maas_run_remote_scripts.sys.stderr, "write")
+        mock_output_and_send_scripts = mocker.patch.object(
+            maas_run_remote_scripts, "output_and_send_scripts"
+        )
+        mock_run_and_check = mocker.patch.object(
             maas_run_remote_scripts, "run_and_check"
         )
         mock_run_and_check.return_value = False
-        make_fake_os_path_exists(self)
-        scripts_dir = self.useFixture(TempDirectory()).path
+        make_fake_os_path_exists(mocker)
+        scripts_dir = str(tmp_path)
         scripts = make_scripts(scripts_dir=scripts_dir, with_output=False)
         packages = [factory.make_name("apt_pkg") for _ in range(3)]
         for script in scripts:
             script["packages"] = {"apt": packages}
 
-        self.assertFalse(install_dependencies(scripts))
+        assert not install_dependencies(scripts)
         for script in scripts:  # noqa: B007
-            self.mock_output_and_send_scripts.assert_any_call(
+            mock_output_and_send_scripts.assert_any_call(
                 "Installing apt packages for {msg_name}",
                 scripts,
                 True,
@@ -533,28 +553,34 @@ class TestInstallDependencies(MAASTestCase):
                 True,
             )
 
-    def test_install_dependencies_snap_str_list(self):
-        mock_run_and_check = self.patch(
+    def test_install_dependencies_snap_str_list(self, mocker, tmp_path):
+        mocker.patch.object(maas_run_remote_scripts, "output_and_send")
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+        mocker.patch.object(maas_run_remote_scripts.sys.stderr, "write")
+        mock_output_and_send_scripts = mocker.patch.object(
+            maas_run_remote_scripts, "output_and_send_scripts"
+        )
+        mock_run_and_check = mocker.patch.object(
             maas_run_remote_scripts, "run_and_check"
         )
-        scripts_dir = self.useFixture(TempDirectory()).path
+        scripts_dir = str(tmp_path)
         scripts = make_scripts(scripts_dir=scripts_dir, with_output=False)
         packages = [factory.make_name("snap_pkg") for _ in range(3)]
         for script in scripts:
             script["packages"] = {"snap": packages}
 
-        self.assertTrue(install_dependencies(scripts))
+        assert install_dependencies(scripts)
         for script in scripts:
-            self.mock_output_and_send_scripts.assert_any_call(
+            mock_output_and_send_scripts.assert_any_call(
                 "Installing snap packages for {msg_name}",
                 scripts,
                 True,
                 status="INSTALLING",
             )
             # Verify cleanup
-            self.assertFalse(os.path.exists(script["combined_path"]))
-            self.assertFalse(os.path.exists(script["stdout_path"]))
-            self.assertFalse(os.path.exists(script["stderr_path"]))
+            assert not os.path.exists(script["combined_path"])
+            assert not os.path.exists(script["stdout_path"])
+            assert not os.path.exists(script["stderr_path"])
 
         for package in packages:
             mock_run_and_check.assert_any_call(
@@ -565,11 +591,17 @@ class TestInstallDependencies(MAASTestCase):
                 True,
             )
 
-    def test_install_dependencies_snap_str_dict(self):
-        mock_run_and_check = self.patch(
+    def test_install_dependencies_snap_str_dict(self, mocker, tmp_path):
+        mocker.patch.object(maas_run_remote_scripts, "output_and_send")
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+        mocker.patch.object(maas_run_remote_scripts.sys.stderr, "write")
+        mock_output_and_send_scripts = mocker.patch.object(
+            maas_run_remote_scripts, "output_and_send_scripts"
+        )
+        mock_run_and_check = mocker.patch.object(
             maas_run_remote_scripts, "run_and_check"
         )
-        scripts_dir = self.useFixture(TempDirectory()).path
+        scripts_dir = str(tmp_path)
         scripts = make_scripts(scripts_dir=scripts_dir, with_output=False)
         packages = [
             {"name": factory.make_name("pkg")},
@@ -597,18 +629,18 @@ class TestInstallDependencies(MAASTestCase):
         for script in scripts:
             script["packages"] = {"snap": packages}
 
-        self.assertTrue(install_dependencies(scripts))
+        assert install_dependencies(scripts)
         for script in scripts:
-            self.mock_output_and_send_scripts.assert_any_call(
+            mock_output_and_send_scripts.assert_any_call(
                 "Installing snap packages for {msg_name}",
                 scripts,
                 True,
                 status="INSTALLING",
             )
             # Verify cleanup
-            self.assertFalse(os.path.exists(script["combined_path"]))
-            self.assertFalse(os.path.exists(script["stdout_path"]))
-            self.assertFalse(os.path.exists(script["stderr_path"]))
+            assert not os.path.exists(script["combined_path"])
+            assert not os.path.exists(script["stdout_path"])
+            assert not os.path.exists(script["stderr_path"])
         mock_run_and_check.assert_any_call(
             ["snap", "install", packages[0]["name"]],
             scripts,
@@ -655,20 +687,26 @@ class TestInstallDependencies(MAASTestCase):
             True,
         )
 
-    def test_install_dependencies_snap_errors(self):
-        mock_run_and_check = self.patch(
+    def test_install_dependencies_snap_errors(self, mocker, tmp_path):
+        mocker.patch.object(maas_run_remote_scripts, "output_and_send")
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+        mocker.patch.object(maas_run_remote_scripts.sys.stderr, "write")
+        mock_output_and_send_scripts = mocker.patch.object(
+            maas_run_remote_scripts, "output_and_send_scripts"
+        )
+        mock_run_and_check = mocker.patch.object(
             maas_run_remote_scripts, "run_and_check"
         )
         mock_run_and_check.return_value = False
-        scripts_dir = self.useFixture(TempDirectory()).path
+        scripts_dir = str(tmp_path)
         scripts = make_scripts(scripts_dir=scripts_dir, with_output=False)
         packages = [factory.make_name("snap_pkg") for _ in range(3)]
         for script in scripts:
             script["packages"] = {"snap": packages}
 
-        self.assertFalse(install_dependencies(scripts))
+        assert not install_dependencies(scripts)
         for script in scripts:  # noqa: B007
-            self.mock_output_and_send_scripts.assert_any_call(
+            mock_output_and_send_scripts.assert_any_call(
                 "Installing snap packages for {msg_name}",
                 scripts,
                 True,
@@ -683,17 +721,23 @@ class TestInstallDependencies(MAASTestCase):
             True,
         )
 
-    def test_install_dependencies_url(self):
-        mock_run_and_check = self.patch(
+    def test_install_dependencies_url(self, mocker, tmp_path):
+        mocker.patch.object(maas_run_remote_scripts, "output_and_send")
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+        mocker.patch.object(maas_run_remote_scripts.sys.stderr, "write")
+        mock_output_and_send_scripts = mocker.patch.object(
+            maas_run_remote_scripts, "output_and_send_scripts"
+        )
+        mock_run_and_check = mocker.patch.object(
             maas_run_remote_scripts, "run_and_check"
         )
-        scripts_dir = self.useFixture(TempDirectory()).path
+        scripts_dir = str(tmp_path)
         scripts = make_scripts(scripts_dir=scripts_dir)
         packages = [factory.make_name("url") for _ in range(3)]
         for script in scripts:
             script["packages"] = {"url": packages}
 
-        self.assertTrue(install_dependencies(scripts))
+        assert install_dependencies(scripts)
         for package in packages:
             mock_run_and_check.assert_any_call(
                 ["wget", package, "-P", scripts[0]["download_path"]],
@@ -702,40 +746,50 @@ class TestInstallDependencies(MAASTestCase):
                 True,
             )
         for script in scripts:  # noqa: B007
-            self.mock_output_and_send_scripts.assert_any_call(
+            mock_output_and_send_scripts.assert_any_call(
                 "Downloading and extracting URLs for {msg_name}",
                 scripts,
                 True,
                 status="INSTALLING",
             )
         # Verify cleanup
-        self.assertFalse(os.path.exists(scripts[0]["combined_path"]))
-        self.assertFalse(os.path.exists(scripts[0]["stdout_path"]))
-        self.assertFalse(os.path.exists(scripts[0]["stderr_path"]))
+        assert not os.path.exists(scripts[0]["combined_path"])
+        assert not os.path.exists(scripts[0]["stdout_path"])
+        assert not os.path.exists(scripts[0]["stderr_path"])
 
-    def test_install_dependencies_url_errors(self):
-        mock_run_and_check = self.patch(
+    def test_install_dependencies_url_errors(self, mocker, tmp_path):
+        mocker.patch.object(maas_run_remote_scripts, "output_and_send")
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+        mocker.patch.object(maas_run_remote_scripts.sys.stderr, "write")
+        mock_output_and_send_scripts = mocker.patch.object(
+            maas_run_remote_scripts, "output_and_send_scripts"
+        )
+        mock_run_and_check = mocker.patch.object(
             maas_run_remote_scripts, "run_and_check"
         )
         mock_run_and_check.return_value = False
-        scripts_dir = self.useFixture(TempDirectory()).path
+        scripts_dir = str(tmp_path)
         scripts = make_scripts(scripts_dir=scripts_dir)
         packages = [factory.make_name("url") for _ in range(3)]
         for script in scripts:
             script["packages"] = {"url": packages}
 
-        self.assertFalse(install_dependencies(scripts))
+        assert not install_dependencies(scripts)
         for script in scripts:  # noqa: B007
-            self.mock_output_and_send_scripts.assert_any_call(
+            mock_output_and_send_scripts.assert_any_call(
                 "Downloading and extracting URLs for {msg_name}",
                 scripts,
                 True,
                 status="INSTALLING",
             )
 
-    def test_install_dependencies_url_tar(self):
-        self.patch(maas_run_remote_scripts, "run_and_check")
-        scripts_dir = self.useFixture(TempDirectory()).path
+    def test_install_dependencies_url_tar(self, mocker, tmp_path):
+        mocker.patch.object(maas_run_remote_scripts, "output_and_send")
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+        mocker.patch.object(maas_run_remote_scripts.sys.stderr, "write")
+        mocker.patch.object(maas_run_remote_scripts, "output_and_send_scripts")
+        mocker.patch.object(maas_run_remote_scripts, "run_and_check")
+        scripts_dir = str(tmp_path)
         scripts = make_scripts(scripts_dir=scripts_dir, with_output=False)
         tar_file = os.path.join(scripts[0]["download_path"], "file.tar.xz")
         file_content = factory.make_bytes()
@@ -749,15 +803,19 @@ class TestInstallDependencies(MAASTestCase):
         for script in scripts:
             script["packages"] = {"url": [tar_file]}
 
-        self.assertTrue(install_dependencies(scripts))
+        assert install_dependencies(scripts)
         with open(
             os.path.join(scripts[0]["download_path"], "test-file"), "rb"
         ) as f:
-            self.assertEqual(file_content, f.read())
+            assert file_content == f.read()
 
-    def test_install_dependencies_url_zip(self):
-        self.patch(maas_run_remote_scripts, "run_and_check")
-        scripts_dir = self.useFixture(TempDirectory()).path
+    def test_install_dependencies_url_zip(self, mocker, tmp_path):
+        mocker.patch.object(maas_run_remote_scripts, "output_and_send")
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+        mocker.patch.object(maas_run_remote_scripts.sys.stderr, "write")
+        mocker.patch.object(maas_run_remote_scripts, "output_and_send_scripts")
+        mocker.patch.object(maas_run_remote_scripts, "run_and_check")
+        scripts_dir = str(tmp_path)
         scripts = make_scripts(scripts_dir=scripts_dir, with_output=False)
         zip_file = os.path.join(scripts[0]["download_path"], "file.zip")
         file_content = factory.make_bytes()
@@ -768,17 +826,21 @@ class TestInstallDependencies(MAASTestCase):
         for script in scripts:
             script["packages"] = {"url": [zip_file]}
 
-        self.assertTrue(install_dependencies(scripts))
+        assert install_dependencies(scripts)
         with open(
             os.path.join(scripts[0]["download_path"], "test-file"), "rb"
         ) as f:
-            self.assertEqual(file_content, f.read())
+            assert file_content == f.read()
 
-    def test_install_dependencies_url_deb(self):
-        mock_run_and_check = self.patch(
+    def test_install_dependencies_url_deb(self, mocker, tmp_path):
+        mocker.patch.object(maas_run_remote_scripts, "output_and_send")
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+        mocker.patch.object(maas_run_remote_scripts.sys.stderr, "write")
+        mocker.patch.object(maas_run_remote_scripts, "output_and_send_scripts")
+        mock_run_and_check = mocker.patch.object(
             maas_run_remote_scripts, "run_and_check"
         )
-        scripts_dir = self.useFixture(TempDirectory()).path
+        scripts_dir = str(tmp_path)
         scripts = make_scripts(scripts_dir=scripts_dir, with_output=False)
         deb_file = os.path.join(scripts[0]["download_path"], "file.deb")
         open(deb_file, "w").close()
@@ -787,7 +849,7 @@ class TestInstallDependencies(MAASTestCase):
         for script in scripts:
             script["packages"] = {"url": [deb_file]}
 
-        self.assertTrue(install_dependencies(scripts))
+        assert install_dependencies(scripts)
         mock_run_and_check.assert_any_call(
             ["dpkg", "-i", deb_file], scripts, "INSTALLING", False, True
         )
@@ -799,12 +861,16 @@ class TestInstallDependencies(MAASTestCase):
             True,
         )
 
-    def test_install_dependencies_url_deb_errors(self):
-        mock_run_and_check = self.patch(
+    def test_install_dependencies_url_deb_errors(self, mocker, tmp_path):
+        mocker.patch.object(maas_run_remote_scripts, "output_and_send")
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+        mocker.patch.object(maas_run_remote_scripts.sys.stderr, "write")
+        mocker.patch.object(maas_run_remote_scripts, "output_and_send_scripts")
+        mock_run_and_check = mocker.patch.object(
             maas_run_remote_scripts, "run_and_check"
         )
         mock_run_and_check.side_effect = (True, True, False)
-        scripts_dir = self.useFixture(TempDirectory()).path
+        scripts_dir = str(tmp_path)
         scripts = make_scripts(scripts_dir=scripts_dir, with_output=False)
         deb_file = os.path.join(scripts[0]["download_path"], "file.deb")
         open(deb_file, "w").close()
@@ -813,7 +879,7 @@ class TestInstallDependencies(MAASTestCase):
         for script in scripts:
             script["packages"] = {"url": [deb_file]}
 
-        self.assertFalse(install_dependencies(scripts))
+        assert not install_dependencies(scripts)
         mock_run_and_check.assert_any_call(
             ["dpkg", "-i", deb_file], scripts, "INSTALLING", False, True
         )
@@ -825,11 +891,15 @@ class TestInstallDependencies(MAASTestCase):
             True,
         )
 
-    def test_install_dependencies_url_snap(self):
-        mock_run_and_check = self.patch(
+    def test_install_dependencies_url_snap(self, mocker, tmp_path):
+        mocker.patch.object(maas_run_remote_scripts, "output_and_send")
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+        mocker.patch.object(maas_run_remote_scripts.sys.stderr, "write")
+        mocker.patch.object(maas_run_remote_scripts, "output_and_send_scripts")
+        mock_run_and_check = mocker.patch.object(
             maas_run_remote_scripts, "run_and_check"
         )
-        scripts_dir = self.useFixture(TempDirectory()).path
+        scripts_dir = str(tmp_path)
         scripts = make_scripts(scripts_dir=scripts_dir, with_output=False)
         snap_file = os.path.join(scripts[0]["download_path"], "file.snap")
         open(snap_file, "w").close()
@@ -838,17 +908,21 @@ class TestInstallDependencies(MAASTestCase):
         for script in scripts:
             script["packages"] = {"url": [snap_file]}
 
-        self.assertTrue(install_dependencies(scripts))
+        assert install_dependencies(scripts)
         mock_run_and_check.assert_any_call(
             ["snap", snap_file], scripts, "INSTALLING", True, True
         )
 
-    def test_install_dependencies_url_snap_errors(self):
-        mock_run_and_check = self.patch(
+    def test_install_dependencies_url_snap_errors(self, mocker, tmp_path):
+        mocker.patch.object(maas_run_remote_scripts, "output_and_send")
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+        mocker.patch.object(maas_run_remote_scripts.sys.stderr, "write")
+        mocker.patch.object(maas_run_remote_scripts, "output_and_send_scripts")
+        mock_run_and_check = mocker.patch.object(
             maas_run_remote_scripts, "run_and_check"
         )
         mock_run_and_check.side_effect = (True, False)
-        scripts_dir = self.useFixture(TempDirectory()).path
+        scripts_dir = str(tmp_path)
         scripts = make_scripts(scripts_dir=scripts_dir, with_output=False)
         snap_file = os.path.join(scripts[0]["download_path"], "file.snap")
         open(snap_file, "w").close()
@@ -857,74 +931,79 @@ class TestInstallDependencies(MAASTestCase):
         for script in scripts:
             script["packages"] = {"url": [snap_file]}
 
-        self.assertFalse(install_dependencies(scripts))
+        assert not install_dependencies(scripts)
         mock_run_and_check.assert_any_call(
             ["snap", snap_file], scripts, "INSTALLING", True, True
         )
 
 
-class TestCustomNetworking(MAASTestCase):
-    def setUp(self):
-        super().setUp()
+@pytest.fixture
+def reset_networking_globals():
+    """Reset module-level cached globals after each test."""
+    yield
+    maas_run_remote_scripts._dbus = None
+    maas_run_remote_scripts._systemd_interface = None
+    maas_run_remote_scripts._networkd_interface = None
+    maas_run_remote_scripts._networkd_properties_interface = None
 
-        self.base_dir = self.useFixture(TempDirectory()).path
-        self.config_dir = os.path.join(self.base_dir, "config")
-        os.makedirs(self.config_dir, exist_ok=True)
-        self.netplan_dir = os.path.join(self.base_dir, "netplan")
-        maas_run_remote_scripts.NETPLAN_DIR = self.netplan_dir
-        os.makedirs(self.netplan_dir, exist_ok=True)
 
-        self.mock_output_and_send_scripts = self.patch(
-            maas_run_remote_scripts, "output_and_send_scripts"
-        )
-        self.mock_run_and_check = self.patch(
-            maas_run_remote_scripts, "run_and_check"
-        )
-        self.mock_get_interfaces = self.patch(
-            maas_run_remote_scripts, "get_interfaces"
-        )
-        self.mock_signal = self.patch_autospec(
-            maas_run_remote_scripts, "signal"
-        )
-        self.patch(maas_run_remote_scripts.sys.stdout, "write")
-        self.patch(maas_run_remote_scripts.sys.stderr, "write")
-        self.patch(maas_run_remote_scripts.time, "sleep")
-        # Mock out dbus so unit tests don't touch the running system.
-        # This causes _wait_for_networkd to return False but doesn't
-        # effect unit tests.
-        self.mock_systembus = self.patch(
-            maas_run_remote_scripts.dbus, "SystemBus"
-        )
+class TestCustomNetworking:
+    def test_enter_does_nothing_if_not_required(self, mocker, tmp_path):
+        config_dir = os.path.join(tmp_path, "config")
+        os.makedirs(config_dir, exist_ok=True)
+        netplan_dir = os.path.join(tmp_path, "netplan")
+        maas_run_remote_scripts.NETPLAN_DIR = netplan_dir
+        os.makedirs(netplan_dir, exist_ok=True)
 
-    def tearDown(self):
-        super().tearDown()
-        # Reset the modules global state for each test.
-        maas_run_remote_scripts._dbus = None
-        maas_run_remote_scripts._systemd_interface = None
-        maas_run_remote_scripts._networkd_interface = None
-        maas_run_remote_scripts._networkd_properties_interface = None
+        mocker.patch.object(maas_run_remote_scripts, "output_and_send_scripts")
+        mocker.patch.object(maas_run_remote_scripts, "run_and_check")
+        mocker.patch.object(maas_run_remote_scripts, "get_interfaces")
+        mocker.patch.object(maas_run_remote_scripts, "signal", autospec=True)
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+        mocker.patch.object(maas_run_remote_scripts.sys.stderr, "write")
+        mocker.patch.object(maas_run_remote_scripts.time, "sleep")
+        mocker.patch.object(maas_run_remote_scripts.dbus, "SystemBus")
 
-    def test_enter_does_nothing_if_not_required(self):
         custom_networking = CustomNetworking(
-            make_scripts(apply_configured_networking=False), self.config_dir
+            make_scripts(apply_configured_networking=False), config_dir
         )
-        mock_bring_down_networking = self.patch(
+        mock_bring_down_networking = mocker.patch.object(
             custom_networking, "_bring_down_networking"
         )
         custom_networking.__enter__()
 
-        self.mock_output_and_send_scripts.assert_not_called()
+        maas_run_remote_scripts.output_and_send_scripts.assert_not_called()
         mock_bring_down_networking.assert_not_called()
 
-    def test_enter_raises_filenotfounderror_if_netplan_yaml_missing(self):
+    def test_enter_raises_filenotfounderror_if_netplan_yaml_missing(
+        self, mocker, tmp_path
+    ):
+        config_dir = os.path.join(tmp_path, "config")
+        os.makedirs(config_dir, exist_ok=True)
+        netplan_dir = os.path.join(tmp_path, "netplan")
+        maas_run_remote_scripts.NETPLAN_DIR = netplan_dir
+        os.makedirs(netplan_dir, exist_ok=True)
+
+        mock_output_and_send_scripts = mocker.patch.object(
+            maas_run_remote_scripts, "output_and_send_scripts"
+        )
+        mocker.patch.object(maas_run_remote_scripts, "run_and_check")
+        mocker.patch.object(maas_run_remote_scripts, "get_interfaces")
+        mocker.patch.object(maas_run_remote_scripts, "signal", autospec=True)
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+        mocker.patch.object(maas_run_remote_scripts.sys.stderr, "write")
+        mocker.patch.object(maas_run_remote_scripts.time, "sleep")
+        mocker.patch.object(maas_run_remote_scripts.dbus, "SystemBus")
+
         scripts = make_scripts(apply_configured_networking=True)
-        custom_networking = CustomNetworking(scripts, self.config_dir)
-        mock_bring_down_networking = self.patch(
+        custom_networking = CustomNetworking(scripts, config_dir)
+        mock_bring_down_networking = mocker.patch.object(
             custom_networking, "_bring_down_networking"
         )
 
-        self.assertRaises(FileNotFoundError, custom_networking.__enter__)
-        self.mock_output_and_send_scripts.assert_has_calls(
+        with pytest.raises(FileNotFoundError):
+            custom_networking.__enter__()
+        mock_output_and_send_scripts.assert_has_calls(
             [
                 call(ANY, scripts, True, status="APPLYING_NETCONF"),
                 call(
@@ -939,145 +1018,237 @@ class TestCustomNetworking(MAASTestCase):
         )
         mock_bring_down_networking.assert_not_called()
 
-    def test_enter_applies_custom_networking(self):
-        netplan_yaml_content = factory.make_string()
-        factory.make_file(
-            self.config_dir, "netplan.yaml", netplan_yaml_content
+    def test_enter_applies_custom_networking(self, mocker, tmp_path):
+        config_dir = os.path.join(tmp_path, "config")
+        os.makedirs(config_dir, exist_ok=True)
+        netplan_dir = os.path.join(tmp_path, "netplan")
+        maas_run_remote_scripts.NETPLAN_DIR = netplan_dir
+        os.makedirs(netplan_dir, exist_ok=True)
+
+        mock_output_and_send_scripts = mocker.patch.object(
+            maas_run_remote_scripts, "output_and_send_scripts"
         )
+        mock_run_and_check = mocker.patch.object(
+            maas_run_remote_scripts, "run_and_check"
+        )
+        mock_get_interfaces = mocker.patch.object(
+            maas_run_remote_scripts, "get_interfaces"
+        )
+        mock_signal = mocker.patch.object(
+            maas_run_remote_scripts, "signal", autospec=True
+        )
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+        mocker.patch.object(maas_run_remote_scripts.sys.stderr, "write")
+        mocker.patch.object(maas_run_remote_scripts.time, "sleep")
+        mocker.patch.object(maas_run_remote_scripts.dbus, "SystemBus")
+
+        netplan_yaml_content = factory.make_string()
+        factory.make_file(config_dir, "netplan.yaml", netplan_yaml_content)
         ephemeral_config_content = factory.make_string()
         factory.make_file(
-            self.netplan_dir, "50-cloud-init.yaml", ephemeral_config_content
+            netplan_dir, "50-cloud-init.yaml", ephemeral_config_content
         )
         scripts = make_scripts(
-            scripts_dir=self.base_dir, apply_configured_networking=True
+            scripts_dir=tmp_path, apply_configured_networking=True
         )
-        custom_networking = CustomNetworking(scripts, self.config_dir)
-        mock_bring_down_networking = self.patch(
+        custom_networking = CustomNetworking(scripts, config_dir)
+        mock_bring_down_networking = mocker.patch.object(
             custom_networking, "_bring_down_networking"
         )
 
         with custom_networking:
             # Verify config files where moved into place
-            self.assertEqual(
-                netplan_yaml_content,
-                open(os.path.join(self.netplan_dir, "netplan.yaml")).read(),
+            assert (
+                netplan_yaml_content
+                == open(os.path.join(netplan_dir, "netplan.yaml")).read()
             )
-            self.assertFalse(
-                os.path.exists(
-                    os.path.join(self.netplan_dir, "50-cloud-init.yaml")
-                )
+            assert not os.path.exists(
+                os.path.join(netplan_dir, "50-cloud-init.yaml")
             )
-            self.assertEqual(
-                ephemeral_config_content,
-                open(
+            assert (
+                ephemeral_config_content
+                == open(
                     os.path.join(
-                        self.config_dir, "netplan.bak", "50-cloud-init.yaml"
+                        config_dir, "netplan.bak", "50-cloud-init.yaml"
                     ),
-                ).read(),
+                ).read()
             )
             # Verify logs from netplan apply where removed
             for path in ["combined_path", "stdout_path", "stderr_path"]:
-                self.assertFalse(os.path.exists(scripts[0][path]))
+                assert not os.path.exists(scripts[0][path])
             # Disable applying ephemeral netplan
             custom_networking.apply_configured_networking = False
 
-        self.mock_output_and_send_scripts.assert_called_once()
-        self.mock_run_and_check.assert_called_once()
+        mock_output_and_send_scripts.assert_called_once()
+        mock_run_and_check.assert_called_once()
 
-        self.mock_get_interfaces.assert_called_once_with(clear_cache=True)
-        self.mock_signal.assert_called_once()
+        mock_get_interfaces.assert_called_once_with(clear_cache=True)
+        mock_signal.assert_called_once()
         mock_bring_down_networking.assert_called_once()
 
-    def test_enter_applies_custom_networking_no_send(self):
-        netplan_yaml_content = factory.make_string()
-        factory.make_file(
-            self.config_dir, "netplan.yaml", netplan_yaml_content
+    def test_enter_applies_custom_networking_no_send(self, mocker, tmp_path):
+        config_dir = os.path.join(tmp_path, "config")
+        os.makedirs(config_dir, exist_ok=True)
+        netplan_dir = os.path.join(tmp_path, "netplan")
+        maas_run_remote_scripts.NETPLAN_DIR = netplan_dir
+        os.makedirs(netplan_dir, exist_ok=True)
+
+        mock_output_and_send_scripts = mocker.patch.object(
+            maas_run_remote_scripts, "output_and_send_scripts"
         )
+        mock_run_and_check = mocker.patch.object(
+            maas_run_remote_scripts, "run_and_check"
+        )
+        mock_get_interfaces = mocker.patch.object(
+            maas_run_remote_scripts, "get_interfaces"
+        )
+        mock_signal = mocker.patch.object(
+            maas_run_remote_scripts, "signal", autospec=True
+        )
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+        mocker.patch.object(maas_run_remote_scripts.sys.stderr, "write")
+        mocker.patch.object(maas_run_remote_scripts.time, "sleep")
+        mocker.patch.object(maas_run_remote_scripts.dbus, "SystemBus")
+
+        netplan_yaml_content = factory.make_string()
+        factory.make_file(config_dir, "netplan.yaml", netplan_yaml_content)
         ephemeral_config_content = factory.make_string()
         factory.make_file(
-            self.netplan_dir, "50-cloud-init.yaml", ephemeral_config_content
+            netplan_dir, "50-cloud-init.yaml", ephemeral_config_content
         )
         scripts = make_scripts(
-            scripts_dir=self.base_dir, apply_configured_networking=True
+            scripts_dir=tmp_path, apply_configured_networking=True
         )
-        custom_networking = CustomNetworking(scripts, self.config_dir, False)
-        mock_bring_down_networking = self.patch(
+        custom_networking = CustomNetworking(scripts, config_dir, False)
+        mock_bring_down_networking = mocker.patch.object(
             custom_networking, "_bring_down_networking"
         )
 
         with custom_networking:
             # Verify config files where moved into place
-            self.assertEqual(
-                netplan_yaml_content,
-                open(os.path.join(self.netplan_dir, "netplan.yaml")).read(),
+            assert (
+                netplan_yaml_content
+                == open(os.path.join(netplan_dir, "netplan.yaml")).read()
             )
-            self.assertFalse(
-                os.path.exists(
-                    os.path.join(self.netplan_dir, "50-cloud-init.yaml")
-                )
+            assert not os.path.exists(
+                os.path.join(netplan_dir, "50-cloud-init.yaml")
             )
-            self.assertEqual(
-                ephemeral_config_content,
-                open(
+            assert (
+                ephemeral_config_content
+                == open(
                     os.path.join(
-                        self.config_dir, "netplan.bak", "50-cloud-init.yaml"
+                        config_dir, "netplan.bak", "50-cloud-init.yaml"
                     ),
-                ).read(),
+                ).read()
             )
             # Verify logs from netplan apply where removed
             for path in ["combined_path", "stdout_path", "stderr_path"]:
-                self.assertFalse(os.path.exists(scripts[0][path]))
+                assert not os.path.exists(scripts[0][path])
             # Disable applying ephemeral netplan
             custom_networking.apply_configured_networking = False
 
-        self.mock_output_and_send_scripts.assert_called_once()
-        self.mock_run_and_check.assert_called_once()
+        mock_output_and_send_scripts.assert_called_once()
+        mock_run_and_check.assert_called_once()
 
-        self.mock_get_interfaces.assert_called_once_with(clear_cache=True)
-        self.mock_signal.assert_not_called()
+        mock_get_interfaces.assert_called_once_with(clear_cache=True)
+        mock_signal.assert_not_called()
         mock_bring_down_networking.assert_called_once()
 
-    def test_enter_raises_oserror_when_netplan_apply_fails(self):
-        factory.make_file(self.config_dir, "netplan.yaml")
-        factory.make_file(self.netplan_dir, "50-cloud-init.yaml")
-        scripts = make_scripts(
-            scripts_dir=self.base_dir, apply_configured_networking=True
+    def test_enter_raises_oserror_when_netplan_apply_fails(
+        self, mocker, tmp_path
+    ):
+        config_dir = os.path.join(tmp_path, "config")
+        os.makedirs(config_dir, exist_ok=True)
+        netplan_dir = os.path.join(tmp_path, "netplan")
+        maas_run_remote_scripts.NETPLAN_DIR = netplan_dir
+        os.makedirs(netplan_dir, exist_ok=True)
+
+        mock_output_and_send_scripts = mocker.patch.object(
+            maas_run_remote_scripts, "output_and_send_scripts"
         )
-        custom_networking = CustomNetworking(scripts, self.config_dir)
-        mock_bring_down_networking = self.patch(
+        mock_run_and_check = mocker.patch.object(
+            maas_run_remote_scripts, "run_and_check"
+        )
+        mock_get_interfaces = mocker.patch.object(
+            maas_run_remote_scripts, "get_interfaces"
+        )
+        mock_signal = mocker.patch.object(
+            maas_run_remote_scripts, "signal", autospec=True
+        )
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+        mocker.patch.object(maas_run_remote_scripts.sys.stderr, "write")
+        mocker.patch.object(maas_run_remote_scripts.time, "sleep")
+        mocker.patch.object(maas_run_remote_scripts.dbus, "SystemBus")
+
+        factory.make_file(config_dir, "netplan.yaml")
+        factory.make_file(netplan_dir, "50-cloud-init.yaml")
+        scripts = make_scripts(
+            scripts_dir=tmp_path, apply_configured_networking=True
+        )
+        custom_networking = CustomNetworking(scripts, config_dir)
+        mock_bring_down_networking = mocker.patch.object(
             custom_networking, "_bring_down_networking"
         )
 
-        self.mock_run_and_check.return_value = False
-        mock_clean_logs = self.patch(maas_run_remote_scripts, "_clean_logs")
+        mock_run_and_check.return_value = False
+        mock_clean_logs = mocker.patch.object(
+            maas_run_remote_scripts, "_clean_logs"
+        )
 
-        self.assertRaises(OSError, custom_networking.__enter__)
-        self.mock_output_and_send_scripts.assert_called_once()
-        self.mock_get_interfaces.assert_not_called()
-        self.mock_signal.assert_not_called()
+        with pytest.raises(OSError):
+            custom_networking.__enter__()
+        mock_output_and_send_scripts.assert_called_once()
+        mock_get_interfaces.assert_not_called()
+        mock_signal.assert_not_called()
         mock_clean_logs.assert_not_called()
         mock_bring_down_networking.assert_called_once()
 
-    def test_enter_raises_signalexception_when_signal_fails(self):
-        factory.make_file(self.config_dir, "netplan.yaml")
-        factory.make_file(self.netplan_dir, "50-cloud-init.yaml")
-        scripts = make_scripts(
-            scripts_dir=self.base_dir, apply_configured_networking=True
+    def test_enter_raises_signalexception_when_signal_fails(
+        self, mocker, tmp_path
+    ):
+        config_dir = os.path.join(tmp_path, "config")
+        os.makedirs(config_dir, exist_ok=True)
+        netplan_dir = os.path.join(tmp_path, "netplan")
+        maas_run_remote_scripts.NETPLAN_DIR = netplan_dir
+        os.makedirs(netplan_dir, exist_ok=True)
+
+        mock_output_and_send_scripts = mocker.patch.object(
+            maas_run_remote_scripts, "output_and_send_scripts"
         )
-        custom_networking = CustomNetworking(scripts, self.config_dir)
-        mock_apply_ephemeral_netplan = self.patch(
+        mock_run_and_check = mocker.patch.object(
+            maas_run_remote_scripts, "run_and_check"
+        )
+        mock_get_interfaces = mocker.patch.object(
+            maas_run_remote_scripts, "get_interfaces"
+        )
+        mock_signal = mocker.patch.object(
+            maas_run_remote_scripts, "signal", autospec=True
+        )
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+        mocker.patch.object(maas_run_remote_scripts.sys.stderr, "write")
+        mocker.patch.object(maas_run_remote_scripts.time, "sleep")
+        mocker.patch.object(maas_run_remote_scripts.dbus, "SystemBus")
+
+        factory.make_file(config_dir, "netplan.yaml")
+        factory.make_file(netplan_dir, "50-cloud-init.yaml")
+        scripts = make_scripts(
+            scripts_dir=tmp_path, apply_configured_networking=True
+        )
+        custom_networking = CustomNetworking(scripts, config_dir)
+        mock_apply_ephemeral_netplan = mocker.patch.object(
             custom_networking, "_apply_ephemeral_netplan"
         )
-        mock_bring_down_networking = self.patch(
+        mock_bring_down_networking = mocker.patch.object(
             custom_networking, "_bring_down_networking"
         )
-        self.mock_signal.side_effect = SignalException(
-            factory.make_name("error")
+        mock_signal.side_effect = SignalException(factory.make_name("error"))
+        mock_clean_logs = mocker.patch.object(
+            maas_run_remote_scripts, "_clean_logs"
         )
-        mock_clean_logs = self.patch(maas_run_remote_scripts, "_clean_logs")
 
-        self.assertRaises(SignalException, custom_networking.__enter__)
-        self.mock_output_and_send_scripts.assert_has_calls(
+        with pytest.raises(SignalException):
+            custom_networking.__enter__()
+        mock_output_and_send_scripts.assert_has_calls(
             [
                 call(ANY, scripts, True, status="APPLYING_NETCONF"),
                 call(
@@ -1090,23 +1261,41 @@ class TestCustomNetworking(MAASTestCase):
                 ),
             ]
         )
-        self.mock_run_and_check.assert_called_once()
-        self.mock_get_interfaces.assert_called_once()
-        self.mock_signal.assert_called_once()
+        mock_run_and_check.assert_called_once()
+        mock_get_interfaces.assert_called_once()
+        mock_signal.assert_called_once()
         mock_apply_ephemeral_netplan.assert_called_once()
         mock_clean_logs.assert_not_called()
         mock_bring_down_networking.assert_called_once()
 
-    def test_apply_ephemeral_netplan_does_nothing_if_not_backup_config(self):
-        mock_check_call = self.patch(maas_run_remote_scripts, "check_call")
-        mock_signal_wrapper = self.patch(
+    def test_apply_ephemeral_netplan_does_nothing_if_not_backup_config(
+        self, mocker, tmp_path
+    ):
+        config_dir = os.path.join(tmp_path, "config")
+        os.makedirs(config_dir, exist_ok=True)
+        netplan_dir = os.path.join(tmp_path, "netplan")
+        maas_run_remote_scripts.NETPLAN_DIR = netplan_dir
+        os.makedirs(netplan_dir, exist_ok=True)
+
+        mock_check_call = mocker.patch.object(
+            maas_run_remote_scripts, "check_call"
+        )
+        mock_signal_wrapper = mocker.patch.object(
             maas_run_remote_scripts, "signal_wrapper"
         )
+        mock_get_interfaces = mocker.patch.object(
+            maas_run_remote_scripts, "get_interfaces"
+        )
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+        mocker.patch.object(maas_run_remote_scripts.sys.stderr, "write")
+        mocker.patch.object(maas_run_remote_scripts.time, "sleep")
+        mocker.patch.object(maas_run_remote_scripts.dbus, "SystemBus")
+
         scripts = make_scripts(
-            scripts_dir=self.base_dir, apply_configured_networking=True
+            scripts_dir=tmp_path, apply_configured_networking=True
         )
         custom_networking = CustomNetworking(scripts, factory.make_name())
-        mock_bring_down_networking = self.patch(
+        mock_bring_down_networking = mocker.patch.object(
             custom_networking, "_bring_down_networking"
         )
 
@@ -1114,161 +1303,236 @@ class TestCustomNetworking(MAASTestCase):
 
         mock_check_call.assert_not_called()
         mock_signal_wrapper.assert_not_called()
-        self.mock_get_interfaces.assert_not_called()
+        mock_get_interfaces.assert_not_called()
         mock_bring_down_networking.assert_not_called()
 
-    def test_apply_ephemeral_netplan(self):
-        mock_check_call = self.patch(maas_run_remote_scripts, "check_call")
-        mock_signal_wrapper = self.patch(
+    def test_apply_ephemeral_netplan(self, mocker, tmp_path):
+        config_dir = os.path.join(tmp_path, "config")
+        os.makedirs(config_dir, exist_ok=True)
+        netplan_dir = os.path.join(tmp_path, "netplan")
+        maas_run_remote_scripts.NETPLAN_DIR = netplan_dir
+        os.makedirs(netplan_dir, exist_ok=True)
+
+        mock_check_call = mocker.patch.object(
+            maas_run_remote_scripts, "check_call"
+        )
+        mock_signal_wrapper = mocker.patch.object(
             maas_run_remote_scripts, "signal_wrapper"
         )
-        netplan_yaml_content = factory.make_string()
-        factory.make_file(
-            self.netplan_dir, "netplan.yaml", netplan_yaml_content
+        mock_get_interfaces = mocker.patch.object(
+            maas_run_remote_scripts, "get_interfaces"
         )
-        backup_dir = os.path.join(self.config_dir, "netplan.bak")
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+        mocker.patch.object(maas_run_remote_scripts.sys.stderr, "write")
+        mocker.patch.object(maas_run_remote_scripts.time, "sleep")
+        mocker.patch.object(maas_run_remote_scripts.dbus, "SystemBus")
+
+        netplan_yaml_content = factory.make_string()
+        factory.make_file(netplan_dir, "netplan.yaml", netplan_yaml_content)
+        backup_dir = os.path.join(config_dir, "netplan.bak")
         os.makedirs(backup_dir, exist_ok=True)
         ephemeral_config_content = factory.make_string()
         factory.make_file(
             backup_dir, "50-cloud-init.yaml", ephemeral_config_content
         )
         scripts = make_scripts(
-            scripts_dir=self.base_dir, apply_configured_networking=True
+            scripts_dir=tmp_path, apply_configured_networking=True
         )
-        custom_networking = CustomNetworking(scripts, self.config_dir)
-        mock_bring_down_networking = self.patch(
+        custom_networking = CustomNetworking(scripts, config_dir)
+        mock_bring_down_networking = mocker.patch.object(
             custom_networking, "_bring_down_networking"
         )
 
         custom_networking._apply_ephemeral_netplan()
 
-        self.assertFalse(os.path.exists(backup_dir))
-        self.assertEqual(
-            ephemeral_config_content,
-            open(os.path.join(self.netplan_dir, "50-cloud-init.yaml")).read(),
+        assert not os.path.exists(backup_dir)
+        assert (
+            ephemeral_config_content
+            == open(os.path.join(netplan_dir, "50-cloud-init.yaml")).read()
         )
         mock_check_call.assert_called_once()
         mock_signal_wrapper.assert_called_once()
-        self.mock_get_interfaces.assert_called_once_with(clear_cache=True)
+        mock_get_interfaces.assert_called_once_with(clear_cache=True)
         mock_bring_down_networking.assert_called_once()
 
-    def test_apply_ephemeral_netplan_no_send(self):
-        mock_check_call = self.patch(maas_run_remote_scripts, "check_call")
-        mock_signal_wrapper = self.patch(
+    def test_apply_ephemeral_netplan_no_send(self, mocker, tmp_path):
+        config_dir = os.path.join(tmp_path, "config")
+        os.makedirs(config_dir, exist_ok=True)
+        netplan_dir = os.path.join(tmp_path, "netplan")
+        maas_run_remote_scripts.NETPLAN_DIR = netplan_dir
+        os.makedirs(netplan_dir, exist_ok=True)
+
+        mock_check_call = mocker.patch.object(
+            maas_run_remote_scripts, "check_call"
+        )
+        mock_signal_wrapper = mocker.patch.object(
             maas_run_remote_scripts, "signal_wrapper"
         )
-        netplan_yaml_content = factory.make_string()
-        factory.make_file(
-            self.netplan_dir, "netplan.yaml", netplan_yaml_content
+        mock_get_interfaces = mocker.patch.object(
+            maas_run_remote_scripts, "get_interfaces"
         )
-        backup_dir = os.path.join(self.config_dir, "netplan.bak")
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+        mocker.patch.object(maas_run_remote_scripts.sys.stderr, "write")
+        mocker.patch.object(maas_run_remote_scripts.time, "sleep")
+        mocker.patch.object(maas_run_remote_scripts.dbus, "SystemBus")
+
+        netplan_yaml_content = factory.make_string()
+        factory.make_file(netplan_dir, "netplan.yaml", netplan_yaml_content)
+        backup_dir = os.path.join(config_dir, "netplan.bak")
         os.makedirs(backup_dir, exist_ok=True)
         ephemeral_config_content = factory.make_string()
         factory.make_file(
             backup_dir, "50-cloud-init.yaml", ephemeral_config_content
         )
         scripts = make_scripts(
-            scripts_dir=self.base_dir, apply_configured_networking=True
+            scripts_dir=tmp_path, apply_configured_networking=True
         )
-        custom_networking = CustomNetworking(scripts, self.config_dir, False)
-        mock_bring_down_networking = self.patch(
+        custom_networking = CustomNetworking(scripts, config_dir, False)
+        mock_bring_down_networking = mocker.patch.object(
             custom_networking, "_bring_down_networking"
         )
 
         custom_networking._apply_ephemeral_netplan()
 
-        self.assertFalse(os.path.exists(backup_dir))
-        self.assertEqual(
-            ephemeral_config_content,
-            open(os.path.join(self.netplan_dir, "50-cloud-init.yaml")).read(),
+        assert not os.path.exists(backup_dir)
+        assert (
+            ephemeral_config_content
+            == open(os.path.join(netplan_dir, "50-cloud-init.yaml")).read()
         )
         mock_check_call.assert_called_once()
         mock_signal_wrapper.assert_not_called()
-        self.mock_get_interfaces.assert_called_once_with(clear_cache=True)
+        mock_get_interfaces.assert_called_once_with(clear_cache=True)
         mock_bring_down_networking.assert_called_once()
 
-    def test_apply_ephemeral_netplan_ignores_timeout_expired(self):
-        mock_check_call = self.patch(maas_run_remote_scripts, "check_call")
+    def test_apply_ephemeral_netplan_ignores_timeout_expired(
+        self, mocker, tmp_path
+    ):
+        config_dir = os.path.join(tmp_path, "config")
+        os.makedirs(config_dir, exist_ok=True)
+        netplan_dir = os.path.join(tmp_path, "netplan")
+        maas_run_remote_scripts.NETPLAN_DIR = netplan_dir
+        os.makedirs(netplan_dir, exist_ok=True)
+
+        mock_check_call = mocker.patch.object(
+            maas_run_remote_scripts, "check_call"
+        )
         mock_check_call.side_effect = TimeoutExpired(
             ["netplan", "apply", "--debug"], 60
         )
-        mock_signal_wrapper = self.patch(
+        mock_signal_wrapper = mocker.patch.object(
             maas_run_remote_scripts, "signal_wrapper"
         )
-        netplan_yaml_content = factory.make_string()
-        factory.make_file(
-            self.netplan_dir, "netplan.yaml", netplan_yaml_content
+        mock_get_interfaces = mocker.patch.object(
+            maas_run_remote_scripts, "get_interfaces"
         )
-        backup_dir = os.path.join(self.config_dir, "netplan.bak")
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+        mocker.patch.object(maas_run_remote_scripts.sys.stderr, "write")
+        mocker.patch.object(maas_run_remote_scripts.time, "sleep")
+        mocker.patch.object(maas_run_remote_scripts.dbus, "SystemBus")
+
+        netplan_yaml_content = factory.make_string()
+        factory.make_file(netplan_dir, "netplan.yaml", netplan_yaml_content)
+        backup_dir = os.path.join(config_dir, "netplan.bak")
         os.makedirs(backup_dir, exist_ok=True)
         ephemeral_config_content = factory.make_string()
         factory.make_file(
             backup_dir, "50-cloud-init.yaml", ephemeral_config_content
         )
         scripts = make_scripts(
-            scripts_dir=self.base_dir, apply_configured_networking=True
+            scripts_dir=tmp_path, apply_configured_networking=True
         )
-        custom_networking = CustomNetworking(scripts, self.config_dir)
-        mock_bring_down_networking = self.patch(
+        custom_networking = CustomNetworking(scripts, config_dir)
+        mock_bring_down_networking = mocker.patch.object(
             custom_networking, "_bring_down_networking"
         )
 
         custom_networking._apply_ephemeral_netplan()
 
-        self.assertFalse(os.path.exists(backup_dir))
-        self.assertEqual(
-            ephemeral_config_content,
-            open(os.path.join(self.netplan_dir, "50-cloud-init.yaml")).read(),
+        assert not os.path.exists(backup_dir)
+        assert (
+            ephemeral_config_content
+            == open(os.path.join(netplan_dir, "50-cloud-init.yaml")).read()
         )
         mock_check_call.assert_called_once()
         mock_signal_wrapper.assert_called_once()
-        self.mock_get_interfaces.assert_called_once_with(clear_cache=True)
+        mock_get_interfaces.assert_called_once_with(clear_cache=True)
         mock_bring_down_networking.assert_called_once()
 
-    def test_apply_ephemeral_netplan_ignores_calledprocesserror(self):
-        mock_check_call = self.patch(maas_run_remote_scripts, "check_call")
+    def test_apply_ephemeral_netplan_ignores_calledprocesserror(
+        self, mocker, tmp_path
+    ):
+        config_dir = os.path.join(tmp_path, "config")
+        os.makedirs(config_dir, exist_ok=True)
+        netplan_dir = os.path.join(tmp_path, "netplan")
+        maas_run_remote_scripts.NETPLAN_DIR = netplan_dir
+        os.makedirs(netplan_dir, exist_ok=True)
+
+        mock_check_call = mocker.patch.object(
+            maas_run_remote_scripts, "check_call"
+        )
         mock_check_call.side_effect = CalledProcessError(
             -1, ["netplan", "apply", "--debug"]
         )
-        mock_signal_wrapper = self.patch(
+        mock_signal_wrapper = mocker.patch.object(
             maas_run_remote_scripts, "signal_wrapper"
         )
-        netplan_yaml_content = factory.make_string()
-        factory.make_file(
-            self.netplan_dir, "netplan.yaml", netplan_yaml_content
+        mock_get_interfaces = mocker.patch.object(
+            maas_run_remote_scripts, "get_interfaces"
         )
-        backup_dir = os.path.join(self.config_dir, "netplan.bak")
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+        mocker.patch.object(maas_run_remote_scripts.sys.stderr, "write")
+        mocker.patch.object(maas_run_remote_scripts.time, "sleep")
+        mocker.patch.object(maas_run_remote_scripts.dbus, "SystemBus")
+
+        netplan_yaml_content = factory.make_string()
+        factory.make_file(netplan_dir, "netplan.yaml", netplan_yaml_content)
+        backup_dir = os.path.join(config_dir, "netplan.bak")
         os.makedirs(backup_dir, exist_ok=True)
         ephemeral_config_content = factory.make_string()
         factory.make_file(
             backup_dir, "50-cloud-init.yaml", ephemeral_config_content
         )
         scripts = make_scripts(
-            scripts_dir=self.base_dir, apply_configured_networking=True
+            scripts_dir=tmp_path, apply_configured_networking=True
         )
-        custom_networking = CustomNetworking(scripts, self.config_dir)
-        mock_bring_down_networking = self.patch(
+        custom_networking = CustomNetworking(scripts, config_dir)
+        mock_bring_down_networking = mocker.patch.object(
             custom_networking, "_bring_down_networking"
         )
 
         custom_networking._apply_ephemeral_netplan()
 
-        self.assertFalse(os.path.exists(backup_dir))
-        self.assertEqual(
-            ephemeral_config_content,
-            open(os.path.join(self.netplan_dir, "50-cloud-init.yaml")).read(),
+        assert not os.path.exists(backup_dir)
+        assert (
+            ephemeral_config_content
+            == open(os.path.join(netplan_dir, "50-cloud-init.yaml")).read()
         )
         mock_check_call.assert_called_once()
         mock_signal_wrapper.assert_called_once()
-        self.mock_get_interfaces.assert_called_once_with(clear_cache=True)
+        mock_get_interfaces.assert_called_once_with(clear_cache=True)
         mock_bring_down_networking.assert_called_once()
 
-    def test_exit_does_nothing_not_applying_config(self):
+    def test_exit_does_nothing_not_applying_config(self, mocker, tmp_path):
+        config_dir = os.path.join(tmp_path, "config")
+        os.makedirs(config_dir, exist_ok=True)
+        netplan_dir = os.path.join(tmp_path, "netplan")
+        maas_run_remote_scripts.NETPLAN_DIR = netplan_dir
+        os.makedirs(netplan_dir, exist_ok=True)
+
+        mocker.patch.object(maas_run_remote_scripts, "output_and_send_scripts")
+        mocker.patch.object(maas_run_remote_scripts, "run_and_check")
+        mocker.patch.object(maas_run_remote_scripts, "get_interfaces")
+        mocker.patch.object(maas_run_remote_scripts, "signal", autospec=True)
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+        mocker.patch.object(maas_run_remote_scripts.sys.stderr, "write")
+        mocker.patch.object(maas_run_remote_scripts.time, "sleep")
+        mocker.patch.object(maas_run_remote_scripts.dbus, "SystemBus")
+
         scripts = make_scripts(
-            scripts_dir=self.base_dir, apply_configured_networking=False
+            scripts_dir=tmp_path, apply_configured_networking=False
         )
-        custom_networking = CustomNetworking(scripts, self.config_dir)
-        mock_apply_ephemeral_netplan = self.patch(
+        custom_networking = CustomNetworking(scripts, config_dir)
+        mock_apply_ephemeral_netplan = mocker.patch.object(
             custom_networking, "_apply_ephemeral_netplan"
         )
 
@@ -1276,12 +1540,27 @@ class TestCustomNetworking(MAASTestCase):
 
         mock_apply_ephemeral_netplan.assert_not_called()
 
-    def test_exit_applies_ephemeral_netplan(self):
+    def test_exit_applies_ephemeral_netplan(self, mocker, tmp_path):
+        config_dir = os.path.join(tmp_path, "config")
+        os.makedirs(config_dir, exist_ok=True)
+        netplan_dir = os.path.join(tmp_path, "netplan")
+        maas_run_remote_scripts.NETPLAN_DIR = netplan_dir
+        os.makedirs(netplan_dir, exist_ok=True)
+
+        mocker.patch.object(maas_run_remote_scripts, "output_and_send_scripts")
+        mocker.patch.object(maas_run_remote_scripts, "run_and_check")
+        mocker.patch.object(maas_run_remote_scripts, "get_interfaces")
+        mocker.patch.object(maas_run_remote_scripts, "signal", autospec=True)
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+        mocker.patch.object(maas_run_remote_scripts.sys.stderr, "write")
+        mocker.patch.object(maas_run_remote_scripts.time, "sleep")
+        mocker.patch.object(maas_run_remote_scripts.dbus, "SystemBus")
+
         scripts = make_scripts(
-            scripts_dir=self.base_dir, apply_configured_networking=True
+            scripts_dir=tmp_path, apply_configured_networking=True
         )
-        custom_networking = CustomNetworking(scripts, self.config_dir)
-        mock_apply_ephemeral_netplan = self.patch(
+        custom_networking = CustomNetworking(scripts, config_dir)
+        mock_apply_ephemeral_netplan = mocker.patch.object(
             custom_networking, "_apply_ephemeral_netplan"
         )
 
@@ -1289,21 +1568,38 @@ class TestCustomNetworking(MAASTestCase):
 
         mock_apply_ephemeral_netplan.assert_called_once()
 
-    def test_bring_down_networking(self):
+    def test_bring_down_networking(self, mocker, tmp_path):
+        config_dir = os.path.join(tmp_path, "config")
+        os.makedirs(config_dir, exist_ok=True)
+        netplan_dir = os.path.join(tmp_path, "netplan")
+        maas_run_remote_scripts.NETPLAN_DIR = netplan_dir
+        os.makedirs(netplan_dir, exist_ok=True)
+
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+        mocker.patch.object(maas_run_remote_scripts.sys.stderr, "write")
+        mocker.patch.object(maas_run_remote_scripts.time, "sleep")
+        mocker.patch.object(maas_run_remote_scripts.dbus, "SystemBus")
+
         virtual_devs = [factory.make_name("vdev") for _ in range(3)]
         physical_devs = [factory.make_name("pdev") for _ in range(3)]
-        mock_listdir = self.patch(maas_run_remote_scripts.os, "listdir")
+        mock_listdir = mocker.patch.object(
+            maas_run_remote_scripts.os, "listdir"
+        )
         mock_listdir.side_effect = (
             ["lo"] + virtual_devs,
             ["lo"] + physical_devs,
         )
-        mock_isfile = self.patch(maas_run_remote_scripts.os.path, "isfile")
-        mock_isfile.return_value = True
-        mock_check_call = self.patch(maas_run_remote_scripts, "check_call")
-        scripts = make_scripts(
-            scripts_dir=self.base_dir, apply_configured_networking=True
+        mock_isfile = mocker.patch.object(
+            maas_run_remote_scripts.os.path, "isfile"
         )
-        custom_networking = CustomNetworking(scripts, self.config_dir)
+        mock_isfile.return_value = True
+        mock_check_call = mocker.patch.object(
+            maas_run_remote_scripts, "check_call"
+        )
+        scripts = make_scripts(
+            scripts_dir=tmp_path, apply_configured_networking=True
+        )
+        custom_networking = CustomNetworking(scripts, config_dir)
 
         custom_networking._bring_down_networking()
 
@@ -1318,42 +1614,78 @@ class TestCustomNetworking(MAASTestCase):
             ],
         )
 
-    def test_bring_down_networking_ignores_non_interfaces(self):
+    def test_bring_down_networking_ignores_non_interfaces(
+        self, mocker, tmp_path
+    ):
+        config_dir = os.path.join(tmp_path, "config")
+        os.makedirs(config_dir, exist_ok=True)
+        netplan_dir = os.path.join(tmp_path, "netplan")
+        maas_run_remote_scripts.NETPLAN_DIR = netplan_dir
+        os.makedirs(netplan_dir, exist_ok=True)
+
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+        mocker.patch.object(maas_run_remote_scripts.sys.stderr, "write")
+        mocker.patch.object(maas_run_remote_scripts.time, "sleep")
+        mocker.patch.object(maas_run_remote_scripts.dbus, "SystemBus")
+
         virtual_devs = [factory.make_name("vdev") for _ in range(3)]
         physical_devs = [factory.make_name("pdev") for _ in range(3)]
-        mock_listdir = self.patch(maas_run_remote_scripts.os, "listdir")
+        mock_listdir = mocker.patch.object(
+            maas_run_remote_scripts.os, "listdir"
+        )
         mock_listdir.side_effect = (
             ["lo"] + virtual_devs,
             ["lo"] + physical_devs,
         )
-        mock_isfile = self.patch(maas_run_remote_scripts.os.path, "isfile")
-        mock_isfile.return_value = False
-        mock_check_call = self.patch(maas_run_remote_scripts, "check_call")
-        scripts = make_scripts(
-            scripts_dir=self.base_dir, apply_configured_networking=True
+        mock_isfile = mocker.patch.object(
+            maas_run_remote_scripts.os.path, "isfile"
         )
-        custom_networking = CustomNetworking(scripts, self.config_dir)
+        mock_isfile.return_value = False
+        mock_check_call = mocker.patch.object(
+            maas_run_remote_scripts, "check_call"
+        )
+        scripts = make_scripts(
+            scripts_dir=tmp_path, apply_configured_networking=True
+        )
+        custom_networking = CustomNetworking(scripts, config_dir)
 
         custom_networking._bring_down_networking()
 
         mock_check_call.assert_not_called()
 
-    def test_bring_down_networking_ignores_errors(self):
+    def test_bring_down_networking_ignores_errors(self, mocker, tmp_path):
+        config_dir = os.path.join(tmp_path, "config")
+        os.makedirs(config_dir, exist_ok=True)
+        netplan_dir = os.path.join(tmp_path, "netplan")
+        maas_run_remote_scripts.NETPLAN_DIR = netplan_dir
+        os.makedirs(netplan_dir, exist_ok=True)
+
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+        mocker.patch.object(maas_run_remote_scripts.sys.stderr, "write")
+        mocker.patch.object(maas_run_remote_scripts.time, "sleep")
+        mocker.patch.object(maas_run_remote_scripts.dbus, "SystemBus")
+
         virtual_devs = [factory.make_name("vdev") for _ in range(3)]
         physical_devs = [factory.make_name("pdev") for _ in range(3)]
-        mock_listdir = self.patch(maas_run_remote_scripts.os, "listdir")
+        mock_listdir = mocker.patch.object(
+            maas_run_remote_scripts.os, "listdir"
+        )
         mock_listdir.side_effect = (
             ["lo"] + virtual_devs,
             ["lo"] + physical_devs,
         )
-        mock_isfile = self.patch(maas_run_remote_scripts.os.path, "isfile")
+        mock_isfile = mocker.patch.object(
+            maas_run_remote_scripts.os.path, "isfile"
+        )
         mock_isfile.return_value = True
-        mock_check_call = self.patch(maas_run_remote_scripts, "check_call")
+        mock_check_call = mocker.patch.object(
+            maas_run_remote_scripts, "check_call"
+        )
         mock_check_call.side_effect = Exception()
         scripts = make_scripts(
-            scripts_dir=self.base_dir, apply_configured_networking=True
+            scripts_dir=tmp_path, apply_configured_networking=True
         )
-        custom_networking = CustomNetworking(scripts, self.config_dir)
+        custom_networking = CustomNetworking(scripts, config_dir)
 
         custom_networking._bring_down_networking()
 
@@ -1368,59 +1700,96 @@ class TestCustomNetworking(MAASTestCase):
             ],
         )
 
-    def test_wait_for_networkd_makes_dbus_connection(self):
+    def test_wait_for_networkd_makes_dbus_connection(self, mocker, tmp_path):
+        config_dir = os.path.join(tmp_path, "config")
+        os.makedirs(config_dir, exist_ok=True)
+        netplan_dir = os.path.join(tmp_path, "netplan")
+        maas_run_remote_scripts.NETPLAN_DIR = netplan_dir
+        os.makedirs(netplan_dir, exist_ok=True)
+
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+        mocker.patch.object(maas_run_remote_scripts.sys.stderr, "write")
+        mocker.patch.object(maas_run_remote_scripts.time, "sleep")
+        mock_systembus = mocker.patch.object(
+            maas_run_remote_scripts.dbus, "SystemBus"
+        )
+
         # Clear cache for test
         maas_run_remote_scripts._dbus = None
         maas_run_remote_scripts._systemd_interface = None
-        maas_run_remote_scripts.networkd_interface = None
+        maas_run_remote_scripts._networkd_interface = None
         maas_run_remote_scripts._networkd_properties_interface = None
+
         scripts = make_scripts(
-            scripts_dir=self.base_dir, apply_configured_networking=True
+            scripts_dir=tmp_path, apply_configured_networking=True
         )
-        custom_networking = CustomNetworking(scripts, self.config_dir)
+        custom_networking = CustomNetworking(scripts, config_dir)
 
         # Returns False as mock prevents connection to dbus
-        self.assertFalse(custom_networking._wait_for_networkd(1))
-        self.mock_systembus.assert_called_once()
-        self.assertIsNotNone(maas_run_remote_scripts._dbus)
-        self.assertIsNotNone(maas_run_remote_scripts._systemd_interface)
-        self.assertIsNotNone(maas_run_remote_scripts._networkd_interface)
-        self.assertIsNotNone(
-            maas_run_remote_scripts._networkd_properties_interface
+        assert not custom_networking._wait_for_networkd(1)
+        mock_systembus.assert_called_once()
+        assert maas_run_remote_scripts._dbus is not None
+        assert maas_run_remote_scripts._systemd_interface is not None
+        assert maas_run_remote_scripts._networkd_interface is not None
+        assert (
+            maas_run_remote_scripts._networkd_properties_interface is not None
         )
 
-    def test_wait_for_networkd_loads_from_cache(self):
-        scripts = make_scripts(
-            scripts_dir=self.base_dir, apply_configured_networking=True
+    def test_wait_for_networkd_loads_from_cache(self, mocker, tmp_path):
+        config_dir = os.path.join(tmp_path, "config")
+        os.makedirs(config_dir, exist_ok=True)
+        netplan_dir = os.path.join(tmp_path, "netplan")
+        maas_run_remote_scripts.NETPLAN_DIR = netplan_dir
+        os.makedirs(netplan_dir, exist_ok=True)
+
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+        mocker.patch.object(maas_run_remote_scripts.sys.stderr, "write")
+        mocker.patch.object(maas_run_remote_scripts.time, "sleep")
+        mock_systembus = mocker.patch.object(
+            maas_run_remote_scripts.dbus, "SystemBus"
         )
-        custom_networking = CustomNetworking(scripts, self.config_dir)
+
+        scripts = make_scripts(
+            scripts_dir=tmp_path, apply_configured_networking=True
+        )
+        custom_networking = CustomNetworking(scripts, config_dir)
         maas_run_remote_scripts._dbus = object()
-        self.patch(maas_run_remote_scripts, "_networkd_interface")
-        mock_networkd_properties_interface = self.patch(
+        mocker.patch.object(maas_run_remote_scripts, "_networkd_interface")
+        mock_networkd_properties_interface = mocker.patch.object(
             maas_run_remote_scripts, "_networkd_properties_interface"
         )
         mock_networkd_properties_interface.Get.return_value = "active"
-        self.assertTrue(custom_networking._wait_for_networkd(1))
-        self.mock_systembus.assert_not_called()
+        assert custom_networking._wait_for_networkd(1)
+        mock_systembus.assert_not_called()
 
-    def test_wait_for_networkd_restarts_networkd(self):
-        self.patch(maas_run_remote_scripts, "_dbus")
-        mock_systemd_interface = self.patch(
+    def test_wait_for_networkd_restarts_networkd(self, mocker, tmp_path):
+        config_dir = os.path.join(tmp_path, "config")
+        os.makedirs(config_dir, exist_ok=True)
+        netplan_dir = os.path.join(tmp_path, "netplan")
+        maas_run_remote_scripts.NETPLAN_DIR = netplan_dir
+        os.makedirs(netplan_dir, exist_ok=True)
+
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+        mocker.patch.object(maas_run_remote_scripts.sys.stderr, "write")
+        mocker.patch.object(maas_run_remote_scripts.time, "sleep")
+
+        mocker.patch.object(maas_run_remote_scripts, "_dbus")
+        mock_systemd_interface = mocker.patch.object(
             maas_run_remote_scripts, "_systemd_interface"
         )
-        mock_networkd_interface = self.patch(
+        mock_networkd_interface = mocker.patch.object(
             maas_run_remote_scripts, "_networkd_interface"
         )
-        mock_networkd_properties_interface = self.patch(
+        mock_networkd_properties_interface = mocker.patch.object(
             maas_run_remote_scripts, "_networkd_properties_interface"
         )
         mock_networkd_properties_interface.Get.return_value = random.choice(
             ["failed", "inactive", "deactivating"]
         )
         scripts = make_scripts(
-            scripts_dir=self.base_dir, apply_configured_networking=True
+            scripts_dir=tmp_path, apply_configured_networking=True
         )
-        custom_networking = CustomNetworking(scripts, self.config_dir)
+        custom_networking = CustomNetworking(scripts, config_dir)
 
         custom_networking._wait_for_networkd(1)
 
@@ -1429,24 +1798,34 @@ class TestCustomNetworking(MAASTestCase):
         )
         mock_networkd_interface.Restart.assert_called_once_with("fail")
 
-    def test_wait_for_networkd_waits_for_networkd(self):
-        self.patch(maas_run_remote_scripts, "_dbus")
-        mock_systemd_interface = self.patch(
+    def test_wait_for_networkd_waits_for_networkd(self, mocker, tmp_path):
+        config_dir = os.path.join(tmp_path, "config")
+        os.makedirs(config_dir, exist_ok=True)
+        netplan_dir = os.path.join(tmp_path, "netplan")
+        maas_run_remote_scripts.NETPLAN_DIR = netplan_dir
+        os.makedirs(netplan_dir, exist_ok=True)
+
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+        mocker.patch.object(maas_run_remote_scripts.sys.stderr, "write")
+        mocker.patch.object(maas_run_remote_scripts.time, "sleep")
+
+        mocker.patch.object(maas_run_remote_scripts, "_dbus")
+        mock_systemd_interface = mocker.patch.object(
             maas_run_remote_scripts, "_systemd_interface"
         )
-        mock_networkd_interface = self.patch(
+        mock_networkd_interface = mocker.patch.object(
             maas_run_remote_scripts, "_networkd_interface"
         )
-        mock_networkd_properties_interface = self.patch(
+        mock_networkd_properties_interface = mocker.patch.object(
             maas_run_remote_scripts, "_networkd_properties_interface"
         )
         mock_networkd_properties_interface.Get.return_value = random.choice(
             ["reloading", "activating"]
         )
         scripts = make_scripts(
-            scripts_dir=self.base_dir, apply_configured_networking=True
+            scripts_dir=tmp_path, apply_configured_networking=True
         )
-        custom_networking = CustomNetworking(scripts, self.config_dir)
+        custom_networking = CustomNetworking(scripts, config_dir)
 
         custom_networking._wait_for_networkd(1)
 
@@ -1454,14 +1833,15 @@ class TestCustomNetworking(MAASTestCase):
         mock_networkd_interface.Restart.assert_not_called()
 
 
-class TestParseParameters(MAASTestCase):
-    def tearDown(self):
-        super().tearDown()
+class TestParseParameters:
+    @pytest.fixture(autouse=True)
+    def _cleanup(self):
+        yield
         maas_run_remote_scripts._block_devices = None
         maas_run_remote_scripts._interfaces = None
 
-    def test_get_block_devices(self):
-        mock_get_storage_model_from_udev = self.patch(
+    def test_get_block_devices(self, mocker):
+        mock_get_storage_model_from_udev = mocker.patch.object(
             maas_run_remote_scripts, "get_storage_model_from_udev"
         )
         mock_get_storage_model_from_udev.side_effect = lambda bd: bd
@@ -1474,56 +1854,74 @@ class TestParseParameters(MAASTestCase):
             }
             for _ in range(3)
         ]
-        mock_check_output = self.patch(maas_run_remote_scripts, "check_output")
+        mock_check_output = mocker.patch.object(
+            maas_run_remote_scripts, "check_output"
+        )
         mock_check_output.return_value = json.dumps(
             {"blockdevices": expected_blockdevs}
         ).encode("utf-8")
         maas_run_remote_scripts._block_devices = None
 
-        self.assertCountEqual(expected_blockdevs, get_block_devices())
-        self.assertTrue(mock_get_storage_model_from_udev.called)
+        result = get_block_devices()
+        assert len(expected_blockdevs) == len(result)
+        for item in expected_blockdevs:
+            assert item in result
+        assert mock_get_storage_model_from_udev.called
 
-    def test_get_block_devices_cached(self):
+    def test_get_block_devices_cached(self, mocker):
         block_devices = factory.make_name("block_devices")
-        mock_check_output = self.patch(maas_run_remote_scripts, "check_output")
+        mock_check_output = mocker.patch.object(
+            maas_run_remote_scripts, "check_output"
+        )
         maas_run_remote_scripts._block_devices = block_devices
 
-        self.assertCountEqual(block_devices, get_block_devices())
+        assert block_devices == get_block_devices()
         mock_check_output.assert_not_called()
 
-    def test_get_block_devices_cached_error(self):
-        mock_check_output = self.patch(maas_run_remote_scripts, "check_output")
+        maas_run_remote_scripts._block_devices = None
+
+    def test_get_block_devices_cached_error(self, mocker):
+        mock_check_output = mocker.patch.object(
+            maas_run_remote_scripts, "check_output"
+        )
         maas_run_remote_scripts._block_devices = KeyError()
 
-        self.assertRaises(KeyError, get_block_devices)
+        with pytest.raises(KeyError):
+            get_block_devices()
         mock_check_output.assert_not_called()
 
-    def test_get_block_devices_raises_timeout_keyerror(self):
-        mock_check_output = self.patch(maas_run_remote_scripts, "check_output")
+        maas_run_remote_scripts._block_devices = None
+
+    def test_get_block_devices_raises_timeout_keyerror(self, mocker):
+        mock_check_output = mocker.patch.object(
+            maas_run_remote_scripts, "check_output"
+        )
         mock_check_output.side_effect = TimeoutExpired(
             [factory.make_name("arg") for _ in range(3)], 60
         )
 
-        self.assertRaises(KeyError, get_block_devices)
+        with pytest.raises(KeyError):
+            get_block_devices()
 
-    def test_get_block_devices_raises_calledprocess_keyerror(self):
-        mock_check_output = self.patch(maas_run_remote_scripts, "check_output")
+    def test_get_block_devices_raises_calledprocess_keyerror(self, mocker):
+        mock_check_output = mocker.patch.object(
+            maas_run_remote_scripts, "check_output"
+        )
         mock_check_output.side_effect = CalledProcessError(
             -1, [factory.make_name("arg") for _ in range(3)]
         )
 
-        self.assertRaises(KeyError, get_block_devices)
+        with pytest.raises(KeyError):
+            get_block_devices()
 
     def test_udev_decode(self):
-        self.assertEqual(
-            "QEMU HARDDISK", udev_decode("QEMU\x20HARDDISK\x20\x20\x20")
-        )
+        assert "QEMU HARDDISK" == udev_decode("QEMU\x20HARDDISK\x20\x20\x20")
 
-    def test_get_storage_model_from_udev(self):
-        self.patch(
+    def test_get_storage_model_from_udev(self, mocker):
+        mocker.patch.object(
             maas_run_remote_scripts.os.path, "exists"
         ).return_value = True
-        self.patch(
+        mocker.patch.object(
             maas_run_remote_scripts,
             "open",
             mock_open(
@@ -1536,30 +1934,27 @@ class TestParseParameters(MAASTestCase):
                 )
             ),
         )
-        self.assertEqual(
-            {
-                "maj:min": "8:0",
-                "model": "QEMU_HARDDISK",
-                "model_enc": "QEMU HARDDISK",
-            },
-            get_storage_model_from_udev({"maj:min": "8:0"}),
-        )
+        assert {
+            "maj:min": "8:0",
+            "model": "QEMU_HARDDISK",
+            "model_enc": "QEMU HARDDISK",
+        } == get_storage_model_from_udev({"maj:min": "8:0"})
 
-    def test_get_storage_model_from_udev_warns(self):
-        mock_stderr_write = self.patch(
+    def test_get_storage_model_from_udev_warns(self, mocker):
+        mock_stderr_write = mocker.patch.object(
             maas_run_remote_scripts.sys.stderr, "write"
         )
         model = factory.make_name("model")
         block_dev = {"maj:min": factory.make_name("maj:min"), "model": model}
-        self.assertEqual(
-            {"model_enc": model, **block_dev},
-            get_storage_model_from_udev(block_dev),
-        )
+        assert {
+            "model_enc": model,
+            **block_dev,
+        } == get_storage_model_from_udev(block_dev)
         mock_stderr_write.assert_called_once()
 
-    def test_get_interfaces(self):
+    def test_get_interfaces(self, mocker, tmp_path):
         maas_run_remote_scripts._interfaces = None
-        netplan_dir = self.useFixture(TempDirectory()).path
+        netplan_dir = tmp_path
         maas_run_remote_scripts.NETPLAN_DIR = netplan_dir
         # Bonds and bridges copy the MAC address of the first physical
         # interface by default.
@@ -1627,53 +2022,61 @@ class TestParseParameters(MAASTestCase):
                     default_flow_style=False,
                 )
             )
-        self.patch(maas_run_remote_scripts.os, "listdir").side_effect = (
+        mocker.patch.object(
+            maas_run_remote_scripts.os, "listdir"
+        ).side_effect = (
             ["interfaces.yaml", "bonds.yaml", "bridges.yaml"],
             # Simulate interfaces taking a bit to come up to verify LP:1838114
             # work around.
             ["lo", "eth0", "eth1", "eth2"],
             ["lo", "eth0", "eth1", "eth2", "bond0", "bridge0"],
         )
-        mock_sleep = self.patch(maas_run_remote_scripts.time, "sleep")
+        mock_sleep = mocker.patch.object(maas_run_remote_scripts.time, "sleep")
 
-        self.assertEqual(
-            {br0_mac: "bridge0", eth2_mac: "eth2"}, get_interfaces()
-        )
+        assert {br0_mac: "bridge0", eth2_mac: "eth2"} == get_interfaces()
         # This should only be called once but sometimes unittest catches
         # sleeps from itself which cause the lander to fail.
         mock_sleep.assert_any_call(0.1)
 
-    def test_get_interfaces_fallback(self):
-        mock_listdir = self.patch(maas_run_remote_scripts.os, "listdir")
+    def test_get_interfaces_fallback(self, mocker, tmp_path):
+        mock_listdir = mocker.patch.object(
+            maas_run_remote_scripts.os, "listdir"
+        )
         mock_listdir.side_effect = (
             FileNotFoundError(),
             ["lo", "eth0"],
         )
         eth0_mac = factory.make_mac_address()
-        sys_dir = self.useFixture(TempDirectory()).path
+        sys_dir = tmp_path
         lo_mac_file = os.path.join(sys_dir, "lo")
         eth0_mac_file = os.path.join(sys_dir, "eth0")
         with open(lo_mac_file, "w") as f:
             f.write("00:00:00:00:00:00")
         with open(eth0_mac_file, "w") as f:
             f.write(eth0_mac)
-        mock_join = self.patch(maas_run_remote_scripts.os.path, "join")
+        mock_join = mocker.patch.object(
+            maas_run_remote_scripts.os.path, "join"
+        )
         mock_join.side_effect = (
             lo_mac_file,
             eth0_mac_file,
         )
-        self.assertEqual({eth0_mac: "eth0"}, get_interfaces())
+        assert {eth0_mac: "eth0"} == get_interfaces()
 
-    def test_get_interfaces_cached(self):
+    def test_get_interfaces_cached(self, mocker):
         interfaces = {factory.make_mac_address(): factory.make_name("dev")}
         maas_run_remote_scripts._interfaces = interfaces
-        mock_listdir = self.patch(maas_run_remote_scripts.os, "listdir")
+        mock_listdir = mocker.patch.object(
+            maas_run_remote_scripts.os, "listdir"
+        )
 
-        self.assertEqual(interfaces, get_interfaces())
+        assert interfaces == get_interfaces()
         mock_listdir.assert_not_called()
 
-    def test_parse_parameters(self):
-        mock_get_storage_model_from_udev = self.patch(
+        maas_run_remote_scripts._interfaces = None
+
+    def test_parse_parameters(self, mocker):
+        mock_get_storage_model_from_udev = mocker.patch.object(
             maas_run_remote_scripts, "get_storage_model_from_udev"
         )
         mock_get_storage_model_from_udev.side_effect = lambda bd: bd
@@ -1724,7 +2127,9 @@ class TestParseParameters(MAASTestCase):
                 },
             },
         }
-        mock_check_output = self.patch(maas_run_remote_scripts, "check_output")
+        mock_check_output = mocker.patch.object(
+            maas_run_remote_scripts, "check_output"
+        )
         mock_check_output.return_value = json.dumps(
             {
                 "blockdevices": [
@@ -1746,7 +2151,7 @@ class TestParseParameters(MAASTestCase):
             if param["type"] == "interface"
         }
 
-        self.assertCountEqual(
+        assert sorted(
             [
                 os.path.join(scripts_dir, script["path"]),
                 "--runtime=%s" % script["parameters"]["runtime"]["value"],
@@ -1759,10 +2164,11 @@ class TestParseParameters(MAASTestCase):
                 % script["parameters"]["interface_virtio"]["value"]["name"],
                 "--interface=%s"
                 % script["parameters"]["interface"]["value"]["name"],
-            ],
-            parse_parameters(script, scripts_dir),
-        )
-        self.assertTrue(mock_get_storage_model_from_udev.called)
+            ]
+        ) == sorted(parse_parameters(script, scripts_dir))
+        assert mock_get_storage_model_from_udev.called
+
+        maas_run_remote_scripts._interfaces = None
 
     def test_parse_parameters_named_params(self):
         scripts_dir = factory.make_name("scripts_dir")
@@ -1774,17 +2180,16 @@ class TestParseParameters(MAASTestCase):
             },
         }
 
-        self.assertCountEqual(
+        assert sorted(
             [
                 os.path.join(scripts_dir, script["path"]),
                 f"--foo={script['parameters']['foo']['value']}",
                 f"--bar={script['parameters']['bar']['default']}",
-            ],
-            parse_parameters(script, scripts_dir),
-        )
+            ]
+        ) == sorted(parse_parameters(script, scripts_dir))
 
-    def test_parse_parameters_argument_format(self):
-        mock_get_storage_model_from_udev = self.patch(
+    def test_parse_parameters_argument_format(self, mocker):
+        mock_get_storage_model_from_udev = mocker.patch.object(
             maas_run_remote_scripts, "get_storage_model_from_udev"
         )
         mock_get_storage_model_from_udev.side_effect = lambda bd: bd
@@ -1828,7 +2233,9 @@ class TestParseParameters(MAASTestCase):
                 },
             },
         }
-        mock_check_output = self.patch(maas_run_remote_scripts, "check_output")
+        mock_check_output = mocker.patch.object(
+            maas_run_remote_scripts, "check_output"
+        )
         mock_check_output.return_value = json.dumps(
             {
                 "blockdevices": [
@@ -1850,7 +2257,7 @@ class TestParseParameters(MAASTestCase):
             if param["type"] == "interface"
         }
 
-        self.assertCountEqual(
+        assert sorted(
             [
                 os.path.join(scripts_dir, script["path"]),
                 "--foo",
@@ -1869,10 +2276,11 @@ class TestParseParameters(MAASTestCase):
                 script["parameters"]["interface"]["value"]["mac_address"],
                 script["parameters"]["interface"]["value"]["vendor"],
                 script["parameters"]["interface"]["value"]["product"],
-            ],
-            parse_parameters(script, scripts_dir),
-        )
-        self.assertTrue(mock_get_storage_model_from_udev.called)
+            ]
+        ) == sorted(parse_parameters(script, scripts_dir))
+        assert mock_get_storage_model_from_udev.called
+
+        maas_run_remote_scripts._interfaces = None
 
     def test_parse_parameters_storage_value_all_raises_keyerror(self):
         scripts_dir = factory.make_name("scripts_dir")
@@ -1881,7 +2289,8 @@ class TestParseParameters(MAASTestCase):
             "parameters": {"storage": {"type": "storage", "value": "all"}},
         }
 
-        self.assertRaises(KeyError, parse_parameters, script, scripts_dir)
+        with pytest.raises(KeyError):
+            parse_parameters(script, scripts_dir)
 
     def test_parse_parameters_interface_value_all_raises_keyerror(self):
         scripts_dir = factory.make_name("scripts_dir")
@@ -1890,10 +2299,11 @@ class TestParseParameters(MAASTestCase):
             "parameters": {"interface": {"type": "interface", "value": "all"}},
         }
 
-        self.assertRaises(KeyError, parse_parameters, script, scripts_dir)
+        with pytest.raises(KeyError):
+            parse_parameters(script, scripts_dir)
 
-    def test_parse_parameters_storage_uses_id_path_if_set(self):
-        mock_get_storage_model_from_udev = self.patch(
+    def test_parse_parameters_storage_uses_id_path_if_set(self, mocker):
+        mock_get_storage_model_from_udev = mocker.patch.object(
             maas_run_remote_scripts, "get_storage_model_from_udev"
         )
         mock_get_storage_model_from_udev.side_effect = lambda bd: bd
@@ -1924,20 +2334,21 @@ class TestParseParameters(MAASTestCase):
             ]
         }
 
-        mock_check_output = self.patch(maas_run_remote_scripts, "check_output")
+        mock_check_output = mocker.patch.object(
+            maas_run_remote_scripts, "check_output"
+        )
         mock_check_output.return_value = json.dumps(lsblk_output).encode()
-        self.assertCountEqual(
+        assert sorted(
             [
                 os.path.join(scripts_dir, script["path"]),
                 "--bar",
                 script["parameters"]["storage"]["value"]["id_path"],
-            ],
-            parse_parameters(script, scripts_dir),
-        )
+            ]
+        ) == sorted(parse_parameters(script, scripts_dir))
 
 
-class TestCheckLinkConnected(MAASTestCase):
-    def test_only_runs_with_network_script(self):
+class TestCheckLinkConnected:
+    def test_only_runs_with_network_script(self, mocker):
         script = make_script(
             hardware_type=random.randint(0, 3),
             apply_configured_networking=True,
@@ -1950,13 +2361,15 @@ class TestCheckLinkConnected(MAASTestCase):
                 "value": {"name": "eth0", "mac_address": mac_address},
             }
         }
-        mock_join = self.patch(maas_run_remote_scripts.os.path, "join")
+        mock_join = mocker.patch.object(
+            maas_run_remote_scripts.os.path, "join"
+        )
 
         _check_link_connected(script)
 
         mock_join.assert_not_called()
 
-    def test_only_runs_when_network_settings_applied(self):
+    def test_only_runs_when_network_settings_applied(self, mocker):
         script = make_script(
             hardware_type=4, apply_configured_networking=False
         )
@@ -1968,21 +2381,25 @@ class TestCheckLinkConnected(MAASTestCase):
                 "value": {"name": "eth0", "mac_address": mac_address},
             }
         }
-        mock_join = self.patch(maas_run_remote_scripts.os.path, "join")
+        mock_join = mocker.patch.object(
+            maas_run_remote_scripts.os.path, "join"
+        )
 
         _check_link_connected(script)
 
         mock_join.assert_not_called()
 
-    def test_only_runs_with_interface_param(self):
+    def test_only_runs_with_interface_param(self, mocker):
         script = make_script(hardware_type=4, apply_configured_networking=True)
-        mock_join = self.patch(maas_run_remote_scripts.os.path, "join")
+        mock_join = mocker.patch.object(
+            maas_run_remote_scripts.os.path, "join"
+        )
 
         _check_link_connected(script)
 
         mock_join.assert_not_called()
 
-    def test_does_nothing_when_interface_is_not_found(self):
+    def test_does_nothing_when_interface_is_not_found(self, mocker):
         script = make_script(hardware_type=4, apply_configured_networking=True)
         mac_address = factory.make_mac_address()
         maas_run_remote_scripts._interfaces = {
@@ -1994,14 +2411,16 @@ class TestCheckLinkConnected(MAASTestCase):
                 "value": {"name": "eth0", "mac_address": mac_address},
             }
         }
-        mock_join = self.patch(maas_run_remote_scripts.os.path, "join")
+        mock_join = mocker.patch.object(
+            maas_run_remote_scripts.os.path, "join"
+        )
 
         _check_link_connected(script)
 
         mock_join.assert_not_called()
 
-    def test_does_nothing_when_link_is_up(self):
-        scripts_dir = self.useFixture(TempDirectory()).path
+    def test_does_nothing_when_link_is_up(self, mocker, tmp_path):
+        scripts_dir = tmp_path
         script = make_script(
             scripts_dir=scripts_dir,
             hardware_type=4,
@@ -2018,16 +2437,22 @@ class TestCheckLinkConnected(MAASTestCase):
         operstate_path = os.path.join(scripts_dir, "operstate")
         with open(operstate_path, "w") as f:
             f.write("up\n")
-        mock_join = self.patch(maas_run_remote_scripts.os.path, "join")
+        mock_join = mocker.patch.object(
+            maas_run_remote_scripts.os.path, "join"
+        )
         mock_join.return_value = operstate_path
-        mock_exists = self.patch(maas_run_remote_scripts.os.path, "exists")
+        mock_exists = mocker.patch.object(
+            maas_run_remote_scripts.os.path, "exists"
+        )
 
         _check_link_connected(script)
 
         mock_exists.assert_not_called()
 
-    def test_check_link_connected_reports_link_down_on_failure(self):
-        scripts_dir = self.useFixture(TempDirectory()).path
+    def test_check_link_connected_reports_link_down_on_failure(
+        self, mocker, tmp_path
+    ):
+        scripts_dir = tmp_path
         script = make_script(
             scripts_dir=scripts_dir,
             hardware_type=4,
@@ -2046,18 +2471,18 @@ class TestCheckLinkConnected(MAASTestCase):
         operstate_path = os.path.join(scripts_dir, "operstate")
         with open(operstate_path, "w") as f:
             f.write("down\n")
-        mock_join = self.patch(maas_run_remote_scripts.os.path, "join")
+        mock_join = mocker.patch.object(
+            maas_run_remote_scripts.os.path, "join"
+        )
         mock_join.return_value = operstate_path
 
         _check_link_connected(script)
 
         with open(script["result_path"]) as f:
-            self.assertEqual(
-                {"link_connected": False}, yaml.safe_load(f.read())
-            )
+            assert {"link_connected": False} == yaml.safe_load(f.read())
 
-    def test_check_link_connected_does_nothing_on_pass(self):
-        scripts_dir = self.useFixture(TempDirectory()).path
+    def test_check_link_connected_does_nothing_on_pass(self, mocker, tmp_path):
+        scripts_dir = tmp_path
         script = make_script(
             scripts_dir=scripts_dir,
             hardware_type=4,
@@ -2076,15 +2501,19 @@ class TestCheckLinkConnected(MAASTestCase):
         operstate_path = os.path.join(scripts_dir, "operstate")
         with open(operstate_path, "w") as f:
             f.write("down\n")
-        mock_join = self.patch(maas_run_remote_scripts.os.path, "join")
+        mock_join = mocker.patch.object(
+            maas_run_remote_scripts.os.path, "join"
+        )
         mock_join.return_value = operstate_path
 
         _check_link_connected(script)
 
-        self.assertFalse(os.path.exists(script["result_path"]))
+        assert not os.path.exists(script["result_path"])
 
-    def test_check_link_connected_does_nothing_on_bad_yaml_file(self):
-        scripts_dir = self.useFixture(TempDirectory()).path
+    def test_check_link_connected_does_nothing_on_bad_yaml_file(
+        self, mocker, tmp_path
+    ):
+        scripts_dir = tmp_path
         script = make_script(
             scripts_dir=scripts_dir,
             hardware_type=4,
@@ -2106,16 +2535,20 @@ class TestCheckLinkConnected(MAASTestCase):
         operstate_path = os.path.join(scripts_dir, "operstate")
         with open(operstate_path, "w") as f:
             f.write("down\n")
-        mock_join = self.patch(maas_run_remote_scripts.os.path, "join")
+        mock_join = mocker.patch.object(
+            maas_run_remote_scripts.os.path, "join"
+        )
         mock_join.return_value = operstate_path
 
         _check_link_connected(script)
 
         with open(script["result_path"], "rb") as f:
-            self.assertEqual(bad_yaml, f.read())
+            assert bad_yaml == f.read()
 
-    def test_check_link_connected_handles_empty_result_file(self):
-        scripts_dir = self.useFixture(TempDirectory()).path
+    def test_check_link_connected_handles_empty_result_file(
+        self, mocker, tmp_path
+    ):
+        scripts_dir = tmp_path
         script = make_script(
             scripts_dir=scripts_dir,
             hardware_type=4,
@@ -2136,18 +2569,20 @@ class TestCheckLinkConnected(MAASTestCase):
         operstate_path = os.path.join(scripts_dir, "operstate")
         with open(operstate_path, "w") as f:
             f.write("down\n")
-        mock_join = self.patch(maas_run_remote_scripts.os.path, "join")
+        mock_join = mocker.patch.object(
+            maas_run_remote_scripts.os.path, "join"
+        )
         mock_join.return_value = operstate_path
 
         _check_link_connected(script)
 
         with open(script["result_path"]) as f:
-            self.assertEqual(
-                {"link_connected": False}, yaml.safe_load(f.read())
-            )
+            assert {"link_connected": False} == yaml.safe_load(f.read())
 
-    def test_check_link_connected_does_nothing_with_nondict_result(self):
-        scripts_dir = self.useFixture(TempDirectory()).path
+    def test_check_link_connected_does_nothing_with_nondict_result(
+        self, mocker, tmp_path
+    ):
+        scripts_dir = tmp_path
         script = make_script(
             scripts_dir=scripts_dir,
             hardware_type=4,
@@ -2169,16 +2604,20 @@ class TestCheckLinkConnected(MAASTestCase):
         operstate_path = os.path.join(scripts_dir, "operstate")
         with open(operstate_path, "w") as f:
             f.write("down\n")
-        mock_join = self.patch(maas_run_remote_scripts.os.path, "join")
+        mock_join = mocker.patch.object(
+            maas_run_remote_scripts.os.path, "join"
+        )
         mock_join.return_value = operstate_path
 
         _check_link_connected(script)
 
         with open(script["result_path"]) as f:
-            self.assertEqual(nondict_result, f.read())
+            assert nondict_result == f.read()
 
-    def test_check_link_connected_does_nothing_when_link_connected_def(self):
-        scripts_dir = self.useFixture(TempDirectory()).path
+    def test_check_link_connected_does_nothing_when_link_connected_def(
+        self, mocker, tmp_path
+    ):
+        scripts_dir = tmp_path
         script = make_script(
             scripts_dir=scripts_dir,
             hardware_type=4,
@@ -2199,18 +2638,20 @@ class TestCheckLinkConnected(MAASTestCase):
         operstate_path = os.path.join(scripts_dir, "operstate")
         with open(operstate_path, "w") as f:
             f.write("down\n")
-        mock_join = self.patch(maas_run_remote_scripts.os.path, "join")
+        mock_join = mocker.patch.object(
+            maas_run_remote_scripts.os.path, "join"
+        )
         mock_join.return_value = operstate_path
 
         _check_link_connected(script)
 
         with open(script["result_path"]) as f:
-            self.assertEqual(
-                {"link_connected": True}, yaml.safe_load(f.read())
-            )
+            assert {"link_connected": True} == yaml.safe_load(f.read())
 
-    def test_check_link_connected_does_nothing_when_yaml_passed(self):
-        scripts_dir = self.useFixture(TempDirectory()).path
+    def test_check_link_connected_does_nothing_when_yaml_passed(
+        self, mocker, tmp_path
+    ):
+        scripts_dir = tmp_path
         script = make_script(
             scripts_dir=scripts_dir,
             hardware_type=4,
@@ -2231,16 +2672,20 @@ class TestCheckLinkConnected(MAASTestCase):
         operstate_path = os.path.join(scripts_dir, "operstate")
         with open(operstate_path, "w") as f:
             f.write("down\n")
-        mock_join = self.patch(maas_run_remote_scripts.os.path, "join")
+        mock_join = mocker.patch.object(
+            maas_run_remote_scripts.os.path, "join"
+        )
         mock_join.return_value = operstate_path
 
         _check_link_connected(script)
 
         with open(script["result_path"]) as f:
-            self.assertEqual({"status": "passed"}, yaml.safe_load(f.read()))
+            assert {"status": "passed"} == yaml.safe_load(f.read())
 
-    def test_check_link_connected_does_nothing_when_script_passed(self):
-        scripts_dir = self.useFixture(TempDirectory()).path
+    def test_check_link_connected_does_nothing_when_script_passed(
+        self, mocker, tmp_path
+    ):
+        scripts_dir = tmp_path
         script = make_script(
             scripts_dir=scripts_dir,
             hardware_type=4,
@@ -2258,18 +2703,18 @@ class TestCheckLinkConnected(MAASTestCase):
         operstate_path = os.path.join(scripts_dir, "operstate")
         with open(operstate_path, "w") as f:
             f.write("down\n")
-        mock_join = self.patch(maas_run_remote_scripts.os.path, "join")
+        mock_join = mocker.patch.object(
+            maas_run_remote_scripts.os.path, "join"
+        )
         mock_join.return_value = operstate_path
 
         _check_link_connected(script)
 
         with open(script["result_path"]) as f:
-            self.assertEqual(
-                yaml.safe_load(script["result"]), yaml.safe_load(f.read())
-            )
+            assert yaml.safe_load(script["result"]) == yaml.safe_load(f.read())
 
-    def test_check_link_connected_appends_yaml(self):
-        scripts_dir = self.useFixture(TempDirectory()).path
+    def test_check_link_connected_appends_yaml(self, mocker, tmp_path):
+        scripts_dir = tmp_path
         script = make_script(
             scripts_dir=scripts_dir,
             hardware_type=4,
@@ -2287,42 +2732,38 @@ class TestCheckLinkConnected(MAASTestCase):
         operstate_path = os.path.join(scripts_dir, "operstate")
         with open(operstate_path, "w") as f:
             f.write("down\n")
-        mock_join = self.patch(maas_run_remote_scripts.os.path, "join")
+        mock_join = mocker.patch.object(
+            maas_run_remote_scripts.os.path, "join"
+        )
         mock_join.return_value = operstate_path
 
         _check_link_connected(script)
 
         with open(script["result_path"]) as f:
-            self.assertEqual(
-                {"link_connected": False, **yaml.safe_load(script["result"])},
-                yaml.safe_load(f.read()),
-            )
+            assert {
+                "link_connected": False,
+                **yaml.safe_load(script["result"]),
+            } == yaml.safe_load(f.read())
 
 
-class TestRunScript(MAASTestCase):
-    def setUp(self):
-        super().setUp()
-        self.mock_output_and_send = self.patch(
+class TestRunScript:
+    def test_run_script(self, mocker, tmp_path):
+        mock_output_and_send = mocker.patch.object(
             maas_run_remote_scripts, "output_and_send"
         )
-        self.mock_capture_script_output = self.patch(
+        mock_capture_script_output = mocker.patch.object(
             maas_run_remote_scripts, "capture_script_output"
         )
-        self.mock_capture_script_output.side_effect = lambda proc, *args: (
+        mock_capture_script_output.side_effect = lambda proc, *args: (
             proc.wait()
         )
-        self.mock_check_link_connected = self.patch(
+        mock_check_link_connected = mocker.patch.object(
             maas_run_remote_scripts, "_check_link_connected"
         )
-        self.args = {"status": "WORKING", "send_result": True}
-        self.patch(maas_run_remote_scripts.sys.stdout, "write")
+        args = {"status": "WORKING", "send_result": True}
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
 
-    def tearDown(self):
-        super().tearDown()
-        maas_run_remote_scripts._block_devices = None
-
-    def test_run_script(self):
-        scripts_dir = self.useFixture(TempDirectory()).path
+        scripts_dir = tmp_path
         script = make_script(scripts_dir=scripts_dir)
         script["bmc_config_path"] = os.path.join(
             scripts_dir, "bmc-config.yaml"
@@ -2330,12 +2771,12 @@ class TestRunScript(MAASTestCase):
 
         run_script(script, scripts_dir)
 
-        self.mock_output_and_send.assert_has_calls(
+        mock_output_and_send.assert_has_calls(
             [
                 call(
                     "Starting %s" % script["msg_name"],
                     **script["args"],
-                    **self.args,
+                    **args,
                 ),
                 call(
                     "Finished %s: 0" % script["msg_name"],
@@ -2348,59 +2789,84 @@ class TestRunScript(MAASTestCase):
                     },
                     runtime=ANY,
                     **script["args"],
-                    **self.args,
+                    **args,
                 ),
             ]
         )
-        self.mock_capture_script_output.assert_called_once_with(
+        mock_capture_script_output.assert_called_once_with(
             ANY,
             script["combined_path"],
             script["stdout_path"],
             script["stderr_path"],
             script["timeout_seconds"],
         )
-        self.mock_check_link_connected.assert_called_once_with(script)
+        mock_check_link_connected.assert_called_once_with(script)
 
-    def test_run_script_sets_env(self):
-        scripts_dir = self.useFixture(TempDirectory()).path
+    def test_run_script_sets_env(self, mocker, tmp_path):
+        mocker.patch.object(maas_run_remote_scripts, "output_and_send")
+        mock_capture_script_output = mocker.patch.object(
+            maas_run_remote_scripts, "capture_script_output"
+        )
+        mock_capture_script_output.side_effect = lambda proc, *args: (
+            proc.wait()
+        )
+        mock_check_link_connected = mocker.patch.object(
+            maas_run_remote_scripts, "_check_link_connected"
+        )
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+
+        scripts_dir = tmp_path
         script = make_script(scripts_dir=scripts_dir)
         script["bmc_config_path"] = os.path.join(
             scripts_dir, "bmc-config.yaml"
         )
-        mock_popen = self.patch(maas_run_remote_scripts, "Popen")
+        mock_popen = mocker.patch.object(maas_run_remote_scripts, "Popen")
 
         run_script(script, scripts_dir)
 
         env = mock_popen.call_args[1]["env"]
-        self.assertEqual(script["combined_path"], env["OUTPUT_COMBINED_PATH"])
-        self.assertEqual(script["stdout_path"], env["OUTPUT_STDOUT_PATH"])
-        self.assertEqual(script["stderr_path"], env["OUTPUT_STDERR_PATH"])
-        self.assertEqual(script["result_path"], env["RESULT_PATH"])
-        self.assertEqual(script["download_path"], env["DOWNLOAD_PATH"])
-        self.assertEqual(script["resources_file"], env["MAAS_RESOURCES_FILE"])
-        self.assertEqual(
-            env["MAAS_STORAGE_CONFIG_FILE"], "/storage-config.json"
-        )
-        self.assertEqual(str(script["timeout_seconds"]), env["RUNTIME"])
-        self.assertEqual(str(script["has_started"]), env["HAS_STARTED"])
-        self.assertEqual(script["bmc_config_path"], env["BMC_CONFIG_PATH"])
-        self.assertIn("MAAS_BASE_URL", env)
-        self.assertIn("PATH", env)
-        self.mock_check_link_connected.assert_called_once_with(script)
+        assert script["combined_path"] == env["OUTPUT_COMBINED_PATH"]
+        assert script["stdout_path"] == env["OUTPUT_STDOUT_PATH"]
+        assert script["stderr_path"] == env["OUTPUT_STDERR_PATH"]
+        assert script["result_path"] == env["RESULT_PATH"]
+        assert script["download_path"] == env["DOWNLOAD_PATH"]
+        assert script["resources_file"] == env["MAAS_RESOURCES_FILE"]
+        assert env["MAAS_STORAGE_CONFIG_FILE"] == "/storage-config.json"
+        assert str(script["timeout_seconds"]) == env["RUNTIME"]
+        assert str(script["has_started"]) == env["HAS_STARTED"]
+        assert script["bmc_config_path"] == env["BMC_CONFIG_PATH"]
+        assert "MAAS_BASE_URL" in env
+        assert "PATH" in env
+        mock_check_link_connected.assert_called_once_with(script)
 
-    def test_run_script_only_sends_result_when_avail(self):
-        scripts_dir = self.useFixture(TempDirectory()).path
+    def test_run_script_only_sends_result_when_avail(self, mocker, tmp_path):
+        mock_output_and_send = mocker.patch.object(
+            maas_run_remote_scripts, "output_and_send"
+        )
+        mock_capture_script_output = mocker.patch.object(
+            maas_run_remote_scripts, "capture_script_output"
+        )
+        mock_capture_script_output.side_effect = lambda proc, *args: (
+            proc.wait()
+        )
+        mock_check_link_connected = mocker.patch.object(
+            maas_run_remote_scripts, "_check_link_connected"
+        )
+        args = {"status": "WORKING", "send_result": True}
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+
+        scripts_dir = tmp_path
         script = make_script(scripts_dir=scripts_dir)
         os.remove(script["result_path"])
 
         run_script(script, scripts_dir)
 
-        self.mock_output_and_send.assert_has_calls(
+        mock_output_and_send.assert_has_calls(
             [
                 call(
                     "Starting %s" % script["msg_name"],
                     **script["args"],
-                    **self.args,
+                    **args,
                 ),
                 call(
                     "Finished %s: 0" % script["msg_name"],
@@ -2412,21 +2878,36 @@ class TestRunScript(MAASTestCase):
                         script["stderr_name"]: script["stderr"].encode(),
                     },
                     **script["args"],
-                    **self.args,
+                    **args,
                 ),
             ]
         )
-        self.mock_capture_script_output.assert_called_once_with(
+        mock_capture_script_output.assert_called_once_with(
             ANY,
             script["combined_path"],
             script["stdout_path"],
             script["stderr_path"],
             script["timeout_seconds"],
         )
-        self.mock_check_link_connected.assert_called_once_with(script)
+        mock_check_link_connected.assert_called_once_with(script)
 
-    def test_run_script_uses_timeout_from_parameter(self):
-        scripts_dir = self.useFixture(TempDirectory()).path
+    def test_run_script_uses_timeout_from_parameter(self, mocker, tmp_path):
+        mock_output_and_send = mocker.patch.object(
+            maas_run_remote_scripts, "output_and_send"
+        )
+        mock_capture_script_output = mocker.patch.object(
+            maas_run_remote_scripts, "capture_script_output"
+        )
+        mock_capture_script_output.side_effect = lambda proc, *args: (
+            proc.wait()
+        )
+        mock_check_link_connected = mocker.patch.object(
+            maas_run_remote_scripts, "_check_link_connected"
+        )
+        args = {"status": "WORKING", "send_result": True}
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+
+        scripts_dir = tmp_path
         script = make_script(scripts_dir=scripts_dir)
         script["parameters"] = {
             "runtime": {"type": "runtime", "value": random.randint(0, 1000)}
@@ -2434,12 +2915,12 @@ class TestRunScript(MAASTestCase):
 
         run_script(script, scripts_dir)
 
-        self.mock_output_and_send.assert_has_calls(
+        mock_output_and_send.assert_has_calls(
             [
                 call(
                     "Starting %s" % script["msg_name"],
                     **script["args"],
-                    **self.args,
+                    **args,
                 ),
                 call(
                     "Finished %s: 0" % script["msg_name"],
@@ -2452,20 +2933,35 @@ class TestRunScript(MAASTestCase):
                     },
                     runtime=ANY,
                     **script["args"],
-                    **self.args,
+                    **args,
                 ),
             ]
         )
-        self.mock_capture_script_output.assert_called_once_with(
+        mock_capture_script_output.assert_called_once_with(
             ANY,
             script["combined_path"],
             script["stdout_path"],
             script["stderr_path"],
             script["parameters"]["runtime"]["value"],
         )
-        self.mock_check_link_connected.assert_called_once_with(script)
+        mock_check_link_connected.assert_called_once_with(script)
 
-    def test_run_script_errors_with_bad_param(self):
+    def test_run_script_errors_with_bad_param(self, mocker, tmp_path):
+        mock_output_and_send = mocker.patch.object(
+            maas_run_remote_scripts, "output_and_send"
+        )
+        mock_capture_script_output = mocker.patch.object(
+            maas_run_remote_scripts, "capture_script_output"
+        )
+        mock_capture_script_output.side_effect = lambda proc, *args: (
+            proc.wait()
+        )
+        mock_check_link_connected = mocker.patch.object(
+            maas_run_remote_scripts, "_check_link_connected"
+        )
+        args = {"status": "WORKING", "send_result": True}
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+
         fake_block_devices = [
             {
                 "model": factory.make_name("model"),
@@ -2476,17 +2972,17 @@ class TestRunScript(MAASTestCase):
         fake_interfaces = [
             {factory.make_mac_address(): "eth%s" % i for i in range(3)}
         ]
-        mock_get_block_devices = self.patch(
+        mock_get_block_devices = mocker.patch.object(
             maas_run_remote_scripts, "get_block_devices"
         )
-        mock_get_interfaces = self.patch(
+        mock_get_interfaces = mocker.patch.object(
             maas_run_remote_scripts, "get_interfaces"
         )
         mock_get_interfaces.return_value = fake_interfaces
         mock_get_block_devices.return_value = fake_block_devices
         testing_block_device_model = factory.make_name("model")
         testing_block_device_serial = factory.make_name("serial")
-        scripts_dir = self.useFixture(TempDirectory()).path
+        scripts_dir = tmp_path
         script = make_script(scripts_dir=scripts_dir)
         script["parameters"] = {
             "storage": {
@@ -2499,7 +2995,7 @@ class TestRunScript(MAASTestCase):
             }
         }
 
-        self.assertFalse(run_script(script, scripts_dir))
+        assert not run_script(script, scripts_dir)
 
         expected_output = (
             "Unable to run '%s': Storage device '%s' with serial '%s' not "
@@ -2522,12 +3018,12 @@ class TestRunScript(MAASTestCase):
         )
         expected_output = expected_output.encode()
 
-        self.mock_output_and_send.assert_has_calls(
+        mock_output_and_send.assert_has_calls(
             [
                 call(
                     "Starting %s" % script["msg_name"],
                     **script["args"],
-                    **self.args,
+                    **args,
                 ),
                 call(
                     "Failed to execute %s: 2" % script["msg_name"],
@@ -2537,28 +3033,45 @@ class TestRunScript(MAASTestCase):
                         script["stderr_name"]: expected_output,
                     },
                     **script["args"],
-                    **self.args,
+                    **args,
                 ),
             ]
         )
-        self.mock_check_link_connected.assert_not_called()
+        mock_check_link_connected.assert_not_called()
 
-    def test_run_script_errors_bad_params_on_unexecutable_script(self):
+    def test_run_script_errors_bad_params_on_unexecutable_script(
+        self, mocker, tmp_path
+    ):
         # Regression test for LP:1669246
-        scripts_dir = self.useFixture(TempDirectory()).path
+        mock_output_and_send = mocker.patch.object(
+            maas_run_remote_scripts, "output_and_send"
+        )
+        mock_capture_script_output = mocker.patch.object(
+            maas_run_remote_scripts, "capture_script_output"
+        )
+        mock_capture_script_output.side_effect = lambda proc, *args: (
+            proc.wait()
+        )
+        mock_check_link_connected = mocker.patch.object(
+            maas_run_remote_scripts, "_check_link_connected"
+        )
+        args = {"status": "WORKING", "send_result": True}
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+
+        scripts_dir = tmp_path
         script = make_script(scripts_dir=scripts_dir)
-        self.mock_capture_script_output.side_effect = OSError(
+        mock_capture_script_output.side_effect = OSError(
             8, "Exec format error"
         )
 
-        self.assertFalse(run_script(script, scripts_dir))
+        assert not run_script(script, scripts_dir)
 
-        self.mock_output_and_send.assert_has_calls(
+        mock_output_and_send.assert_has_calls(
             [
                 call(
                     "Starting %s" % script["msg_name"],
                     **script["args"],
-                    **self.args,
+                    **args,
                 ),
                 call(
                     "Failed to execute %s: 8" % script["msg_name"],
@@ -2572,28 +3085,43 @@ class TestRunScript(MAASTestCase):
                         script["result_name"]: script["result"].encode(),
                     },
                     **script["args"],
-                    **self.args,
+                    **args,
                 ),
             ]
         )
-        self.mock_check_link_connected.assert_called_once_with(script)
+        mock_check_link_connected.assert_called_once_with(script)
 
     def test_run_script_errors_bad_params_on_unexecutable_script_no_errno(
-        self,
+        self, mocker, tmp_path
     ):
         # Regression test for LP:1669246
-        scripts_dir = self.useFixture(TempDirectory()).path
+        mock_output_and_send = mocker.patch.object(
+            maas_run_remote_scripts, "output_and_send"
+        )
+        mock_capture_script_output = mocker.patch.object(
+            maas_run_remote_scripts, "capture_script_output"
+        )
+        mock_capture_script_output.side_effect = lambda proc, *args: (
+            proc.wait()
+        )
+        mock_check_link_connected = mocker.patch.object(
+            maas_run_remote_scripts, "_check_link_connected"
+        )
+        args = {"status": "WORKING", "send_result": True}
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+
+        scripts_dir = tmp_path
         script = make_script(scripts_dir=scripts_dir)
-        self.mock_capture_script_output.side_effect = OSError()
+        mock_capture_script_output.side_effect = OSError()
 
-        self.assertFalse(run_script(script, scripts_dir))
+        assert not run_script(script, scripts_dir)
 
-        self.mock_output_and_send.assert_has_calls(
+        mock_output_and_send.assert_has_calls(
             [
                 call(
                     "Starting %s" % script["msg_name"],
                     **script["args"],
-                    **self.args,
+                    **args,
                 ),
                 call(
                     "Failed to execute %s: 2" % script["msg_name"],
@@ -2605,30 +3133,45 @@ class TestRunScript(MAASTestCase):
                         script["result_name"]: script["result"].encode(),
                     },
                     **script["args"],
-                    **self.args,
+                    **args,
                 ),
             ]
         )
-        self.mock_check_link_connected.assert_called_once_with(script)
+        mock_check_link_connected.assert_called_once_with(script)
 
     def test_run_script_errors_bad_params_on_unexecutable_script_baderrno(
-        self,
+        self, mocker, tmp_path
     ):
         # Regression test for LP:1669246
-        scripts_dir = self.useFixture(TempDirectory()).path
+        mock_output_and_send = mocker.patch.object(
+            maas_run_remote_scripts, "output_and_send"
+        )
+        mock_capture_script_output = mocker.patch.object(
+            maas_run_remote_scripts, "capture_script_output"
+        )
+        mock_capture_script_output.side_effect = lambda proc, *args: (
+            proc.wait()
+        )
+        mock_check_link_connected = mocker.patch.object(
+            maas_run_remote_scripts, "_check_link_connected"
+        )
+        args = {"status": "WORKING", "send_result": True}
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+
+        scripts_dir = tmp_path
         script = make_script(scripts_dir=scripts_dir)
-        self.mock_capture_script_output.side_effect = OSError(
+        mock_capture_script_output.side_effect = OSError(
             0, "Exec format error"
         )
 
-        self.assertFalse(run_script(script, scripts_dir))
+        assert not run_script(script, scripts_dir)
 
-        self.mock_output_and_send.assert_has_calls(
+        mock_output_and_send.assert_has_calls(
             [
                 call(
                     "Starting %s" % script["msg_name"],
                     **script["args"],
-                    **self.args,
+                    **args,
                 ),
                 call(
                     "Failed to execute %s: 2" % script["msg_name"],
@@ -2642,30 +3185,44 @@ class TestRunScript(MAASTestCase):
                         script["result_name"]: script["result"].encode(),
                     },
                     **script["args"],
-                    **self.args,
+                    **args,
                 ),
             ]
         )
-        self.mock_check_link_connected.assert_called_once_with(script)
+        mock_check_link_connected.assert_called_once_with(script)
 
-    def test_run_script_timed_out_script(self):
-        scripts_dir = self.useFixture(TempDirectory()).path
+    def test_run_script_timed_out_script(self, mocker, tmp_path):
+        mock_output_and_send = mocker.patch.object(
+            maas_run_remote_scripts, "output_and_send"
+        )
+        mock_capture_script_output = mocker.patch.object(
+            maas_run_remote_scripts, "capture_script_output"
+        )
+        mock_capture_script_output.side_effect = lambda proc, *args: (
+            proc.wait()
+        )
+        mock_check_link_connected = mocker.patch.object(
+            maas_run_remote_scripts, "_check_link_connected"
+        )
+        args = {"send_result": True}
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+
+        scripts_dir = tmp_path
         script = make_script(scripts_dir=scripts_dir)
-        self.mock_capture_script_output.side_effect = TimeoutExpired(
+        mock_capture_script_output.side_effect = TimeoutExpired(
             [factory.make_name("arg") for _ in range(3)],
             script["timeout_seconds"],
         )
-        self.args.pop("status")
 
-        self.assertFalse(run_script(script, scripts_dir))
+        assert not run_script(script, scripts_dir)
 
-        self.mock_output_and_send.assert_has_calls(
+        mock_output_and_send.assert_has_calls(
             [
                 call(
                     "Starting %s" % script["msg_name"],
                     status="WORKING",
                     **script["args"],
-                    **self.args,
+                    **args,
                 ),
                 call(
                     "Timeout(%s) expired on %s"
@@ -2683,15 +3240,32 @@ class TestRunScript(MAASTestCase):
                     },
                     status="TIMEDOUT",
                     **script["args"],
-                    **self.args,
+                    **args,
                 ),
             ]
         )
-        self.mock_check_link_connected.assert_called_once_with(script)
+        mock_check_link_connected.assert_called_once_with(script)
 
-    def test_run_script_configs_bmc(self):
-        scripts_dir = self.useFixture(TempDirectory()).path
-        mock_bmc_config = self.patch(maas_run_remote_scripts, "bmc_config")
+    def test_run_script_configs_bmc(self, mocker, tmp_path):
+        mock_output_and_send = mocker.patch.object(
+            maas_run_remote_scripts, "output_and_send"
+        )
+        mock_capture_script_output = mocker.patch.object(
+            maas_run_remote_scripts, "capture_script_output"
+        )
+        mock_capture_script_output.side_effect = lambda proc, *args: (
+            proc.wait()
+        )
+        mock_check_link_connected = mocker.patch.object(
+            maas_run_remote_scripts, "_check_link_connected"
+        )
+        args = {"status": "WORKING", "send_result": True}
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+
+        scripts_dir = tmp_path
+        mock_bmc_config = mocker.patch.object(
+            maas_run_remote_scripts, "bmc_config"
+        )
         script = make_script(scripts_dir=scripts_dir)
         script["bmc_config_path"] = os.path.join(
             scripts_dir, "bmc-config.yaml"
@@ -2700,12 +3274,12 @@ class TestRunScript(MAASTestCase):
 
         run_script(script, scripts_dir)
 
-        self.mock_output_and_send.assert_has_calls(
+        mock_output_and_send.assert_has_calls(
             [
                 call(
                     "Starting %s" % script["msg_name"],
                     **script["args"],
-                    **self.args,
+                    **args,
                 ),
                 call(
                     "Finished %s: 0" % script["msg_name"],
@@ -2718,23 +3292,40 @@ class TestRunScript(MAASTestCase):
                     },
                     runtime=ANY,
                     **script["args"],
-                    **self.args,
+                    **args,
                 ),
             ]
         )
-        self.mock_capture_script_output.assert_called_once_with(
+        mock_capture_script_output.assert_called_once_with(
             ANY,
             script["combined_path"],
             script["stdout_path"],
             script["stderr_path"],
             script["timeout_seconds"],
         )
-        self.mock_check_link_connected.assert_called_once_with(script)
+        mock_check_link_connected.assert_called_once_with(script)
         mock_bmc_config.assert_called_once_with(script, True)
 
-    def test_run_script_does_not_config_bmc_if_failed(self):
-        scripts_dir = self.useFixture(TempDirectory()).path
-        mock_bmc_config = self.patch(maas_run_remote_scripts, "bmc_config")
+    def test_run_script_does_not_config_bmc_if_failed(self, mocker, tmp_path):
+        mock_output_and_send = mocker.patch.object(
+            maas_run_remote_scripts, "output_and_send"
+        )
+        mock_capture_script_output = mocker.patch.object(
+            maas_run_remote_scripts, "capture_script_output"
+        )
+        mock_capture_script_output.side_effect = lambda proc, *args: (
+            proc.wait()
+        )
+        mock_check_link_connected = mocker.patch.object(
+            maas_run_remote_scripts, "_check_link_connected"
+        )
+        args = {"status": "WORKING", "send_result": True}
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+
+        scripts_dir = tmp_path
+        mock_bmc_config = mocker.patch.object(
+            maas_run_remote_scripts, "bmc_config"
+        )
         script = make_script(scripts_dir=scripts_dir, return_code=1)
         script["bmc_config_path"] = os.path.join(
             scripts_dir, "bmc-config.yaml"
@@ -2743,12 +3334,12 @@ class TestRunScript(MAASTestCase):
 
         run_script(script, scripts_dir)
 
-        self.mock_output_and_send.assert_has_calls(
+        mock_output_and_send.assert_has_calls(
             [
                 call(
                     "Starting %s" % script["msg_name"],
                     **script["args"],
-                    **self.args,
+                    **args,
                 ),
                 call(
                     "Finished %s: 1" % script["msg_name"],
@@ -2761,23 +3352,40 @@ class TestRunScript(MAASTestCase):
                     },
                     runtime=ANY,
                     **script["args"],
-                    **self.args,
+                    **args,
                 ),
             ]
         )
-        self.mock_capture_script_output.assert_called_once_with(
+        mock_capture_script_output.assert_called_once_with(
             ANY,
             script["combined_path"],
             script["stdout_path"],
             script["stderr_path"],
             script["timeout_seconds"],
         )
-        self.mock_check_link_connected.assert_called_once_with(script)
+        mock_check_link_connected.assert_called_once_with(script)
         mock_bmc_config.assert_not_called()
 
-    def test_run_script_records_bmc_config_error(self):
-        scripts_dir = self.useFixture(TempDirectory()).path
-        mock_bmc_config = self.patch(maas_run_remote_scripts, "bmc_config")
+    def test_run_script_records_bmc_config_error(self, mocker, tmp_path):
+        mock_output_and_send = mocker.patch.object(
+            maas_run_remote_scripts, "output_and_send"
+        )
+        mock_capture_script_output = mocker.patch.object(
+            maas_run_remote_scripts, "capture_script_output"
+        )
+        mock_capture_script_output.side_effect = lambda proc, *args: (
+            proc.wait()
+        )
+        mock_check_link_connected = mocker.patch.object(
+            maas_run_remote_scripts, "_check_link_connected"
+        )
+        args = {"status": "WORKING", "send_result": True}
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+
+        scripts_dir = tmp_path
+        mock_bmc_config = mocker.patch.object(
+            maas_run_remote_scripts, "bmc_config"
+        )
         exception_message = factory.make_string()
         mock_bmc_config.side_effect = factory.make_exception(exception_message)
         script = make_script(scripts_dir=scripts_dir)
@@ -2795,12 +3403,12 @@ class TestRunScript(MAASTestCase):
         script["combined"] += bmc_config_error
         script["stderr"] += bmc_config_error
 
-        self.mock_output_and_send.assert_has_calls(
+        mock_output_and_send.assert_has_calls(
             [
                 call(
                     "Starting %s" % script["msg_name"],
                     **script["args"],
-                    **self.args,
+                    **args,
                 ),
                 call(
                     "Finished %s: 1" % script["msg_name"],
@@ -2813,37 +3421,35 @@ class TestRunScript(MAASTestCase):
                     },
                     runtime=ANY,
                     **script["args"],
-                    **self.args,
+                    **args,
                 ),
             ]
         )
-        self.mock_capture_script_output.assert_called_once_with(
+        mock_capture_script_output.assert_called_once_with(
             ANY,
             script["combined_path"],
             script["stdout_path"],
             script["stderr_path"],
             script["timeout_seconds"],
         )
-        self.mock_check_link_connected.assert_called_once_with(script)
+        mock_check_link_connected.assert_called_once_with(script)
         mock_bmc_config.assert_called_once_with(script, True)
 
 
-class TestBMCConfig(MAASTestCase):
-    def test_get_mac_addresses_for_enlistment(self):
+class TestBMCConfig:
+    def test_get_mac_addresses_for_enlistment(self, mocker):
         mac_addresses = [factory.make_mac_address() for _ in range(3)]
-        mock_get_interfaces = self.patch(
+        mock_get_interfaces = mocker.patch.object(
             maas_run_remote_scripts, "get_interfaces"
         )
         mock_get_interfaces.return_value = {
             "02:00:00:00:00:02": factory.make_name("iface"),
             **{mac: factory.make_name("iface") for mac in mac_addresses},
         }
-        self.assertEqual(
-            ",".join(mac_addresses), get_mac_addresses_for_enlistment()
-        )
+        assert ",".join(mac_addresses) == get_mac_addresses_for_enlistment()
 
-    def test_enlist(self):
-        cloud_cfg_dir = self.useFixture(TempDirectory()).path
+    def test_enlist(self, mocker, tmp_path):
+        cloud_cfg_dir = tmp_path
         config_path = os.path.join(cloud_cfg_dir, "91_kernel_cmdline_url.cfg")
         open(config_path, "w").write(factory.make_string())
         creds = {
@@ -2861,18 +3467,18 @@ class TestBMCConfig(MAASTestCase):
             },
         }
         mac_addresses = [factory.make_mac_address() for _ in range(3)]
-        mock_get_interfaces = self.patch(
+        mock_get_interfaces = mocker.patch.object(
             maas_run_remote_scripts, "get_interfaces"
         )
         mock_get_interfaces.return_value = {
             mac: factory.make_name("iface") for mac in mac_addresses
         }
         system_id = factory.make_name("system_id")
-        mock_get_maas_machines = self.patch(
+        mock_get_maas_machines = mocker.patch.object(
             maas_run_remote_scripts, "get_maas_machines"
         )
         mock_get_maas_machines.return_value = {"system_id": system_id}
-        mock_geturl = self.patch(maas_run_remote_scripts, "geturl")
+        mock_geturl = mocker.patch.object(maas_run_remote_scripts, "geturl")
         mock_geturl.return_value = BytesIO(yaml.safe_dump(preseed).encode())
         netloc = factory.make_hostname()
         url = factory.make_url(scheme="http", netloc=netloc)
@@ -2893,20 +3499,16 @@ class TestBMCConfig(MAASTestCase):
             "http://%s/MAAS/metadata/latest/by-id/%s/?op=get_preseed"
             % (netloc, system_id)
         )
-        self.assertEqual(
-            config.credentials.consumer_key, new_creds["consumer_key"]
+        assert config.credentials.consumer_key == new_creds["consumer_key"]
+        assert (
+            config.credentials.consumer_secret == new_creds["consumer_secret"]
         )
-        self.assertEqual(
-            config.credentials.consumer_secret, new_creds["consumer_secret"]
-        )
-        self.assertEqual(config.credentials.token_key, new_creds["token_key"])
-        self.assertEqual(
-            config.credentials.token_secret, new_creds["token_secret"]
-        )
-        self.assertEqual(yaml.safe_load(open(config_path)), preseed)
+        assert config.credentials.token_key == new_creds["token_key"]
+        assert config.credentials.token_secret == new_creds["token_secret"]
+        assert yaml.safe_load(open(config_path)) == preseed
 
-    def test_enlist_with_power_creds(self):
-        cloud_cfg_dir = self.useFixture(TempDirectory()).path
+    def test_enlist_with_power_creds(self, mocker, tmp_path):
+        cloud_cfg_dir = tmp_path
         config_path = os.path.join(cloud_cfg_dir, "91_kernel_cmdline_url.cfg")
         open(config_path, "w").write(factory.make_string())
         creds = {
@@ -2924,18 +3526,18 @@ class TestBMCConfig(MAASTestCase):
             },
         }
         mac_addresses = [factory.make_mac_address() for _ in range(3)]
-        mock_get_interfaces = self.patch(
+        mock_get_interfaces = mocker.patch.object(
             maas_run_remote_scripts, "get_interfaces"
         )
         mock_get_interfaces.return_value = {
             mac: factory.make_name("iface") for mac in mac_addresses
         }
         system_id = factory.make_name("system_id")
-        mock_get_maas_machines = self.patch(
+        mock_get_maas_machines = mocker.patch.object(
             maas_run_remote_scripts, "get_maas_machines"
         )
         mock_get_maas_machines.return_value = {"system_id": system_id}
-        mock_geturl = self.patch(maas_run_remote_scripts, "geturl")
+        mock_geturl = mocker.patch.object(maas_run_remote_scripts, "geturl")
         mock_geturl.return_value = BytesIO(yaml.safe_dump(preseed).encode())
         netloc = factory.make_hostname()
         url = factory.make_url(scheme="http", netloc=netloc)
@@ -2963,25 +3565,21 @@ class TestBMCConfig(MAASTestCase):
             "http://%s/MAAS/metadata/latest/by-id/%s/?op=get_preseed"
             % (netloc, system_id)
         )
-        self.assertEqual(
-            config.credentials.consumer_key, new_creds["consumer_key"]
+        assert config.credentials.consumer_key == new_creds["consumer_key"]
+        assert (
+            config.credentials.consumer_secret == new_creds["consumer_secret"]
         )
-        self.assertEqual(
-            config.credentials.consumer_secret, new_creds["consumer_secret"]
-        )
-        self.assertEqual(config.credentials.token_key, new_creds["token_key"])
-        self.assertEqual(
-            config.credentials.token_secret, new_creds["token_secret"]
-        )
-        self.assertEqual(yaml.safe_load(open(config_path)), preseed)
+        assert config.credentials.token_key == new_creds["token_key"]
+        assert config.credentials.token_secret == new_creds["token_secret"]
+        assert yaml.safe_load(open(config_path)) == preseed
 
-    def test_bmc_config_commissioning(self):
-        mock_output_and_send = self.patch(
+    def test_bmc_config_commissioning(self, mocker, tmp_path):
+        mock_output_and_send = mocker.patch.object(
             maas_run_remote_scripts, "output_and_send"
         )
         mock_output_and_send.return_value = True
         maas_run_remote_scripts._bmc_config_uploaded = False
-        config_dir = self.useFixture(TempDirectory()).path
+        config_dir = tmp_path
         bmc_config_path = os.path.join(config_dir, "bmc-config.yaml")
         power_type = factory.make_name("power_type")
         power_params = {
@@ -3021,16 +3619,16 @@ class TestBMCConfig(MAASTestCase):
             status="WORKING",
             **script["args"],
         )
-        self.assertTrue(maas_run_remote_scripts._bmc_config_uploaded)
+        assert maas_run_remote_scripts._bmc_config_uploaded
 
-    def test_bmc_config_enlist(self):
-        mock_output_and_send = self.patch(
+    def test_bmc_config_enlist(self, mocker, tmp_path):
+        mock_output_and_send = mocker.patch.object(
             maas_run_remote_scripts, "output_and_send"
         )
         mock_output_and_send.return_value = False
-        mock_enlist = self.patch(maas_run_remote_scripts, "enlist")
+        mock_enlist = mocker.patch.object(maas_run_remote_scripts, "enlist")
         maas_run_remote_scripts._bmc_config_uploaded = False
-        config_dir = self.useFixture(TempDirectory()).path
+        config_dir = tmp_path
         bmc_config_path = os.path.join(config_dir, "bmc-config.yaml")
         power_type = factory.make_name("power_type")
         power_params = {
@@ -3074,18 +3672,18 @@ class TestBMCConfig(MAASTestCase):
             **script["args"],
         )
         mock_enlist.assert_called_once_with(config, power_type, power_params)
-        self.assertTrue(maas_run_remote_scripts._bmc_config_uploaded)
+        assert maas_run_remote_scripts._bmc_config_uploaded
 
-    def test_bmc_config_enlist_retry(self):
-        mock_output_and_send = self.patch(
+    def test_bmc_config_enlist_retry(self, mocker, tmp_path):
+        mock_output_and_send = mocker.patch.object(
             maas_run_remote_scripts, "output_and_send"
         )
         mock_output_and_send.return_value = False
-        mock_enlist = self.patch(maas_run_remote_scripts, "enlist")
+        mock_enlist = mocker.patch.object(maas_run_remote_scripts, "enlist")
         exception = factory.make_exception_type()
         mock_enlist.side_effect = (exception(), None)
         maas_run_remote_scripts._bmc_config_uploaded = False
-        config_dir = self.useFixture(TempDirectory()).path
+        config_dir = tmp_path
         bmc_config_path = os.path.join(config_dir, "bmc-config.yaml")
         power_type = factory.make_name("power_type")
         power_params = {
@@ -3118,7 +3716,8 @@ class TestBMCConfig(MAASTestCase):
             "config": config,
         }
 
-        self.assertRaises(exception, bmc_config, script)
+        with pytest.raises(exception):
+            bmc_config(script)
 
         mock_output_and_send.assert_called_once_with(
             "BMC credentials reconfigured by %s" % script_name,
@@ -3134,39 +3733,34 @@ class TestBMCConfig(MAASTestCase):
                 call(config),
             ]
         )
-        self.assertTrue(maas_run_remote_scripts._bmc_config_uploaded)
+        assert maas_run_remote_scripts._bmc_config_uploaded
 
-    def test_bmc_config_does_nothing_if_already_sent(self):
+    def test_bmc_config_does_nothing_if_already_sent(self, mocker):
         maas_run_remote_scripts._bmc_config_uploaded = True
-        mock_output_and_send = self.patch(
+        mock_output_and_send = mocker.patch.object(
             maas_run_remote_scripts, "output_and_send"
         )
         bmc_config({})
         mock_output_and_send.assert_not_called()
 
-    def test_bmc_config_does_nothing_if_send_result_false(self):
+    def test_bmc_config_does_nothing_if_send_result_false(self, mocker):
         maas_run_remote_scripts._bmc_config_uploaded = False
-        mock_output_and_send = self.patch(
+        mock_output_and_send = mocker.patch.object(
             maas_run_remote_scripts, "output_and_send"
         )
         bmc_config({}, False)
         mock_output_and_send.assert_not_called()
 
 
-class TestRunScripts(MAASTestCase):
-    def setUp(self):
-        self.patch(maas_run_remote_scripts.sys.stdout, "write")
-        self.patch(maas_run_remote_scripts.sys.stderr, "write")
-        super().setUp()
-
-    def test_run_scripts(self):
-        mock_run_serial_scripts = self.patch(
+class TestRunScripts:
+    def test_run_scripts(self, mocker, tmp_path):
+        mock_run_serial_scripts = mocker.patch.object(
             maas_run_remote_scripts, "run_serial_scripts"
         )
-        mock_run_instance_scripts = self.patch(
+        mock_run_instance_scripts = mocker.patch.object(
             maas_run_remote_scripts, "run_instance_scripts"
         )
-        mock_run_parallel_scripts = self.patch(
+        mock_run_parallel_scripts = mocker.patch.object(
             maas_run_remote_scripts, "run_parallel_scripts"
         )
         single_thread = make_scripts(instance=False, parallel=0)
@@ -3177,7 +3771,7 @@ class TestRunScripts(MAASTestCase):
             scripts += copy.deepcopy(instance_thread_group)
         scripts += copy.deepcopy(any_thread)
         config = Config()
-        scripts_dir = self.useFixture(TempDirectory()).path
+        scripts_dir = tmp_path
         out_dir = os.path.join(scripts_dir, "out")
 
         run_scripts(config, scripts_dir, out_dir, scripts)
@@ -3209,11 +3803,11 @@ class TestRunScripts(MAASTestCase):
             parallel_scripts, scripts_dir, ANY, True
         )
 
-    def test_run_scripts_adds_data(self):
-        scripts_dir = self.useFixture(TempDirectory()).path
+    def test_run_scripts_adds_data(self, mocker, tmp_path):
+        scripts_dir = tmp_path
         out_dir = os.path.join(scripts_dir, "out")
-        self.patch(maas_run_remote_scripts, "install_dependencies")
-        self.patch(maas_run_remote_scripts, "run_script")
+        mocker.patch.object(maas_run_remote_scripts, "install_dependencies")
+        mocker.patch.object(maas_run_remote_scripts, "run_script")
         url = factory.make_url()
         creds = {"token_secret": factory.make_name("token_secret")}
         config = Config()
@@ -3253,11 +3847,13 @@ class TestRunScripts(MAASTestCase):
         run_scripts(config, scripts_dir, out_dir, scripts)
         scripts[0].pop("thread", None)
         scripts[0].pop("resources_file")
-        self.assertEqual(script, scripts[0])
+        assert script == scripts[0]
 
-    def test_run_scripts_sends_unsent_results_after_bmc_discovered(self):
-        scripts_dir = self.useFixture(TempDirectory()).path
-        mock_output_and_send = self.patch(
+    def test_run_scripts_sends_unsent_results_after_bmc_discovered(
+        self, mocker, tmp_path
+    ):
+        scripts_dir = tmp_path
+        mock_output_and_send = mocker.patch.object(
             maas_run_remote_scripts, "output_and_send"
         )
         # Simulate the second script configures the BMC and allows the machine
@@ -3408,9 +4004,9 @@ class TestRunScripts(MAASTestCase):
             ]
         )
 
-    def test_run_scripts_enlists(self):
-        scripts_dir = self.useFixture(TempDirectory()).path
-        mock_output_and_send = self.patch(
+    def test_run_scripts_enlists(self, mocker, tmp_path):
+        scripts_dir = tmp_path
+        mock_output_and_send = mocker.patch.object(
             maas_run_remote_scripts, "output_and_send"
         )
         # Simulate no script configures the BMC, the machine is created after
@@ -3426,7 +4022,7 @@ class TestRunScripts(MAASTestCase):
             True,
             True,
         )
-        mock_enlist = self.patch(maas_run_remote_scripts, "enlist")
+        mock_enlist = mocker.patch.object(maas_run_remote_scripts, "enlist")
         scripts = make_scripts(
             scripts_dir=scripts_dir, instance=False, parallel=0
         )
@@ -3437,23 +4033,12 @@ class TestRunScripts(MAASTestCase):
         # with the result. No script is able to send when it starts or finishes
         # so all results must be sent after they finish running and enlistment
         # has occured.
-        self.assertEqual(9, len(mock_output_and_send.call_args_list))
+        assert len(mock_output_and_send.call_args_list) == 9
         mock_enlist.assert_called_once()
 
 
-class TestRunScriptsFromMetadata(MAASTestCase):
-    def setUp(self):
-        super().setUp()
-        self.mock_output_and_send = self.patch(
-            maas_run_remote_scripts, "output_and_send"
-        )
-        self.mock_signal = self.patch_autospec(
-            maas_run_remote_scripts, "signal"
-        )
-        self.mock_run_scripts = self.patch(
-            maas_run_remote_scripts, "run_scripts"
-        )
-        self.patch(maas_run_remote_scripts.sys.stdout, "write")
+class TestRunScriptsFromMetadata:
+    """Test run_scripts_from_metadata."""
 
     def make_index_json(
         self,
@@ -3500,13 +4085,21 @@ class TestRunScriptsFromMetadata(MAASTestCase):
             f.write(json.dumps(index_json))
         return True
 
-    def test_run_scripts_from_metadata(self):
-        scripts_dir = self.useFixture(TempDirectory()).path
-        self.mock_run_scripts.return_value = 0
+    def test_run_scripts_from_metadata(self, mocker, tmp_path):
+        scripts_dir = str(tmp_path)
+        mocker.patch.object(maas_run_remote_scripts, "output_and_send")
+        mock_signal = mocker.patch.object(
+            maas_run_remote_scripts, "signal", autospec=True
+        )
+        mock_run_scripts = mocker.patch.object(
+            maas_run_remote_scripts, "run_scripts"
+        )
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+        mock_run_scripts.return_value = 0
         index_json = self.make_index_json(
             scripts_dir, with_release=True, with_deployment=True
         )
-        mock_download_and_extract_tar = self.patch(
+        mock_download_and_extract_tar = mocker.patch.object(
             maas_run_remote_scripts, "download_and_extract_tar"
         )
         mock_download_and_extract_tar.side_effect = (
@@ -3522,7 +4115,7 @@ class TestRunScriptsFromMetadata(MAASTestCase):
 
         run_scripts_from_metadata(config, scripts_dir, None)
 
-        self.mock_run_scripts.assert_any_call(
+        mock_run_scripts.assert_any_call(
             config,
             scripts_dir,
             None,
@@ -3530,28 +4123,28 @@ class TestRunScriptsFromMetadata(MAASTestCase):
             True,
             allow_bmc_detection=True,
         )
-        self.mock_run_scripts.assert_any_call(
+        mock_run_scripts.assert_any_call(
             config,
             scripts_dir,
             None,
             index_json["testing_scripts"],
             True,
         )
-        self.mock_run_scripts.assert_any_call(
+        mock_run_scripts.assert_any_call(
             config,
             scripts_dir,
             None,
             index_json["release_scripts"],
             True,
         )
-        self.mock_run_scripts.assert_any_call(
+        mock_run_scripts.assert_any_call(
             config,
             scripts_dir,
             None,
             index_json["deployment_scripts"],
             True,
         )
-        self.mock_signal.assert_any_call(
+        mock_signal.assert_any_call(
             config.metadata_url, config.credentials, "TESTING"
         )
         mock_download_and_extract_tar.assert_called_once_with(
@@ -3560,10 +4153,22 @@ class TestRunScriptsFromMetadata(MAASTestCase):
             scripts_dir,
         )
 
-    def test_run_scripts_from_metadata_doesnt_run_tests_on_commiss_fail(self):
-        scripts_dir = self.useFixture(TempDirectory()).path
+    def test_run_scripts_from_metadata_doesnt_run_tests_on_commiss_fail(
+        self, mocker, tmp_path
+    ):
+        scripts_dir = str(tmp_path)
+        mock_output_and_send = mocker.patch.object(
+            maas_run_remote_scripts, "output_and_send"
+        )
+        mock_signal = mocker.patch.object(
+            maas_run_remote_scripts, "signal", autospec=True
+        )
+        mock_run_scripts = mocker.patch.object(
+            maas_run_remote_scripts, "run_scripts"
+        )
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
         fail_count = random.randint(1, 100)
-        self.mock_run_scripts.return_value = fail_count
+        mock_run_scripts.return_value = fail_count
         index_json = self.make_index_json(scripts_dir)
         config = Config()
         config.update(
@@ -3574,7 +4179,7 @@ class TestRunScriptsFromMetadata(MAASTestCase):
         )
         run_scripts_from_metadata(config, scripts_dir, None)
 
-        self.mock_run_scripts.assert_called_once_with(
+        mock_run_scripts.assert_called_once_with(
             config,
             scripts_dir,
             None,
@@ -3582,8 +4187,8 @@ class TestRunScriptsFromMetadata(MAASTestCase):
             True,
             allow_bmc_detection=True,
         )
-        self.mock_signal.assert_not_called()
-        self.mock_output_and_send.assert_called_once_with(
+        mock_signal.assert_not_called()
+        mock_output_and_send.assert_called_once_with(
             "%s commissioning scripts failed to run" % fail_count,
             True,
             config.metadata_url,
@@ -3591,12 +4196,22 @@ class TestRunScriptsFromMetadata(MAASTestCase):
             "FAILED",
         )
 
-    def test_run_scripts_from_metadata_redownloads_after_commiss(self):
-        scripts_dir = self.useFixture(TempDirectory()).path
-        self.mock_run_scripts.return_value = 0
+    def test_run_scripts_from_metadata_redownloads_after_commiss(
+        self, mocker, tmp_path
+    ):
+        scripts_dir = str(tmp_path)
+        mocker.patch.object(maas_run_remote_scripts, "output_and_send")
+        mock_signal = mocker.patch.object(
+            maas_run_remote_scripts, "signal", autospec=True
+        )
+        mock_run_scripts = mocker.patch.object(
+            maas_run_remote_scripts, "run_scripts"
+        )
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+        mock_run_scripts.return_value = 0
         testing_scripts = make_scripts(with_config=False)
         testing_scripts[0]["parameters"] = {"storage": {"type": "storage"}}
-        mock_download_and_extract_tar = self.patch(
+        mock_download_and_extract_tar = mocker.patch.object(
             maas_run_remote_scripts, "download_and_extract_tar"
         )
 
@@ -3620,7 +4235,7 @@ class TestRunScriptsFromMetadata(MAASTestCase):
         )
         run_scripts_from_metadata(config, scripts_dir, None)
 
-        self.mock_run_scripts.assert_any_call(
+        mock_run_scripts.assert_any_call(
             config,
             scripts_dir,
             None,
@@ -3628,7 +4243,7 @@ class TestRunScriptsFromMetadata(MAASTestCase):
             True,
             allow_bmc_detection=True,
         )
-        self.mock_signal.assert_any_call(
+        mock_signal.assert_any_call(
             config.metadata_url, config.credentials, "TESTING"
         )
         mock_download_and_extract_tar.assert_called_once_with(
@@ -3636,7 +4251,7 @@ class TestRunScriptsFromMetadata(MAASTestCase):
             config.credentials,
             scripts_dir,
         )
-        self.mock_run_scripts.assert_any_call(
+        mock_run_scripts.assert_any_call(
             config,
             scripts_dir,
             None,
@@ -3644,12 +4259,24 @@ class TestRunScriptsFromMetadata(MAASTestCase):
             True,
         )
 
-    def test_run_scripts_from_metadata_signals_test_failure(self):
-        scripts_dir = self.useFixture(TempDirectory()).path
+    def test_run_scripts_from_metadata_signals_test_failure(
+        self, mocker, tmp_path
+    ):
+        scripts_dir = str(tmp_path)
+        mock_output_and_send = mocker.patch.object(
+            maas_run_remote_scripts, "output_and_send"
+        )
+        mock_signal = mocker.patch.object(
+            maas_run_remote_scripts, "signal", autospec=True
+        )
+        mock_run_scripts = mocker.patch.object(
+            maas_run_remote_scripts, "run_scripts"
+        )
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
         fail_count = random.randint(1, 100)
-        self.mock_run_scripts.side_effect = (0, fail_count)
+        mock_run_scripts.side_effect = (0, fail_count)
         index_json = self.make_index_json(scripts_dir)
-        mock_download_and_extract_tar = self.patch(
+        mock_download_and_extract_tar = mocker.patch.object(
             maas_run_remote_scripts, "download_and_extract_tar"
         )
         mock_download_and_extract_tar.side_effect = (
@@ -3665,7 +4292,7 @@ class TestRunScriptsFromMetadata(MAASTestCase):
         )
         run_scripts_from_metadata(config, scripts_dir, None)
 
-        self.mock_run_scripts.assert_any_call(
+        mock_run_scripts.assert_any_call(
             config,
             scripts_dir,
             None,
@@ -3673,14 +4300,14 @@ class TestRunScriptsFromMetadata(MAASTestCase):
             True,
             allow_bmc_detection=True,
         )
-        self.mock_run_scripts.assert_any_call(
+        mock_run_scripts.assert_any_call(
             config,
             scripts_dir,
             None,
             index_json["testing_scripts"],
             True,
         )
-        self.mock_signal.assert_any_call(
+        mock_signal.assert_any_call(
             config.metadata_url, config.credentials, "TESTING"
         )
         mock_download_and_extract_tar.assert_called_once_with(
@@ -3688,7 +4315,7 @@ class TestRunScriptsFromMetadata(MAASTestCase):
             config.credentials,
             scripts_dir,
         )
-        self.mock_output_and_send.assert_any_call(
+        mock_output_and_send.assert_any_call(
             "%s test scripts failed to run" % fail_count,
             True,
             config.metadata_url,
@@ -3697,56 +4324,53 @@ class TestRunScriptsFromMetadata(MAASTestCase):
         )
 
 
-class TestGetMaasMachines(MAASTestCase):
-    def setUp(self):
-        super().setUp()
-        self.mock_geturl = self.patch(maas_run_remote_scripts, "geturl")
-        self.mock_geturl.return_value = BytesIO(b"true")
-
-    def test_get_maas_machines(self):
+class TestGetMaasMachines:
+    def test_get_maas_machines(self, mocker):
+        mock_geturl = mocker.patch.object(maas_run_remote_scripts, "geturl")
+        mock_geturl.return_value = BytesIO(b"true")
         netloc = factory.make_hostname()
         url = factory.make_url(scheme="http", netloc=netloc)
-        self.assertTrue(get_maas_machines(url))
-        self.mock_geturl.assert_called_once_with(
+        assert get_maas_machines(url)
+        mock_geturl.assert_called_once_with(
             "http://%s/MAAS/api/2.0/machines/" % netloc, post_data=None
         )
 
-    def test_get_maas_machines_query(self):
+    def test_get_maas_machines_query(self, mocker):
+        mock_geturl = mocker.patch.object(maas_run_remote_scripts, "geturl")
+        mock_geturl.return_value = BytesIO(b"true")
         netloc = factory.make_hostname()
         url = factory.make_url(scheme="http", netloc=netloc)
         query = {
             factory.make_name("key"): factory.make_name("value")
             for _ in range(3)
         }
-        self.assertTrue(get_maas_machines(url, query))
-        self.mock_geturl.assert_called_once_with(
+        assert get_maas_machines(url, query)
+        mock_geturl.assert_called_once_with(
             "http://%s/MAAS/api/2.0/machines/?%s"
             % (netloc, "&".join("%s=%s" % i for i in query.items())),
             post_data=None,
         )
 
-    def test_get_maas_machines_post_data(self):
+    def test_get_maas_machines_post_data(self, mocker):
+        mock_geturl = mocker.patch.object(maas_run_remote_scripts, "geturl")
+        mock_geturl.return_value = BytesIO(b"true")
         netloc = factory.make_hostname()
         url = factory.make_url(scheme="http", netloc=netloc)
         post_data = {
             factory.make_name("key"): factory.make_name("value")
             for _ in range(3)
         }
-        self.assertTrue(get_maas_machines(url, post_data=post_data))
-        self.mock_geturl.assert_called_once_with(
+        assert get_maas_machines(url, post_data=post_data)
+        mock_geturl.assert_called_once_with(
             "http://%s/MAAS/api/2.0/machines/" % netloc,
             post_data=post_data,
         )
 
 
-class TestMaasRunRemoteScripts(MAASTestCase):
-    def setUp(self):
-        super().setUp()
-        self.patch(maas_run_remote_scripts.sys.stdout, "write")
-
-    def test_download_and_extract_tar(self):
-        self.patch(maas_run_remote_scripts.sys.stdout, "write")
-        scripts_dir = self.useFixture(TempDirectory()).path
+class TestMaasRunRemoteScripts:
+    def test_download_and_extract_tar(self, mocker, tmp_path):
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+        scripts_dir = tmp_path
         binary = BytesIO()
         file_content = factory.make_bytes()
         with tarfile.open(mode="w", fileobj=binary) as tar:
@@ -3754,34 +4378,39 @@ class TestMaasRunRemoteScripts(MAASTestCase):
             tarinfo.size = len(file_content)
             tarinfo.mode = 0o755
             tar.addfile(tarinfo, BytesIO(file_content))
-        mock_geturl = self.patch(maas_run_remote_scripts, "geturl")
+        mock_geturl = mocker.patch.object(maas_run_remote_scripts, "geturl")
         mm = MagicMock()
         mm.status = 200
         mm.read.return_value = binary.getvalue()
         mock_geturl.return_value = mm
 
         # geturl is mocked out so we don't need to give a url or creds.
-        self.assertTrue(download_and_extract_tar(None, None, scripts_dir))
+        assert download_and_extract_tar(None, None, scripts_dir)
 
         written_file_content = open(
             os.path.join(scripts_dir, "test-file"), "rb"
         ).read()
-        self.assertEqual(file_content, written_file_content)
+        assert file_content == written_file_content
 
-    def test_download_and_extract_tar_returns_false_on_no_content(self):
-        self.patch(maas_run_remote_scripts.sys.stdout, "write")
-        scripts_dir = self.useFixture(TempDirectory()).path
-        mock_geturl = self.patch(maas_run_remote_scripts, "geturl")
+    def test_download_and_extract_tar_returns_false_on_no_content(
+        self, mocker, tmp_path
+    ):
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+        scripts_dir = tmp_path
+        mock_geturl = mocker.patch.object(maas_run_remote_scripts, "geturl")
         mm = MagicMock()
         mm.status = int(http.client.NO_CONTENT)
         mm.read.return_value = b"No content"
         mock_geturl.return_value = mm
 
         # geturl is mocked out so we don't need to give a url or creds.
-        self.assertFalse(download_and_extract_tar(None, None, scripts_dir))
+        assert not download_and_extract_tar(None, None, scripts_dir)
 
-    def test_heartbeat(self):
-        mock_signal = self.patch_autospec(maas_run_remote_scripts, "signal")
+    def test_heartbeat(self, mocker):
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+        mock_signal = mocker.patch.object(
+            maas_run_remote_scripts, "signal", autospec=True
+        )
         url = factory.make_url()
         creds = Credentials()
         creds.update({"token_secret": factory.make_name("token_secret")})
@@ -3789,12 +4418,17 @@ class TestMaasRunRemoteScripts(MAASTestCase):
         start_time = time.time()
         heart_beat.start()
         heart_beat.stop()
-        self.assertLess(time.time() - start_time, 1)
+        assert time.time() - start_time < 1
         mock_signal.assert_called_once_with(url, creds, "WORKING")
 
-    def test_heartbeat_with_long_sleep(self):
-        mock_signal = self.patch_autospec(maas_run_remote_scripts, "signal")
-        self.patch(maas_run_remote_scripts.time, "monotonic").side_effect = [
+    def test_heartbeat_with_long_sleep(self, mocker):
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+        mock_signal = mocker.patch.object(
+            maas_run_remote_scripts, "signal", autospec=True
+        )
+        mocker.patch.object(
+            maas_run_remote_scripts.time, "monotonic"
+        ).side_effect = [
             time.monotonic(),
             time.monotonic(),
             time.monotonic() + 500,
@@ -3806,11 +4440,12 @@ class TestMaasRunRemoteScripts(MAASTestCase):
         start_time = time.time()
         heart_beat.start()
         heart_beat.stop()
-        self.assertLess(time.time() - start_time, 1)
+        assert time.time() - start_time < 1
         mock_signal.assert_called_once_with(url, creds, "WORKING")
 
-    def test_main_checks_if_registered_during_enlistment(self):
-        self.patch(
+    def test_main_checks_if_registered_during_enlistment(self, mocker):
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+        mocker.patch.object(
             maas_run_remote_scripts.argparse.ArgumentParser, "parse_args"
         ).return_value = argparse.Namespace(
             ckey=None,
@@ -3821,32 +4456,35 @@ class TestMaasRunRemoteScripts(MAASTestCase):
             config="http://example.com/config",
             apiver=maas_run_remote_scripts.MD_VERSION,
         )
-        self.patch(maas_run_remote_scripts, "get_mac_addresses_for_enlistment")
-        self.patch(maas_run_remote_scripts.Config, "update_from_url")
-        mock_get_maas_machines = self.patch(
+        mocker.patch.object(
+            maas_run_remote_scripts, "get_mac_addresses_for_enlistment"
+        )
+        mocker.patch.object(maas_run_remote_scripts.Config, "update_from_url")
+        mock_get_maas_machines = mocker.patch.object(
             maas_run_remote_scripts, "get_maas_machines"
         )
         mock_get_maas_machines.return_value = True
-        mock_sleep = self.patch(maas_run_remote_scripts.time, "sleep")
+        mock_sleep = mocker.patch.object(maas_run_remote_scripts.time, "sleep")
 
-        self.assertEqual(0, maas_run_remote_scripts.main())
+        assert maas_run_remote_scripts.main() == 0
         mock_sleep.assert_any_call(10)
 
-    def test_main_signals_success(self):
-        self.patch(
+    def test_main_signals_success(self, mocker):
+        mocker.patch.object(maas_run_remote_scripts.sys.stdout, "write")
+        mocker.patch.object(
             maas_run_remote_scripts.argparse.ArgumentParser, "parse_args"
         )
-        self.patch(maas_run_remote_scripts, "Config")
-        self.patch(maas_run_remote_scripts, "os")
-        self.patch(maas_run_remote_scripts.Path, "open")
-        self.patch(
+        mocker.patch.object(maas_run_remote_scripts, "Config")
+        mocker.patch.object(maas_run_remote_scripts, "os")
+        mocker.patch.object(maas_run_remote_scripts.Path, "open")
+        mocker.patch.object(
             maas_run_remote_scripts, "download_and_extract_tar"
         ).return_value = True
-        self.patch(
+        mocker.patch.object(
             maas_run_remote_scripts, "run_scripts_from_metadata"
         ).return_value = 0
-        self.patch(maas_run_remote_scripts, "signal")
-        mock_output_and_send = self.patch(
+        mocker.patch.object(maas_run_remote_scripts, "signal")
+        mock_output_and_send = mocker.patch.object(
             maas_run_remote_scripts, "output_and_send"
         )
 

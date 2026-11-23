@@ -3,22 +3,20 @@
 
 """Tests for Script form."""
 
+from collections import Counter
 from datetime import timedelta
 import json
 import random
 
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.http import HttpRequest
+import pytest
 
 from maascommon.events import AUDIT
-from maasserver.forms.script import (
-    CommissioningScriptForm,
-    ScriptForm,
-    TestingScriptForm,
-)
+from maasserver.forms.script import CommissioningScriptForm, ScriptForm
+from maasserver.forms.script import TestingScriptForm as ScriptUploadForm
 from maasserver.models import Event, Script, VersionedTextFile
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from metadataserver.enum import (
     HARDWARE_TYPE,
     HARDWARE_TYPE_CHOICES,
@@ -29,42 +27,43 @@ from metadataserver.enum import (
 )
 
 
-class TestScriptForm(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestScriptForm:
     def test_create_requires_name(self):
         form = ScriptForm(data={"script": factory.make_script_content()})
-        self.assertFalse(form.is_valid())
-        self.assertCountEqual([], VersionedTextFile.objects.all())
+        assert not form.is_valid()
+        assert not VersionedTextFile.objects.exists()
 
     def test_create_requires_script(self):
         form = ScriptForm(data={"name": factory.make_string()})
-        self.assertFalse(form.is_valid())
-        self.assertCountEqual([], VersionedTextFile.objects.all())
+        assert not form.is_valid()
+        assert not VersionedTextFile.objects.exists()
 
     def test_create_with_default_values(self):
         name = factory.make_name("name")
         script_content = factory.make_script_content()
 
         form = ScriptForm(data={"name": name, "script": script_content})
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         script = form.save()
 
-        self.assertEqual(name, script.name)
-        self.assertEqual("", script.title)
-        self.assertEqual("", script.description)
-        self.assertEqual(1, len(script.tags))
-        self.assertEqual(SCRIPT_TYPE.TESTING, script.script_type)
-        self.assertEqual(HARDWARE_TYPE.NODE, script.hardware_type)
-        self.assertEqual(SCRIPT_PARALLEL.DISABLED, script.parallel)
-        self.assertEqual({}, script.packages)
-        self.assertEqual({}, script.results)
-        self.assertEqual({}, script.parameters)
-        self.assertEqual(timedelta(0), script.timeout)
-        self.assertFalse(script.destructive)
-        self.assertEqual(script_content, script.script.data)
-        self.assertFalse(script.default)
-        self.assertEqual([], script.for_hardware)
-        self.assertFalse(script.may_reboot)
-        self.assertFalse(script.recommission)
+        assert name == script.name
+        assert "" == script.title
+        assert "" == script.description
+        assert 1 == len(script.tags)
+        assert SCRIPT_TYPE.TESTING == script.script_type
+        assert HARDWARE_TYPE.NODE == script.hardware_type
+        assert SCRIPT_PARALLEL.DISABLED == script.parallel
+        assert {} == script.packages
+        assert {} == script.results
+        assert {} == script.parameters
+        assert timedelta(0) == script.timeout
+        assert not script.destructive
+        assert script_content == script.script.data
+        assert not script.default
+        assert [] == script.for_hardware
+        assert not script.may_reboot
+        assert not script.recommission
 
     def test_create_with_defined_values(self):
         name = factory.make_name("name")
@@ -117,29 +116,29 @@ class TestScriptForm(MAASServerTestCase):
                 "recommission": recommission,
             }
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         script = form.save()
 
-        self.assertEqual(name, script.name)
-        self.assertEqual(title, script.title)
-        self.assertEqual(description, script.description)
+        assert name == script.name
+        assert title == script.title
+        assert description == script.description
         for tag in tags:
-            self.assertIn(tag, script.tags)
-        self.assertEqual(script_type, script.script_type)
-        self.assertEqual(hardware_type, script.hardware_type)
-        self.assertEqual(parallel, script.parallel)
-        self.assertEqual(packages, script.packages)
-        self.assertEqual({}, script.results)
-        self.assertEqual({}, script.parameters)
-        self.assertEqual(packages, script.packages)
-        self.assertEqual(timedelta(0, timeout), script.timeout)
-        self.assertEqual(destructive, script.destructive)
-        self.assertEqual(script_content, script.script.data)
-        self.assertEqual(comment, script.script.comment)
-        self.assertEqual(may_reboot, script.may_reboot)
-        self.assertCountEqual(for_hardware, script.for_hardware)
-        self.assertEqual(recommission, script.recommission)
-        self.assertFalse(script.default)
+            assert tag in script.tags
+        assert script_type == script.script_type
+        assert hardware_type == script.hardware_type
+        assert parallel == script.parallel
+        assert packages == script.packages
+        assert {} == script.results
+        assert {} == script.parameters
+        assert packages == script.packages
+        assert timedelta(0, timeout) == script.timeout
+        assert destructive == script.destructive
+        assert script_content == script.script.data
+        assert comment == script.script.comment
+        assert may_reboot == script.may_reboot
+        assert Counter(for_hardware) == Counter(script.for_hardware)
+        assert recommission == script.recommission
+        assert not script.default
 
     def test_create_setting_default_has_no_effect(self):
         form = ScriptForm(
@@ -149,9 +148,9 @@ class TestScriptForm(MAASServerTestCase):
                 "default": True,
             }
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         script = form.save()
-        self.assertFalse(script.default)
+        assert not script.default
 
     def test_update(self):
         script = factory.make_Script()
@@ -209,44 +208,42 @@ class TestScriptForm(MAASServerTestCase):
             },
             instance=script,
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         script = form.save()
 
-        self.assertEqual(name, script.name)
-        self.assertEqual(title, script.title)
-        self.assertEqual(description, script.description)
+        assert name == script.name
+        assert title == script.title
+        assert description == script.description
         for tag in tags:
-            self.assertIn(tag, script.tags)
-        self.assertEqual(script_type, script.script_type)
-        self.assertEqual(hardware_type, script.hardware_type)
-        self.assertEqual(parallel, script.parallel)
-        self.assertEqual({}, script.results)
-        self.assertEqual({}, script.parameters)
-        self.assertEqual(packages, script.packages)
-        self.assertEqual(timedelta(0, timeout), script.timeout)
-        self.assertEqual(destructive, script.destructive)
-        self.assertEqual(script_content, script.script.data)
-        self.assertEqual(comment, script.script.comment)
-        self.assertEqual(
-            orig_script_content, script.script.previous_version.data
+            assert tag in script.tags
+        assert script_type == script.script_type
+        assert hardware_type == script.hardware_type
+        assert parallel == script.parallel
+        assert {} == script.results
+        assert {} == script.parameters
+        assert packages == script.packages
+        assert timedelta(0, timeout) == script.timeout
+        assert destructive == script.destructive
+        assert script_content == script.script.data
+        assert comment == script.script.comment
+        assert orig_script_content == script.script.previous_version.data
+        assert script.script.previous_version.comment is None
+        assert (
+            apply_configured_networking == script.apply_configured_networking
         )
-        self.assertIsNone(script.script.previous_version.comment)
-        self.assertEqual(
-            apply_configured_networking, script.apply_configured_networking
-        )
-        self.assertFalse(script.default)
+        assert not script.default
 
     def test_update_no_fields_mandatory(self):
         script = factory.make_Script()
         form = ScriptForm(data={}, instance=script)
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
 
     def test_update_setting_default_has_no_effect(self):
         script = factory.make_Script(default=True)
         form = ScriptForm(data={"default": False}, instance=script)
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         script = form.save()
-        self.assertTrue(script.default)
+        assert script.default
 
     def test_update_prohibits_most_field_updates_on_default_script(self):
         script = factory.make_Script(default=True)
@@ -274,8 +271,8 @@ class TestScriptForm(MAASServerTestCase):
             else:
                 value = factory.make_string()
             form = ScriptForm(data={name: value}, instance=script)
-            self.assertFalse(form.is_valid())
-            self.assertEqual(1, VersionedTextFile.objects.all().count())
+            assert not form.is_valid()
+            assert 1 == VersionedTextFile.objects.all().count()
 
     def test_update_edit_default_allows_update_of_all_fields(self):
         script = factory.make_Script(default=True)
@@ -305,7 +302,7 @@ class TestScriptForm(MAASServerTestCase):
             form = ScriptForm(
                 data={name: value}, instance=script, edit_default=True
             )
-            self.assertTrue(form.is_valid(), form.errors)
+            assert form.is_valid(), form.errors
 
     def test_update_allows_editing_tag_and_timeout_on_default_script(self):
         script = factory.make_Script(default=True, destructive=False)
@@ -316,28 +313,25 @@ class TestScriptForm(MAASServerTestCase):
             data={"tags": ",".join(tags), "timeout": str(timeout)},
             instance=script,
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         script = form.save()
 
         for tag in tags:
-            self.assertIn(tag, script.tags)
-        self.assertEqual(timedelta(0, timeout), script.timeout)
+            assert tag in script.tags
+        assert timedelta(0, timeout) == script.timeout
 
     def test_update_requires_script_with_comment(self):
         script = factory.make_Script()
         form = ScriptForm(
             data={"comment": factory.make_name("comment")}, instance=script
         )
-        self.assertFalse(form.is_valid())
-        self.assertEqual(
-            {
-                "comment": [
-                    '"comment" may only be used when specifying a "script" '
-                    "as well."
-                ]
-            },
-            form.errors,
-        )
+        assert not form.is_valid()
+        assert {
+            "comment": [
+                '"comment" may only be used when specifying a "script" '
+                "as well."
+            ]
+        } == form.errors
 
     def test_update_script_doesnt_effect_other_fields(self):
         script = factory.make_Script()
@@ -359,26 +353,26 @@ class TestScriptForm(MAASServerTestCase):
         recommission = script.recommission
 
         form = ScriptForm(data={"script": script_content}, instance=script)
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         script = form.save()
 
-        self.assertEqual(name, script.name)
-        self.assertEqual(title, script.title)
-        self.assertEqual(description, script.description)
-        self.assertEqual(tags, script.tags)
-        self.assertEqual(script_type, script.script_type)
-        self.assertEqual(hardware_type, script.hardware_type)
-        self.assertEqual(packages, script.packages)
-        self.assertEqual(parallel, script.parallel)
-        self.assertEqual(results, script.results)
-        self.assertEqual(parameters, script.parameters)
-        self.assertEqual(timeout, script.timeout)
-        self.assertEqual(destructive, script.destructive)
-        self.assertFalse(script.default)
-        self.assertEqual(script_content, script.script.data)
-        self.assertEqual(may_reboot, script.may_reboot)
-        self.assertCountEqual(for_hardware, script.for_hardware)
-        self.assertEqual(recommission, script.recommission)
+        assert name == script.name
+        assert title == script.title
+        assert description == script.description
+        assert tags == script.tags
+        assert script_type == script.script_type
+        assert hardware_type == script.hardware_type
+        assert packages == script.packages
+        assert parallel == script.parallel
+        assert results == script.results
+        assert parameters == script.parameters
+        assert timeout == script.timeout
+        assert destructive == script.destructive
+        assert not script.default
+        assert script_content == script.script.data
+        assert may_reboot == script.may_reboot
+        assert Counter(for_hardware) == Counter(script.for_hardware)
+        assert recommission == script.recommission
 
     def test_yaml_doesnt_update_tags(self):
         script = factory.make_Script()
@@ -392,9 +386,9 @@ class TestScriptForm(MAASServerTestCase):
             },
             instance=script,
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         script = form.save()
-        self.assertCountEqual(orig_tags, script.tags)
+        assert Counter(orig_tags) == Counter(script.tags)
 
     def test_yaml_doesnt_update_timeout(self):
         script = factory.make_Script()
@@ -408,9 +402,9 @@ class TestScriptForm(MAASServerTestCase):
             },
             instance=script,
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         script = form.save()
-        self.assertEqual(orig_timeout, script.timeout)
+        assert orig_timeout == script.timeout
 
     def test_can_use_script_type_name(self):
         script_type = factory.pick_choice(SCRIPT_TYPE_CHOICES)
@@ -421,10 +415,10 @@ class TestScriptForm(MAASServerTestCase):
                 "type": script_type,
             }
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         script = form.save()
 
-        self.assertEqual(script_type, script.script_type)
+        assert script_type == script.script_type
 
     def test_errors_on_invalid_script_type(self):
         form = ScriptForm(
@@ -434,16 +428,13 @@ class TestScriptForm(MAASServerTestCase):
                 "type": factory.make_string(),
             }
         )
-        self.assertFalse(form.is_valid())
-        self.assertEqual(
-            {
-                "script_type": [
-                    "Script type must be commissioning, testing, release or deployment"
-                ]
-            },
-            form.errors,
-        )
-        self.assertCountEqual([], VersionedTextFile.objects.all())
+        assert not form.is_valid()
+        assert {
+            "script_type": [
+                "Script type must be commissioning, testing, release or deployment"
+            ]
+        } == form.errors
+        assert not VersionedTextFile.objects.exists()
 
     def test_can_use_hardware_type_name(self):
         hardware_type = factory.pick_choice(HARDWARE_TYPE_CHOICES)
@@ -454,10 +445,10 @@ class TestScriptForm(MAASServerTestCase):
                 "hardware_type": hardware_type,
             }
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         script = form.save()
 
-        self.assertEqual(hardware_type, script.hardware_type)
+        assert hardware_type == script.hardware_type
 
     def test_errors_on_invalid_hardware_type(self):
         form = ScriptForm(
@@ -467,16 +458,13 @@ class TestScriptForm(MAASServerTestCase):
                 "hardware_type": factory.make_string(),
             }
         )
-        self.assertFalse(form.is_valid())
-        self.assertEqual(
-            {
-                "hardware_type": [
-                    "Hardware type must be node, cpu, memory, storage, or gpu"
-                ]
-            },
-            form.errors,
-        )
-        self.assertCountEqual([], VersionedTextFile.objects.all())
+        assert not form.is_valid()
+        assert {
+            "hardware_type": [
+                "Hardware type must be node, cpu, memory, storage, or gpu"
+            ]
+        } == form.errors
+        assert not VersionedTextFile.objects.exists()
 
     def test_can_use_parallel(self):
         script_parallel = factory.pick_choice(SCRIPT_PARALLEL_CHOICES)
@@ -487,10 +475,10 @@ class TestScriptForm(MAASServerTestCase):
                 "parallel": script_parallel,
             }
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         script = form.save()
 
-        self.assertEqual(script_parallel, script.parallel)
+        assert script_parallel == script.parallel
 
     def test_errors_on_invalid_parallel_name(self):
         form = ScriptForm(
@@ -500,16 +488,11 @@ class TestScriptForm(MAASServerTestCase):
                 "parallel": factory.make_string(),
             }
         )
-        self.assertFalse(form.is_valid())
-        self.assertEqual(
-            {
-                "parallel": [
-                    "Script parallel must be disabled, instance, or any."
-                ]
-            },
-            form.errors,
-        )
-        self.assertCountEqual([], VersionedTextFile.objects.all())
+        assert not form.is_valid()
+        assert {
+            "parallel": ["Script parallel must be disabled, instance, or any."]
+        } == form.errors
+        assert not VersionedTextFile.objects.exists()
 
     def test_errors_on_no_shebang_in_script(self):
         form = ScriptForm(
@@ -518,8 +501,8 @@ class TestScriptForm(MAASServerTestCase):
                 "script": factory.make_string(),
             }
         )
-        self.assertFalse(form.is_valid())
-        self.assertEqual({"script": ["Must start with shebang."]}, form.errors)
+        assert not form.is_valid()
+        assert {"script": ["Must start with shebang."]} == form.errors
 
     def test_errors_on_invalid_parameters(self):
         form = ScriptForm(
@@ -529,15 +512,15 @@ class TestScriptForm(MAASServerTestCase):
                 "parameters": {"storage": {"type": "error"}},
             }
         )
-        self.assertFalse(form.is_valid())
-        self.assertCountEqual([], VersionedTextFile.objects.all())
+        assert not form.is_valid()
+        assert not VersionedTextFile.objects.exists()
 
     def test_errors_on_reserved_name(self):
         form = ScriptForm(
             data={"name": "none", "script": factory.make_script_content()}
         )
-        self.assertFalse(form.is_valid())
-        self.assertEqual({"name": ['"none" is a reserved name.']}, form.errors)
+        assert not form.is_valid()
+        assert {"name": ['"none" is a reserved name.']} == form.errors
 
     def test_errors_on_digit_name(self):
         form = ScriptForm(
@@ -546,8 +529,8 @@ class TestScriptForm(MAASServerTestCase):
                 "script": factory.make_script_content(),
             }
         )
-        self.assertFalse(form.is_valid())
-        self.assertEqual({"name": ["Cannot be a number."]}, form.errors)
+        assert not form.is_valid()
+        assert {"name": ["Cannot be a number."]} == form.errors
 
     def test_errors_on_whitespace_in_name(self):
         name = factory.make_name("with space")
@@ -557,16 +540,13 @@ class TestScriptForm(MAASServerTestCase):
                 "script": factory.make_script_content(),
             }
         )
-        self.assertFalse(form.is_valid())
-        self.assertEqual(
-            {
-                "name": [
-                    "Name '%s' contains disallowed characters, e.g. space or quotes."
-                    % name
-                ]
-            },
-            form.errors,
-        )
+        assert not form.is_valid()
+        assert {
+            "name": [
+                "Name '%s' contains disallowed characters, e.g. space or quotes."
+                % name
+            ]
+        } == form.errors
 
     def test_errors_on_quotes_in_name(self):
         name = factory.make_name("l'horreur")
@@ -576,16 +556,13 @@ class TestScriptForm(MAASServerTestCase):
                 "script": factory.make_script_content(),
             }
         )
-        self.assertFalse(form.is_valid())
-        self.assertEqual(
-            {
-                "name": [
-                    "Name '%s' contains disallowed characters, e.g. space or quotes."
-                    % name
-                ]
-            },
-            form.errors,
-        )
+        assert not form.is_valid()
+        assert {
+            "name": [
+                "Name '%s' contains disallowed characters, e.g. space or quotes."
+                % name
+            ]
+        } == form.errors
 
     def test_type_aliased_to_script_type(self):
         script_type = factory.pick_choice(SCRIPT_TYPE_CHOICES)
@@ -596,9 +573,9 @@ class TestScriptForm(MAASServerTestCase):
                 "type": script_type,
             }
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         script = form.save()
-        self.assertEqual(script_type, script.script_type)
+        assert script_type == script.script_type
 
     def test_loads_yaml_embedded_attributes(self):
         embedded_yaml = {
@@ -632,36 +609,34 @@ class TestScriptForm(MAASServerTestCase):
             embedded_yaml["recommission"] = factory.pick_bool()
         script_content = factory.make_script_content(embedded_yaml)
         form = ScriptForm(data={"script": script_content})
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         script = form.save()
-        self.assertEqual(embedded_yaml["name"], script.name)
-        self.assertEqual(embedded_yaml["title"], script.title)
-        self.assertEqual(embedded_yaml["description"], script.description)
+        assert embedded_yaml["name"] == script.name
+        assert embedded_yaml["title"] == script.title
+        assert embedded_yaml["description"] == script.description
         for tag in embedded_yaml["tags"]:
-            self.assertIn(tag, script.tags)
-        self.assertEqual(embedded_yaml["script_type"], script.script_type)
-        self.assertEqual(embedded_yaml["hardware_type"], script.hardware_type)
-        self.assertEqual(embedded_yaml["parallel"], script.parallel)
-        self.assertCountEqual(embedded_yaml["results"], script.results)
-        self.assertCountEqual(embedded_yaml["parameters"], script.parameters)
-        self.assertEqual(embedded_yaml["packages"], script.packages)
-        self.assertEqual(
-            timedelta(0, embedded_yaml["timeout"]), script.timeout
+            assert tag in script.tags
+        assert embedded_yaml["script_type"] == script.script_type
+        assert embedded_yaml["hardware_type"] == script.hardware_type
+        assert embedded_yaml["parallel"] == script.parallel
+        assert Counter(embedded_yaml["results"]) == Counter(script.results)
+        assert sorted(embedded_yaml["parameters"], key=repr) == sorted(
+            script.parameters, key=repr
         )
-        self.assertEqual(embedded_yaml["destructive"], script.destructive)
-        self.assertEqual(embedded_yaml["may_reboot"], script.may_reboot)
+        assert embedded_yaml["packages"] == script.packages
+        assert timedelta(0, embedded_yaml["timeout"]) == script.timeout
+        assert embedded_yaml["destructive"] == script.destructive
+        assert embedded_yaml["may_reboot"] == script.may_reboot
         if embedded_yaml["script_type"] == SCRIPT_TYPE.COMMISSIONING:
-            self.assertCountEqual(
-                embedded_yaml["for_hardware"], script.for_hardware
+            assert Counter(embedded_yaml["for_hardware"]) == Counter(
+                script.for_hardware
             )
-            self.assertEqual(
-                embedded_yaml["recommission"], script.recommission
-            )
+            assert embedded_yaml["recommission"] == script.recommission
         else:
-            self.assertCountEqual([], script.for_hardware)
-            self.assertFalse(script.recommission)
-        self.assertFalse(script.default)
-        self.assertEqual(script_content, script.script.data)
+            assert Counter([]) == Counter(script.for_hardware)
+            assert not script.recommission
+        assert not script.default
+        assert script_content == script.script.data
 
     def test_only_loads_when_script_updated(self):
         script = factory.make_Script(
@@ -671,9 +646,9 @@ class TestScriptForm(MAASServerTestCase):
         )
         name = factory.make_name("name")
         form = ScriptForm(instance=script, data={"name": name})
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         script = form.save()
-        self.assertEqual(name, script.name)
+        assert name == script.name
 
     def test_user_option_unable_to_over_yaml_value(self):
         name = factory.make_name("name")
@@ -685,7 +660,7 @@ class TestScriptForm(MAASServerTestCase):
                 ),
             }
         )
-        self.assertFalse(form.is_valid())
+        assert not form.is_valid()
 
     def test_user_option_can_match_yaml_value(self):
         name = factory.make_name("name")
@@ -699,7 +674,7 @@ class TestScriptForm(MAASServerTestCase):
                 ),
             }
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
 
     def test_errors_on_bad_yaml(self):
         form = ScriptForm(
@@ -708,7 +683,7 @@ class TestScriptForm(MAASServerTestCase):
                 "script": factory.make_script_content("# {"),
             }
         )
-        self.assertFalse(form.is_valid())
+        assert not form.is_valid()
 
     def test_errors_on_missing_comment_on_yaml(self):
         form = ScriptForm(
@@ -719,7 +694,7 @@ class TestScriptForm(MAASServerTestCase):
                 ),
             }
         )
-        self.assertFalse(form.is_valid())
+        assert not form.is_valid()
 
     def test_ignores_other_version_yaml(self):
         script = factory.make_Script()
@@ -732,9 +707,9 @@ class TestScriptForm(MAASServerTestCase):
                 )
             },
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         script = form.save()
-        self.assertEqual(name, script.name)
+        assert name == script.name
 
     def tests_yaml_tags_can_be_string(self):
         tags = [factory.make_name("tag") for _ in range(3)]
@@ -745,10 +720,10 @@ class TestScriptForm(MAASServerTestCase):
                 )
             }
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         script = form.save()
         for tag in tags:
-            self.assertIn(tag, script.tags)
+            assert tag in script.tags
 
     def tests_yaml_tags_can_be_list_of_strings(self):
         tags = [factory.make_name("tag") for _ in range(3)]
@@ -759,10 +734,10 @@ class TestScriptForm(MAASServerTestCase):
                 )
             }
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         script = form.save()
         for tag in tags:
-            self.assertIn(tag, script.tags)
+            assert tag in script.tags
 
     def tests_yaml_tags_errors_on_non_list_or_string(self):
         form = ScriptForm(
@@ -771,17 +746,14 @@ class TestScriptForm(MAASServerTestCase):
                 "script": factory.make_script_content({"tags": {}}),
             }
         )
-        self.assertFalse(form.is_valid())
-        self.assertEqual(
-            {
-                "tags": [
-                    "Embedded tags must be a string of comma seperated values, "
-                    "or a list of strings."
-                ]
-            },
-            form.errors,
-        )
-        self.assertCountEqual([], VersionedTextFile.objects.all())
+        assert not form.is_valid()
+        assert {
+            "tags": [
+                "Embedded tags must be a string of comma seperated values, "
+                "or a list of strings."
+            ]
+        } == form.errors
+        assert not VersionedTextFile.objects.exists()
 
     def tests_yaml_tags_errors_on_list_of_non_string(self):
         form = ScriptForm(
@@ -792,17 +764,14 @@ class TestScriptForm(MAASServerTestCase):
                 ),
             }
         )
-        self.assertFalse(form.is_valid())
-        self.assertEqual(
-            {
-                "tags": [
-                    "Embedded tags must be a string of comma seperated values, "
-                    "or a list of strings."
-                ]
-            },
-            form.errors,
-        )
-        self.assertCountEqual([], VersionedTextFile.objects.all())
+        assert not form.is_valid()
+        assert {
+            "tags": [
+                "Embedded tags must be a string of comma seperated values, "
+                "or a list of strings."
+            ]
+        } == form.errors
+        assert not VersionedTextFile.objects.exists()
 
     def test_packages_validate(self):
         apt_pkgs = [factory.make_name("apt_pkg") for _ in range(3)]
@@ -826,12 +795,13 @@ class TestScriptForm(MAASServerTestCase):
                 )
             }
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         script = form.save()
-        self.assertEqual(
-            {"apt": apt_pkgs, "snap": [snap_pkg], "url": [url]},
-            script.packages,
-        )
+        assert {
+            "apt": apt_pkgs,
+            "snap": [snap_pkg],
+            "url": [url],
+        } == script.packages
 
     def test_converts_single_package_to_list(self):
         apt_pkg = factory.make_name("apt_pkg")
@@ -851,12 +821,13 @@ class TestScriptForm(MAASServerTestCase):
                 )
             }
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         script = form.save()
-        self.assertEqual(
-            {"apt": [apt_pkg], "snap": [snap_pkg], "url": [url]},
-            script.packages,
-        )
+        assert {
+            "apt": [apt_pkg],
+            "snap": [snap_pkg],
+            "url": [url],
+        } == script.packages
 
     def test_errors_when_apt_package_isnt_string(self):
         form = ScriptForm(
@@ -869,11 +840,11 @@ class TestScriptForm(MAASServerTestCase):
                 )
             }
         )
-        self.assertFalse(form.is_valid())
-        self.assertEqual(
-            {"packages": ["Each apt package must be a string."]}, form.errors
-        )
-        self.assertCountEqual([], VersionedTextFile.objects.all())
+        assert not form.is_valid()
+        assert {
+            "packages": ["Each apt package must be a string."]
+        } == form.errors
+        assert not VersionedTextFile.objects.exists()
 
     def test_errors_when_url_package_isnt_string(self):
         form = ScriptForm(
@@ -886,11 +857,11 @@ class TestScriptForm(MAASServerTestCase):
                 )
             }
         )
-        self.assertFalse(form.is_valid())
-        self.assertEqual(
-            {"packages": ["Each url package must be a string."]}, form.errors
-        )
-        self.assertCountEqual([], VersionedTextFile.objects.all())
+        assert not form.is_valid()
+        assert {
+            "packages": ["Each url package must be a string."]
+        } == form.errors
+        assert not VersionedTextFile.objects.exists()
 
     def test_snap_package_dict_requires_name(self):
         form = ScriptForm(
@@ -903,11 +874,11 @@ class TestScriptForm(MAASServerTestCase):
                 )
             }
         )
-        self.assertFalse(form.is_valid())
-        self.assertEqual(
-            {"packages": ["Snap package name must be defined."]}, form.errors
-        )
-        self.assertCountEqual([], VersionedTextFile.objects.all())
+        assert not form.is_valid()
+        assert {
+            "packages": ["Snap package name must be defined."]
+        } == form.errors
+        assert not VersionedTextFile.objects.exists()
 
     def test_snap_package_channel_must_be_valid(self):
         form = ScriptForm(
@@ -925,16 +896,13 @@ class TestScriptForm(MAASServerTestCase):
                 )
             }
         )
-        self.assertFalse(form.is_valid())
-        self.assertEqual(
-            {
-                "packages": [
-                    "Snap channel must be stable, edge, beta, or candidate."
-                ]
-            },
-            form.errors,
-        )
-        self.assertCountEqual([], VersionedTextFile.objects.all())
+        assert not form.is_valid()
+        assert {
+            "packages": [
+                "Snap channel must be stable, edge, beta, or candidate."
+            ]
+        } == form.errors
+        assert not VersionedTextFile.objects.exists()
 
     def test_snap_package_mode_must_be_valid(self):
         form = ScriptForm(
@@ -952,12 +920,11 @@ class TestScriptForm(MAASServerTestCase):
                 )
             }
         )
-        self.assertFalse(form.is_valid())
-        self.assertEqual(
-            {"packages": ["Snap mode must be classic, dev, or jail."]},
-            form.errors,
-        )
-        self.assertCountEqual([], VersionedTextFile.objects.all())
+        assert not form.is_valid()
+        assert {
+            "packages": ["Snap mode must be classic, dev, or jail."]
+        } == form.errors
+        assert not VersionedTextFile.objects.exists()
 
     def test_snap_package_list_must_be_strings(self):
         form = ScriptForm(
@@ -970,11 +937,9 @@ class TestScriptForm(MAASServerTestCase):
                 )
             }
         )
-        self.assertFalse(form.is_valid())
-        self.assertEqual(
-            {"packages": ["Snap package must be a string."]}, form.errors
-        )
-        self.assertCountEqual([], VersionedTextFile.objects.all())
+        assert not form.is_valid()
+        assert {"packages": ["Snap package must be a string."]} == form.errors
+        assert not VersionedTextFile.objects.exists()
 
     def test_allows_list_of_results(self):
         results = [factory.make_name("result") for _ in range(3)]
@@ -985,9 +950,9 @@ class TestScriptForm(MAASServerTestCase):
                 )
             }
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         script = form.save()
-        self.assertCountEqual(results, script.results)
+        assert Counter(results) == Counter(script.results)
 
     def test_allows_dictionary_of_results(self):
         results = {
@@ -1004,9 +969,9 @@ class TestScriptForm(MAASServerTestCase):
                 )
             }
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         script = form.save()
-        self.assertEqual(results, script.results)
+        assert results == script.results
 
     def test_results_list_must_be_strings(self):
         form = ScriptForm(
@@ -1016,12 +981,11 @@ class TestScriptForm(MAASServerTestCase):
                 )
             }
         )
-        self.assertFalse(form.is_valid())
-        self.assertEqual(
-            {"results": ["Each result in a result list must be a string."]},
-            form.errors,
-        )
-        self.assertCountEqual([], VersionedTextFile.objects.all())
+        assert not form.is_valid()
+        assert {
+            "results": ["Each result in a result list must be a string."]
+        } == form.errors
+        assert not VersionedTextFile.objects.exists()
 
     def test_allows_dict_of_results(self):
         results = {
@@ -1038,9 +1002,9 @@ class TestScriptForm(MAASServerTestCase):
                 )
             }
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         script = form.save()
-        self.assertEqual(results, script.results)
+        assert results == script.results
 
     def test_dict_of_results_requires_title(self):
         form = ScriptForm(
@@ -1053,12 +1017,11 @@ class TestScriptForm(MAASServerTestCase):
                 )
             }
         )
-        self.assertFalse(form.is_valid())
-        self.assertEqual(
-            {"results": ["title must be included in a result dictionary."]},
-            form.errors,
-        )
-        self.assertCountEqual([], VersionedTextFile.objects.all())
+        assert not form.is_valid()
+        assert {
+            "results": ["title must be included in a result dictionary."]
+        } == form.errors
+        assert not VersionedTextFile.objects.exists()
 
     def test_title_description_of_result_must_be_strings(self):
         results = {
@@ -1071,17 +1034,14 @@ class TestScriptForm(MAASServerTestCase):
                 )
             }
         )
-        self.assertFalse(form.is_valid())
-        self.assertEqual(
-            {
-                "results": [
-                    "title must be a string.",
-                    "description must be a string.",
-                ]
-            },
-            form.errors,
-        )
-        self.assertCountEqual([], VersionedTextFile.objects.all())
+        assert not form.is_valid()
+        assert {
+            "results": [
+                "title must be a string.",
+                "description must be a string.",
+            ]
+        } == form.errors
+        assert not VersionedTextFile.objects.exists()
 
     def test_results_must_be_list_or_dict(self):
         form = ScriptForm(
@@ -1091,17 +1051,14 @@ class TestScriptForm(MAASServerTestCase):
                 )
             }
         )
-        self.assertFalse(form.is_valid())
-        self.assertEqual(
-            {
-                "results": [
-                    "results must be a list of strings or a dictionary of "
-                    "dictionaries."
-                ]
-            },
-            form.errors,
-        )
-        self.assertCountEqual([], VersionedTextFile.objects.all())
+        assert not form.is_valid()
+        assert {
+            "results": [
+                "results must be a list of strings or a dictionary of "
+                "dictionaries."
+            ]
+        } == form.errors
+        assert not VersionedTextFile.objects.exists()
 
     def test_errors_when_hardware_not_a_list(self):
         form = ScriptForm(
@@ -1111,11 +1068,9 @@ class TestScriptForm(MAASServerTestCase):
                 )
             }
         )
-        self.assertFalse(form.is_valid())
-        self.assertEqual(
-            {"for_hardware": ["Must be a list or string"]}, form.errors
-        )
-        self.assertCountEqual([], VersionedTextFile.objects.all())
+        assert not form.is_valid()
+        assert {"for_hardware": ["Must be a list or string"]} == form.errors
+        assert not VersionedTextFile.objects.exists()
 
     def test_errors_when_hardware_invalid(self):
         hw_id = factory.make_name("hw_id")
@@ -1126,21 +1081,19 @@ class TestScriptForm(MAASServerTestCase):
                 )
             }
         )
-        self.assertFalse(form.is_valid())
-        self.assertEqual(
-            {
-                "for_hardware": [
-                    "Hardware identifier '%s' must be a modalias, PCI ID, "
-                    "USB ID, system vendor, system product, system version, "
-                    "mainboard vendor, or mainboard product." % hw_id
-                ]
-            },
-            form.errors,
-        )
-        self.assertCountEqual([], VersionedTextFile.objects.all())
+        assert not form.is_valid()
+        assert {
+            "for_hardware": [
+                "Hardware identifier '%s' must be a modalias, PCI ID, "
+                "USB ID, system vendor, system product, system version, "
+                "mainboard vendor, or mainboard product." % hw_id
+            ]
+        } == form.errors
+        assert not VersionedTextFile.objects.exists()
 
 
-class TestCommissioningScriptForm(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestCommissioningScriptForm:
     def test_creates_commissioning_script_from_embedded_yaml_name(self):
         request = HttpRequest()
         request.user = factory.make_User()
@@ -1150,11 +1103,11 @@ class TestCommissioningScriptForm(MAASServerTestCase):
             content=content.encode("ascii"), name=factory.make_name("filename")
         )
         form = CommissioningScriptForm(files={"content": uploaded_file})
-        self.assertTrue(form.is_valid(), form._errors)
+        assert form.is_valid(), form._errors
         form.save(request)
         new_script = Script.objects.get(name=name)
-        self.assertEqual(SCRIPT_TYPE.COMMISSIONING, new_script.script_type)
-        self.assertEqual(content, new_script.script.data)
+        assert SCRIPT_TYPE.COMMISSIONING == new_script.script_type
+        assert content == new_script.script.data
 
     def test_creates_commissioning_script_from_filename(self):
         request = HttpRequest()
@@ -1165,11 +1118,11 @@ class TestCommissioningScriptForm(MAASServerTestCase):
             content=content.encode("ascii"), name=name
         )
         form = CommissioningScriptForm(files={"content": uploaded_file})
-        self.assertTrue(form.is_valid(), form._errors)
+        assert form.is_valid(), form._errors
         form.save(request)
         new_script = Script.objects.get(name=name)
-        self.assertEqual(SCRIPT_TYPE.COMMISSIONING, new_script.script_type)
-        self.assertEqual(content, new_script.script.data)
+        assert SCRIPT_TYPE.COMMISSIONING == new_script.script_type
+        assert content == new_script.script.data
 
     def test_updates_commissioning_script(self):
         request = HttpRequest()
@@ -1180,11 +1133,11 @@ class TestCommissioningScriptForm(MAASServerTestCase):
             content=content.encode("ascii"), name=script.name
         )
         form = CommissioningScriptForm(files={"content": uploaded_file})
-        self.assertTrue(form.is_valid(), form._errors)
+        assert form.is_valid(), form._errors
         form.save(request)
         new_script = Script.objects.get(name=script.name)
-        self.assertEqual(SCRIPT_TYPE.COMMISSIONING, new_script.script_type)
-        self.assertEqual(content, new_script.script.data)
+        assert SCRIPT_TYPE.COMMISSIONING == new_script.script_type
+        assert content == new_script.script.data
 
     def test_creates_audit_event(self):
         request = HttpRequest()
@@ -1195,11 +1148,11 @@ class TestCommissioningScriptForm(MAASServerTestCase):
             content=content.encode("ascii"), name=name
         )
         form = CommissioningScriptForm(files={"content": uploaded_file})
-        self.assertTrue(form.is_valid(), form._errors)
+        assert form.is_valid(), form._errors
         form.save(request)
         event = Event.objects.get(type__level=AUDIT)
-        self.assertIsNotNone(event)
-        self.assertEqual(event.description, "Saved script '%s'." % name)
+        assert event is not None
+        assert event.description == "Saved script '%s'." % name
 
     def test_propagates_script_form_errors(self):
         # Regression test for LP:1712422
@@ -1207,18 +1160,17 @@ class TestCommissioningScriptForm(MAASServerTestCase):
             content=factory.make_script_content().encode("ascii"), name="none"
         )
         form = CommissioningScriptForm(files={"content": uploaded_file})
-        self.assertFalse(form.is_valid())
-        self.assertEqual(
-            {"content": ['name: "none" is a reserved name.']}, form.errors
-        )
+        assert not form.is_valid()
+        assert {"content": ['name: "none" is a reserved name.']} == form.errors
 
     def test_not_valid_when_empty(self):
         # Regression test for LP:1712423
         form = CommissioningScriptForm()
-        self.assertFalse(form.is_valid())
+        assert not form.is_valid()
 
 
-class TestTestingScriptForm(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestTestingScriptForm:
     def test_creates_test_script_from_embedded_yaml_name(self):
         request = HttpRequest()
         request.user = factory.make_User()
@@ -1227,12 +1179,12 @@ class TestTestingScriptForm(MAASServerTestCase):
         uploaded_file = SimpleUploadedFile(
             content=content.encode("ascii"), name=factory.make_name("filename")
         )
-        form = TestingScriptForm(files={"content": uploaded_file})
-        self.assertTrue(form.is_valid(), form._errors)
+        form = ScriptUploadForm(files={"content": uploaded_file})
+        assert form.is_valid(), form._errors
         form.save(request)
         new_script = Script.objects.get(name=name)
-        self.assertEqual(SCRIPT_TYPE.TESTING, new_script.script_type)
-        self.assertEqual(content, new_script.script.data)
+        assert SCRIPT_TYPE.TESTING == new_script.script_type
+        assert content == new_script.script.data
 
     def test_creates_test_script_from_filename(self):
         request = HttpRequest()
@@ -1242,12 +1194,12 @@ class TestTestingScriptForm(MAASServerTestCase):
         uploaded_file = SimpleUploadedFile(
             content=content.encode("ascii"), name=name
         )
-        form = TestingScriptForm(files={"content": uploaded_file})
-        self.assertTrue(form.is_valid(), form._errors)
+        form = ScriptUploadForm(files={"content": uploaded_file})
+        assert form.is_valid(), form._errors
         form.save(request)
         new_script = Script.objects.get(name=name)
-        self.assertEqual(SCRIPT_TYPE.TESTING, new_script.script_type)
-        self.assertEqual(content, new_script.script.data)
+        assert SCRIPT_TYPE.TESTING == new_script.script_type
+        assert content == new_script.script.data
 
     def test_updates_test_script(self):
         request = HttpRequest()
@@ -1257,12 +1209,12 @@ class TestTestingScriptForm(MAASServerTestCase):
         uploaded_file = SimpleUploadedFile(
             content=content.encode("ascii"), name=script.name
         )
-        form = TestingScriptForm(files={"content": uploaded_file})
-        self.assertTrue(form.is_valid(), form._errors)
+        form = ScriptUploadForm(files={"content": uploaded_file})
+        assert form.is_valid(), form._errors
         form.save(request)
         new_script = Script.objects.get(name=script.name)
-        self.assertEqual(SCRIPT_TYPE.TESTING, new_script.script_type)
-        self.assertEqual(content, new_script.script.data)
+        assert SCRIPT_TYPE.TESTING == new_script.script_type
+        assert content == new_script.script.data
 
     def test_creates_audit_event(self):
         request = HttpRequest()
@@ -1272,28 +1224,24 @@ class TestTestingScriptForm(MAASServerTestCase):
         uploaded_file = SimpleUploadedFile(
             content=content.encode("ascii"), name=name
         )
-        form = TestingScriptForm(files={"content": uploaded_file})
-        self.assertTrue(form.is_valid(), form._errors)
+        form = ScriptUploadForm(files={"content": uploaded_file})
+        assert form.is_valid(), form._errors
         form.save(request)
         new_script = Script.objects.get(name=name)
         event = Event.objects.get(type__level=AUDIT)
-        self.assertIsNotNone(event)
-        self.assertEqual(
-            event.description, "Saved script '%s'." % new_script.name
-        )
+        assert event is not None
+        assert event.description == "Saved script '%s'." % new_script.name
 
     def test_propagates_script_form_errors(self):
         # Regression test for LP:1712422
         uploaded_file = SimpleUploadedFile(
             content=factory.make_script_content().encode("ascii"), name="none"
         )
-        form = TestingScriptForm(files={"content": uploaded_file})
-        self.assertFalse(form.is_valid())
-        self.assertEqual(
-            {"content": ['name: "none" is a reserved name.']}, form.errors
-        )
+        form = ScriptUploadForm(files={"content": uploaded_file})
+        assert not form.is_valid()
+        assert {"content": ['name: "none" is a reserved name.']} == form.errors
 
     def test_not_valid_when_empty(self):
         # Regression test for LP:1712423
-        form = TestingScriptForm()
-        self.assertFalse(form.is_valid())
+        form = ScriptUploadForm()
+        assert not form.is_valid()

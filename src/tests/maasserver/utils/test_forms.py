@@ -5,10 +5,9 @@
 
 from maasserver.testing.factory import factory
 from maasserver.utils.forms import compose_invalid_choice_text
-from maastesting.testcase import MAASTestCase
 
 
-class TestComposeInvalidChoiceText(MAASTestCase):
+class TestComposeInvalidChoiceText:
     def test_map_enum_includes_all_enum_values(self):
         choices = [
             (factory.make_name("key"), factory.make_name("value"))
@@ -16,4 +15,4 @@ class TestComposeInvalidChoiceText(MAASTestCase):
         ]
         msg = compose_invalid_choice_text(factory.make_name(), choices)
         for key, _ in choices:
-            self.assertIn(f"'{key}'", msg)
+            assert f"'{key}'" in msg

@@ -4,6 +4,7 @@
 """Tests for `SSHKeyForm`."""
 
 from django.http import HttpRequest
+import pytest
 
 from maascommon.events import AUDIT
 from maasserver.enum import ENDPOINT_CHOICES
@@ -11,10 +12,10 @@ from maasserver.forms import SSHKeyForm
 from maasserver.models import Event
 from maasserver.testing import get_data
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 
 
-class TestSSHKeyForm(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestSSHKeyForm:
     """Tests for `SSHKeyForm`."""
 
     def test_creates_audit_event_on_save(self):
@@ -25,8 +26,8 @@ class TestSSHKeyForm(MAASServerTestCase):
         request.user = user
         form.save(factory.pick_choice(ENDPOINT_CHOICES), request)
         event = Event.objects.get(type__level=AUDIT)
-        self.assertIsNotNone(event)
-        self.assertEqual(event.description, "Created SSH key.")
+        assert event is not None
+        assert event.description == "Created SSH key."
 
     def test_creates_audit_event_for_specified_user_on_save(self):
         specified_user = factory.make_User()
@@ -37,7 +38,5 @@ class TestSSHKeyForm(MAASServerTestCase):
         request.user = request_user
         form.save(factory.pick_choice(ENDPOINT_CHOICES), request)
         event = Event.objects.get(type__level=AUDIT)
-        self.assertIsNotNone(event)
-        self.assertEqual(
-            event.description, "Created SSH key for %s." % specified_user
-        )
+        assert event is not None
+        assert event.description == "Created SSH key for %s." % specified_user

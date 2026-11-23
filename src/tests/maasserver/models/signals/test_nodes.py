@@ -4,6 +4,8 @@
 
 import random
 
+import pytest
+
 from maasserver.enum import (
     IPADDRESS_TYPE,
     NODE_STATUS,
@@ -22,12 +24,12 @@ from maasserver.models.service import RACK_SERVICES, REGION_SERVICES, Service
 from maasserver.models.signals import power
 from maasserver.node_status import NODE_TRANSITIONS
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from maasserver.utils.orm import post_commit_hooks, reload_object
 from provisioningserver.enum import POWER_STATE, POWER_STATE_CHOICES
 
 
-class TestNodeDeletion(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestNodeDeletion:
     def test_deleting_node_updates_event_node_hostname(self):
         """Test that event's `node_hostname` is set when the node is going to be
         deleted."""
@@ -36,7 +38,7 @@ class TestNodeDeletion(MAASServerTestCase):
         events = [factory.make_Event(node=node) for _ in range(3)]
         node.delete()
         for event in events:
-            self.assertEqual(event.node_hostname, node_hostname)
+            assert event.node_hostname == node_hostname
 
     def test_deleting_node_sets_node_to_null(self):
         node = factory.make_Node()
@@ -44,14 +46,14 @@ class TestNodeDeletion(MAASServerTestCase):
         node.delete()
         for event in events:
             event = reload_object(event)
-            self.assertIsNone(event.node)
+            assert event.node is None
 
     def test_deleting_node_creates_dnspublication(self):
         domain = factory.make_Domain("example.com", authoritative=True)
         node = factory.make_Node(domain=domain)
         node.delete()
         dnspublication = DNSPublication.objects.get_most_recent()
-        self.assertIn(f"removed node {node.hostname}", dnspublication.source)
+        assert f"removed node {node.hostname}" in dnspublication.source
 
     def test_deleting_node_does_not_create_dnspublication_if_domain_is_not_authoritative(
         self,
@@ -60,12 +62,11 @@ class TestNodeDeletion(MAASServerTestCase):
         node = factory.make_Node(domain=domain)
         node.delete()
         dnspublication = DNSPublication.objects.get_most_recent()
-        self.assertNotIn(
-            f"removed node {node.hostname}", dnspublication.source
-        )
+        assert f"removed node {node.hostname}" not in dnspublication.source
 
 
-class TestNodeUpdateEmitsDNSPublication(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestNodeUpdateEmitsDNSPublication:
     def test_updating_node_hostname_emits_dnspublication(self):
         domain = factory.make_Domain("example.com", authoritative=True)
         node = factory.make_Node(domain=domain, hostname="old-hostname")
@@ -73,9 +74,9 @@ class TestNodeUpdateEmitsDNSPublication(MAASServerTestCase):
         with post_commit_hooks:
             node.save()
         dnspublication = DNSPublication.objects.get_most_recent()
-        self.assertIn(
-            "node old-hostname changed hostname to new-hostname",
-            dnspublication.source,
+        assert (
+            "node old-hostname changed hostname to new-hostname"
+            in dnspublication.source
         )
 
     def test_updating_node_domain_emits_dnspublication(self):
@@ -86,9 +87,9 @@ class TestNodeUpdateEmitsDNSPublication(MAASServerTestCase):
         with post_commit_hooks:
             node.save()
         dnspublication = DNSPublication.objects.get_most_recent()
-        self.assertIn(
-            f"node {node.hostname} changed zone to new-example.com",
-            dnspublication.source,
+        assert (
+            f"node {node.hostname} changed zone to new-example.com"
+            in dnspublication.source
         )
 
     def test_updating_node_does_not_emit_dnspublication_if_domain_is_not_authoritative(
@@ -105,20 +106,20 @@ class TestNodeUpdateEmitsDNSPublication(MAASServerTestCase):
         with post_commit_hooks:
             node.save()
         dnspublication = DNSPublication.objects.get_most_recent()
-        self.assertNotIn(
-            f"node {node.hostname} changed zone to new-example.com",
-            dnspublication.source,
+        assert (
+            f"node {node.hostname} changed zone to new-example.com"
+            not in dnspublication.source
         )
 
 
-class TestNodePreviousStatus(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestNodePreviousStatus:
     """Test that `previous_status` is set when the status is changed."""
 
-    def setUp(self):
-        super().setUp()
-        # Disable power signals: some status transitions prompt a power check.
-        self.addCleanup(power.signals.enable)
+    @pytest.fixture(autouse=True)
+    def _disable_power_signals(self, request):
         power.signals.disable()
+        request.addfinalizer(power.signals.enable)
 
     def test_changing_status_updates_previous_status(self):
         node = factory.make_Node()
@@ -126,8 +127,8 @@ class TestNodePreviousStatus(MAASServerTestCase):
         new_status = random.choice(NODE_TRANSITIONS[node.status])
         node.update_status(new_status)
         node.save()
-        self.assertEqual(node.status, new_status)
-        self.assertEqual(node.previous_status, old_status)
+        assert node.status == new_status
+        assert node.previous_status == old_status
 
     def test_chaning_status_doesnt_store_blacklisted_statuses(self):
         black_listed_statuses = [
@@ -147,19 +148,19 @@ class TestNodePreviousStatus(MAASServerTestCase):
         )
         node.update_status(random.choice(NODE_TRANSITIONS[node.status]))
         node.save()
-        self.assertEqual(previous_status, node.previous_status)
+        assert previous_status == node.previous_status
 
 
-class TestNodeClearsOwnerNEWOrREADYStatus(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestNodeClearsOwnerNEWOrREADYStatus:
     """Test that `owner` is cleared when the status is set to
     NEW or READY state.
     """
 
-    def setUp(self):
-        super().setUp()
-        # Disable power signals: some status transitions prompt a power check.
-        self.addCleanup(power.signals.enable)
+    @pytest.fixture(autouse=True)
+    def _disable_power_signals(self, request):
         power.signals.disable()
+        request.addfinalizer(power.signals.enable)
 
     def test_changing_to_new_status_clears_owner(self):
         node = factory.make_Node(
@@ -167,16 +168,17 @@ class TestNodeClearsOwnerNEWOrREADYStatus(MAASServerTestCase):
         )
         node.update_status(NODE_STATUS.NEW)
         node.save()
-        self.assertIsNone(node.owner)
+        assert node.owner is None
 
     def test_changing_to_ready_status_clears_owner(self):
         node = factory.make_Node(owner=factory.make_User())
         node.update_status(NODE_STATUS.READY)
         node.save()
-        self.assertIsNone(node.owner)
+        assert node.owner is None
 
 
-class TestNodeKeyPolicy(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestNodeKeyPolicy:
     """Test that `NodeKey`s are cleared when nodes change ownership."""
 
     def test_changing_owner_clears_node_key(self):
@@ -186,28 +188,28 @@ class TestNodeKeyPolicy(MAASServerTestCase):
         node.save()
         # Ensure there's a token.
         token = NodeKey.objects.get_token_for_node(node)
-        self.assertIsNotNone(token)
+        assert token is not None
         # Change the owner.
         node.owner = factory.make_User()
         node.save()
         # The token has been deleted.
         token = reload_object(token)
-        self.assertIsNone(token)
+        assert token is None
 
     def test_clearing_owner_clears_node_key(self):
         node = factory.make_Node(status=NODE_STATUS.READY)
-        # Ensure the node has an owner.
+        # Ensure that the node has an owner.
         node.owner = factory.make_User()
         node.save()
         # Ensure there's a token.
         token = NodeKey.objects.get_token_for_node(node)
-        self.assertIsNotNone(token)
+        assert token is not None
         # Remove the owner.
         node.owner = None
         node.save()
         # The token has been deleted.
         token = reload_object(token)
-        self.assertIsNone(token)
+        assert token is None
 
     def test_setting_owner_clears_node_key(self):
         node = factory.make_Node(status=NODE_STATUS.READY)
@@ -216,16 +218,17 @@ class TestNodeKeyPolicy(MAASServerTestCase):
         node.save()
         # Ensure there's a token.
         token = NodeKey.objects.get_token_for_node(node)
-        self.assertIsNotNone(token)
+        assert token is not None
         # Set the owner.
         node.owner = factory.make_User()
         node.save()
         # The token has been deleted.
         token = reload_object(token)
-        self.assertIsNone(token)
+        assert token is None
 
 
-class TestNodeCreateServices(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestNodeCreateServices:
     """Test that services are created when a node is created
     or node_type changes.
     """
@@ -233,33 +236,30 @@ class TestNodeCreateServices(MAASServerTestCase):
     def test_doesnt_create_services_for_machine(self):
         machine = factory.make_Node()
         services = Service.objects.filter(node=machine)
-        self.assertEqual({service.name for service in services}, set())
+        assert {service.name for service in services} == set()
 
     def test_doesnt_create_services_for_device(self):
         device = factory.make_Device()
         services = Service.objects.filter(node=device)
-        self.assertEqual({service.name for service in services}, set())
+        assert {service.name for service in services} == set()
 
     def test_creates_services_for_rack_controller(self):
         rack_controller = factory.make_RackController()
         services = Service.objects.filter(node=rack_controller)
-        self.assertEqual(RACK_SERVICES, {service.name for service in services})
+        assert {service.name for service in services} == RACK_SERVICES
 
     def test_creates_services_for_region_controller(self):
         region_controller = factory.make_RegionController()
         services = Service.objects.filter(node=region_controller)
-        self.assertEqual(
-            REGION_SERVICES, {service.name for service in services}
-        )
+        assert {service.name for service in services} == REGION_SERVICES
 
     def test_creates_services_when_region_converts_to_region_rack(self):
         controller = factory.make_RegionController()
         controller.node_type = NODE_TYPE.REGION_AND_RACK_CONTROLLER
         controller.save()
         services = Service.objects.filter(node=controller)
-        self.assertEqual(
-            REGION_SERVICES | RACK_SERVICES,
-            {service.name for service in services},
+        assert {service.name for service in services} == (
+            REGION_SERVICES | RACK_SERVICES
         )
 
     def test_creates_services_when_rack_controller_becomes_just_region(self):
@@ -267,25 +267,24 @@ class TestNodeCreateServices(MAASServerTestCase):
         controller.node_type = NODE_TYPE.REGION_CONTROLLER
         controller.save()
         services = Service.objects.filter(node=controller)
-        self.assertEqual(
-            REGION_SERVICES, {service.name for service in services}
-        )
+        assert {service.name for service in services} == REGION_SERVICES
 
 
-class TestNodeDefaultNUMANode(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestNodeDefaultNUMANode:
     def test_create_node_creates_default_numanode(self):
         node = Node()
         node.save()
         [numanode] = node.numanode_set.all()
-        self.assertIs(numanode.node, node)
-        self.assertEqual(numanode.index, 0)
+        assert numanode.node is node
+        assert numanode.index == 0
 
     def test_create_node_creates_default_numanode_controller(self):
         node = RackController()
         node.save()
         [numanode] = node.numanode_set.all()
-        self.assertIs(numanode.node, node)
-        self.assertEqual(numanode.index, 0)
+        assert numanode.node is node
+        assert numanode.index == 0
 
     def test_update_doesnt_create_numanode(self):
         node = factory.make_Node()
@@ -294,18 +293,20 @@ class TestNodeDefaultNUMANode(MAASServerTestCase):
         with post_commit_hooks:
             node.save()
         [new_numanode] = node.numanode_set.all()
-        self.assertEqual(new_numanode.id, numanode.id)
+        assert new_numanode.id == numanode.id
 
     def test_not_for_devices(self):
         device = factory.make_Device()
-        self.assertEqual(device.numanode_set.count(), 0)
+        assert device.numanode_set.count() == 0
 
 
-class TestNodeReleasesAutoIPs(MAASServerTestCase):
-    """Test that auto ips are released when node power is off."""
-
-    def __init__(self, *args, **kwargs):
-        self.reserved_statuses = [
+@pytest.mark.parametrize(
+    "status",
+    [
+        status
+        for status, status_label in NODE_STATUS_CHOICES
+        if status
+        not in [
             NODE_STATUS.COMMISSIONING,
             NODE_STATUS.DEPLOYED,
             NODE_STATUS.DEPLOYING,
@@ -314,14 +315,23 @@ class TestNodeReleasesAutoIPs(MAASServerTestCase):
             NODE_STATUS.ENTERING_RESCUE_MODE,
             NODE_STATUS.TESTING,
         ]
-        self.scenarios = [
-            (status_label, {"status": status})
-            for status, status_label in NODE_STATUS_CHOICES
-            if status not in self.reserved_statuses
-        ]
-        super().__init__(*args, **kwargs)
+    ],
+)
+@pytest.mark.usefixtures(
+    "maasdb", "mock_openfga", "mock_start_workflows", "factory"
+)
+class TestNodeReleasesAutoIPs:
+    reserved_statuses = [
+        NODE_STATUS.COMMISSIONING,
+        NODE_STATUS.DEPLOYED,
+        NODE_STATUS.DEPLOYING,
+        NODE_STATUS.DISK_ERASING,
+        NODE_STATUS.RESCUE_MODE,
+        NODE_STATUS.ENTERING_RESCUE_MODE,
+        NODE_STATUS.TESTING,
+    ]
 
-    def test_releases_interface_config_when_turned_off(self):
+    def test_releases_interface_config_when_turned_off(self, status):
         machine = factory.make_Machine_with_Interface_on_Subnet(
             status=random.choice(self.reserved_statuses),
             power_state=POWER_STATE.ON,
@@ -332,7 +342,7 @@ class TestNodeReleasesAutoIPs(MAASServerTestCase):
                 interface.claim_auto_ips()
 
         # Hack to get around node transition model
-        Node.objects.filter(id=machine.id).update(status=self.status)
+        Node.objects.filter(id=machine.id).update(status=status)
         machine = reload_object(machine)
         machine.power_state = POWER_STATE.OFF
 
@@ -343,9 +353,9 @@ class TestNodeReleasesAutoIPs(MAASServerTestCase):
             interface__node_config__node=machine,
             alloc_type=IPADDRESS_TYPE.AUTO,
         ):
-            self.assertIsNone(ip.ip)
+            assert ip.ip is None
 
-    def test_does_nothing_if_not_off(self):
+    def test_does_nothing_if_not_off(self, status):
         machine = factory.make_Machine_with_Interface_on_Subnet(
             status=random.choice(self.reserved_statuses),
             power_state=POWER_STATE.ON,
@@ -356,7 +366,7 @@ class TestNodeReleasesAutoIPs(MAASServerTestCase):
                 interface.claim_auto_ips()
 
         # Hack to get around node transition model
-        Node.objects.filter(id=machine.id).update(status=self.status)
+        Node.objects.filter(id=machine.id).update(status=status)
         machine = reload_object(machine)
         machine.power_state = factory.pick_choice(
             POWER_STATE_CHOICES, but_not=[POWER_STATE.OFF]
@@ -367,11 +377,11 @@ class TestNodeReleasesAutoIPs(MAASServerTestCase):
             interface__node_config__node=machine,
             alloc_type=IPADDRESS_TYPE.AUTO,
         ):
-            self.assertIsNotNone(ip.ip)
+            assert ip.ip is not None
 
-    def test_does_nothing_if_reserved_status(self):
+    def test_does_nothing_if_reserved_status(self, status):
         machine = factory.make_Machine_with_Interface_on_Subnet(
-            status=self.status, power_state=POWER_STATE.ON
+            status=status, power_state=POWER_STATE.ON
         )
 
         with post_commit_hooks:
@@ -390,9 +400,9 @@ class TestNodeReleasesAutoIPs(MAASServerTestCase):
             interface__node_config__node=machine,
             alloc_type=IPADDRESS_TYPE.AUTO,
         ):
-            self.assertIsNotNone(ip.ip)
+            assert ip.ip is not None
 
-    def test_does_nothing_if_not_machine(self):
+    def test_does_nothing_if_not_machine(self, status):
         node = factory.make_Node_with_Interface_on_Subnet(
             node_type=factory.pick_choice(
                 NODE_TYPE_CHOICES, but_not=[NODE_TYPE.MACHINE]
@@ -406,7 +416,7 @@ class TestNodeReleasesAutoIPs(MAASServerTestCase):
                 interface.claim_auto_ips()
 
         # Hack to get around node transition model
-        Node.objects.filter(id=node.id).update(status=self.status)
+        Node.objects.filter(id=node.id).update(status=status)
         node = reload_object(node)
         node.power_state = POWER_STATE.OFF
         node.save()
@@ -414,4 +424,4 @@ class TestNodeReleasesAutoIPs(MAASServerTestCase):
         for ip in StaticIPAddress.objects.filter(
             interface__node_config__node=node, alloc_type=IPADDRESS_TYPE.AUTO
         ):
-            self.assertIsNotNone(ip.ip)
+            assert ip.ip is not None

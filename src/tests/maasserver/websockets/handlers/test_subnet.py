@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, sentinel
 
 from fixtures import FakeLogger
 from netaddr import IPNetwork
+import pytest
 
 from maascommon.utils.network import IPRangeStatistics
 from maasserver import openfga
@@ -13,17 +14,17 @@ from maasserver.api import discoveries as discoveries_module
 from maasserver.enum import INTERFACE_TYPE, IPADDRESS_TYPE, NODE_STATUS
 from maasserver.models.subnet import Subnet
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from maasserver.utils.orm import post_commit_hooks, reload_object
 from maasserver.websockets.base import (
     dehydrate_datetime,
     HandlerPermissionError,
 )
 from maasserver.websockets.handlers.subnet import SubnetHandler
-from maastesting.djangotestcase import count_queries
+from maastesting.querycounter import count_queries
 
 
-class TestSubnetHandler(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestSubnetHandler:
     def dehydrate_subnet(self, subnet, for_list=False):
         data = {
             "id": subnet.id,
@@ -65,7 +66,7 @@ class TestSubnetHandler(MAASServerTestCase):
         subnet = factory.make_Subnet()
         expected_data = self.dehydrate_subnet(subnet)
         result = handler.get({"id": subnet.id})
-        self.assertEqual(expected_data, result)
+        assert expected_data == result
 
     def test_get_handles_null_dns_servers(self):
         user = factory.make_User()
@@ -75,16 +76,16 @@ class TestSubnetHandler(MAASServerTestCase):
         subnet.save()
         expected_data = self.dehydrate_subnet(subnet)
         result = handler.get({"id": subnet.id})
-        self.assertEqual(expected_data, result)
+        assert expected_data == result
 
     def test_get_uses_consistent_queries(self):
         user = factory.make_User()
         handler = SubnetHandler(user, {}, None)
         subnet = factory.make_Subnet()
-        self.assertIsNone(handler.cache.get("staticroutes"))
+        assert handler.cache.get("staticroutes") is None
         queries, _ = count_queries(handler.get, {"id": subnet.id})
-        self.assertEqual(6, queries)
-        self.assertIsNotNone(handler.cache["staticroutes"])
+        assert 6 == queries
+        assert handler.cache["staticroutes"] is not None
 
     def test_list(self):
         user = factory.make_User()
@@ -94,14 +95,16 @@ class TestSubnetHandler(MAASServerTestCase):
             self.dehydrate_subnet(subnet, for_list=True)
             for subnet in Subnet.objects.all()
         ]
-        self.assertCountEqual(expected_subnets, handler.list({}))
+        assert sorted(expected_subnets, key=repr) == sorted(
+            handler.list({}), key=repr
+        )
 
     def test_list_uses_consistent_queries(self):
         user = factory.make_User()
         handler = SubnetHandler(user, {}, None)
         subnet = factory.make_Subnet()
         factory.make_Interface(iftype=INTERFACE_TYPE.UNKNOWN, subnet=subnet)
-        self.assertIsNone(handler.cache.get("staticroutes"))
+        assert handler.cache.get("staticroutes") is None
 
         queries_one, _ = count_queries(handler.list, {})
 
@@ -118,16 +121,17 @@ class TestSubnetHandler(MAASServerTestCase):
                     interface=iface,
                 )
 
-        self.assertIsNotNone(handler.cache["staticroutes"])
+        assert handler.cache["staticroutes"] is not None
         del handler.cache["staticroutes"]
         queries_all, _ = count_queries(handler.list, {})
         # TODO: FIXME! We are now making a linear number of queries, this is not ok.
         # self.assertEqual(queries_one, queries_all)
-        self.assertIsNotNone(handler.cache["staticroutes"])
-        self.assertEqual(5, queries_one)
+        assert handler.cache["staticroutes"] is not None
+        assert 5 == queries_one
 
 
-class TestSubnetHandlerDelete(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestSubnetHandlerDelete:
     def test_delete_as_admin_success(self):
         user = factory.make_admin()
         handler = SubnetHandler(user, {}, None)
@@ -137,13 +141,13 @@ class TestSubnetHandlerDelete(MAASServerTestCase):
             handler.delete({"id": subnet.id})
 
         subnet = reload_object(subnet)
-        self.assertIsNone(subnet)
+        assert subnet is None
 
     def test_delete_as_non_admin_asserts(self):
         user = factory.make_User()
         handler = SubnetHandler(user, {}, None)
         subnet = factory.make_Subnet()
-        with self.assertRaisesRegex(AssertionError, "Permission denied."):
+        with pytest.raises(AssertionError, match="Permission denied."):
             handler.delete({"id": subnet.id})
 
     def test_reloads_user(self):
@@ -152,11 +156,12 @@ class TestSubnetHandlerDelete(MAASServerTestCase):
         subnet = factory.make_Subnet()
         user.is_superuser = False
         user.save()
-        with self.assertRaisesRegex(AssertionError, "Permission denied."):
+        with pytest.raises(AssertionError, match="Permission denied."):
             handler.delete({"id": subnet.id})
 
 
-class TestSubnetHandlerCreate(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestSubnetHandlerCreate:
     def test_create_as_admin_succeeds(self):
         user = factory.make_admin()
         handler = SubnetHandler(user, {}, None)
@@ -168,7 +173,7 @@ class TestSubnetHandlerCreate(MAASServerTestCase):
             )
 
         subnet = Subnet.objects.get(id=result["id"])
-        self.assertEqual("192.168.0.0/24", subnet.cidr)
+        assert "192.168.0.0/24" == subnet.cidr
 
     def test_create_as_admin_succeeds_even_with_a_specified_space(self):
         user = factory.make_admin()
@@ -182,7 +187,7 @@ class TestSubnetHandlerCreate(MAASServerTestCase):
             )
 
         subnet = Subnet.objects.get(id=result["id"])
-        self.assertEqual("192.168.0.0/24", subnet.cidr)
+        assert "192.168.0.0/24" == subnet.cidr
 
     def test_create_as_non_admin_asserts(self):
         user = factory.make_User()
@@ -190,7 +195,7 @@ class TestSubnetHandlerCreate(MAASServerTestCase):
         vlan = factory.make_VLAN()
 
         with post_commit_hooks:
-            with self.assertRaisesRegex(AssertionError, "Permission denied."):
+            with pytest.raises(AssertionError, match="Permission denied."):
                 handler.create({"vlan": vlan.id, "cidr": "192.168.0.0/24"})
 
     def test_create_reloads_user(self):
@@ -199,11 +204,12 @@ class TestSubnetHandlerCreate(MAASServerTestCase):
         vlan = factory.make_VLAN()
         user.is_superuser = False
         user.save()
-        with self.assertRaisesRegex(AssertionError, "Permission denied."):
+        with pytest.raises(AssertionError, match="Permission denied."):
             handler.create({"vlan": vlan.id, "cidr": "192.168.0.0/24"})
 
 
-class TestSubnetHandlerUpdate(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestSubnetHandlerUpdate:
     def test_update_as_admin_succeeds(self):
         user = factory.make_admin()
         handler = SubnetHandler(user, {}, None)
@@ -214,7 +220,7 @@ class TestSubnetHandlerUpdate(MAASServerTestCase):
             handler.update({"id": subnet.id, "description": new_description})
 
         subnet = reload_object(subnet)
-        self.assertEqual(new_description, subnet.description)
+        assert new_description == subnet.description
 
     def test_update_as_admin_succeeds_even_with_a_specified_space(self):
         user = factory.make_admin()
@@ -233,13 +239,13 @@ class TestSubnetHandlerUpdate(MAASServerTestCase):
             )
 
         subnet = reload_object(subnet)
-        self.assertEqual(new_description, subnet.description)
+        assert new_description == subnet.description
 
     def test_update_as_non_admin_asserts(self):
         user = factory.make_User()
         handler = SubnetHandler(user, {}, None)
         subnet = factory.make_Subnet()
-        with self.assertRaisesRegex(AssertionError, "Permission denied."):
+        with pytest.raises(AssertionError, match="Permission denied."):
             handler.update({"id": subnet.id})
 
     def test_reloads_user(self):
@@ -248,21 +254,24 @@ class TestSubnetHandlerUpdate(MAASServerTestCase):
         subnet = factory.make_Subnet()
         user.is_superuser = False
         user.save()
-        with self.assertRaisesRegex(AssertionError, "Permission denied."):
+        with pytest.raises(AssertionError, match="Permission denied."):
             handler.update({"id": subnet.id})
 
 
-class TestSubnetHandlerScan(MAASServerTestCase):
-    def setUp(self):
-        self.scan_all_rack_networks = self.patch(
-            discoveries_module.scan_all_rack_networks
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestSubnetHandlerScan:
+    @pytest.fixture(autouse=True)
+    def _setup(self, mocker):
+        self.scan_all_rack_networks = mocker.patch.object(
+            discoveries_module,
+            "scan_all_rack_networks",
+            return_value=sentinel.rpc_result,
         )
-        self.scan_all_rack_networks.return_value = sentinel.rpc_result
-        self.user_friendly_scan_results = self.patch(
-            discoveries_module.user_friendly_scan_results
+        self.user_friendly_scan_results = mocker.patch.object(
+            discoveries_module,
+            "user_friendly_scan_results",
+            return_value=sentinel.result,
         )
-        self.user_friendly_scan_results.return_value = sentinel.result
-        return super().setUp()
 
     def test_scan_as_admin_succeeds_and_returns_user_friendly_result(self):
         user = factory.make_admin()
@@ -272,7 +281,7 @@ class TestSubnetHandlerScan(MAASServerTestCase):
         factory.make_Interface(node=rack, subnet=subnet)
         cidr = subnet.get_ipnetwork()
         result = handler.scan({"id": subnet.id})
-        self.assertEqual(sentinel.result, result)
+        assert sentinel.result == result
         self.scan_all_rack_networks.assert_called_once_with(cidrs=[cidr])
         self.user_friendly_scan_results.assert_called_once_with(
             sentinel.rpc_result
@@ -284,28 +293,28 @@ class TestSubnetHandlerScan(MAASServerTestCase):
         subnet = factory.make_Subnet(version=4)
         rack = factory.make_RackController()
         factory.make_Interface(node=rack, subnet=subnet)
-        logger = self.useFixture(FakeLogger())
-        cidr = subnet.get_ipnetwork()
-        handler.scan({"id": subnet.id})
-        self.assertRegex(
-            logger.output,
+        with FakeLogger() as logger:
+            cidr = subnet.get_ipnetwork()
+            handler.scan({"id": subnet.id})
+        assert re.search(
             "User '%s' initiated a neighbour discovery scan against subnet: %s"
             % (re.escape(user.username), re.escape(str(cidr))),
+            logger.output,
         )
 
     def test_scan_ipv6_fails(self):
         user = factory.make_admin()
         handler = SubnetHandler(user, {}, None)
         subnet = factory.make_Subnet(version=6)
-        with self.assertRaisesRegex(ValueError, ".*only IPv4.*"):
+        with pytest.raises(ValueError, match=".*only IPv4.*"):
             handler.scan({"id": subnet.id})
 
     def test_scan_fails_if_no_rack_is_configured_with_subnet(self):
         user = factory.make_admin()
         handler = SubnetHandler(user, {}, None)
         subnet = factory.make_Subnet(version=4)
-        with self.assertRaisesRegex(
-            ValueError, ".*must be configured on a rack*"
+        with pytest.raises(
+            ValueError, match=".*must be configured on a rack*"
         ):
             handler.scan({"id": subnet.id})
 
@@ -313,7 +322,7 @@ class TestSubnetHandlerScan(MAASServerTestCase):
         user = factory.make_User()
         handler = SubnetHandler(user, {}, None)
         subnet = factory.make_Subnet()
-        with self.assertRaisesRegex(AssertionError, "Permission denied."):
+        with pytest.raises(AssertionError, match="Permission denied."):
             handler.scan({"id": subnet.id})
 
     def test_reloads_user(self):
@@ -322,11 +331,12 @@ class TestSubnetHandlerScan(MAASServerTestCase):
         subnet = factory.make_Subnet()
         user.is_superuser = False
         user.save()
-        with self.assertRaisesRegex(AssertionError, "Permission denied."):
+        with pytest.raises(AssertionError, match="Permission denied."):
             handler.scan({"id": subnet.id})
 
 
-class TestSubnetHandlerViewPermission(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestSubnetHandlerViewPermission:
     def deny_global_view(self):
         client = openfga.get_openfga_client()
         client.can_view_global_entities = MagicMock(return_value=False)
@@ -335,12 +345,10 @@ class TestSubnetHandlerViewPermission(MAASServerTestCase):
         self.deny_global_view()
         handler = SubnetHandler(factory.make_User(), {}, None)
         factory.make_Subnet()
-        self.assertRaises(HandlerPermissionError, handler.list, {})
+        pytest.raises(HandlerPermissionError, handler.list, {})
 
     def test_get_requires_view_permission(self):
         self.deny_global_view()
         subnet = factory.make_Subnet()
         handler = SubnetHandler(factory.make_User(), {}, None)
-        self.assertRaises(
-            HandlerPermissionError, handler.get, {"id": subnet.id}
-        )
+        pytest.raises(HandlerPermissionError, handler.get, {"id": subnet.id})

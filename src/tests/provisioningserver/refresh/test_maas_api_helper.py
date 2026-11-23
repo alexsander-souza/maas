@@ -6,7 +6,6 @@ from collections import OrderedDict
 from email.utils import formatdate
 from io import StringIO
 import json
-from pathlib import Path
 import random
 import re
 from subprocess import PIPE, Popen, TimeoutExpired
@@ -15,95 +14,77 @@ from unittest.mock import ANY, MagicMock
 import urllib
 
 from lxml import etree
+import pytest
 
 from maastesting.factory import factory
-from maastesting.fixtures import TempDirectory
-from maastesting.testcase import MAASTestCase
 from provisioningserver.refresh import maas_api_helper
 
 
-class TestCredentials(MAASTestCase):
+class TestCredentials:
     def test_defaults(self):
         creds = maas_api_helper.Credentials()
-        self.assertEqual(creds.consumer_key, "")
-        self.assertEqual(creds.token_key, "")
-        self.assertEqual(creds.token_secret, "")
-        self.assertEqual(creds.consumer_secret, "")
+        assert creds.consumer_key == ""
+        assert creds.token_key == ""
+        assert creds.token_secret == ""
+        assert creds.consumer_secret == ""
 
     def test_with_args(self):
         creds = maas_api_helper.Credentials(
             token_key="token_key", consumer_secret="consumer_secret"
         )
-        self.assertEqual(creds.consumer_key, "")
-        self.assertEqual(creds.token_key, "token_key")
-        self.assertEqual(creds.token_secret, "")
-        self.assertEqual(creds.consumer_secret, "consumer_secret")
+        assert creds.consumer_key == ""
+        assert creds.token_key == "token_key"
+        assert creds.token_secret == ""
+        assert creds.consumer_secret == "consumer_secret"
 
     def test_eq(self):
         creds = maas_api_helper.Credentials(
             token_key="token_key", consumer_secret="consumer_secret"
         )
-        self.assertEqual(
-            creds,
-            maas_api_helper.Credentials(
-                token_key="token_key", consumer_secret="consumer_secret"
-            ),
+        assert creds == maas_api_helper.Credentials(
+            token_key="token_key", consumer_secret="consumer_secret"
         )
-        self.assertNotEqual(
-            creds,
-            maas_api_helper.Credentials(
-                token_key="token_key2", consumer_key="consumer_key"
-            ),
+        assert creds != maas_api_helper.Credentials(
+            token_key="token_key2", consumer_key="consumer_key"
         )
 
     def test_bool(self):
-        self.assertTrue(
-            maas_api_helper.Credentials(
-                token_key="token_key", consumer_key="consumer_key"
-            )
+        assert maas_api_helper.Credentials(
+            token_key="token_key", consumer_key="consumer_key"
         )
-        self.assertFalse(maas_api_helper.Credentials())
+        assert not maas_api_helper.Credentials()
 
     def test_from_stringempty(self):
-        self.assertEqual(
-            maas_api_helper.Credentials.from_string(""),
-            maas_api_helper.Credentials(),
+        assert (
+            maas_api_helper.Credentials.from_string("")
+            == maas_api_helper.Credentials()
         )
-        self.assertEqual(
-            maas_api_helper.Credentials.from_string(None),
-            maas_api_helper.Credentials(),
+        assert (
+            maas_api_helper.Credentials.from_string(None)
+            == maas_api_helper.Credentials()
         )
 
     def test_all(self):
         creds = maas_api_helper.Credentials.from_string("ck:tk:ts:cs")
-        self.assertEqual(
-            creds,
-            maas_api_helper.Credentials(
-                consumer_key="ck",
-                token_key="tk",
-                token_secret="ts",
-                consumer_secret="cs",
-            ),
+        assert creds == maas_api_helper.Credentials(
+            consumer_key="ck",
+            token_key="tk",
+            token_secret="ts",
+            consumer_secret="cs",
         )
 
     def test_no_consumer_secret(self):
         creds = maas_api_helper.Credentials.from_string("ck:tk:ts")
-        self.assertEqual(
-            creds,
-            maas_api_helper.Credentials(
-                consumer_key="ck",
-                token_key="tk",
-                token_secret="ts",
-                consumer_secret="",
-            ),
+        assert creds == maas_api_helper.Credentials(
+            consumer_key="ck",
+            token_key="tk",
+            token_secret="ts",
+            consumer_secret="",
         )
 
     def test_wrong_format(self):
-        self.assertRaises(
-            maas_api_helper.InvalidCredentialsFormat,
-            maas_api_helper.Credentials.from_string,
-            "wrong:format",
-        )
+        with pytest.raises(maas_api_helper.InvalidCredentialsFormat):
+            maas_api_helper.Credentials.from_string("wrong:format")
 
     def test_update(self):
         creds = maas_api_helper.Credentials()
@@ -119,10 +100,10 @@ class TestCredentials(MAASTestCase):
                 "consumer_secret": consumer_secret,
             }
         )
-        self.assertEqual(creds.consumer_key, consumer_key)
-        self.assertEqual(creds.token_key, token_key)
-        self.assertEqual(creds.token_secret, token_secret)
-        self.assertEqual(creds.consumer_secret, consumer_secret)
+        assert creds.consumer_key == consumer_key
+        assert creds.token_key == token_key
+        assert creds.token_secret == token_secret
+        assert creds.consumer_secret == consumer_secret
 
     def test_update_no_update_already_set(self):
         creds = maas_api_helper.Credentials()
@@ -146,10 +127,10 @@ class TestCredentials(MAASTestCase):
                 "consumer_secret": factory.make_name(),
             }
         )
-        self.assertEqual(creds.consumer_key, consumer_key)
-        self.assertEqual(creds.token_key, token_key)
-        self.assertEqual(creds.token_secret, token_secret)
-        self.assertEqual(creds.consumer_secret, consumer_secret)
+        assert creds.consumer_key == consumer_key
+        assert creds.token_key == token_key
+        assert creds.token_secret == token_secret
+        assert creds.consumer_secret == consumer_secret
 
     def test_oauth_headers(self):
         now = time.time()
@@ -170,35 +151,31 @@ class TestCredentials(MAASTestCase):
         )
         headers = credentials.oauth_headers(url)
         authorization = headers["Authorization"]
-        self.assertRegex(authorization, "^OAuth .*")
+        assert re.search(r"^OAuth .*", authorization)
         authorization = authorization.replace("OAuth ", "")
         oauth_arguments = {}
         for argument in authorization.split(", "):
             key, value = argument.split("=")
             oauth_arguments[key] = value.replace('"', "")
 
-        self.assertIn("oauth_nonce", oauth_arguments)
+        assert "oauth_nonce" in oauth_arguments
         oauth_arguments.pop("oauth_nonce", None)
 
-        self.assertAlmostEqual(
-            int(oauth_arguments.get("oauth_timestamp", 0)), now, delta=3
+        assert int(oauth_arguments.get("oauth_timestamp", 0)) == pytest.approx(
+            now, abs=3
         )
-        self.assertEqual(oauth_arguments.get("oauth_version"), "1.0")
-        self.assertEqual(
-            oauth_arguments.get("oauth_signature_method"), "PLAINTEXT"
-        )
-        self.assertEqual(
-            oauth_arguments.get("oauth_consumer_key"), consumer_key
-        )
-        self.assertEqual(oauth_arguments.get("oauth_token"), token_key)
-        self.assertEqual(
-            oauth_arguments.get("oauth_signature"),
-            f"{consumer_secret}%26{token_secret}",
+        assert oauth_arguments.get("oauth_version") == "1.0"
+        assert oauth_arguments.get("oauth_signature_method") == "PLAINTEXT"
+        assert oauth_arguments.get("oauth_consumer_key") == consumer_key
+        assert oauth_arguments.get("oauth_token") == token_key
+        assert (
+            oauth_arguments.get("oauth_signature")
+            == f"{consumer_secret}%26{token_secret}"
         )
 
     def test_oauth_headers_empty(self):
         creds = maas_api_helper.Credentials()
-        self.assertEqual(creds.oauth_headers("http://example.com"), {})
+        assert creds.oauth_headers("http://example.com") == {}
 
 
 class MAASMockHTTPHandler(urllib.request.HTTPHandler):
@@ -219,67 +196,67 @@ class MAASMockHTTPHandler(urllib.request.HTTPHandler):
         return resp
 
 
-class TestGetBase(MAASTestCase):
+class TestGetBase:
     def test_get_base_url(self):
-        self.assertEqual(
+        assert (
             maas_api_helper.get_base_url(
                 "http://example.com:1234/some/path?and=query"
-            ),
-            "http://example.com:1234",
+            )
+            == "http://example.com:1234"
         )
 
     def test_get_base_url_no_port(self):
-        self.assertEqual(
+        assert (
             maas_api_helper.get_base_url(
                 "http://example.com/some/path?and=query"
-            ),
-            "http://example.com",
+            )
+            == "http://example.com"
         )
 
 
-class TestGetUrl(MAASTestCase):
-    def setUp(self):
-        super().setUp()
+class TestGetUrl:
+    @pytest.fixture(autouse=True)
+    def _setup(self):
         opener = urllib.request.build_opener(MAASMockHTTPHandler)
         urllib.request.install_opener(opener)
 
     def test_geturl_sends_request(self):
-        self.assertEqual(
-            "mock response",
-            maas_api_helper.geturl(
+        assert (
+            "mock response"
+            == maas_api_helper.geturl(
                 "http://%s" % factory.make_hostname(),
-            ).read(),
+            ).read()
         )
 
-    def test_geturl_raises_exception_on_failure(self):
-        sleep = self.patch(maas_api_helper.time, "sleep")
-        warn = self.patch(maas_api_helper, "warn")
-        self.assertRaises(
-            urllib.error.HTTPError,
-            maas_api_helper.geturl,
-            "http://%s-broken" % factory.make_hostname(),
-        )
-        self.assertEqual(8, sleep.call_count)
+    def test_geturl_raises_exception_on_failure(self, mocker):
+        sleep = mocker.patch.object(maas_api_helper.time, "sleep")
+        warn = mocker.patch.object(maas_api_helper, "warn")
+        with pytest.raises(urllib.error.HTTPError):
+            maas_api_helper.geturl(
+                "http://%s-broken" % factory.make_hostname(),
+            )
+        assert sleep.call_count == 8
         warn.assert_any_call("date field not in 400 headers")
 
-    def test_geturl_increments_skew(self):
-        sleep = self.patch(maas_api_helper.time, "sleep")
-        warn = self.patch(maas_api_helper, "warn")
-        self.assertRaises(
-            urllib.error.HTTPError,
-            maas_api_helper.geturl,
-            "http://%s-broken_with_date" % factory.make_hostname(),
-        )
-        self.assertEqual(8, sleep.call_count)
+    def test_geturl_increments_skew(self, mocker):
+        sleep = mocker.patch.object(maas_api_helper.time, "sleep")
+        warn = mocker.patch.object(maas_api_helper, "warn")
+        with pytest.raises(urllib.error.HTTPError):
+            maas_api_helper.geturl(
+                "http://%s-broken_with_date" % factory.make_hostname(),
+            )
+        assert sleep.call_count == 8
         clock_skew_updates = [
             call
             for call in warn.call_args_list
             if call[0][0].startswith("updated clock skew to")
         ]
-        self.assertEqual(8, len(clock_skew_updates))
+        assert len(clock_skew_updates) == 8
 
-    def test_geturl_posts_data(self):
-        mock_urlopen = self.patch(maas_api_helper.urllib.request.urlopen)
+    def test_geturl_posts_data(self, mocker):
+        mock_urlopen = mocker.patch.object(
+            maas_api_helper.urllib.request, "urlopen"
+        )
         post_data = {factory.make_name("key"): factory.make_name("value")}
         maas_api_helper.geturl(
             "http://%s" % factory.make_hostname(), post_data=post_data
@@ -288,26 +265,25 @@ class TestGetUrl(MAASTestCase):
             ANY, data=urllib.parse.urlencode(post_data).encode("ascii")
         )
 
-    def test_geturl_no_retry(self):
-        mock_urlopen = self.patch(maas_api_helper.urllib.request.urlopen)
+    def test_geturl_no_retry(self, mocker):
+        mock_urlopen = mocker.patch.object(
+            maas_api_helper.urllib.request, "urlopen"
+        )
         maas_api_helper.geturl("http://example.com", retry=False)
         mock_urlopen.assert_called_once()
 
 
-class TestEncode(MAASTestCase):
+class TestEncode:
     def test_encode_blank(self):
         data, headers = maas_api_helper.encode_multipart_data({}, {})
         m = re.search("boundary=([a-zA-Z]+)", headers["Content-Type"])
         boundary = m.group(1)
-        self.assertEqual(
-            {
-                "Content-Type": "multipart/form-data; boundary=%s" % boundary,
-                "Content-Length": str(len(data)),
-            },
-            headers,
-        )
-        self.assertIsInstance(data, bytes)
-        self.assertEqual("--%s--\r\n" % boundary, data.decode("utf-8"))
+        assert headers == {
+            "Content-Type": "multipart/form-data; boundary=%s" % boundary,
+            "Content-Length": str(len(data)),
+        }
+        assert isinstance(data, bytes)
+        assert data.decode("utf-8") == "--%s--\r\n" % boundary
 
     def test_encode_data(self):
         key = factory.make_name("key")
@@ -316,18 +292,14 @@ class TestEncode(MAASTestCase):
         data, headers = maas_api_helper.encode_multipart_data(params, {})
         m = re.search("boundary=([a-zA-Z]+)", headers["Content-Type"])
         boundary = m.group(1)
-        self.assertEqual(
-            {
-                "Content-Type": "multipart/form-data; boundary=%s" % boundary,
-                "Content-Length": str(len(data)),
-            },
-            headers,
-        )
-        self.assertIsInstance(data, bytes)
-        self.assertEqual(
+        assert headers == {
+            "Content-Type": "multipart/form-data; boundary=%s" % boundary,
+            "Content-Length": str(len(data)),
+        }
+        assert isinstance(data, bytes)
+        assert data.decode("utf-8") == (
             '--%s\r\nContent-Disposition: form-data; name="%s"'
-            "\r\n\r\n%s\r\n--%s--\r\n" % (boundary, key, value, boundary),
-            data.decode("utf-8"),
+            "\r\n\r\n%s\r\n--%s--\r\n" % (boundary, key, value, boundary)
         )
 
     def test_encode_file(self):
@@ -337,29 +309,25 @@ class TestEncode(MAASTestCase):
         data, headers = maas_api_helper.encode_multipart_data({}, files)
         m = re.search("boundary=([a-zA-Z]+)", headers["Content-Type"])
         boundary = m.group(1)
-        self.assertEqual(
-            {
-                "Content-Type": "multipart/form-data; boundary=%s" % boundary,
-                "Content-Length": str(len(data)),
-            },
-            headers,
-        )
-        self.assertIsInstance(data, bytes)
-        self.assertEqual(
+        assert headers == {
+            "Content-Type": "multipart/form-data; boundary=%s" % boundary,
+            "Content-Length": str(len(data)),
+        }
+        assert isinstance(data, bytes)
+        assert data.decode("utf-8") == (
             '--%s\r\nContent-Disposition: form-data; name="%s"; filename="%s"'
             "\r\nContent-Type: application/octet-stream\r\n\r\n%s\r\n--%s--"
-            "\r\n" % (boundary, file, file, content, boundary),
-            data.decode("utf-8"),
+            "\r\n" % (boundary, file, file, content, boundary)
         )
 
 
-class TestSignal(MAASTestCase):
-    def test_signal_formats_basic_params(self):
-        mock_encode_multipart_data = self.patch(
+class TestSignal:
+    def test_signal_formats_basic_params(self, mocker):
+        mock_encode_multipart_data = mocker.patch.object(
             maas_api_helper, "encode_multipart_data"
         )
         mock_encode_multipart_data.return_value = None, None
-        mock_geturl = self.patch(maas_api_helper, "geturl")
+        mock_geturl = mocker.patch.object(maas_api_helper, "geturl")
         mm = MagicMock()
         mm.status = 200
         mm.read.return_value = b"OK"
@@ -376,12 +344,12 @@ class TestSignal(MAASTestCase):
         )
         mock_geturl.assert_called_once()
 
-    def test_signal_formats_params_with_error(self):
-        mock_encode_multipart_data = self.patch(
+    def test_signal_formats_params_with_error(self, mocker):
+        mock_encode_multipart_data = mocker.patch.object(
             maas_api_helper, "encode_multipart_data"
         )
         mock_encode_multipart_data.return_value = None, None
-        mock_geturl = self.patch(maas_api_helper, "geturl")
+        mock_geturl = mocker.patch.object(maas_api_helper, "geturl")
         mm = MagicMock()
         mm.status = 200
         mm.read.return_value = b"OK"
@@ -403,12 +371,12 @@ class TestSignal(MAASTestCase):
         )
         mock_geturl.assert_called_once()
 
-    def test_signal_formats_params_with_script_result_id(self):
-        mock_encode_multipart_data = self.patch(
+    def test_signal_formats_params_with_script_result_id(self, mocker):
+        mock_encode_multipart_data = mocker.patch.object(
             maas_api_helper, "encode_multipart_data"
         )
         mock_encode_multipart_data.return_value = None, None
-        mock_geturl = self.patch(maas_api_helper, "geturl")
+        mock_geturl = mocker.patch.object(maas_api_helper, "geturl")
         mm = MagicMock()
         mm.status = 200
         mm.read.return_value = b"OK"
@@ -432,12 +400,12 @@ class TestSignal(MAASTestCase):
         )
         mock_geturl.assert_called_once()
 
-    def test_signal_formats_params_with_exit_status(self):
-        mock_encode_multipart_data = self.patch(
+    def test_signal_formats_params_with_exit_status(self, mocker):
+        mock_encode_multipart_data = mocker.patch.object(
             maas_api_helper, "encode_multipart_data"
         )
         mock_encode_multipart_data.return_value = None, None
-        mock_geturl = self.patch(maas_api_helper, "geturl")
+        mock_geturl = mocker.patch.object(maas_api_helper, "geturl")
         mm = MagicMock()
         mm.status = 200
         mm.read.return_value = b"OK"
@@ -459,12 +427,12 @@ class TestSignal(MAASTestCase):
         )
         mock_geturl.assert_called_once()
 
-    def test_signal_formats_params_with_script_name(self):
-        mock_encode_multipart_data = self.patch(
+    def test_signal_formats_params_with_script_name(self, mocker):
+        mock_encode_multipart_data = mocker.patch.object(
             maas_api_helper, "encode_multipart_data"
         )
         mock_encode_multipart_data.return_value = None, None
-        mock_geturl = self.patch(maas_api_helper, "geturl")
+        mock_geturl = mocker.patch.object(maas_api_helper, "geturl")
         mm = MagicMock()
         mm.status = 200
         mm.read.return_value = b"OK"
@@ -486,12 +454,12 @@ class TestSignal(MAASTestCase):
         )
         mock_geturl.assert_called_once()
 
-    def test_signal_formats_params_with_script_version_id(self):
-        mock_encode_multipart_data = self.patch(
+    def test_signal_formats_params_with_script_version_id(self, mocker):
+        mock_encode_multipart_data = mocker.patch.object(
             maas_api_helper, "encode_multipart_data"
         )
         mock_encode_multipart_data.return_value = None, None
-        mock_geturl = self.patch(maas_api_helper, "geturl")
+        mock_geturl = mocker.patch.object(maas_api_helper, "geturl")
         mm = MagicMock()
         mm.status = 200
         mm.read.return_value = b"OK"
@@ -515,12 +483,12 @@ class TestSignal(MAASTestCase):
         )
         mock_geturl.assert_called_once()
 
-    def test_signal_formats_params_with_runtime(self):
-        mock_encode_multipart_data = self.patch(
+    def test_signal_formats_params_with_runtime(self, mocker):
+        mock_encode_multipart_data = mocker.patch.object(
             maas_api_helper, "encode_multipart_data"
         )
         mock_encode_multipart_data.return_value = None, None
-        mock_geturl = self.patch(maas_api_helper, "geturl")
+        mock_geturl = mocker.patch.object(maas_api_helper, "geturl")
         mm = MagicMock()
         mm.status = 200
         mm.read.return_value = b"OK"
@@ -546,12 +514,12 @@ class TestSignal(MAASTestCase):
         )
         mock_geturl.assert_called_once()
 
-    def test_signal_formats_params_with_power_params(self):
-        mock_encode_multipart_data = self.patch(
+    def test_signal_formats_params_with_power_params(self, mocker):
+        mock_encode_multipart_data = mocker.patch.object(
             maas_api_helper, "encode_multipart_data"
         )
         mock_encode_multipart_data.return_value = None, None
-        mock_geturl = self.patch(maas_api_helper, "geturl")
+        mock_geturl = mocker.patch.object(maas_api_helper, "geturl")
         mm = MagicMock()
         mm.status = 200
         mm.read.return_value = b"OK"
@@ -589,12 +557,12 @@ class TestSignal(MAASTestCase):
         )
         mock_geturl.assert_called_once()
 
-    def test_signal_formats_params_with_moonshot_power_params(self):
-        mock_encode_multipart_data = self.patch(
+    def test_signal_formats_params_with_moonshot_power_params(self, mocker):
+        mock_encode_multipart_data = mocker.patch.object(
             maas_api_helper, "encode_multipart_data"
         )
         mock_encode_multipart_data.return_value = None, None
-        mock_geturl = self.patch(maas_api_helper, "geturl")
+        mock_geturl = mocker.patch.object(maas_api_helper, "geturl")
         mm = MagicMock()
         mm.status = 200
         mm.read.return_value = b"OK"
@@ -631,12 +599,12 @@ class TestSignal(MAASTestCase):
         )
         mock_geturl.assert_called_once()
 
-    def test_signal_formats_files(self):
-        mock_encode_multipart_data = self.patch(
+    def test_signal_formats_files(self, mocker):
+        mock_encode_multipart_data = mocker.patch.object(
             maas_api_helper, "encode_multipart_data"
         )
         mock_encode_multipart_data.return_value = None, None
-        mock_geturl = self.patch(maas_api_helper, "geturl")
+        mock_geturl = mocker.patch.object(maas_api_helper, "geturl")
         mm = MagicMock()
         mm.status = 200
         mm.read.return_value = b"OK"
@@ -657,12 +625,12 @@ class TestSignal(MAASTestCase):
         )
         mock_geturl.assert_called_once()
 
-    def test_signal_raises_exception_if_not_ok(self):
-        mock_encode_multipart_data = self.patch(
+    def test_signal_raises_exception_if_not_ok(self, mocker):
+        mock_encode_multipart_data = mocker.patch.object(
             maas_api_helper, "encode_multipart_data"
         )
         mock_encode_multipart_data.return_value = None, None
-        mock_geturl = self.patch(maas_api_helper, "geturl")
+        mock_geturl = mocker.patch.object(maas_api_helper, "geturl")
         mm = MagicMock()
         mm.status = 400
         mm.read.return_value = b"bad_ret"
@@ -671,20 +639,15 @@ class TestSignal(MAASTestCase):
         status = factory.make_name("status")
 
         # None used for url and creds as we're not actually sending data.
-        self.assertRaises(
-            maas_api_helper.SignalException,
-            maas_api_helper.signal,
-            None,
-            None,
-            status,
-        )
+        with pytest.raises(maas_api_helper.SignalException):
+            maas_api_helper.signal(None, None, status)
 
-    def test_signal_raises_exception_on_httperror(self):
-        mock_encode_multipart_data = self.patch(
+    def test_signal_raises_exception_on_httperror(self, mocker):
+        mock_encode_multipart_data = mocker.patch.object(
             maas_api_helper, "encode_multipart_data"
         )
         mock_encode_multipart_data.return_value = None, None
-        mock_geturl = self.patch(maas_api_helper, "geturl")
+        mock_geturl = mocker.patch.object(maas_api_helper, "geturl")
         mock_geturl.side_effect = maas_api_helper.urllib.error.HTTPError(
             None, None, None, None, None
         )
@@ -692,100 +655,77 @@ class TestSignal(MAASTestCase):
         status = factory.make_name("status")
 
         # None used for url and creds as we're not actually sending data.
-        self.assertRaises(
-            maas_api_helper.SignalException,
-            maas_api_helper.signal,
-            None,
-            None,
-            status,
-        )
+        with pytest.raises(maas_api_helper.SignalException):
+            maas_api_helper.signal(None, None, status)
 
-    def test_signal_raises_exception_on_urlerror(self):
-        mock_encode_multipart_data = self.patch(
+    def test_signal_raises_exception_on_urlerror(self, mocker):
+        mock_encode_multipart_data = mocker.patch.object(
             maas_api_helper, "encode_multipart_data"
         )
         mock_encode_multipart_data.return_value = None, None
-        mock_geturl = self.patch(maas_api_helper, "geturl")
+        mock_geturl = mocker.patch.object(maas_api_helper, "geturl")
         mock_geturl.side_effect = maas_api_helper.urllib.error.URLError(None)
 
         status = factory.make_name("status")
 
         # None used for url and creds as we're not actually sending data.
-        self.assertRaises(
-            maas_api_helper.SignalException,
-            maas_api_helper.signal,
-            None,
-            None,
-            status,
-        )
+        with pytest.raises(maas_api_helper.SignalException):
+            maas_api_helper.signal(None, None, status)
 
-    def test_signal_raises_exception_on_socket_timeout(self):
-        mock_encode_multipart_data = self.patch(
+    def test_signal_raises_exception_on_socket_timeout(self, mocker):
+        mock_encode_multipart_data = mocker.patch.object(
             maas_api_helper, "encode_multipart_data"
         )
         mock_encode_multipart_data.return_value = None, None
-        mock_geturl = self.patch(maas_api_helper, "geturl")
+        mock_geturl = mocker.patch.object(maas_api_helper, "geturl")
         mock_geturl.side_effect = maas_api_helper.socket.timeout()
 
         status = factory.make_name("status")
 
         # None used for url and creds as we're not actually sending data.
-        self.assertRaises(
-            maas_api_helper.SignalException,
-            maas_api_helper.signal,
-            None,
-            None,
-            status,
-        )
+        with pytest.raises(maas_api_helper.SignalException):
+            maas_api_helper.signal(None, None, status)
 
-    def test_signal_raises_exception_on_typeerror(self):
-        mock_encode_multipart_data = self.patch(
+    def test_signal_raises_exception_on_typeerror(self, mocker):
+        mock_encode_multipart_data = mocker.patch.object(
             maas_api_helper, "encode_multipart_data"
         )
         mock_encode_multipart_data.return_value = None, None
-        mock_geturl = self.patch(maas_api_helper, "geturl")
+        mock_geturl = mocker.patch.object(maas_api_helper, "geturl")
         mock_geturl.side_effect = TypeError()
 
         status = factory.make_name("status")
 
         # None used for url and creds as we're not actually sending data.
-        self.assertRaises(
-            maas_api_helper.SignalException,
-            maas_api_helper.signal,
-            None,
-            None,
-            status,
-        )
+        with pytest.raises(maas_api_helper.SignalException):
+            maas_api_helper.signal(None, None, status)
 
-    def test_signal_raises_exception_on_unknown_exception(self):
-        mock_encode_multipart_data = self.patch(
+    def test_signal_raises_exception_on_unknown_exception(self, mocker):
+        mock_encode_multipart_data = mocker.patch.object(
             maas_api_helper, "encode_multipart_data"
         )
         mock_encode_multipart_data.return_value = None, None
-        mock_geturl = self.patch(maas_api_helper, "geturl")
+        mock_geturl = mocker.patch.object(maas_api_helper, "geturl")
         mock_geturl.side_effect = Exception()
 
         status = factory.make_name("status")
 
         # None used for url and creds as we're not actually sending data.
-        self.assertRaises(
-            maas_api_helper.SignalException,
-            maas_api_helper.signal,
-            None,
-            None,
-            status,
-        )
+        with pytest.raises(maas_api_helper.SignalException):
+            maas_api_helper.signal(None, None, status)
 
 
-class TestCaptureScriptOutput(MAASTestCase):
-    def setUp(self):
-        super().setUp()
+class TestCaptureScriptOutput:
+    @pytest.fixture(autouse=True)
+    def _setup(self, mocker, tmp_path):
+        self.tmp_path = tmp_path
+        self.mocker = mocker
         # Make sure output isn't shown when running tests through a console
-        self.isatty = self.patch(maas_api_helper.sys.stdout, "isatty")
+        self.isatty = mocker.patch.object(maas_api_helper.sys.stdout, "isatty")
         self.isatty.return_value = False
 
     def capture(self, proc, timeout=None, console_output=None):
-        scripts_dir = Path(self.useFixture(TempDirectory()).path)
+        scripts_dir = self.tmp_path
         combined_path = scripts_dir.joinpath("combined")
         stdout_path = scripts_dir.joinpath("stdout")
         stderr_path = scripts_dir.joinpath("stderr")
@@ -814,19 +754,23 @@ class TestCaptureScriptOutput(MAASTestCase):
             shell=True,
         )
         ret_code, stdout, stderr, combined = self.capture(proc)
-        self.assertEqual(ret_code, 0)
-        self.assertEqual(stdout, "stdout\n")
-        self.assertEqual(stderr, "stderr\n")
+        assert ret_code == 0
+        assert stdout == "stdout\n"
+        assert stderr == "stderr\n"
         # The writes to stdout and stderr occur so close in time that
         # they may be received in any order.
 
-        self.assertCountEqual(combined.splitlines(), ["stderr", "stdout"])
+        assert sorted(combined.splitlines()) == sorted(["stderr", "stdout"])
 
     def test_forwards_to_console(self):
-        stdout = self.patch(maas_api_helper.sys.stdout, "write")
-        stderr = self.patch(maas_api_helper.sys.stderr, "write")
-        stdout_flush = self.patch(maas_api_helper.sys.stdout, "flush")
-        stderr_flush = self.patch(maas_api_helper.sys.stderr, "flush")
+        stdout = self.mocker.patch.object(maas_api_helper.sys.stdout, "write")
+        stderr = self.mocker.patch.object(maas_api_helper.sys.stderr, "write")
+        stdout_flush = self.mocker.patch.object(
+            maas_api_helper.sys.stdout, "flush"
+        )
+        stderr_flush = self.mocker.patch.object(
+            maas_api_helper.sys.stderr, "flush"
+        )
         self.isatty.return_value = True
         proc = Popen(
             'echo "stdout"; echo "stderr" 1>&2',
@@ -841,10 +785,10 @@ class TestCaptureScriptOutput(MAASTestCase):
         stderr_flush.assert_called_once()
 
     def test_no_forwards_to_console_with_false(self):
-        stdout = self.patch(maas_api_helper.sys.stdout, "write")
-        stderr = self.patch(maas_api_helper.sys.stderr, "write")
-        self.patch(maas_api_helper.sys.stdout, "flush")
-        self.patch(maas_api_helper.sys.stderr, "flush")
+        stdout = self.mocker.patch.object(maas_api_helper.sys.stdout, "write")
+        stderr = self.mocker.patch.object(maas_api_helper.sys.stderr, "write")
+        self.mocker.patch.object(maas_api_helper.sys.stdout, "flush")
+        self.mocker.patch.object(maas_api_helper.sys.stderr, "flush")
         self.isatty.return_value = True
         proc = Popen(
             'echo "stdout"; echo "stderr" 1>&2',
@@ -857,10 +801,10 @@ class TestCaptureScriptOutput(MAASTestCase):
         stderr.assert_not_called()
 
     def test_forwards_to_console_with_true_no_tty(self):
-        stdout = self.patch(maas_api_helper.sys.stdout, "write")
-        stderr = self.patch(maas_api_helper.sys.stderr, "write")
-        self.patch(maas_api_helper.sys.stdout, "flush")
-        self.patch(maas_api_helper.sys.stderr, "flush")
+        stdout = self.mocker.patch.object(maas_api_helper.sys.stdout, "write")
+        stderr = self.mocker.patch.object(maas_api_helper.sys.stderr, "write")
+        self.mocker.patch.object(maas_api_helper.sys.stdout, "flush")
+        self.mocker.patch.object(maas_api_helper.sys.stderr, "flush")
         self.isatty.return_value = False
         proc = Popen(
             'echo "stdout"; echo "stderr" 1>&2',
@@ -876,13 +820,13 @@ class TestCaptureScriptOutput(MAASTestCase):
         start_time = time.time()
         proc = Popen("sleep 6 &", stdout=PIPE, stderr=PIPE, shell=True)
         ret_code, stdout, stderr, combined = self.capture(proc)
-        self.assertEqual(ret_code, 0)
-        self.assertEqual(stdout, "")
-        self.assertEqual(stderr, "")
-        self.assertEqual(combined, "")
+        assert ret_code == 0
+        assert stdout == ""
+        assert stderr == ""
+        assert combined == ""
         # A forked process should continue running after capture_script_output
         # returns. capture_script_output should not block on the forked call.
-        self.assertLess(time.time() - start_time, 3)
+        assert time.time() - start_time < 3
 
     def test_captures_output_from_completed_process(self):
         # Write to both stdout and stderr.
@@ -894,14 +838,14 @@ class TestCaptureScriptOutput(MAASTestCase):
         )
         ret_code, stdout, stderr, combined = self.capture(proc)
         # Wait for it to finish before capturing.
-        self.assertEqual(0, proc.wait())
+        assert 0 == proc.wait()
         # Capturing now still gets foo and bar.
-        self.assertEqual(ret_code, 0)
-        self.assertEqual(stdout, "foo")
-        self.assertEqual(stderr, "bar")
+        assert ret_code == 0
+        assert stdout == "foo"
+        assert stderr == "bar"
         # The writes to stdout and stderr occur so close in time that
         # they may be received in any order.
-        self.assertIn(combined, ("foobar", "barfoo"))
+        assert combined in ("foobar", "barfoo")
 
     def test_captures_stderr_after_stdout_closes(self):
         # Write to stdout, close stdout, then write to stderr.
@@ -913,12 +857,12 @@ class TestCaptureScriptOutput(MAASTestCase):
         )
         ret_code, stdout, stderr, combined = self.capture(proc)
         # Capturing gets the bar even after stdout is closed.
-        self.assertEqual(ret_code, 0)
-        self.assertEqual(stdout, "foo")
-        self.assertEqual(stderr, "bar")
+        assert ret_code == 0
+        assert stdout == "foo"
+        assert stderr == "bar"
         # The writes to stdout and stderr occur so close in time that
         # they may be received in any order.
-        self.assertIn(combined, ("foobar", "barfoo"))
+        assert combined in ("foobar", "barfoo")
 
     def test_captures_stdout_after_stderr_closes(self):
         # Write to stderr, close stderr, then write to stdout.
@@ -930,20 +874,20 @@ class TestCaptureScriptOutput(MAASTestCase):
         )
         ret_code, stdout, stderr, combined = self.capture(proc)
         # Capturing gets the foo even after stderr is closed.
-        self.assertEqual(ret_code, 0)
-        self.assertEqual(stdout, "foo")
-        self.assertEqual(stderr, "bar")
+        assert ret_code == 0
+        assert stdout == "foo"
+        assert stderr == "bar"
         # The writes to stdout and stderr occur so close in time that
         # they may be received in any order.
-        self.assertIn(combined, ("foobar", "barfoo"))
+        assert combined in ("foobar", "barfoo")
 
     def test_captures_all_output(self):
         proc = Popen(("lshw", "-xml"), stdout=PIPE, stderr=PIPE)
         ret_code, stdout, stderr, combined = self.capture(proc)
-        self.assertEqual(ret_code, 0)
+        assert ret_code == 0
         # This is a complete XML document that can be parsed; we've captured
         # all output.
-        self.assertIsNotNone(etree.fromstring(stdout))
+        assert etree.fromstring(stdout) is not None
 
     def test_interprets_backslash(self):
         proc = Popen(
@@ -953,10 +897,10 @@ class TestCaptureScriptOutput(MAASTestCase):
             shell=True,
         )
         ret_code, stdout, stderr, combined = self.capture(proc)
-        self.assertEqual(ret_code, 0)
-        self.assertEqual(stdout, "maas")
-        self.assertEqual(stderr, "")
-        self.assertEqual(combined, "maas")
+        assert ret_code == 0
+        assert stdout == "maas"
+        assert stderr == ""
+        assert combined == "maas"
 
     def test_interprets_carriage_return(self):
         proc = Popen(
@@ -966,19 +910,20 @@ class TestCaptureScriptOutput(MAASTestCase):
             shell=True,
         )
         ret_code, stdout, stderr, combined = self.capture(proc)
-        self.assertEqual(ret_code, 0)
-        self.assertEqual(stdout, "maas")
-        self.assertEqual(stderr, "")
-        self.assertEqual(combined, "maas")
+        assert ret_code == 0
+        assert stdout == "maas"
+        assert stderr == ""
+        assert combined == "maas"
 
     def test_timeout(self):
-        self.patch(maas_api_helper.time, "monotonic").side_effect = (
+        self.mocker.patch.object(
+            maas_api_helper.time, "monotonic"
+        ).side_effect = (
             0,
             60 * 6,
             60 * 6,
             60 * 6,
         )
         proc = Popen('echo "test"', stdout=PIPE, stderr=PIPE, shell=True)
-        self.assertRaises(
-            TimeoutExpired, self.capture, proc, random.randint(1, 5)
-        )
+        with pytest.raises(TimeoutExpired):
+            self.capture(proc, random.randint(1, 5))

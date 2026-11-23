@@ -1,11 +1,8 @@
-# Copyright 2015-2026 Canonical Ltd.  This software is licensed under the
-# GNU Affero General Public License version 3 (see the file LICENSE).
-
-
 from unittest.mock import sentinel
 
 from distro_info import UbuntuDistroInfo
 import petname
+import pytest
 
 from maasserver.enum import (
     BOND_LACP_RATE_CHOICES,
@@ -20,7 +17,6 @@ from maasserver.node_action import ACTIONS_DICT
 from maasserver.secrets import SecretManager
 from maasserver.testing.factory import factory
 from maasserver.testing.osystems import make_osystem_with_releases
-from maasserver.testing.testcase import MAASServerTestCase
 from maasserver.websockets.base import DATETIME_FORMAT, dehydrate_datetime
 from maasserver.websockets.handlers import general
 from maasserver.websockets.handlers.general import GeneralHandler
@@ -28,16 +24,17 @@ from provisioningserver.boot import BootMethodRegistry
 from provisioningserver.testing.certificates import get_sample_cert
 from provisioningserver.utils.snap import SnapVersionsInfo
 from provisioningserver.utils.version import MAASVersion
-from tests.maasserver.auth.test_auth import OpenFGAMockMixin
+from tests.maasserver.auth.test_auth import PytestOpenFGAMockMixin
 
 
-class TestGeneralHandler(MAASServerTestCase):
-    def setUp(self):
-        super().setUp()
+@pytest.mark.usefixtures("maasdb", "factory", "maas_region_test")
+class TestGeneralHandler:
+    @pytest.fixture(autouse=True)
+    def _setup_handler(self, maasdb, request):
         factory.make_RegionController()
-        # Disable boot sources signals otherwise the test fails due to unrun
-        # post-commit tasks at the end of the test.
-        self.useFixture(SignalsDisabled("bootsources"))
+        signals_disabled = SignalsDisabled("bootsources")
+        signals_disabled.setUp()
+        request.addfinalizer(signals_disabled.cleanUp)
 
     def dehydrate_actions(self, actions, node_type=None):
         return [
@@ -105,59 +102,56 @@ class TestGeneralHandler(MAASServerTestCase):
         for arch in arches:
             factory.make_usable_boot_resource(architecture=arch)
         handler = GeneralHandler(factory.make_User(), {}, None)
-        self.assertCountEqual(arches, handler.architectures({}))
+        assert sorted(arches, key=repr) == sorted(
+            handler.architectures({}), key=repr
+        )
 
     def test_known_architectures(self):
         handler = GeneralHandler(factory.make_User(), {}, None)
-        self.assertEqual(
-            PackageRepository.objects.get_known_architectures(),
-            handler.known_architectures({}),
+        assert (
+            PackageRepository.objects.get_known_architectures()
+            == handler.known_architectures({})
         )
 
     def test_pockets_to_disable(self):
         handler = GeneralHandler(factory.make_User(), {}, None)
-        self.assertEqual(
-            PackageRepository.objects.get_pockets_to_disable(),
-            handler.pockets_to_disable({}),
+        assert (
+            PackageRepository.objects.get_pockets_to_disable()
+            == handler.pockets_to_disable({})
         )
 
     def test_components_to_disable(self):
         handler = GeneralHandler(factory.make_User(), {}, None)
-        self.assertEqual(
-            PackageRepository.objects.get_components_to_disable(),
-            handler.components_to_disable({}),
+        assert (
+            PackageRepository.objects.get_components_to_disable()
+            == handler.components_to_disable({})
         )
 
     def test_hwe_kernels(self):
         expected_output = self.make_boot_sources()
         handler = GeneralHandler(factory.make_User(), {}, None)
-        self.assertCountEqual(
-            expected_output,
-            handler.hwe_kernels({}),
-        )
+        assert sorted(expected_output) == sorted(handler.hwe_kernels({}))
 
     def test_hwe_min_kernels(self):
         expected_output = self.make_boot_sources()
         handler = GeneralHandler(factory.make_User(), {}, None)
-        self.assertCountEqual(
-            expected_output,
-            handler.min_hwe_kernels({}),
-        )
+        assert sorted(expected_output) == sorted(handler.min_hwe_kernels({}))
 
-    def test_osinfo(self):
+    def test_osinfo(self, mocker):
         handler = GeneralHandler(factory.make_User(), {}, None)
-        osystem, osystem_releases = make_osystem_with_releases(self)
+        osystem, osystem_releases = make_osystem_with_releases(
+            None, osystem_name="ubuntu", releases=["noble"]
+        )
         releases = [
-            (
-                "{}/{}".format(osystem, release),
-                release,
-            )
+            ("{}/{}".format(osystem, release), release)
             for release in osystem_releases
         ]
-        self.patch(general, "list_osystem_choices").return_value = [
-            (osystem, osystem)
-        ]
-        self.patch(general, "list_release_choices").return_value = releases
+        mocker.patch.object(
+            general, "list_osystem_choices", return_value=[(osystem, osystem)]
+        )
+        mocker.patch.object(
+            general, "list_release_choices", return_value=releases
+        )
         expected_osinfo = {
             "osystems": [(osystem, osystem)],
             "releases": releases,
@@ -169,18 +163,20 @@ class TestGeneralHandler(MAASServerTestCase):
                 "default_distro_series"
             ),
         }
-        self.assertEqual(expected_osinfo, handler.osinfo({}))
+        assert expected_osinfo == handler.osinfo({})
 
     def test_machine_actions_for_admin(self):
         handler = GeneralHandler(factory.make_admin(), {}, None)
         actions_expected = self.dehydrate_actions(
             ACTIONS_DICT, NODE_TYPE.MACHINE
         )
-        self.assertCountEqual(actions_expected, handler.machine_actions({}))
+        assert sorted(actions_expected, key=repr) == sorted(
+            handler.machine_actions({}), key=repr
+        )
 
     def test_machine_actions_for_non_admin(self):
         handler = GeneralHandler(factory.make_User(), {}, None)
-        self.assertCountEqual(
+        assert sorted(
             {
                 "release",
                 "mark-broken",
@@ -191,40 +187,41 @@ class TestGeneralHandler(MAASServerTestCase):
                 "lock",
                 "unlock",
             },
+            key=repr,
+        ) == sorted(
             [action["name"] for action in handler.machine_actions({})],
+            key=repr,
         )
 
     def test_device_actions_for_admin(self):
         handler = GeneralHandler(factory.make_admin(), {}, None)
-        self.assertCountEqual(
-            {"set-zone", "delete"},
-            [action["name"] for action in handler.device_actions({})],
+        assert sorted({"set-zone", "delete"}, key=repr) == sorted(
+            [action["name"] for action in handler.device_actions({})], key=repr
         )
 
     def test_device_actions_for_non_admin(self):
         handler = GeneralHandler(factory.make_User(), {}, None)
-        self.assertCountEqual(
-            {"set-zone", "delete"},
-            [action["name"] for action in handler.device_actions({})],
+        assert sorted({"set-zone", "delete"}, key=repr) == sorted(
+            [action["name"] for action in handler.device_actions({})], key=repr
         )
 
     def test_region_controller_actions_for_admin(self):
         handler = GeneralHandler(factory.make_admin(), {}, None)
-        self.assertCountEqual(
-            {"set-zone", "delete"},
+        assert sorted({"set-zone", "delete"}, key=repr) == sorted(
             [
                 action["name"]
                 for action in handler.region_controller_actions({})
             ],
+            key=repr,
         )
 
     def test_region_controller_actions_for_non_admin(self):
         handler = GeneralHandler(factory.make_User(), {}, None)
-        self.assertEqual([], handler.region_controller_actions({}))
+        assert [] == handler.region_controller_actions({})
 
     def test_rack_controller_actions_for_admin(self):
         handler = GeneralHandler(factory.make_admin(), {}, None)
-        self.assertCountEqual(
+        assert sorted(
             [
                 "delete",
                 "off",
@@ -233,51 +230,51 @@ class TestGeneralHandler(MAASServerTestCase):
                 "test",
                 "override-failed-testing",
             ],
+            key=repr,
+        ) == sorted(
             [action["name"] for action in handler.rack_controller_actions({})],
+            key=repr,
         )
 
     def test_rack_controller_actions_for_non_admin(self):
         handler = GeneralHandler(factory.make_User(), {}, None)
-        self.assertEqual([], handler.rack_controller_actions({}))
+        assert [] == handler.rack_controller_actions({})
 
     def test_region_and_rack_controller_actions_for_admin(self):
         handler = GeneralHandler(factory.make_admin(), {}, None)
-        self.assertCountEqual(
-            ["set-zone", "delete"],
+        assert sorted(["set-zone", "delete"], key=repr) == sorted(
             [
                 action["name"]
                 for action in handler.region_and_rack_controller_actions({})
             ],
+            key=repr,
         )
 
     def test_region_and_rack_controller_actions_for_non_admin(self):
         handler = GeneralHandler(factory.make_User(), {}, None)
-        self.assertEqual([], handler.region_and_rack_controller_actions({}))
+        assert [] == handler.region_and_rack_controller_actions({})
 
-    def test_random_hostname_checks_hostname_existence(self):
+    def test_random_hostname_checks_hostname_existence(self, mocker):
         existing_node = factory.make_Node(hostname="hostname")
         hostnames = [existing_node.hostname, "new-hostname"]
-        self.patch(petname, "Generate").side_effect = hostnames
+        mocker.patch.object(petname, "Generate").side_effect = hostnames
         handler = GeneralHandler(factory.make_User(), {}, None)
-        self.assertEqual("new-hostname", handler.random_hostname({}))
+        assert "new-hostname" == handler.random_hostname({})
 
     def test_bond_options(self):
         handler = GeneralHandler(factory.make_User(), {}, None)
-        self.assertEqual(
-            {
-                "modes": BOND_MODE_CHOICES,
-                "lacp_rates": BOND_LACP_RATE_CHOICES,
-                "xmit_hash_policies": BOND_XMIT_HASH_POLICY_CHOICES,
-            },
-            handler.bond_options({}),
-        )
+        assert {
+            "modes": BOND_MODE_CHOICES,
+            "lacp_rates": BOND_LACP_RATE_CHOICES,
+            "xmit_hash_policies": BOND_XMIT_HASH_POLICY_CHOICES,
+        } == handler.bond_options({})
 
-    def test_version(self):
+    def test_version(self, mocker):
         handler = GeneralHandler(factory.make_User(), {}, None)
-        self.patch_autospec(
-            general, "get_maas_version"
+        mocker.patch.object(
+            general, "get_maas_version", autospec=True
         ).return_value = MAASVersion.from_string("1.2.3~rc1")
-        self.assertEqual(handler.version({}), "1.2.3~rc1")
+        assert handler.version({}) == "1.2.3~rc1"
 
     def test_target_version(self):
         controller = factory.make_RackController()
@@ -297,9 +294,9 @@ class TestGeneralHandler(MAASServerTestCase):
         )
         handler = GeneralHandler(factory.make_User(), {}, None)
         result = handler.target_version({})
-        self.assertEqual(result["version"], "3.0.0~beta3-456-g.cafe")
-        self.assertEqual(result["snap_channel"], "3.0/beta")
-        self.assertIsNotNone(result["first_reported"])
+        assert result["version"] == "3.0.0~beta3-456-g.cafe"
+        assert result["snap_channel"] == "3.0/beta"
+        assert result["first_reported"] is not None
 
     def test_target_version_snap_cohort(self):
         controller = factory.make_RackController()
@@ -316,14 +313,14 @@ class TestGeneralHandler(MAASServerTestCase):
         )
         handler = GeneralHandler(factory.make_User(), {}, None)
         result = handler.target_version({})
-        self.assertEqual(result["snap_cohort"], "abc")
+        assert result["snap_cohort"] == "abc"
 
-    def test_power_types(self):
+    def test_power_types(self, mocker):
         handler = GeneralHandler(factory.make_User(), {}, None)
-        self.patch_autospec(
-            general, "get_all_power_types"
+        mocker.patch.object(
+            general, "get_all_power_types", autospec=True
         ).return_value = sentinel.types
-        self.assertEqual(sentinel.types, handler.power_types({}))
+        assert sentinel.types == handler.power_types({})
 
     def test_release_options(self):
         handler = GeneralHandler(factory.make_User(), {}, None)
@@ -333,64 +330,58 @@ class TestGeneralHandler(MAASServerTestCase):
         Config.objects.set_config("enable_disk_erasing_on_release", erase)
         Config.objects.set_config("disk_erase_with_secure_erase", secure_erase)
         Config.objects.set_config("disk_erase_with_quick_erase", quick_erase)
-        self.assertEqual(
-            {
-                "erase": erase,
-                "secure_erase": secure_erase,
-                "quick_erase": quick_erase,
-            },
-            handler.release_options({}),
-        )
+        assert {
+            "erase": erase,
+            "secure_erase": secure_erase,
+            "quick_erase": quick_erase,
+        } == handler.release_options({})
 
     def test_known_boot_architectures(self):
         handler = GeneralHandler(factory.make_User(), {}, None)
-        self.assertEqual(
-            [
-                {
-                    "name": boot_method.name,
-                    "bios_boot_method": boot_method.bios_boot_method,
-                    "bootloader_arches": "/".join(
-                        boot_method.bootloader_arches
-                    ),
-                    "arch_octet": boot_method.arch_octet,
-                    "protocol": (
-                        "http"
-                        if boot_method.http_url or boot_method.user_class
-                        else "tftp"
-                    ),
-                }
-                for _, boot_method in BootMethodRegistry
-                if boot_method.arch_octet or boot_method.user_class
-            ],
-            handler.known_boot_architectures({}),
-        )
+        assert [
+            {
+                "name": boot_method.name,
+                "bios_boot_method": boot_method.bios_boot_method,
+                "bootloader_arches": "/".join(boot_method.bootloader_arches),
+                "arch_octet": boot_method.arch_octet,
+                "protocol": (
+                    "http"
+                    if boot_method.http_url or boot_method.user_class
+                    else "tftp"
+                ),
+            }
+            for _, boot_method in BootMethodRegistry
+            if boot_method.arch_octet or boot_method.user_class
+        ] == handler.known_boot_architectures({})
 
-    def test_generate_certificate_no_name(self):
+    def test_generate_certificate_no_name(self, mocker):
         Config.objects.set_config("maas_name", "mymaas")
         handler = GeneralHandler(factory.make_User(), {}, None)
-        mock_generate_certificate = self.patch_autospec(
-            general, "generate_certificate"
+        mock_generate_certificate = mocker.patch.object(
+            general, "generate_certificate", autospec=True
         )
         handler.generate_client_certificate({})
         mock_generate_certificate.assert_called_once_with("mymaas")
 
-    def test_generate_certificate_with_name(self):
+    def test_generate_certificate_with_name(self, mocker):
         Config.objects.set_config("maas_name", "mymaas")
         handler = GeneralHandler(factory.make_User(), {}, None)
-        mock_generate_certificate = self.patch_autospec(
-            general, "generate_certificate"
+        mock_generate_certificate = mocker.patch.object(
+            general, "generate_certificate", autospec=True
         )
         handler.generate_client_certificate({"object_name": "mypod"})
         mock_generate_certificate.assert_called_once_with("mypod@mymaas")
 
-    def test_generate_certificate_metadata(self):
+    def test_generate_certificate_metadata(self, mocker):
         cert = get_sample_cert()
         handler = GeneralHandler(factory.make_User(), {}, None)
-        self.patch(general, "generate_certificate").return_value = cert
+        mocker.patch.object(
+            general, "generate_certificate"
+        ).return_value = cert
         result = handler.generate_client_certificate({})
-        self.assertEqual(result["fingerprint"], cert.cert_hash())
-        self.assertEqual(
-            result["expiration"], cert.expiration().strftime(DATETIME_FORMAT)
+        assert result["fingerprint"] == cert.cert_hash()
+        assert result["expiration"] == cert.expiration().strftime(
+            DATETIME_FORMAT
         )
 
     def test_tls_certificate(self):
@@ -405,58 +396,57 @@ class TestGeneralHandler(MAASServerTestCase):
         handler = GeneralHandler(factory.make_User(), {}, None)
         result = handler.tls_certificate({})
 
-        self.assertEqual(cert.cn(), result["CN"])
-        self.assertEqual(cert.certificate_pem(), result["certificate"])
-        self.assertEqual(
-            dehydrate_datetime(cert.expiration()), result["expiration"]
-        )
-        self.assertEqual(cert.cert_hash(), result["fingerprint"])
+        assert cert.cn() == result["CN"]
+        assert cert.certificate_pem() == result["certificate"]
+        assert dehydrate_datetime(cert.expiration()) == result["expiration"]
+        assert cert.cert_hash() == result["fingerprint"]
 
         # ensure we don't leak anything else
         allowed_keys = ["CN", "certificate", "expiration", "fingerprint"]
-        self.assertCountEqual(result.keys(), allowed_keys)
+        assert sorted(result.keys(), key=repr) == sorted(
+            allowed_keys, key=repr
+        )
 
     def test_tls_certificate_tls_disabled(self):
         handler = GeneralHandler(factory.make_User(), {}, None)
         result = handler.tls_certificate({})
 
-        self.assertIsNone(result)
+        assert result is None
 
     def test_vault_enabled(self):
         Config.objects.set_config("vault_enabled", True)
         handler = GeneralHandler(factory.make_User(), {}, None)
         result = handler.vault_enabled({})
-        self.assertTrue(result)
+        assert result
 
     def test_vault_disabled(self):
         Config.objects.set_config("vault_enabled", False)
         handler = GeneralHandler(factory.make_User(), {}, None)
         result = handler.vault_enabled({})
-        self.assertFalse(result)
+        assert not result
 
     def test_vault_not_specified(self):
         handler = GeneralHandler(factory.make_User(), {}, None)
         result = handler.vault_enabled({})
-        self.assertFalse(result)
+        assert not result
 
     def test_maas_url(self):
         url = "http://maas.internal"
         Config.objects.set_config("maas_url", url)
         handler = GeneralHandler(factory.make_User(), {}, None)
         result = handler.maas_url({})
-        self.assertEqual(url, result)
+        assert url == result
 
 
-class TestGeneralHandlerOpenFGAIntegration(
-    OpenFGAMockMixin, MAASServerTestCase
-):
+@pytest.mark.usefixtures("maasdb", "factory")
+class TestGeneralHandlerOpenFGAIntegration(PytestOpenFGAMockMixin):
     def test_machine_actions_for_users_that_can_edit_machines(self):
-        self.openfga_client.can_edit_machines.return_value = True
         user = factory.make_User()
         handler = GeneralHandler(user, {}, None)
+        self.openfga_client.can_edit_machines.return_value = True
         actions_expected = handler.machine_actions({})
-        self.assertCountEqual(
-            {
+        assert sorted(
+            [
                 "commission",
                 "acquire",
                 "deploy",
@@ -464,23 +454,22 @@ class TestGeneralHandlerOpenFGAIntegration(
                 "off",
                 "release",
                 "abort",
+                "override-failed-testing",
                 "test",
                 "rescue-mode",
                 "exit-rescue-mode",
-                "mark-broken",
-                "mark-fixed",
-                "override-failed-testing",
                 "lock",
                 "unlock",
+                "mark-broken",
+                "mark-fixed",
                 "tag",
                 "untag",
                 "clone",
                 "set-zone",
                 "set-pool",
                 "delete",
-            },
-            [action["name"] for action in actions_expected],
-        )
+            ]
+        ) == sorted([action["name"] for action in actions_expected])
         self.openfga_client.can_edit_machines.assert_called_once_with(user)
 
     def test_machine_actions_for_users_with_no_edit_permissions(self):
@@ -488,8 +477,8 @@ class TestGeneralHandlerOpenFGAIntegration(
         user = factory.make_User()
         handler = GeneralHandler(user, {}, None)
         actions_expected = handler.machine_actions({})
-        self.assertCountEqual(
-            {
+        assert sorted(
+            [
                 "acquire",
                 "deploy",
                 "on",
@@ -498,9 +487,8 @@ class TestGeneralHandlerOpenFGAIntegration(
                 "mark-broken",
                 "lock",
                 "unlock",
-            },
-            [action["name"] for action in actions_expected],
-        )
+            ]
+        ) == sorted([action["name"] for action in actions_expected])
         self.openfga_client.can_edit_machines.assert_called_once_with(user)
 
     def test_controller_actions_for_users_that_can_edit_controllers(self):
@@ -508,9 +496,8 @@ class TestGeneralHandlerOpenFGAIntegration(
         user = factory.make_User()
         handler = GeneralHandler(user, {}, None)
         actions_expected = handler.region_controller_actions({})
-        self.assertCountEqual(
-            {"set-zone", "delete"},
-            [action["name"] for action in actions_expected],
+        assert sorted(["set-zone", "delete"]) == sorted(
+            [action["name"] for action in actions_expected]
         )
         self.openfga_client.can_edit_controllers.assert_called_once_with(user)
 
@@ -519,5 +506,5 @@ class TestGeneralHandlerOpenFGAIntegration(
         user = factory.make_User()
         handler = GeneralHandler(user, {}, None)
         actions_expected = handler.region_controller_actions({})
-        self.assertEqual([], actions_expected)
+        assert [] == actions_expected
         self.openfga_client.can_edit_controllers.assert_called_once_with(user)

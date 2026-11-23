@@ -3,11 +3,13 @@
 
 """Tests for the Neighbour model."""
 
+import pytest
+
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 
 
-class TestNeighbourModel(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestNeighbourModel:
     def test_mac_organization(self):
         neighbour = factory.make_Neighbour(mac_address="48:51:b7:00:00:00")
-        self.assertEqual(neighbour.mac_organization, "Intel Corporate")
+        assert neighbour.mac_organization == "Intel Corporate"

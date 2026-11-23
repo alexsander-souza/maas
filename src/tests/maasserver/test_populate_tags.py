@@ -2,8 +2,10 @@
 # GNU Affero General Public License version 3 (see the file LICENSE).
 
 
+from collections import Counter
 from unittest.mock import create_autospec
 
+import pytest
 from twisted.internet.base import DelayedCall
 from twisted.internet.task import Clock
 
@@ -15,10 +17,6 @@ from maasserver.populate_tags import (
     populate_tags_for_single_node,
 )
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import (
-    MAASServerTestCase,
-    MAASTransactionServerTestCase,
-)
 from maastesting.twisted import always_succeed_with
 from metadataserver.enum import RESULT_TYPE, SCRIPT_STATUS
 from provisioningserver.refresh.node_info_scripts import (
@@ -57,8 +55,8 @@ def make_lldp_result(node, stdout=None, exit_status=0):
     return make_script_result(node, LLDP_OUTPUT_NAME, stdout, exit_status)
 
 
-class TestDoPopulateTags(MAASServerTestCase):
-    def patch_clients(self, rack_controllers):
+class TestDoPopulateTags:
+    def patch_clients(self, mocker, rack_controllers):
         clients = [
             create_autospec(Client, instance=True) for _ in rack_controllers
         ]
@@ -66,22 +64,22 @@ class TestDoPopulateTags(MAASServerTestCase):
             client.side_effect = always_succeed_with(None)
             client.ident = rack.system_id
 
-        _get_clients = self.patch_autospec(
-            populate_tags_module, "getAllClients"
-        )
-        _get_clients.return_value = clients
-
+        mocker.patch.object(
+            populate_tags_module, "getAllClients", autospec=True
+        ).return_value = clients
         return clients
 
 
-class TestPopulateTagsInRegion(MAASTransactionServerTestCase):
+@pytest.mark.allow_transactions
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestPopulateTagsInRegion:
     """Tests for populating tags in the region.
 
     This happens when there are no rack controllers to carry out the task.
     """
 
-    def test_saving_tag_schedules_node_population(self):
-        clock = self.patch(tag_module, "reactor", Clock())
+    def test_saving_tag_schedules_node_population(self, mocker):
+        clock = mocker.patch.object(tag_module, "reactor", Clock())
 
         # Make a Tag by hand to trigger normal node population handling
         # behaviour rather than the (generally more convenient) default
@@ -91,16 +89,19 @@ class TestPopulateTagsInRegion(MAASTransactionServerTestCase):
 
         # A call has been scheduled to populate tags.
         calls = clock.getDelayedCalls()
-        self.assertEqual(len(calls), 1)
+        assert len(calls) == 1
         [call] = calls
-        self.assertIsInstance(call, DelayedCall)
-        self.assertEqual(call.time, 0)
-        self.assertEqual(call.func, tag._update_tag_node_relations)
-        self.assertEqual(call.args, ())
-        self.assertEqual(call.kw, {})
+        assert isinstance(call, DelayedCall)
+        assert call.time == 0
+        assert call.func == tag._update_tag_node_relations
+        assert call.args == ()
+        assert call.kw == {}
 
 
-class TestPopulateTagsForSingleNode(MAASServerTestCase):
+@pytest.mark.usefixtures(
+    "maasdb", "factory", "mock_openfga", "mock_start_workflows"
+)
+class TestPopulateTagsForSingleNode:
     def test_updates_node_with_all_applicable_tags(self):
         node = factory.make_Node()
         make_lshw_result(node, b"<foo/>")
@@ -111,8 +112,8 @@ class TestPopulateTagsForSingleNode(MAASServerTestCase):
             factory.make_Tag("baz", "/foo/bar", populate=False),
         ]
         populate_tags_for_single_node(tags, node)
-        self.assertCountEqual(
-            ["foo", "bar"], [tag.name for tag in node.tags.all()]
+        assert Counter(["foo", "bar"]) == Counter(
+            [tag.name for tag in node.tags.all()]
         )
 
     def test_ignores_tags_with_unrecognised_namespaces(self):
@@ -123,9 +124,7 @@ class TestPopulateTagsForSingleNode(MAASServerTestCase):
             factory.make_Tag("lou", "//nge:bar", populate=False),
         ]
         populate_tags_for_single_node(tags, node)  # Look mom, no exception!
-        self.assertSequenceEqual(
-            ["foo"], [tag.name for tag in node.tags.all()]
-        )
+        assert ["foo"] == [tag.name for tag in node.tags.all()]
 
     def test_ignores_tags_without_definition(self):
         node = factory.make_Node()
@@ -135,19 +134,19 @@ class TestPopulateTagsForSingleNode(MAASServerTestCase):
             Tag(name="empty", definition=""),
         ]
         populate_tags_for_single_node(tags, node)  # Look mom, no exception!
-        self.assertSequenceEqual(
-            ["foo"], [tag.name for tag in node.tags.all()]
-        )
+        assert ["foo"] == [tag.name for tag in node.tags.all()]
 
 
-class TestPopulateTagForMultipleNodes(MAASServerTestCase):
+@pytest.mark.usefixtures(
+    "maasdb", "factory", "mock_openfga", "mock_start_workflows"
+)
+class TestPopulateTagForMultipleNodes:
     def test_updates_nodes_with_tag(self):
         nodes = [factory.make_Node() for _ in range(5)]
         for node in nodes[0:2]:
             make_lldp_result(node, b"<bar/>")
         tag = factory.make_Tag("bar", "//lldp:bar", populate=False)
         populate_tag_for_multiple_nodes(tag, nodes)
-        self.assertCountEqual(
-            [node.hostname for node in nodes[0:2]],
-            [node.hostname for node in Node.objects.filter(tags__name="bar")],
+        assert Counter([node.hostname for node in nodes[0:2]]) == Counter(
+            [node.hostname for node in Node.objects.filter(tags__name="bar")]
         )

@@ -3,101 +3,128 @@
 
 """Tests for `Notification`."""
 
+from collections import Counter
 import itertools
 import random
 
 from django.core.exceptions import ValidationError
 from django.db.models.query import QuerySet
+import pytest
 
 from maasserver.models.notification import (
     Notification,
     NotificationNotDismissable,
 )
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 
 
-class TestNotificationManagerCreateMethods(MAASServerTestCase):
-    """Tests for the `NotificationManager`'s create methods."""
-
-    create_methods = tuple(
-        (category, target, f"create_{category.lower()}_for_{target}")
-        for category, target in itertools.product(
+@pytest.mark.parametrize(
+    "category,target_name,method_name",
+    [
+        pytest.param(
+            category,
+            target_name,
+            f"create_{category.lower()}_for_{target_name}",
+            id=f"create_{category.lower()}_for_{target_name}",
+        )
+        for category, target_name in itertools.product(
             ("error", "warning", "success", "info"),
             ("user", "users", "admins"),
         )
-    )
+    ],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test")
+class TestNotificationManagerCreateMethods:
+    """Tests for the `NotificationManager`'s create methods."""
 
-    scenarios = tuple(
-        (
-            method_name,
-            {
-                "category": category,
-                "method_name": method_name,
-                "target_name": target_name,
-                "targets_user": target_name == "user",
-                "targets_users": target_name == "users",
-                "targets_admins": target_name in {"users", "admins"},
-            },
-        )
-        for category, target_name, method_name in create_methods
-    )
-
-    def makeNotification(self, *, ident=None, context=None):
-        method = getattr(Notification.objects, self.method_name)
+    def make_notification(
+        self, method_name, target_name, *, ident=None, context=None
+    ):
+        method = getattr(Notification.objects, method_name)
         message = factory.make_name("message")
 
-        if self.targets_user:
-            user = factory.make_User()
-            notification = method(message, user, context=context, ident=ident)
-        else:
-            user = None
-            notification = method(message, context=context, ident=ident)
+        if target_name == "user":
+            return method(
+                message, factory.make_User(), context=context, ident=ident
+            )
+        return method(message, context=context, ident=ident)
 
-        return notification
-
-    def assertNotification(self, notification, *, ident):
-        self.assertIs(notification.users, self.targets_users)
-        self.assertIs(notification.admins, self.targets_admins)
-        if self.targets_user:
-            self.assertIsNotNone(notification.user)
+    def check_notification(
+        self, notification, *, ident, category, target_name
+    ):
+        assert notification.users is (target_name == "users")
+        assert notification.admins is (target_name in {"users", "admins"})
+        if target_name == "user":
+            assert notification.user is not None
         else:
-            self.assertIsNone(notification.user)
+            assert notification.user is None
         if ident is None:
-            self.assertIsNone(notification.ident)
+            assert notification.ident is None
         else:
-            self.assertEqual(notification.ident, ident)
-        self.assertEqual(notification.category, self.category)
+            assert notification.ident == ident
+        assert notification.category == category
 
-    def test_create_new_notification_without_context(self):
-        notification = self.makeNotification()
-        self.assertNotification(notification, ident=None)
-        self.assertEqual({}, notification.context)
+    def test_create_new_notification_without_context(
+        self, category, target_name, method_name
+    ):
+        notification = self.make_notification(method_name, target_name)
+        self.check_notification(
+            notification,
+            ident=None,
+            category=category,
+            target_name=target_name,
+        )
+        assert notification.context == {}
 
-    def test_create_new_notification_with_context(self):
+    def test_create_new_notification_with_context(
+        self, category, target_name, method_name
+    ):
         context = {factory.make_name("key"): factory.make_name("value")}
-        notification = self.makeNotification(context=context)
-        self.assertNotification(notification, ident=None)
-        self.assertEqual(context, notification.context)
+        notification = self.make_notification(
+            method_name, target_name, context=context
+        )
+        self.check_notification(
+            notification,
+            ident=None,
+            category=category,
+            target_name=target_name,
+        )
+        assert notification.context == context
 
-    def test_create_new_notification_with_ident(self):
+    def test_create_new_notification_with_ident(
+        self, category, target_name, method_name
+    ):
         ident = factory.make_name("ident")
-        notification = self.makeNotification(ident=ident)
-        self.assertNotification(notification, ident=ident)
+        notification = self.make_notification(
+            method_name, target_name, ident=ident
+        )
+        self.check_notification(
+            notification,
+            ident=ident,
+            category=category,
+            target_name=target_name,
+        )
 
-    def test_create_new_notification_with_reused_ident(self):
+    def test_create_new_notification_with_reused_ident(
+        self, category, target_name, method_name
+    ):
         # A new notification is created, and the ident is moved.
         ident = factory.make_name("ident")
-        n1 = self.makeNotification(ident=ident)
-        n2 = self.makeNotification(ident=ident)
+        n1 = self.make_notification(method_name, target_name, ident=ident)
+        n2 = self.make_notification(method_name, target_name, ident=ident)
         n1.refresh_from_db()  # Get current value of `ident`.
-        self.assertNotEqual(n1, n2)
-        self.assertNotification(n1, ident=None)
-        self.assertNotification(n2, ident=ident)
-        self.assertEqual(Notification.objects.filter(ident=ident).count(), 1)
+        assert n1 != n2
+        self.check_notification(
+            n1, ident=None, category=category, target_name=target_name
+        )
+        self.check_notification(
+            n2, ident=ident, category=category, target_name=target_name
+        )
+        assert Notification.objects.filter(ident=ident).count() == 1
 
 
-class TestFindingAndDismissingNotifications(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test")
+class TestFindingAndDismissingNotifications:
     """Tests for finding and dismissing notifications."""
 
     def notify(self, user):
@@ -108,55 +135,53 @@ class TestFindingAndDismissingNotifications(MAASServerTestCase):
             Notification.objects.create_error_for_admins(message),
         )
 
-    def assertNotifications(self, user, notifications):
+    def check_notifications(self, user, notifications):
         notification = Notification.objects.find_for_user(user)
-        self.assertIsInstance(notification, QuerySet)  # Not RawQuerySet
-        self.assertCountEqual(notifications, notification)
+        assert isinstance(notification, QuerySet)  # Not RawQuerySet
+        assert Counter(notification) == Counter(notifications)
 
     def test_find_and_dismiss_notifications_for_user(self):
         user = factory.make_User()
         n_for_user, n_for_users, n_for_admins = self.notify(user)
-        self.assertNotifications(user, [n_for_user, n_for_users])
+        self.check_notifications(user, [n_for_user, n_for_users])
         n_for_user.dismiss(user)
-        self.assertNotifications(user, [n_for_users])
+        self.check_notifications(user, [n_for_users])
         n_for_users.dismiss(user)
-        self.assertNotifications(user, [])
+        self.check_notifications(user, [])
 
     def test_find_and_dismiss_notifications_for_users(self):
         user = factory.make_User("user")
         user2 = factory.make_User("user2")
         n_for_user, n_for_users, n_for_admins = self.notify(user)
-        self.assertNotifications(user, [n_for_user, n_for_users])
-        self.assertNotifications(user2, [n_for_users])
+        self.check_notifications(user, [n_for_user, n_for_users])
+        self.check_notifications(user2, [n_for_users])
         n_for_users.dismiss(user2)
-        self.assertNotifications(user, [n_for_user, n_for_users])
-        self.assertNotifications(user2, [])
+        self.check_notifications(user, [n_for_user, n_for_users])
+        self.check_notifications(user2, [])
 
     def test_find_and_dismiss_notifications_for_admins(self):
         user = factory.make_User("user")
         admin = factory.make_admin("admin")
         n_for_user, n_for_users, n_for_admins = self.notify(user)
-        self.assertNotifications(user, [n_for_user, n_for_users])
-        self.assertNotifications(admin, [n_for_users, n_for_admins])
+        self.check_notifications(user, [n_for_user, n_for_users])
+        self.check_notifications(admin, [n_for_users, n_for_admins])
         n_for_users.dismiss(admin)
-        self.assertNotifications(user, [n_for_user, n_for_users])
-        self.assertNotifications(admin, [n_for_admins])
+        self.check_notifications(user, [n_for_user, n_for_users])
+        self.check_notifications(admin, [n_for_admins])
         n_for_admins.dismiss(admin)
-        self.assertNotifications(user, [n_for_user, n_for_users])
-        self.assertNotifications(admin, [])
+        self.check_notifications(user, [n_for_user, n_for_users])
+        self.check_notifications(admin, [])
 
     def test_not_dismissable(self):
         notification = Notification(
             message="Some notification", dismissable=False
         )
-        self.assertRaises(
-            NotificationNotDismissable,
-            notification.dismiss,
-            factory.make_User(),
-        )
+        with pytest.raises(NotificationNotDismissable):
+            notification.dismiss(factory.make_User())
 
 
-class TestNotification(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test")
+class TestNotification:
     """Tests for the `Notification`."""
 
     def test_render_combines_message_with_context(self):
@@ -165,122 +190,112 @@ class TestNotification(MAASServerTestCase):
         message = "There are {b:d} of {a} in my suitcase."
         context = {"a": thing_a, "b": thing_b}
         notification = Notification(message=message, context=context)
-        self.assertEqual(
-            notification.render(),
-            "There are "
-            + str(thing_b)
-            + " of "
-            + thing_a
-            + " in my suitcase.",
+        assert notification.render() == (
+            "There are " + str(thing_b) + " of " + thing_a + " in my suitcase."
         )
 
     def test_render_allows_markup_in_message_but_escapes_context(self):
         message = "<foo>{bar}</foo>"
         context = {"bar": "<BAR>"}
         notification = Notification(message=message, context=context)
-        self.assertEqual("<foo>&lt;BAR&gt;</foo>", notification.render())
+        assert notification.render() == "<foo>&lt;BAR&gt;</foo>"
 
     def test_save_checks_that_rendering_works(self):
         message = "Dude, where's my {thing}?"
         notification = Notification(message=message)
-        error = self.assertRaises(ValidationError, notification.save)
-        self.assertEqual(
-            {"__all__": ["Notification cannot be rendered."]},
-            error.message_dict,
-        )
-        self.assertIsNone(notification.id)
-        self.assertFalse(Notification.objects.all().exists())
+        with pytest.raises(ValidationError) as error:
+            notification.save()
+        assert error.value.message_dict == {
+            "__all__": ["Notification cannot be rendered."]
+        }
+        assert notification.id is None
+        assert not Notification.objects.all().exists()
 
     def test_is_relevant_to_user(self):
-        make_Notification = factory.make_Notification
+        make_notification = factory.make_Notification
 
         user = factory.make_User()
         user2 = factory.make_User()
         admin = factory.make_admin()
 
-        def assertRelevance(notification, user, should_be_relevant: bool):
+        def check_relevance(notification, user, should_be_relevant: bool):
             # Ensure that is_relevant_to and find_for_user agree, i.e. if
             # is_relevant_to returns True, the notification is in the set
             # returned by find_for_user. Likewise, if is_relevant_to returns
             # False, the notification is not in the find_for_user set.
-            self.assertEqual(
-                notification.is_relevant_to(user), should_be_relevant
-            )
-            self.assertEqual(
+            assert notification.is_relevant_to(user) == should_be_relevant
+            assert (
                 Notification.objects.find_for_user(user)
                 .filter(id=notification.id)
-                .exists(),
-                should_be_relevant,
-            )
+                .exists()
+            ) == should_be_relevant
 
-        notification_to_user = make_Notification(user=user)
-        assertRelevance(notification_to_user, None, False)
-        assertRelevance(notification_to_user, user, True)
-        assertRelevance(notification_to_user, user2, False)
-        assertRelevance(notification_to_user, admin, False)
+        notification_to_user = make_notification(user=user)
+        check_relevance(notification_to_user, None, False)
+        check_relevance(notification_to_user, user, True)
+        check_relevance(notification_to_user, user2, False)
+        check_relevance(notification_to_user, admin, False)
 
-        notification_to_users = make_Notification(users=True)
-        assertRelevance(notification_to_users, None, False)
-        assertRelevance(notification_to_users, user, True)
-        assertRelevance(notification_to_users, user2, True)
-        assertRelevance(notification_to_users, admin, False)
+        notification_to_users = make_notification(users=True)
+        check_relevance(notification_to_users, None, False)
+        check_relevance(notification_to_users, user, True)
+        check_relevance(notification_to_users, user2, True)
+        check_relevance(notification_to_users, admin, False)
 
-        notification_to_admins = make_Notification(admins=True)
-        assertRelevance(notification_to_admins, None, False)
-        assertRelevance(notification_to_admins, user, False)
-        assertRelevance(notification_to_admins, user2, False)
-        assertRelevance(notification_to_admins, admin, True)
+        notification_to_admins = make_notification(admins=True)
+        check_relevance(notification_to_admins, None, False)
+        check_relevance(notification_to_admins, user, False)
+        check_relevance(notification_to_admins, user2, False)
+        check_relevance(notification_to_admins, admin, True)
 
-        notification_to_all = make_Notification(users=True, admins=True)
-        assertRelevance(notification_to_all, None, False)
-        assertRelevance(notification_to_all, user, True)
-        assertRelevance(notification_to_all, user2, True)
-        assertRelevance(notification_to_all, admin, True)
+        notification_to_all = make_notification(users=True, admins=True)
+        check_relevance(notification_to_all, None, False)
+        check_relevance(notification_to_all, user, True)
+        check_relevance(notification_to_all, user2, True)
+        check_relevance(notification_to_all, admin, True)
 
 
-class TestNotificationRepresentation(MAASServerTestCase):
+@pytest.mark.parametrize(
+    "category",
+    ("error", "warning", "success", "info"),
+    ids=("error", "warning", "success", "info"),
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test")
+class TestNotificationRepresentation:
     """Tests for the `Notification` representation."""
 
-    scenarios = tuple(
-        (category, dict(category=category))
-        for category in ("error", "warning", "success", "info")
-    )
-
-    def test_for_user(self):
+    def test_for_user(self, category):
         notification = Notification(
             user=factory.make_User("foobar"),
             message="The cat in the {place}",
             context=dict(place="bear trap"),
-            category=self.category,
+            category=category,
         )
-        self.assertEqual(
-            repr(notification),
-            (
-                f"<Notification {self.category.upper()} user='foobar' users=False admins=False "
-                "'The cat in the bear trap'>"
-            ),
+        assert repr(notification) == (
+            f"<Notification {category.upper()} user='foobar' users=False admins=False "
+            "'The cat in the bear trap'>"
         )
 
-    def test_for_users(self):
+    def test_for_users(self, category):
         notification = Notification(
             users=True,
             message="The cat in the {place}",
             context=dict(place="blender"),
-            category=self.category,
+            category=category,
         )
-        self.assertEqual(
-            repr(notification),
-            f"<Notification {self.category.upper()} user=None users=True admins=False 'The cat in the blender'>",
+        assert repr(notification) == (
+            f"<Notification {category.upper()} user=None users=True admins=False "
+            "'The cat in the blender'>"
         )
 
-    def test_for_admins(self):
+    def test_for_admins(self, category):
         notification = Notification(
             admins=True,
             message="The cat in the {place}",
             context=dict(place="lava pit"),
-            category=self.category,
+            category=category,
         )
-        self.assertEqual(
-            repr(notification),
-            f"<Notification {self.category.upper()} user=None users=False admins=True 'The cat in the lava pit'>",
+        assert repr(notification) == (
+            f"<Notification {category.upper()} user=None users=False admins=True "
+            "'The cat in the lava pit'>"
         )

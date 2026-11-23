@@ -6,39 +6,36 @@
 from unittest.mock import MagicMock, sentinel
 
 from maastesting.factory import factory
-from maastesting.testcase import MAASTestCase
 from provisioningserver.utils.events import Event, EventGroup
 
 
-class TestEvent(MAASTestCase):
+class TestEvent:
     """Tests for `Event`."""
 
     def test_registerHandler(self):
         event = Event()
         event.registerHandler(sentinel.handler)
-        self.assertEqual({sentinel.handler}, event.handlers)
+        assert {sentinel.handler} == event.handlers
 
     def test_registerHandler_during_fire(self):
         event = Event()
         event.registerHandler(event.registerHandler)
         event.fire(sentinel.otherHandler)
-        self.assertEqual(
-            {event.registerHandler, sentinel.otherHandler}, event.handlers
-        )
+        assert {event.registerHandler, sentinel.otherHandler} == event.handlers
 
     def test_unregisterHandler(self):
         event = Event()
         event.registerHandler(sentinel.handler)
         event.unregisterHandler(sentinel.handler)
-        self.assertEqual(set(), event.handlers)
+        assert set() == event.handlers
 
     def test_unregisterHandler_during_fire(self):
         event = Event()
         event.registerHandler(event.unregisterHandler)
         event.fire(event.unregisterHandler)
-        self.assertEqual(set(), event.handlers)
+        assert set() == event.handlers
 
-    def test_fire_calls_all_handlers(self):
+    def test_fire_calls_all_handlers(self, mocker):
         event = Event()
         handler_one = MagicMock()
         handler_two = MagicMock()
@@ -50,15 +47,15 @@ class TestEvent(MAASTestCase):
             for _ in range(3)
         }
         event.fire(*args, **kwargs)
-        handler_one.mock_called_once_with(*args, **kwargs)
-        handler_two.mock_called_once_with(*args, **kwargs)
+        handler_one.assert_called_once_with(*args, **kwargs)
+        handler_two.assert_called_once_with(*args, **kwargs)
 
 
-class TestEventGroup(MAASTestCase):
+class TestEventGroup:
     """Tests for `EventGroup`."""
 
     def test_makes_events_as_properties(self):
         events = [factory.make_name("event") for _ in range(3)]
         group = EventGroup(*events)
         for event in events:
-            self.assertIsInstance(getattr(group, event), Event)
+            assert isinstance(getattr(group, event), Event)

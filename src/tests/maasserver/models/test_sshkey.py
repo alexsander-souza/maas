@@ -1,20 +1,22 @@
 # Copyright 2012-2016 Canonical Ltd.  This software is licensed under the
 # GNU Affero General Public License version 3 (see the file LICENSE).
 
+from collections import Counter
 import random
 from unittest.mock import MagicMock
 
 from django.core.exceptions import ValidationError
+import pytest
 
 from maasserver.enum import KEYS_PROTOCOL_TYPE
 from maasserver.models import SSHKey, sshkey
 from maasserver.models.sshkey import validate_ssh_public_key
 from maasserver.testing import get_data
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 
 
-class TestSSHKeyValidator(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestSSHKeyValidator:
     def test_validates_rsa_public_key(self):
         key_string = get_data("data/test_rsa0.pub")
         validate_ssh_public_key(key_string)
@@ -42,7 +44,8 @@ class TestSSHKeyValidator(MAASServerTestCase):
 
     def test_does_not_validate_random_data(self):
         key_string = factory.make_string()
-        self.assertRaises(ValidationError, validate_ssh_public_key, key_string)
+        with pytest.raises(ValidationError):
+            validate_ssh_public_key(key_string)
 
     def test_does_not_validate_wrongly_padded_data(self):
         key_string = "ssh-rsa {} {}@{}".format(
@@ -50,7 +53,8 @@ class TestSSHKeyValidator(MAASServerTestCase):
             factory.make_string(),
             factory.make_string(),
         )
-        self.assertRaises(ValidationError, validate_ssh_public_key, key_string)
+        with pytest.raises(ValidationError):
+            validate_ssh_public_key(key_string)
 
     def test_does_not_validate_non_ascii_key(self):
         non_ascii_key = "AAB3NzaC" + "\u2502" + "mN6Lo2I9w=="
@@ -59,72 +63,77 @@ class TestSSHKeyValidator(MAASServerTestCase):
             factory.make_string(),
             factory.make_string(),
         )
-        self.assertRaises(ValidationError, validate_ssh_public_key, key_string)
+        with pytest.raises(ValidationError):
+            validate_ssh_public_key(key_string)
 
-    def test_does_not_validate_wrong_key(self):
-        # Validation fails if normalise_openssh_public_key crashes.
-        norm = self.patch(sshkey, "normalise_openssh_public_key")
-        norm.side_effect = factory.make_exception_type()
-        self.assertRaises(
-            ValidationError, validate_ssh_public_key, factory.make_name("key")
+    def test_does_not_validate_wrong_key(self, mocker):
+        # Validation fails if normalize_openssh_public_key crashes.
+        normalize = mocker.patch.object(
+            sshkey.service_layer.services.sshkeys,
+            "normalize_openssh_public_key",
         )
+        normalize.side_effect = factory.make_exception_type()
+        with pytest.raises(ValidationError):
+            validate_ssh_public_key(factory.make_name("key"))
 
     def test_does_not_validate_rsa_private_key(self):
         key_string = get_data("data/test_rsa")
-        self.assertRaises(ValidationError, validate_ssh_public_key, key_string)
+        with pytest.raises(ValidationError):
+            validate_ssh_public_key(key_string)
 
     def test_does_not_validate_dsa_private_key(self):
         key_string = get_data("data/test_dsa")
-        self.assertRaises(ValidationError, validate_ssh_public_key, key_string)
+        with pytest.raises(ValidationError):
+            validate_ssh_public_key(key_string)
 
 
-class TestValidateSSHPublicKeyFIPS(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestValidateSSHPublicKeyFIPS:
     """Tests for FIPS-conditional validation in validate_ssh_public_key."""
 
-    def _mock_normalize(self, key_string):
+    def _mock_normalize(self, mocker):
         """Patch service_layer so normalize returns the key unchanged."""
         mock_sl = MagicMock()
         mock_sl.services.sshkeys.normalize_openssh_public_key.side_effect = (
             lambda key: key
         )
-        self.patch(sshkey, "service_layer", mock_sl)
+        mocker.patch.object(sshkey, "service_layer", mock_sl)
 
-    def test_fips_rejects_dsa_key(self):
+    def test_fips_rejects_dsa_key(self, mocker):
         key_string = "ssh-dss AAAA test@host"
-        self._mock_normalize(key_string)
-        self.patch(sshkey, "is_fips_enabled").return_value = True
-        error = self.assertRaises(
-            ValidationError, validate_ssh_public_key, key_string
-        )
-        self.assertEqual("fips_violation", error.code)
+        self._mock_normalize(mocker)
+        mocker.patch.object(sshkey, "is_fips_enabled").return_value = True
+        with pytest.raises(ValidationError) as error:
+            validate_ssh_public_key(key_string)
+        assert error.value.code == "fips_violation"
 
-    def test_fips_rejects_ed25519_key(self):
+    def test_fips_rejects_ed25519_key(self, mocker):
         key_string = "ssh-ed25519 AAAA test@host"
-        self._mock_normalize(key_string)
-        self.patch(sshkey, "is_fips_enabled").return_value = True
-        error = self.assertRaises(
-            ValidationError, validate_ssh_public_key, key_string
-        )
-        self.assertEqual("fips_violation", error.code)
+        self._mock_normalize(mocker)
+        mocker.patch.object(sshkey, "is_fips_enabled").return_value = True
+        with pytest.raises(ValidationError) as error:
+            validate_ssh_public_key(key_string)
+        assert error.value.code == "fips_violation"
 
-    def test_fips_accepts_ecdsa_key(self):
+    def test_fips_accepts_ecdsa_key(self, mocker):
         key_string = "ecdsa-sha2-nistp256 AAAA test@host"
-        self._mock_normalize(key_string)
-        self.patch(sshkey, "is_fips_enabled").return_value = True
+        self._mock_normalize(mocker)
+        mocker.patch.object(sshkey, "is_fips_enabled").return_value = True
         # No exception should be raised.
         result = validate_ssh_public_key(key_string)
-        self.assertEqual(key_string, result)
+        assert result == key_string
 
-    def test_no_fips_check_when_disabled(self):
+    def test_no_fips_check_when_disabled(self, mocker):
         key_string = "ssh-dss AAAA test@host"
-        self._mock_normalize(key_string)
-        self.patch(sshkey, "is_fips_enabled").return_value = False
+        self._mock_normalize(mocker)
+        mocker.patch.object(sshkey, "is_fips_enabled").return_value = False
         # DSA key accepted when FIPS is disabled.
         result = validate_ssh_public_key(key_string)
-        self.assertEqual(key_string, result)
+        assert result == key_string
 
 
-class TestSSHKey(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestSSHKey:
     def test_sshkey_validation_with_valid_key(self):
         key_string = get_data("data/test_rsa0.pub")
         user = factory.make_User()
@@ -136,7 +145,8 @@ class TestSSHKey(MAASServerTestCase):
         key_string = factory.make_string()
         user = factory.make_User()
         key = SSHKey(key=key_string, user=user)
-        self.assertRaises(ValidationError, key.full_clean)
+        with pytest.raises(ValidationError):
+            key.full_clean()
 
     def test_sshkey_user_and_key_unique_together_create(self):
         protocol = random.choice(
@@ -152,7 +162,8 @@ class TestSSHKey(MAASServerTestCase):
         key2 = SSHKey(
             key=key_string, user=user, protocol=protocol, auth_id=auth_id
         )
-        self.assertRaises(ValidationError, key2.full_clean)
+        with pytest.raises(ValidationError):
+            key2.full_clean()
 
     def test_sshkey_user_and_key_unique_together_change_key(self):
         protocol = random.choice(
@@ -171,7 +182,8 @@ class TestSSHKey(MAASServerTestCase):
         )
         key2.save()
         key2.key = key1.key
-        self.assertRaises(ValidationError, key2.full_clean)
+        with pytest.raises(ValidationError):
+            key2.full_clean()
 
     def test_sshkey_same_key_can_be_used_by_different_sources(self):
         auth_id = factory.make_name("auth_id")
@@ -191,7 +203,7 @@ class TestSSHKey(MAASServerTestCase):
             auth_id=auth_id,
         )
         key2.save()
-        self.assertIsNone(key2.full_clean())
+        assert key2.full_clean() is None
 
     def test_sshkey_same_key_can_be_used_by_different_users(self):
         key_string = get_data("data/test_rsa0.pub")
@@ -204,11 +216,12 @@ class TestSSHKey(MAASServerTestCase):
         # No ValidationError.
 
 
-class TestSSHKeyManager(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestSSHKeyManager:
     def test_get_keys_for_user_no_keys(self):
         user = factory.make_User()
         keys = SSHKey.objects.get_keys_for_user(user)
-        self.assertCountEqual([], keys)
+        assert Counter([]) == Counter(keys)
 
     def test_get_keys_for_user_with_keys(self):
         user1, created_keys = factory.make_user_with_keys(
@@ -217,4 +230,4 @@ class TestSSHKeyManager(MAASServerTestCase):
         # user2
         factory.make_user_with_keys(n_keys=2)
         keys = SSHKey.objects.get_keys_for_user(user1)
-        self.assertCountEqual([key.key for key in created_keys], keys)
+        assert Counter([key.key for key in created_keys]) == Counter(keys)

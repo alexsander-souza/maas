@@ -3,20 +3,23 @@
 
 """Tests for `maasserver.dbviews`."""
 
+from collections import Counter
+
 from django.db import connection
+import pytest
 
 from maasserver.models.subnet import Subnet
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 
 
-class TestRoutablePairs(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestRoutablePairs:
     """Tests for the `maasserver_routable_pairs` view."""
 
     def test_contains_nothing_when_there_are_no_nodes(self):
         with connection.cursor() as cursor:
             cursor.execute("SELECT * from maasserver_routable_pairs")
-            self.assertEqual(len(cursor.fetchall()), 0)
+            assert len(cursor.fetchall()) == 0
 
     def make_node_with_address(self, cidr, space=None, vlan=None):
         node = factory.make_Node()
@@ -49,7 +52,7 @@ class TestRoutablePairs(MAASServerTestCase):
 
         with connection.cursor() as cursor:
             cursor.execute("SELECT * from maasserver_routable_pairs")
-            self.assertCountEqual(expected, cursor.fetchall())
+            assert Counter(expected) == Counter(cursor.fetchall())
 
     def test_contains_routes_between_nodes_on_same_vlan(self):
         vlan = factory.make_VLAN()
@@ -78,7 +81,7 @@ class TestRoutablePairs(MAASServerTestCase):
 
         with connection.cursor() as cursor:
             cursor.execute("SELECT * from maasserver_routable_pairs")
-            self.assertCountEqual(expected, cursor.fetchall())
+            assert Counter(expected) == Counter(cursor.fetchall())
 
     def test_contains_routes_between_nodes_on_same_space(self):
         space = factory.make_Space()
@@ -103,7 +106,7 @@ class TestRoutablePairs(MAASServerTestCase):
 
         with connection.cursor() as cursor:
             cursor.execute("SELECT * from maasserver_routable_pairs")
-            self.assertCountEqual(expected, cursor.fetchall())
+            assert Counter(expected) == Counter(cursor.fetchall())
 
     def test_contains_routes_between_nodes_via_null_space(self):
         network1 = factory.make_ip4_or_6_network()
@@ -127,7 +130,7 @@ class TestRoutablePairs(MAASServerTestCase):
 
         with connection.cursor() as cursor:
             cursor.execute("SELECT * from maasserver_routable_pairs")
-            self.assertCountEqual(expected, cursor.fetchall())
+            assert Counter(expected) == Counter(cursor.fetchall())
 
     def test_does_not_contain_routes_between_nodes_on_differing_spaces(self):
         space1 = factory.make_Space()
@@ -149,7 +152,7 @@ class TestRoutablePairs(MAASServerTestCase):
 
         with connection.cursor() as cursor:
             cursor.execute("SELECT * from maasserver_routable_pairs")
-            self.assertCountEqual(expected, cursor.fetchall())
+            assert Counter(expected) == Counter(cursor.fetchall())
 
     def test_does_not_contain_routes_between_addrs_of_diff_network_fams(self):
         space = factory.make_Space()  # One space.
@@ -169,4 +172,4 @@ class TestRoutablePairs(MAASServerTestCase):
 
         with connection.cursor() as cursor:
             cursor.execute("SELECT * from maasserver_routable_pairs")
-            self.assertCountEqual(expected, cursor.fetchall())
+            assert Counter(expected) == Counter(cursor.fetchall())

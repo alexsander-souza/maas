@@ -2,26 +2,40 @@
 # GNU Affero General Public License version 3 (see the file LICENSE).
 
 
+from collections import Counter
 import http.client
 import json
 import random
 
 from django.urls import reverse
+import pytest
 
 from maasserver.enum import BOOT_RESOURCE_TYPE
-from maasserver.testing.api import APITestCase
+from maasserver.models.user import create_auth_token
 from maasserver.testing.factory import factory
+from maasserver.testing.testclient import MAASSensibleOAuthClient
+from maasserver.worker_user import get_worker_user
 
 
 def get_image_sync_uri(file_id, system_id):
     return reverse("image_sync_progress_handler", args=[file_id, system_id])
 
 
-class TestImageSyncProgressHandler(APITestCase.ForInternalUser):
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user=worker,client=oauth", id="user=user,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestImageSyncProgressHandler:
+    @pytest.fixture(autouse=True)
+    def _setup(self, maas_region_test, api_identity):
+        self.user = get_worker_user()
+        token = create_auth_token(self.user)
+        self.client = MAASSensibleOAuthClient(user=self.user, token=token)
+
     def test_handler_path(self):
-        self.assertEqual(
-            "/MAAS/api/2.0/images-sync-progress/1/a/",
-            get_image_sync_uri(1, "a"),
+        assert "/MAAS/api/2.0/images-sync-progress/1/a/" == get_image_sync_uri(
+            1, "a"
         )
 
     def test_update_creates_default_size(self):
@@ -34,11 +48,9 @@ class TestImageSyncProgressHandler(APITestCase.ForInternalUser):
         )
         uri = get_image_sync_uri(file.id, region.system_id)
         response = self.client.put(uri, {})
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         syncstatus = file.bootresourcefilesync_set.get(region=region)
-        self.assertEqual(syncstatus.size, 0)
+        assert syncstatus.size == 0
 
     def test_update(self):
         region = factory.make_RegionController()
@@ -51,11 +63,9 @@ class TestImageSyncProgressHandler(APITestCase.ForInternalUser):
         test_size = random.randint(1, 30)
         uri = get_image_sync_uri(file.id, region.system_id)
         response = self.client.put(uri, {"size": test_size})
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         syncstatus = file.bootresourcefilesync_set.get(region=region)
-        self.assertEqual(test_size, syncstatus.size)
+        assert test_size == syncstatus.size
 
     def test_update_existing_brfsync(self):
         region = factory.make_RegionController()
@@ -69,11 +79,9 @@ class TestImageSyncProgressHandler(APITestCase.ForInternalUser):
         test_size = random.randint(1, 30)
         uri = get_image_sync_uri(file.id, region.system_id)
         response = self.client.put(uri, {"size": test_size})
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         syncset = file.bootresourcefilesync_set.get(region=region)
-        self.assertEqual(syncset.size, test_size)
+        assert syncset.size == test_size
 
     def test_update_fail_no_file(self):
         region = factory.make_RegionController()
@@ -86,9 +94,7 @@ class TestImageSyncProgressHandler(APITestCase.ForInternalUser):
         test_size = random.randint(1, 30)
         uri = get_image_sync_uri((file.id + 1), region.system_id)
         response = self.client.put(uri, {"size": test_size})
-        self.assertEqual(
-            http.client.NOT_FOUND, response.status_code, response.content
-        )
+        assert http.client.NOT_FOUND == response.status_code, response.content
 
     def test_read_nonexistent_brfsync(self):
         region = factory.make_RegionController()
@@ -100,11 +106,9 @@ class TestImageSyncProgressHandler(APITestCase.ForInternalUser):
         )
         uri = get_image_sync_uri(file.id, region.system_id)
         response = self.client.get(uri)
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         r = json.loads(response.content)
-        self.assertEqual(r.get("size"), 0)
+        assert r.get("size") == 0
 
     def test_read_existing_brfsync(self):
         region = factory.make_RegionController()
@@ -120,11 +124,9 @@ class TestImageSyncProgressHandler(APITestCase.ForInternalUser):
         )
         uri = get_image_sync_uri(file.id, region.system_id)
         response = self.client.get(uri)
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         r = json.loads(response.content)
-        self.assertEqual(r.get("size"), filesync.size)
+        assert r.get("size") == filesync.size
 
     def test_read_nonexistent_file(self):
         region = factory.make_RegionController()
@@ -136,12 +138,21 @@ class TestImageSyncProgressHandler(APITestCase.ForInternalUser):
         )
         uri = get_image_sync_uri((file.id + 1), region.system_id)
         response = self.client.get(uri)
-        self.assertEqual(
-            http.client.NOT_FOUND, response.status_code, response.content
-        )
+        assert http.client.NOT_FOUND == response.status_code, response.content
 
 
-class TestImagesSyncProgressHandler(APITestCase.ForInternalUser):
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user=worker,client=oauth", id="user=user,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestImagesSyncProgressHandler:
+    @pytest.fixture(autouse=True)
+    def _setup(self, maas_region_test, api_identity):
+        self.user = get_worker_user()
+        token = create_auth_token(self.user)
+        self.client = MAASSensibleOAuthClient(user=self.user, token=token)
+
     def test_read(self):
         regions = [factory.make_RegionController() for _ in range(3)]
         resource = factory.make_BootResource(rtype=BOOT_RESOURCE_TYPE.UPLOADED)
@@ -161,27 +172,20 @@ class TestImagesSyncProgressHandler(APITestCase.ForInternalUser):
             synced=[(regions[0], 256)],
         )
         response = self.client.get(reverse("images_sync_progress_handler"))
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         status = response.json()
-        self.assertEqual(complete.size, status[str(complete.id)]["size"])
-        self.assertEqual(complete.sha256, status[str(complete.id)]["sha256"])
-        self.assertEqual(
-            partial_sync.size, status[str(partial_sync.id)]["size"]
+        assert complete.size == status[str(complete.id)]["size"]
+        assert complete.sha256 == status[str(complete.id)]["sha256"]
+        assert partial_sync.size == status[str(partial_sync.id)]["size"]
+        assert partial_sync.sha256 == status[str(partial_sync.id)]["sha256"]
+        assert Counter((str(partial_sync.id), str(complete.id))) == Counter(
+            set(status.keys())
         )
-        self.assertEqual(
-            partial_sync.sha256, status[str(partial_sync.id)]["sha256"]
+        assert Counter([r.system_id for r in regions]) == Counter(
+            status[str(complete.id)]["sources"]
         )
-        self.assertCountEqual(
-            (str(partial_sync.id), str(complete.id)), set(status.keys())
-        )
-        self.assertCountEqual(
-            [r.system_id for r in regions], status[str(complete.id)]["sources"]
-        )
-        self.assertCountEqual(
-            [r.system_id for r in regions[2:]],
-            status[str(partial_sync.id)]["sources"],
+        assert Counter([r.system_id for r in regions[2:]]) == Counter(
+            status[str(partial_sync.id)]["sources"]
         )
 
     def test_bulk_create(self):
@@ -200,20 +204,16 @@ class TestImagesSyncProgressHandler(APITestCase.ForInternalUser):
                 "size": 1,
             },
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         for f in rfiles[:1]:
-            self.assertEqual(
-                1, f.bootresourcefilesync_set.get(region=regions[0]).size
-            )
-        self.assertFalse(
-            rfiles[0]
+            assert 1 == f.bootresourcefilesync_set.get(region=regions[0]).size
+        assert (
+            not rfiles[0]
             .bootresourcefilesync_set.filter(region=regions[1])
             .exists()
         )
-        self.assertFalse(
-            rfiles[2]
+        assert (
+            not rfiles[2]
             .bootresourcefilesync_set.filter(region=regions[0])
             .exists()
         )
@@ -231,10 +231,6 @@ class TestImagesSyncProgressHandler(APITestCase.ForInternalUser):
                 "size": 1,
             },
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         for f in rfiles:
-            self.assertEqual(
-                1, f.bootresourcefilesync_set.get(region=regions[0]).size
-            )
+            assert 1 == f.bootresourcefilesync_set.get(region=regions[0]).size

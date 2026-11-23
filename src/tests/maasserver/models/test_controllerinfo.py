@@ -2,6 +2,8 @@
 # GNU Affero General Public License version 3 (see the file LICENSE).
 
 
+import pytest
+
 from maasserver.models import ControllerInfo, Notification
 from maasserver.models.controllerinfo import (
     get_maas_version,
@@ -12,22 +14,22 @@ from maasserver.models.controllerinfo import (
     VERSION_ISSUES,
 )
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from maasserver.utils.orm import reload_object
 from provisioningserver.utils.snap import SnapChannel, SnapVersionsInfo
 from provisioningserver.utils.version import MAASVersion
 
 
-class TestControllerInfo(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestControllerInfo:
     def test_str(self):
         controller = factory.make_RackController(hostname="foobar")
         info, _ = ControllerInfo.objects.update_or_create(node=controller)
-        self.assertEqual("ControllerInfo (foobar)", str(info))
+        assert "ControllerInfo (foobar)" == str(info)
 
     def test_set_version(self):
         controller = factory.make_RackController()
         ControllerInfo.objects.set_version(controller, "2.3.0")
-        self.assertEqual(controller.version, "2.3.0")
+        assert controller.version == "2.3.0"
 
     def test_set_versions_info_snap(self):
         controller = factory.make_RackController()
@@ -45,17 +47,13 @@ class TestControllerInfo(MAASServerTestCase):
         )
         ControllerInfo.objects.set_versions_info(controller, versions)
         controller_info = controller.controllerinfo
-        self.assertEqual(
-            controller_info.version, "3.0.0~alpha1-111-g.deadbeef"
-        )
-        self.assertEqual(
-            controller_info.update_version, "3.0.0~alpha2-222-g.cafecafe"
-        )
-        self.assertEqual(controller_info.update_origin, "3.0/stable")
-        self.assertEqual(controller_info.snap_revision, "1234")
-        self.assertEqual(controller_info.snap_update_revision, "5678")
-        self.assertEqual(controller_info.snap_cohort, "abc123")
-        self.assertIsNotNone(controller_info.update_first_reported)
+        assert controller_info.version == "3.0.0~alpha1-111-g.deadbeef"
+        assert controller_info.update_version == "3.0.0~alpha2-222-g.cafecafe"
+        assert controller_info.update_origin == "3.0/stable"
+        assert controller_info.snap_revision == "1234"
+        assert controller_info.snap_update_revision == "5678"
+        assert controller_info.snap_cohort == "abc123"
+        assert controller_info.update_first_reported is not None
 
     def test_set_versions_info_snap_no_update(self):
         controller = factory.make_RackController()
@@ -68,10 +66,10 @@ class TestControllerInfo(MAASServerTestCase):
         )
         ControllerInfo.objects.set_versions_info(controller, versions)
         controller_info = controller.controllerinfo
-        self.assertEqual(controller_info.update_origin, "3.0/stable")
-        self.assertEqual(controller_info.snap_update_revision, "")
-        self.assertEqual(controller_info.snap_cohort, "")
-        self.assertIsNone(controller_info.update_first_reported)
+        assert controller_info.update_origin == "3.0/stable"
+        assert controller_info.snap_update_revision == ""
+        assert controller_info.snap_cohort == ""
+        assert controller_info.update_first_reported is None
 
     def test_set_versions_update_first_reported_update_same_update(self):
         controller = factory.make_RackController()
@@ -98,9 +96,7 @@ class TestControllerInfo(MAASServerTestCase):
             },
         )
         controller_info = reload_object(controller).controllerinfo
-        self.assertEqual(
-            controller_info.update_first_reported, update_first_reported
-        )
+        assert controller_info.update_first_reported == update_first_reported
 
     def test_set_versions_update_first_reported_update_different_update(self):
         controller = factory.make_RackController()
@@ -128,9 +124,7 @@ class TestControllerInfo(MAASServerTestCase):
         )
         ControllerInfo.objects.set_versions_info(controller, versions)
         controller_info = reload_object(controller).controllerinfo
-        self.assertGreater(
-            controller_info.update_first_reported, update_first_reported
-        )
+        assert controller_info.update_first_reported > update_first_reported
 
     def test_set_versions_update_first_reported_no_update(self):
         controller = factory.make_RackController()
@@ -153,7 +147,7 @@ class TestControllerInfo(MAASServerTestCase):
         )
         ControllerInfo.objects.set_versions_info(controller, versions)
         controller_info = reload_object(controller).controllerinfo
-        self.assertIsNone(controller_info.update_first_reported)
+        assert controller_info.update_first_reported is None
 
     def test_is_up_to_date(self):
         version = "3.0.0~alpha1-111-g.deadbeef"
@@ -171,7 +165,7 @@ class TestControllerInfo(MAASServerTestCase):
                 },
             ),
         )
-        self.assertTrue(controller.info.is_up_to_date(target_version))
+        assert controller.info.is_up_to_date(target_version)
 
     def test_is_up_to_date_with_update(self):
         version = "3.0.0~alpha1-111-g.deadbeef"
@@ -193,7 +187,7 @@ class TestControllerInfo(MAASServerTestCase):
                 },
             ),
         )
-        self.assertFalse(controller.info.is_up_to_date(target_version))
+        assert not controller.info.is_up_to_date(target_version)
 
     def test_is_up_to_date_with_different_version(self):
         target_version = TargetVersion(
@@ -210,7 +204,7 @@ class TestControllerInfo(MAASServerTestCase):
                 },
             ),
         )
-        self.assertFalse(controller.info.is_up_to_date(target_version))
+        assert not controller.info.is_up_to_date(target_version)
 
     def test_get_version_issues(self):
         target_version = TargetVersion(
@@ -229,13 +223,10 @@ class TestControllerInfo(MAASServerTestCase):
                 cohort="abc",
             ),
         )
-        self.assertEqual(
-            controller.info.get_version_issues(target_version),
-            [
-                VERSION_ISSUES.DIFFERENT_CHANNEL.value,
-                VERSION_ISSUES.DIFFERENT_COHORT.value,
-            ],
-        )
+        assert controller.info.get_version_issues(target_version) == [
+            VERSION_ISSUES.DIFFERENT_CHANNEL.value,
+            VERSION_ISSUES.DIFFERENT_COHORT.value,
+        ]
 
     def test_get_version_issue_flags_missing_channel(self):
         target_version = TargetVersion(
@@ -252,18 +243,16 @@ class TestControllerInfo(MAASServerTestCase):
                 },
             ),
         )
-        self.assertEqual(
-            controller.info.get_version_issues(target_version),
-            [
-                VERSION_ISSUES.MISSING_CHANNEL.value,
-            ],
-        )
+        assert controller.info.get_version_issues(target_version) == [
+            VERSION_ISSUES.MISSING_CHANNEL.value,
+        ]
 
 
-class TestGetTargetVersion(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestGetTargetVersion:
     def test_empty(self):
         factory.make_RackController()
-        self.assertIsNone(get_target_version())
+        assert get_target_version() is None
 
     def test_return_highest_version(self):
         c1 = factory.make_RackController()
@@ -288,9 +277,8 @@ class TestGetTargetVersion(MAASServerTestCase):
             ),
         )
         target_version = get_target_version()
-        self.assertEqual(
-            target_version.version,
-            MAASVersion.from_string("3.0.0-333-g.ccc"),
+        assert target_version.version == MAASVersion.from_string(
+            "3.0.0-333-g.ccc"
         )
 
     def test_return_highest_update(self):
@@ -319,15 +307,11 @@ class TestGetTargetVersion(MAASServerTestCase):
             ),
         )
         target_version = get_target_version()
-        self.assertEqual(
-            target_version.version,
-            MAASVersion.from_string("3.0.0-333-g.ccc"),
+        assert target_version.version == MAASVersion.from_string(
+            "3.0.0-333-g.ccc"
         )
 
-        self.assertEqual(
-            target_version.first_reported,
-            c3.info.update_first_reported,
-        )
+        assert target_version.first_reported == c3.info.update_first_reported
 
     def test_update_return_earliest_reported(self):
         c1 = factory.make_RackController()
@@ -355,14 +339,10 @@ class TestGetTargetVersion(MAASServerTestCase):
             ),
         )
         target_version = get_target_version()
-        self.assertEqual(
-            target_version.version,
-            MAASVersion.from_string("3.0.0-333-g.ccc"),
+        assert target_version.version == MAASVersion.from_string(
+            "3.0.0-333-g.ccc"
         )
-        self.assertEqual(
-            target_version.first_reported,
-            c2.info.update_first_reported,
-        )
+        assert target_version.first_reported == c2.info.update_first_reported
 
     def test_update_older_than_installed(self):
         c1 = factory.make_RackController()
@@ -381,8 +361,8 @@ class TestGetTargetVersion(MAASServerTestCase):
             ),
         )
         target_version = get_target_version()
-        self.assertEqual(
-            target_version.version, MAASVersion.from_string("3.0.0-111-g.aaa")
+        assert target_version.version == MAASVersion.from_string(
+            "3.0.0-111-g.aaa"
         )
 
     def test_snap_channel(self):
@@ -404,10 +384,7 @@ class TestGetTargetVersion(MAASServerTestCase):
         )
         target_version = get_target_version()
         # the most stable channel is returned
-        self.assertEqual(
-            target_version.snap_channel,
-            SnapChannel("3.0", "stable"),
-        )
+        assert target_version.snap_channel == SnapChannel("3.0", "stable")
 
     def test_snap_channel_no_branch(self):
         controller = factory.make_RackController()
@@ -419,10 +396,7 @@ class TestGetTargetVersion(MAASServerTestCase):
             ),
         )
         target_version = get_target_version()
-        self.assertEqual(
-            target_version.snap_channel,
-            SnapChannel("3.0", "beta"),
-        )
+        assert target_version.snap_channel == SnapChannel("3.0", "beta")
 
     def test_snap_channel_keep_release_branch(self):
         controller = factory.make_RackController()
@@ -438,9 +412,8 @@ class TestGetTargetVersion(MAASServerTestCase):
             ),
         )
         target_version = get_target_version()
-        self.assertEqual(
-            target_version.snap_channel,
-            SnapChannel("3.0", "beta", branch="ubuntu-20.04"),
+        assert target_version.snap_channel == SnapChannel(
+            "3.0", "beta", branch="ubuntu-20.04"
         )
 
     def test_snap_channel_from_version(self):
@@ -452,10 +425,7 @@ class TestGetTargetVersion(MAASServerTestCase):
             ),
         )
         target_version = get_target_version()
-        self.assertEqual(
-            target_version.snap_channel,
-            SnapChannel("3.0", "candidate"),
-        )
+        assert target_version.snap_channel == SnapChannel("3.0", "candidate")
 
     def test_snap_cohort_from_target_version(self):
         c1 = factory.make_RackController()
@@ -475,7 +445,7 @@ class TestGetTargetVersion(MAASServerTestCase):
             ),
         )
         target_version = get_target_version()
-        self.assertEqual(target_version.snap_cohort, "xyz")
+        assert target_version.snap_cohort == "xyz"
 
     def test_snap_cohort_from_update(self):
         c1 = factory.make_RackController()
@@ -496,7 +466,7 @@ class TestGetTargetVersion(MAASServerTestCase):
             ),
         )
         target_version = get_target_version()
-        self.assertEqual(target_version.snap_cohort, "abc")
+        assert target_version.snap_cohort == "abc"
 
     def test_snap_cohort_multiple_cohorts_target_version(self):
         c1 = factory.make_RackController()
@@ -516,14 +486,15 @@ class TestGetTargetVersion(MAASServerTestCase):
             ),
         )
         target_version = get_target_version()
-        self.assertEqual(target_version.snap_cohort, "")
+        assert target_version.snap_cohort == ""
 
 
-class TestGetMAASVersion(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestGetMAASVersion:
     def test_no_versions(self):
         factory.make_RegionRackController()
         factory.make_RegionRackController()
-        self.assertIsNone(get_maas_version())
+        assert get_maas_version() is None
 
     def test_version_with_highest_count(self):
         c1 = factory.make_RegionRackController()
@@ -532,14 +503,14 @@ class TestGetMAASVersion(MAASServerTestCase):
         ControllerInfo.objects.set_version(c2, "3.0.0")
         c3 = factory.make_RegionRackController()
         ControllerInfo.objects.set_version(c3, "3.1.0")
-        self.assertEqual(get_maas_version(), MAASVersion.from_string("3.0.0"))
+        assert get_maas_version() == MAASVersion.from_string("3.0.0")
 
     def test_highest_version_same_count(self):
         c1 = factory.make_RegionRackController()
         ControllerInfo.objects.set_version(c1, "3.0.0")
         c2 = factory.make_RegionRackController()
         ControllerInfo.objects.set_version(c2, "3.1.0")
-        self.assertEqual(get_maas_version(), MAASVersion.from_string("3.1.0"))
+        assert get_maas_version() == MAASVersion.from_string("3.1.0")
 
     def test_combine_versions_up_to_qualifier(self):
         c1 = factory.make_RegionRackController()
@@ -550,12 +521,11 @@ class TestGetMAASVersion(MAASServerTestCase):
         ControllerInfo.objects.set_version(c2, "3.0.0~beta2-789-g.abcd")
         c3 = factory.make_RegionRackController()
         ControllerInfo.objects.set_version(c3, "3.1.0")
-        self.assertEqual(
-            get_maas_version(), MAASVersion.from_string("3.0.0~beta2")
-        )
+        assert get_maas_version() == MAASVersion.from_string("3.0.0~beta2")
 
 
-class TestUpdateVersionNotifications(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestUpdateVersionNotifications:
     def test_same_upgrade(self):
         c1 = factory.make_RegionRackController()
         c2 = factory.make_RegionRackController()
@@ -573,11 +543,9 @@ class TestUpdateVersionNotifications(MAASServerTestCase):
                 update={"version": "3.0.1-222-g.bbb", "revision": "1"},
             ),
         )
-        self.assertFalse(
-            Notification.objects.filter(
-                ident=UPGRADE_ISSUE_NOTIFICATION_IDENT
-            ).exists()
-        )
+        assert not Notification.objects.filter(
+            ident=UPGRADE_ISSUE_NOTIFICATION_IDENT
+        ).exists()
 
     def test_different_versions(self):
         c1 = factory.make_RegionRackController()
@@ -597,10 +565,7 @@ class TestUpdateVersionNotifications(MAASServerTestCase):
         notification = Notification.objects.filter(
             ident=UPGRADE_ISSUE_NOTIFICATION_IDENT
         ).first()
-        self.assertIn(
-            "Controllers have different versions.",
-            notification.message,
-        )
+        assert "Controllers have different versions." in notification.message
 
     def test_different_upgrades(self):
         c1 = factory.make_RegionRackController()
@@ -622,9 +587,9 @@ class TestUpdateVersionNotifications(MAASServerTestCase):
         notification = Notification.objects.filter(
             ident=UPGRADE_ISSUE_NOTIFICATION_IDENT
         ).first()
-        self.assertIn(
-            "Controllers report different upgrade versions.",
-            notification.message,
+        assert (
+            "Controllers report different upgrade versions."
+            in notification.message
         )
 
     def test_different_origins(self):
@@ -647,9 +612,9 @@ class TestUpdateVersionNotifications(MAASServerTestCase):
         notification = Notification.objects.filter(
             ident=UPGRADE_ISSUE_NOTIFICATION_IDENT
         ).first()
-        self.assertIn(
-            "Controllers have different installation sources.",
-            notification.message,
+        assert (
+            "Controllers have different installation sources."
+            in notification.message
         )
 
     def test_different_snap_cohorts(self):
@@ -672,9 +637,9 @@ class TestUpdateVersionNotifications(MAASServerTestCase):
         notification = Notification.objects.filter(
             ident=UPGRADE_ISSUE_NOTIFICATION_IDENT
         ).first()
-        self.assertIn(
-            "Controllers have different installation sources.",
-            notification.message,
+        assert (
+            "Controllers have different installation sources."
+            in notification.message
         )
 
     def test_issue_resolved_removes_notification(self):
@@ -693,11 +658,9 @@ class TestUpdateVersionNotifications(MAASServerTestCase):
                 current={"version": "3.0.0-111-g.aaa", "revision": "1234"},
             ),
         )
-        self.assertTrue(
-            Notification.objects.filter(
-                ident=UPGRADE_ISSUE_NOTIFICATION_IDENT
-            ).exists()
-        )
+        assert Notification.objects.filter(
+            ident=UPGRADE_ISSUE_NOTIFICATION_IDENT
+        ).exists()
         # remove the cohort
         ControllerInfo.objects.set_versions_info(
             c1,
@@ -705,11 +668,9 @@ class TestUpdateVersionNotifications(MAASServerTestCase):
                 current={"version": "3.0.0-111-g.aaa", "revision": "1234"},
             ),
         )
-        self.assertFalse(
-            Notification.objects.filter(
-                ident=UPGRADE_ISSUE_NOTIFICATION_IDENT
-            ).exists()
-        )
+        assert not Notification.objects.filter(
+            ident=UPGRADE_ISSUE_NOTIFICATION_IDENT
+        ).exists()
 
     def test_different_issue_new_notification(self):
         c1 = factory.make_RegionRackController()
@@ -731,9 +692,9 @@ class TestUpdateVersionNotifications(MAASServerTestCase):
         notification1 = Notification.objects.filter(
             ident=UPGRADE_ISSUE_NOTIFICATION_IDENT
         ).first()
-        self.assertIn(
-            "Controllers have different installation sources.",
-            notification1.message,
+        assert (
+            "Controllers have different installation sources."
+            in notification1.message
         )
         ControllerInfo.objects.set_versions_info(
             c2,
@@ -745,11 +706,8 @@ class TestUpdateVersionNotifications(MAASServerTestCase):
         notification2 = Notification.objects.filter(
             ident=UPGRADE_ISSUE_NOTIFICATION_IDENT
         ).first()
-        self.assertIn(
-            "Controllers have different versions.",
-            notification2.message,
-        )
-        self.assertNotEqual(notification1.id, notification2.id)
+        assert "Controllers have different versions." in notification2.message
+        assert notification1.id != notification2.id
 
     def test_update_status_update_available(self):
         c1 = factory.make_RegionRackController()
@@ -763,15 +721,15 @@ class TestUpdateVersionNotifications(MAASServerTestCase):
         notification = Notification.objects.filter(
             ident=UPGRADE_STATUS_NOTIFICATION_IDENT,
         ).first()
-        self.assertEqual(notification.category, "info")
-        self.assertEqual(
-            notification.render(),
-            "MAAS 3.0.1 is available, controllers will upgrade soon.",
+        assert notification.category == "info"
+        assert (
+            notification.render()
+            == "MAAS 3.0.1 is available, controllers will upgrade soon."
         )
-        self.assertEqual(
-            notification.context,
-            {"status": "inprogress", "version": "3.0.1"},
-        )
+        assert notification.context == {
+            "status": "inprogress",
+            "version": "3.0.1",
+        }
 
     def test_update_status_update_same_version(self):
         c1 = factory.make_RegionRackController()
@@ -785,9 +743,9 @@ class TestUpdateVersionNotifications(MAASServerTestCase):
         notification1 = Notification.objects.filter(
             ident=UPGRADE_STATUS_NOTIFICATION_IDENT,
         ).first()
-        self.assertEqual(
-            notification1.render(),
-            "MAAS 3.0.1 is available, controllers will upgrade soon.",
+        assert (
+            notification1.render()
+            == "MAAS 3.0.1 is available, controllers will upgrade soon."
         )
         # report again, same version
         ControllerInfo.objects.set_versions_info(
@@ -800,15 +758,15 @@ class TestUpdateVersionNotifications(MAASServerTestCase):
         notification2 = Notification.objects.filter(
             ident=UPGRADE_STATUS_NOTIFICATION_IDENT,
         ).first()
-        self.assertEqual(
-            notification2.render(),
-            "MAAS 3.0.1 is available, controllers will upgrade soon.",
+        assert (
+            notification2.render()
+            == "MAAS 3.0.1 is available, controllers will upgrade soon."
         )
-        self.assertEqual(
-            notification2.context,
-            {"status": "inprogress", "version": "3.0.1"},
-        )
-        self.assertEqual(notification1.id, notification2.id)
+        assert notification2.context == {
+            "status": "inprogress",
+            "version": "3.0.1",
+        }
+        assert notification1.id == notification2.id
 
     def test_update_status_update_new_version(self):
         c1 = factory.make_RegionRackController()
@@ -822,9 +780,9 @@ class TestUpdateVersionNotifications(MAASServerTestCase):
         notification1 = Notification.objects.filter(
             ident=UPGRADE_STATUS_NOTIFICATION_IDENT,
         ).first()
-        self.assertEqual(
-            notification1.render(),
-            "MAAS 3.0.1 is available, controllers will upgrade soon.",
+        assert (
+            notification1.render()
+            == "MAAS 3.0.1 is available, controllers will upgrade soon."
         )
         # report again, but new upgrade version
         ControllerInfo.objects.set_versions_info(
@@ -837,15 +795,15 @@ class TestUpdateVersionNotifications(MAASServerTestCase):
         notification2 = Notification.objects.filter(
             ident=UPGRADE_STATUS_NOTIFICATION_IDENT,
         ).first()
-        self.assertEqual(
-            notification2.render(),
-            "MAAS 3.0.2 is available, controllers will upgrade soon.",
+        assert (
+            notification2.render()
+            == "MAAS 3.0.2 is available, controllers will upgrade soon."
         )
-        self.assertEqual(
-            notification2.context,
-            {"status": "inprogress", "version": "3.0.2"},
-        )
-        self.assertNotEqual(notification1.id, notification2.id)
+        assert notification2.context == {
+            "status": "inprogress",
+            "version": "3.0.2",
+        }
+        assert notification1.id != notification2.id
 
     def test_update_status_update_completed(self):
         c1 = factory.make_RegionRackController()
@@ -868,16 +826,15 @@ class TestUpdateVersionNotifications(MAASServerTestCase):
         notification2 = Notification.objects.filter(
             ident=UPGRADE_STATUS_NOTIFICATION_IDENT,
         ).first()
-        self.assertEqual(notification2.category, "success")
-        self.assertEqual(
-            notification2.render(),
-            "MAAS has been updated to version 3.0.1.",
+        assert notification2.category == "success"
+        assert (
+            notification2.render() == "MAAS has been updated to version 3.0.1."
         )
-        self.assertEqual(
-            notification2.context,
-            {"status": "completed", "version": "3.0.1"},
-        )
-        self.assertNotEqual(notification1.id, notification2.id)
+        assert notification2.context == {
+            "status": "completed",
+            "version": "3.0.1",
+        }
+        assert notification1.id != notification2.id
 
     def test_update_status_update_already_completed(self):
         c1 = factory.make_RegionRackController()
@@ -907,15 +864,14 @@ class TestUpdateVersionNotifications(MAASServerTestCase):
         notification2 = Notification.objects.filter(
             ident=UPGRADE_STATUS_NOTIFICATION_IDENT,
         ).first()
-        self.assertEqual(
-            notification2.render(),
-            "MAAS has been updated to version 3.0.1.",
+        assert (
+            notification2.render() == "MAAS has been updated to version 3.0.1."
         )
-        self.assertEqual(
-            notification2.context,
-            {"status": "completed", "version": "3.0.1"},
-        )
-        self.assertEqual(notification1.id, notification2.id)
+        assert notification2.context == {
+            "status": "completed",
+            "version": "3.0.1",
+        }
+        assert notification1.id == notification2.id
 
     def test_update_status_new_update_already_completed(self):
         c1 = factory.make_RegionRackController()
@@ -946,12 +902,12 @@ class TestUpdateVersionNotifications(MAASServerTestCase):
         notification2 = Notification.objects.filter(
             ident=UPGRADE_STATUS_NOTIFICATION_IDENT,
         ).first()
-        self.assertEqual(
-            notification2.render(),
-            "MAAS 3.0.2 is available, controllers will upgrade soon.",
+        assert (
+            notification2.render()
+            == "MAAS 3.0.2 is available, controllers will upgrade soon."
         )
-        self.assertEqual(
-            notification2.context,
-            {"status": "inprogress", "version": "3.0.2"},
-        )
-        self.assertNotEqual(notification1.id, notification2.id)
+        assert notification2.context == {
+            "status": "inprogress",
+            "version": "3.0.2",
+        }
+        assert notification1.id != notification2.id

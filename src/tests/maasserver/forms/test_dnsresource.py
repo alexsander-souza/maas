@@ -3,16 +3,19 @@
 
 """Tests for DNSResource forms."""
 
+from collections import Counter
 import random
 from unittest.mock import Mock
 
+import pytest
+
 from maasserver.forms.dnsresource import DNSResourceForm
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from maasserver.utils.orm import post_commit_hooks, reload_object
 
 
-class TestDNSResourceForm(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestDNSResourceForm:
     def test_creates_dnsresource(self):
         name = factory.make_name("dnsresource")
         sip = factory.make_StaticIPAddress()
@@ -23,11 +26,11 @@ class TestDNSResourceForm(MAASServerTestCase):
             {"name": name, "domain": domain.id, "ip_addresses": [sip.id]},
             request=request,
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         dnsresource = form.save()
-        self.assertEqual(name, dnsresource.name)
-        self.assertEqual(domain.id, dnsresource.domain.id)
-        self.assertEqual(sip.id, dnsresource.ip_addresses.first().id)
+        assert name == dnsresource.name
+        assert domain.id == dnsresource.domain.id
+        assert sip.id == dnsresource.ip_addresses.first().id
 
     def test_accepts_string_for_ip_addresses(self):
         name = factory.make_name("dnsresource")
@@ -36,11 +39,11 @@ class TestDNSResourceForm(MAASServerTestCase):
         form = DNSResourceForm(
             {"name": name, "domain": domain.id, "ip_addresses": str(sip.id)}
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         dnsresource = form.save()
-        self.assertEqual(name, dnsresource.name)
-        self.assertEqual(domain.id, dnsresource.domain.id)
-        self.assertEqual(sip.id, dnsresource.ip_addresses.first().id)
+        assert name == dnsresource.name
+        assert domain.id == dnsresource.domain.id
+        assert sip.id == dnsresource.ip_addresses.first().id
 
     def test_creates_staticipaddresses(self):
         name = factory.make_name("dnsresource")
@@ -52,16 +55,16 @@ class TestDNSResourceForm(MAASServerTestCase):
             {"name": name, "domain": domain.id, "ip_addresses": " ".join(ips)},
             request=request,
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         with post_commit_hooks:
             dnsresource = form.save()
-        self.assertEqual(name, dnsresource.name)
-        self.assertEqual(domain.id, dnsresource.domain.id)
+        assert name == dnsresource.name
+        assert domain.id == dnsresource.domain.id
         actual_ips = dnsresource.ip_addresses.all()
         actual = {str(ip.ip) for ip in actual_ips}
-        self.assertCountEqual(set(ips), actual)
+        assert Counter(set(ips)) == Counter(actual)
         actual_users = {ip.user_id for ip in actual_ips}
-        self.assertEqual({request.user.id}, actual_users)
+        assert {request.user.id} == actual_users
 
     def test_accepts_mix_of_id_and_ipaddress(self):
         name = factory.make_name("dnsresource")
@@ -77,21 +80,21 @@ class TestDNSResourceForm(MAASServerTestCase):
                 "ip_addresses": " ".join(in_vals),
             }
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         dnsresource = form.save()
-        self.assertEqual(name, dnsresource.name)
-        self.assertEqual(domain.id, dnsresource.domain.id)
+        assert name == dnsresource.name
+        assert domain.id == dnsresource.domain.id
         actual = {ip.id for ip in dnsresource.ip_addresses.all()}
-        self.assertCountEqual({ip.id for ip in ips}, actual)
+        assert Counter({ip.id for ip in ips}) == Counter(actual)
 
     def test_does_not_require_ip_addresses(self):
         name = factory.make_name("dnsresource")
         domain = factory.make_Domain()
         form = DNSResourceForm({"name": name, "domain": domain.id})
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         dnsresource = form.save()
-        self.assertEqual(name, dnsresource.name)
-        self.assertEqual(domain.id, dnsresource.domain.id)
+        assert name == dnsresource.name
+        assert domain.id == dnsresource.domain.id
 
     def test_accepts_address_ttl(self):
         name = factory.make_name("dnsresource")
@@ -100,11 +103,11 @@ class TestDNSResourceForm(MAASServerTestCase):
         form = DNSResourceForm(
             {"name": name, "domain": domain.id, "address_ttl": ttl}
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         dnsresource = form.save()
-        self.assertEqual(name, dnsresource.name)
-        self.assertEqual(domain.id, dnsresource.domain.id)
-        self.assertEqual(ttl, dnsresource.address_ttl)
+        assert name == dnsresource.name
+        assert domain.id == dnsresource.domain.id
+        assert ttl == dnsresource.address_ttl
 
     def test_accepts_address_ttl_equals_none(self):
         name = factory.make_name("dnsresource")
@@ -113,21 +116,21 @@ class TestDNSResourceForm(MAASServerTestCase):
         form = DNSResourceForm(
             {"name": name, "domain": domain.id, "address_ttl": ttl}
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         dnsresource = form.save()
         form = DNSResourceForm(
             instance=dnsresource, data={"address_ttl": None}
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         dnsresource = form.save()
-        self.assertEqual(name, dnsresource.name)
-        self.assertEqual(domain.id, dnsresource.domain.id)
-        self.assertIsNone(dnsresource.address_ttl)
+        assert name == dnsresource.name
+        assert domain.id == dnsresource.domain.id
+        assert dnsresource.address_ttl is None
 
     def test_doesnt_require_name_on_update(self):
         dnsresource = factory.make_DNSResource()
         form = DNSResourceForm(instance=dnsresource, data={})
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
 
     def test_updates_dnsresource(self):
         dnsresource = factory.make_DNSResource()
@@ -142,13 +145,12 @@ class TestDNSResourceForm(MAASServerTestCase):
                 "address_ttl": new_ttl,
             },
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         form.save()
-        self.assertEqual(new_name, reload_object(dnsresource).name)
-        self.assertEqual(new_ttl, reload_object(dnsresource).address_ttl)
-        self.assertCountEqual(
-            new_sip_ids,
-            [ip.id for ip in reload_object(dnsresource).ip_addresses.all()],
+        assert new_name == reload_object(dnsresource).name
+        assert new_ttl == reload_object(dnsresource).address_ttl
+        assert Counter(new_sip_ids) == Counter(
+            [ip.id for ip in reload_object(dnsresource).ip_addresses.all()]
         )
 
     def test_update_allows_multiple_ips(self):
@@ -162,12 +164,11 @@ class TestDNSResourceForm(MAASServerTestCase):
                 "ip_addresses": " ".join(str(id) for id in new_sip_ids),
             },
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         form.save()
-        self.assertEqual(new_name, reload_object(dnsresource).name)
-        self.assertCountEqual(
-            new_sip_ids,
-            [ip.id for ip in reload_object(dnsresource).ip_addresses.all()],
+        assert new_name == reload_object(dnsresource).name
+        assert Counter(new_sip_ids) == Counter(
+            [ip.id for ip in reload_object(dnsresource).ip_addresses.all()]
         )
 
     def test_does_not_create_invalid_label(self):
@@ -184,7 +185,7 @@ class TestDNSResourceForm(MAASServerTestCase):
             },
             request=request,
         )
-        self.assertFalse(form.is_valid())
+        assert not form.is_valid()
 
     def test_create_atsign(self):
         name = "@"
@@ -200,10 +201,10 @@ class TestDNSResourceForm(MAASServerTestCase):
             },
             request=request,
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         with post_commit_hooks:
             dnsresource = form.save()
-        self.assertEqual(name, dnsresource.name)
+        assert name == dnsresource.name
 
     def test_create_wildcard(self):
         name = "*"
@@ -219,7 +220,7 @@ class TestDNSResourceForm(MAASServerTestCase):
             },
             request=request,
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         with post_commit_hooks:
             dnsresource = form.save()
-        self.assertEqual(name, dnsresource.name)
+        assert name == dnsresource.name

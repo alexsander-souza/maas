@@ -13,8 +13,6 @@ import time
 
 import fixtures
 import tempita
-from testtools.content import Content
-from testtools.content_type import UTF8_TEXT
 
 from maastesting.fixtures import TempDirectory
 from provisioningserver.dns.config import generate_rndc
@@ -265,13 +263,6 @@ class BINDServerRunner(fixtures.Fixture):
                     env=env,
                 )
         self.addCleanup(self._stop)
-        # Keep the log_file open for reading so that we can still get the log
-        # even if the log is deleted.
-        open_log_file = open(self.config.log_file, "rb")
-        self.addDetail(
-            os.path.basename(self.config.log_file),
-            Content(UTF8_TEXT, lambda: open_log_file),
-        )
 
     def rndc(self, command):
         """Executes a ``rndc`` command and returns status."""
@@ -301,17 +292,17 @@ class BINDServerRunner(fixtures.Fixture):
                 break
             time.sleep(self.config.timeout_interval)
         else:
-            raise Exception(
-                "Timeout waiting for BIND server to start: log in %r."
-                % (self.config.log_file,)
+            with open(
+                self.config.log_file, encoding="utf-8", errors="replace"
+            ) as log_file:
+                log = log_file.read()
+            raise RuntimeError(
+                f"Timeout waiting for BIND server to start; "
+                f"log at {self.config.log_file}:\n{log}"
             )
 
     def _request_stop(self):
         outstr, errstr = self.rndc("stop")
-        if outstr:
-            self.addDetail("stop-out", Content(UTF8_TEXT, lambda: [outstr]))
-        if errstr:
-            self.addDetail("stop-err", Content(UTF8_TEXT, lambda: [errstr]))
 
     def _stop(self):
         """Stop the running server. Normally called by cleanups."""

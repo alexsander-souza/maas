@@ -4,11 +4,12 @@ import ipaddress
 import os
 import random
 import socket
+from unittest import TestCase as UnittestTestCase
 from unittest.mock import call, Mock
 from urllib.parse import urlparse
 
 from netaddr import IPAddress, IPNetwork
-from testtools import TestCase
+import pytest
 
 from maascommon.dns import HostnameIPMapping, HostnameRRsetMapping
 from maasserver import server_address
@@ -33,10 +34,6 @@ from maasserver.models import Config, Domain, Subnet
 from maasserver.models.staticipaddress import StaticIPAddress
 from maasserver.testing.config import RegionConfigurationFixture
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import (
-    MAASServerTestCase,
-    MAASTransactionServerTestCase,
-)
 from maasserver.utils.orm import post_commit_hooks, transactional
 from maastesting.factory import factory as maastesting_factory
 from maastesting.fakemethod import FakeMethod
@@ -47,7 +44,37 @@ from provisioningserver.dns.zoneconfig import (
 )
 
 
-class TestGetDNSServerAddress(MAASServerTestCase):
+class _PytestDBTestCase:
+    @pytest.fixture(autouse=True)
+    def _setup_test_helpers(self, mocker, request, tmp_path):
+        self._mocker = mocker
+        self._tmp_path = tmp_path
+        self._request = request
+        self._assertions = UnittestTestCase()
+
+    def __getattr__(self, name):
+        if name.startswith("assert") or name == "fail":
+            return getattr(self._assertions, name)
+        raise AttributeError(name)
+
+    def patch(self, obj, attribute=None, value=None):
+        if attribute is None:
+            return self._mocker.patch(obj)
+        if value is None:
+            return self._mocker.patch.object(obj, attribute)
+        return self._mocker.patch.object(obj, attribute, value)
+
+    def useFixture(self, fixture):
+        fixture.setUp()
+        self._request.addfinalizer(fixture.cleanUp)
+        return fixture
+
+    def make_dir(self):
+        return str(self._tmp_path)
+
+
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestGetDNSServerAddress(_PytestDBTestCase):
     def test_get_dns_server_address_resolves_hostname(self):
         url = maastesting_factory.make_simple_http_url()
         self.useFixture(RegionConfigurationFixture(maas_url=url))
@@ -121,7 +148,8 @@ class TestGetDNSServerAddress(MAASServerTestCase):
         self.assertIsNone(get_dns_server_address(rack_controller))
 
 
-class TestGetDNSServerAddresses(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestGetDNSServerAddresses(_PytestDBTestCase):
     def test_no_rack_all_subnets(self):
         subnet1 = factory.make_Subnet(cidr="10.10.0.0/24", allow_dns=False)
         subnet2 = factory.make_Subnet(cidr="10.20.0.0/24", allow_dns=True)
@@ -152,7 +180,8 @@ class TestGetDNSServerAddresses(MAASServerTestCase):
         )
 
 
-class TestGetDNSSearchPaths(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestGetDNSSearchPaths(_PytestDBTestCase):
     def test_returns_all_authoritative_domains(self):
         domain_names = get_dns_search_paths()
         domain_names.update(
@@ -163,7 +192,8 @@ class TestGetDNSSearchPaths(MAASServerTestCase):
         self.assertEqual(domain_names, get_dns_search_paths())
 
 
-class TestWarnLoopback(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestWarnLoopback(_PytestDBTestCase):
     def test_warn_loopback_warns_about_IPv4_loopback(self):
         logger = self.patch(zonegenerator, "logger")
         loopback = "127.0.0.1"
@@ -193,24 +223,24 @@ class TestWarnLoopback(MAASServerTestCase):
         logger.warn.assert_not_called()
 
 
-class TestLazyDict(TestCase):
+class TestLazyDict:
     """Tests for `lazydict`."""
 
     def test_empty_initially(self):
-        self.assertEqual({}, lazydict(Mock()))
+        assert {} == lazydict(Mock())
 
     def test_populates_on_demand(self):
         value = factory.make_name("value")
         value_dict = lazydict(lambda key: value)
         key = factory.make_name("key")
         retrieved_value = value_dict[key]
-        self.assertEqual(value, retrieved_value)
-        self.assertEqual({key: value}, value_dict)
+        assert value == retrieved_value
+        assert {key: value} == value_dict
 
     def test_remembers_elements(self):
         value_dict = lazydict(lambda key: factory.make_name("value"))
         key = factory.make_name("key")
-        self.assertEqual(value_dict[key], value_dict[key])
+        assert value_dict[key] == value_dict[key]
 
     def test_holds_one_value_per_key(self):
         value_dict = lazydict(lambda key: key)
@@ -220,11 +250,12 @@ class TestLazyDict(TestCase):
         value1 = value_dict[key1]
         value2 = value_dict[key2]
 
-        self.assertEqual((key1, key2), (value1, value2))
-        self.assertEqual({key1: key1, key2: key2}, value_dict)
+        assert (key1, key2) == (value1, value2)
+        assert {key1: key1, key2: key2} == value_dict
 
 
-class TestGetHostnameMapping(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestGetHostnameMapping(_PytestDBTestCase):
     """Test for `get_hostname_ip_mapping`."""
 
     def test_get_hostname_ip_mapping_containts_both_static_and_dynamic(self):
@@ -303,11 +334,12 @@ def assertIsReverseZoneWithDomain(testcase, zone, domain, network):
     testcase.assertEqual(zone._network, network)
 
 
-class TestZoneGenerator(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestZoneGenerator(_PytestDBTestCase):
     """Tests for :class:`ZoneGenerator`."""
 
-    def setUp(self):
-        super().setUp()
+    @pytest.fixture(autouse=True)
+    def _setup_config(self, _setup_test_helpers, maasdb, maas_region_test):
         self.useFixture(RegionConfigurationFixture())
 
     def test_empty_yields_nothing(self):
@@ -683,7 +715,9 @@ class TestZoneGenerator(MAASServerTestCase):
         assertIsReverseZoneWithDomain(self, rev2, default_domain.name, "10/24")
 
 
-class TestZoneGeneratorTTL(MAASTransactionServerTestCase):
+@pytest.mark.usefixtures("transactional_maasdb", "maas_region_test", "factory")
+@pytest.mark.allow_transactions
+class TestZoneGeneratorTTL(_PytestDBTestCase):
     """Tests for TTL in :class:ZoneGenerator`."""
 
     @transactional
@@ -1007,7 +1041,8 @@ class TestZoneGeneratorTTL(MAASTransactionServerTestCase):
         self.assertEqual(42, zone_config.default_ttl)
 
 
-class TestZoneGeneratorEndToEnd(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestZoneGeneratorEndToEnd(_PytestDBTestCase):
     def _find_most_specific_subnet(
         self, ip: StaticIPAddress, subnets: list[Subnet]
     ):

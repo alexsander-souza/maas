@@ -1,40 +1,42 @@
 import datetime
 
 from django.utils import timezone
+import pytest
 
 from maasserver import release_notifications
 from maasserver.models import ControllerInfo, Notification
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import (
-    MAASServerTestCase,
-    MAASTransactionServerTestCase,
-)
 
 
-class TestVersionCheck(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestVersionCheck:
     def test_new_release_available(self):
         ControllerInfo.objects.set_version(
             factory.make_RackController(),
             "2.8.1",
         )
-        self.assertTrue(release_notifications.notification_available("2.9.0"))
+        assert release_notifications.notification_available("2.9.0")
 
     def test_already_on_latest_version(self):
         ControllerInfo.objects.set_version(
             factory.make_RackController(),
             "2.9.0",
         )
-        self.assertFalse(release_notifications.notification_available("2.9.0"))
+        assert not release_notifications.notification_available("2.9.0")
 
     def test_notification_is_old(self):
         ControllerInfo.objects.set_version(
             factory.make_RackController(),
             "2.9.0",
         )
-        self.assertFalse(release_notifications.notification_available("2.8.0"))
+        assert not release_notifications.notification_available("2.8.0")
 
 
-class TestReleaseNotification(MAASTransactionServerTestCase):
+@pytest.mark.allow_transactions
+@pytest.mark.usefixtures(
+    "maasdb", "maas_region_test", "factory", "transactional_maasdb"
+)
+class TestReleaseNotification:
     def _get_release_notifications(self):
         return Notification.objects.filter(
             ident=release_notifications.RELEASE_NOTIFICATION_IDENT
@@ -49,14 +51,14 @@ class TestReleaseNotification(MAASTransactionServerTestCase):
 
         release_notifications.ensure_notification_exists(message)
 
-        self.assertEqual(self._get_release_notifications().count(), 1)
+        assert self._get_release_notifications().count() == 1
 
         notification = self._get_release_notifications().get()
-        self.assertEqual(message, notification.message)
-        self.assertEqual(notification.created, original_notification.created)
+        assert message == notification.message
+        assert notification.created == original_notification.created
         # As the notification hasn't changed, we don't want the updated datetime
         # to be changed.
-        self.assertEqual(notification.updated, original_notification.updated)
+        assert notification.updated == original_notification.updated
 
     def test_updating_notification(self):
         """Test updating a release notification with a new message"""
@@ -68,12 +70,12 @@ class TestReleaseNotification(MAASTransactionServerTestCase):
         message = "Upgrade to version 3.2 today"
         release_notifications.ensure_notification_exists(message)
 
-        self.assertEqual(self._get_release_notifications().count(), 1)
+        assert self._get_release_notifications().count() == 1
 
         notification = self._get_release_notifications().get()
-        self.assertEqual(message, notification.message)
-        self.assertEqual(notification.created, original_notification.created)
-        self.assertGreater(notification.updated, original_notification.updated)
+        assert message == notification.message
+        assert notification.created == original_notification.created
+        assert notification.updated > original_notification.updated
 
     def test_resurface_notification(self):
         """Test resufacing release notifications that were dismissed"""
@@ -88,7 +90,7 @@ class TestReleaseNotification(MAASTransactionServerTestCase):
         notification.dismiss(user2)
 
         # We expect to have two dismissals here, one for each user
-        self.assertEqual(notification.notificationdismissal_set.count(), 2)
+        assert notification.notificationdismissal_set.count() == 2
 
         # Manually update the notification to appear in the past.
         three_weeks_ago = timezone.now() - datetime.timedelta(weeks=3)
@@ -100,16 +102,16 @@ class TestReleaseNotification(MAASTransactionServerTestCase):
 
         # as one of the dismissals was old it should be deleted, leaving us
         # with only one for user1
-        self.assertEqual(
-            notification.notificationdismissal_set.filter(user=user1).count(),
-            1,
+        assert (
+            notification.notificationdismissal_set.filter(user=user1).count()
+            == 1
         )
-        self.assertEqual(
-            notification.notificationdismissal_set.filter(user=user2).count(),
-            0,
+        assert (
+            notification.notificationdismissal_set.filter(user=user2).count()
+            == 0
         )
 
-        self.assertEqual(self._get_release_notifications().count(), 1)
+        assert self._get_release_notifications().count() == 1
 
         notification = self._get_release_notifications().get()
-        self.assertEqual(message, notification.message)
+        assert message == notification.message

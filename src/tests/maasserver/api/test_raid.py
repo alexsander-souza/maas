@@ -7,6 +7,7 @@ import uuid
 
 from django.conf import settings
 from django.urls import reverse
+import pytest
 
 from maasserver.enum import FILESYSTEM_GROUP_TYPE, FILESYSTEM_TYPE, NODE_STATUS
 from maasserver.models.blockdevice import MIN_BLOCK_DEVICE_SIZE
@@ -14,7 +15,6 @@ from maasserver.models.filesystem import Filesystem
 from maasserver.models.filesystemgroup import RAID, RAID_SUPERBLOCK_OVERHEAD
 from maasserver.models.partition import MIN_PARTITION_SIZE
 from maasserver.models.partitiontable import PARTITION_TABLE_EXTRA_SPACE
-from maasserver.testing.api import APITestCase
 from maasserver.testing.factory import factory
 from maasserver.utils.converters import human_readable_bytes
 from maasserver.utils.orm import reload_object
@@ -65,13 +65,22 @@ def get_devices_from_raid(parsed_device):
     )
 
 
-class TestRaidsAPI(APITestCase.ForUser):
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user=user,client=oauth", id="user=user,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestRaidsAPI:
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maas_user, api_client):
+        self.user = maas_user
+        self.client = api_client
+
     def test_handler_path(self):
         node = factory.make_Node()
-        self.assertEqual(
-            "/MAAS/api/2.0/nodes/%s/raids/" % (node.system_id),
-            get_raid_devices_uri(node),
-        )
+        assert "/MAAS/api/2.0/nodes/%s/raids/" % (
+            node.system_id
+        ) == get_raid_devices_uri(node)
 
     def test_read(self):
         node = factory.make_Node()
@@ -100,9 +109,7 @@ class TestRaidsAPI(APITestCase.ForUser):
         uri = get_raid_devices_uri(node)
         response = self.client.get(uri)
 
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         expected_ids = [raid.id for raid in raids]
         result_ids = [
             raid["id"]
@@ -110,7 +117,7 @@ class TestRaidsAPI(APITestCase.ForUser):
                 response.content.decode(settings.DEFAULT_CHARSET)
             )
         ]
-        self.assertCountEqual(expected_ids, result_ids)
+        assert sorted(expected_ids) == sorted(result_ids)
 
     def test_create_403_when_not_admin(self):
         node = factory.make_Node(status=NODE_STATUS.READY)
@@ -141,12 +148,11 @@ class TestRaidsAPI(APITestCase.ForUser):
                 "spare_partitions": [],
             },
         )
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content
 
     def test_create_409_when_not_ready(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(status=NODE_STATUS.ALLOCATED)
         bds = [
             factory.make_PhysicalBlockDevice(
@@ -175,14 +181,13 @@ class TestRaidsAPI(APITestCase.ForUser):
                 "spare_partitions": [],
             },
         )
-        self.assertEqual(
-            http.client.CONFLICT, response.status_code, response.content
-        )
+        assert http.client.CONFLICT == response.status_code, response.content
 
     def test_create_raid_0(self):
         """Checks it's possible to create a RAID 0 using with 5 raw devices, 5
         partitions and no spare."""
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(status=NODE_STATUS.READY)
         bds = [
             factory.make_PhysicalBlockDevice(
@@ -211,9 +216,7 @@ class TestRaidsAPI(APITestCase.ForUser):
                 "spare_partitions": [],
             },
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed_device = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
@@ -224,18 +227,19 @@ class TestRaidsAPI(APITestCase.ForUser):
             parsed_partition_spares,
         ) = get_devices_from_raid(parsed_device)
         raid = RAID.objects.get(id=parsed_device["id"])
-        self.assertEqual(parsed_device["size"], raid.get_size())
-        self.assertEqual(uuid4, parsed_device["uuid"])
-        self.assertCountEqual(block_devices, parsed_block_devices)
-        self.assertCountEqual(partitions, parsed_partitions)
-        self.assertEqual([], parsed_block_device_spares)
-        self.assertEqual([], parsed_partition_spares)
+        assert parsed_device["size"] == raid.get_size()
+        assert uuid4 == parsed_device["uuid"]
+        assert sorted(block_devices) == sorted(parsed_block_devices)
+        assert sorted(partitions) == sorted(parsed_partitions)
+        assert [] == parsed_block_device_spares
+        assert [] == parsed_partition_spares
 
     def test_create_raid_0_with_a_spare_fails(self):
         """Checks it's not possible to create a RAID 0 using 4 raw
         devices, 5 partitions and one spare device (because a RAID-0 cannot
         have spares)."""
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(status=NODE_STATUS.READY)
         bds = [
             factory.make_PhysicalBlockDevice(
@@ -266,14 +270,15 @@ class TestRaidsAPI(APITestCase.ForUser):
                 "spare_partitions": [],
             },
         )
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
 
     def test_create_raid_1(self):
         """Checks it's possible to create a RAID 1 using with 5 raw devices, 5
         partitions and no spare."""
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(status=NODE_STATUS.READY)
         bds = [
             factory.make_PhysicalBlockDevice(
@@ -302,9 +307,7 @@ class TestRaidsAPI(APITestCase.ForUser):
                 "spare_partitions": [],
             },
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed_device = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
@@ -314,19 +317,18 @@ class TestRaidsAPI(APITestCase.ForUser):
             parsed_block_device_spares,
             parsed_partition_spares,
         ) = get_devices_from_raid(parsed_device)
-        self.assertEqual(
-            PART_SIZE - RAID_SUPERBLOCK_OVERHEAD, parsed_device["size"]
-        )
-        self.assertEqual(uuid4, parsed_device["uuid"])
-        self.assertCountEqual(block_devices, parsed_block_devices)
-        self.assertCountEqual(partitions, parsed_partitions)
-        self.assertEqual([], parsed_block_device_spares)
-        self.assertEqual([], parsed_partition_spares)
+        assert PART_SIZE - RAID_SUPERBLOCK_OVERHEAD == parsed_device["size"]
+        assert uuid4 == parsed_device["uuid"]
+        assert sorted(block_devices) == sorted(parsed_block_devices)
+        assert sorted(partitions) == sorted(parsed_partitions)
+        assert [] == parsed_block_device_spares
+        assert [] == parsed_partition_spares
 
     def test_create_raid_1_with_spares(self):
         """Checks it's possible to create a RAID 1 using with 4 raw devices, 4
         partitions and two spares."""
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(status=NODE_STATUS.READY)
         bds = [
             factory.make_PhysicalBlockDevice(
@@ -358,9 +360,7 @@ class TestRaidsAPI(APITestCase.ForUser):
                 "spare_partitions": spare_partitions,
             },
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed_device = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
@@ -370,19 +370,18 @@ class TestRaidsAPI(APITestCase.ForUser):
             parsed_block_device_spares,
             parsed_partition_spares,
         ) = get_devices_from_raid(parsed_device)
-        self.assertEqual(
-            PART_SIZE - RAID_SUPERBLOCK_OVERHEAD, parsed_device["size"]
-        )
-        self.assertEqual(uuid4, parsed_device["uuid"])
-        self.assertCountEqual(block_devices, parsed_block_devices)
-        self.assertCountEqual(partitions, parsed_partitions)
-        self.assertEqual(spare_devices, parsed_block_device_spares)
-        self.assertEqual(spare_partitions, parsed_partition_spares)
+        assert PART_SIZE - RAID_SUPERBLOCK_OVERHEAD == parsed_device["size"]
+        assert uuid4 == parsed_device["uuid"]
+        assert sorted(block_devices) == sorted(parsed_block_devices)
+        assert sorted(partitions) == sorted(parsed_partitions)
+        assert spare_devices == parsed_block_device_spares
+        assert spare_partitions == parsed_partition_spares
 
     def test_create_raid_5(self):
         """Checks it's possible to create a RAID 5 using 4 raw 10TB
         devices, 4 9TB partitions, one spare device and one spare partition."""
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(status=NODE_STATUS.READY)
         # Add 10 10TB physical block devices to the node.
         bds = [
@@ -416,9 +415,7 @@ class TestRaidsAPI(APITestCase.ForUser):
                 "spare_partitions": spare_partitions,
             },
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed_device = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
@@ -428,20 +425,19 @@ class TestRaidsAPI(APITestCase.ForUser):
             parsed_block_device_spares,
             parsed_partition_spares,
         ) = get_devices_from_raid(parsed_device)
-        # Size is equivalent to 7 of the smallest device (the partitions).
-        self.assertEqual(
-            (7 * large_partitions[0].size) - RAID_SUPERBLOCK_OVERHEAD,
-            parsed_device["size"],
-        )
-        self.assertCountEqual(block_devices, parsed_block_devices)
-        self.assertCountEqual(partitions, parsed_partitions)
-        self.assertEqual(spare_devices, parsed_block_device_spares)
-        self.assertEqual(spare_partitions, parsed_partition_spares)
+        assert (
+            7 * large_partitions[0].size
+        ) - RAID_SUPERBLOCK_OVERHEAD == parsed_device["size"]
+        assert sorted(block_devices) == sorted(parsed_block_devices)
+        assert sorted(partitions) == sorted(parsed_partitions)
+        assert spare_devices == parsed_block_device_spares
+        assert spare_partitions == parsed_partition_spares
 
     def test_create_raid_6(self):
         """Checks it's possible to create a RAID 6 using 4 raw
         devices, 4 partitions, one spare device and one spare partition."""
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(status=NODE_STATUS.READY)
         # Add 10 10TB physical block devices to the node.
         bds = [
@@ -475,9 +471,7 @@ class TestRaidsAPI(APITestCase.ForUser):
                 "spare_partitions": spare_partitions,
             },
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
 
         parsed_device = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
@@ -488,20 +482,19 @@ class TestRaidsAPI(APITestCase.ForUser):
             parsed_block_device_spares,
             parsed_partition_spares,
         ) = get_devices_from_raid(parsed_device)
-        # Size is equivalent to 6 of the smallest device (the partitions).
-        self.assertEqual(
-            (6 * large_partitions[0].size) - RAID_SUPERBLOCK_OVERHEAD,
-            parsed_device["size"],
-        )
-        self.assertCountEqual(block_devices, parsed_block_devices)
-        self.assertCountEqual(partitions, parsed_partitions)
-        self.assertEqual(spare_devices, parsed_block_device_spares)
-        self.assertEqual(spare_partitions, parsed_partition_spares)
+        assert (
+            6 * large_partitions[0].size
+        ) - RAID_SUPERBLOCK_OVERHEAD == parsed_device["size"]
+        assert sorted(block_devices) == sorted(parsed_block_devices)
+        assert sorted(partitions) == sorted(parsed_partitions)
+        assert spare_devices == parsed_block_device_spares
+        assert spare_partitions == parsed_partition_spares
 
     def test_create_raid_10(self):
         """Checks it's possible to create a RAID 10 using 4 raw
         devices, 4 partitions, one spare device and one spare partition."""
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(status=NODE_STATUS.READY)
         # Add 10 10TB physical block devices to the node.
         bds = [
@@ -535,9 +528,7 @@ class TestRaidsAPI(APITestCase.ForUser):
                 "spare_partitions": spare_partitions,
             },
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
 
         parsed_device = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
@@ -548,18 +539,17 @@ class TestRaidsAPI(APITestCase.ForUser):
             parsed_block_device_spares,
             parsed_partition_spares,
         ) = get_devices_from_raid(parsed_device)
-        # Size is equivalent to 4 of the smallest device (the partitions).
-        self.assertEqual(
-            (4 * large_partitions[0].size) - RAID_SUPERBLOCK_OVERHEAD,
-            parsed_device["size"],
-        )
-        self.assertCountEqual(block_devices, parsed_block_devices)
-        self.assertCountEqual(partitions, parsed_partitions)
-        self.assertEqual(spare_devices, parsed_block_device_spares)
-        self.assertEqual(spare_partitions, parsed_partition_spares)
+        assert (
+            4 * large_partitions[0].size
+        ) - RAID_SUPERBLOCK_OVERHEAD == parsed_device["size"]
+        assert sorted(block_devices) == sorted(parsed_block_devices)
+        assert sorted(partitions) == sorted(parsed_partitions)
+        assert spare_devices == parsed_block_device_spares
+        assert spare_partitions == parsed_partition_spares
 
     def test_create_raid_5_with_2_elements_fails(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(status=NODE_STATUS.READY)
         # Add 2 10TB physical block devices to the node.
         bds = [
@@ -580,12 +570,13 @@ class TestRaidsAPI(APITestCase.ForUser):
                 "spare_partitions": [],
             },
         )
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
 
     def test_create_raid_6_with_3_elements_fails(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(status=NODE_STATUS.READY)
         # Add 3 10TB physical block devices to the node.
         bds = [
@@ -606,12 +597,13 @@ class TestRaidsAPI(APITestCase.ForUser):
                 "spare_partitions": [],
             },
         )
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
 
     def test_create_raid_10_with_2_elements_fails(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(status=NODE_STATUS.READY)
         # Add 3 10TB physical block devices to the node.
         bds = [
@@ -632,12 +624,13 @@ class TestRaidsAPI(APITestCase.ForUser):
                 "spare_partitions": [],
             },
         )
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
 
     def test_create_raid_0_with_one_element_fails(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(status=NODE_STATUS.READY)
         # Add one 10TB physical block devices to the node.
         bd = factory.make_PhysicalBlockDevice(node=node, size=10 * 1000**4)
@@ -655,12 +648,13 @@ class TestRaidsAPI(APITestCase.ForUser):
                 "spare_partitions": [],
             },
         )
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
 
     def test_create_raid_1_with_one_element_fails_without_side_effects(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(status=NODE_STATUS.READY)
         # Add one 10TB physical block devices to the node.
         bd = factory.make_PhysicalBlockDevice(node=node, size=10 * 1000**4)
@@ -678,13 +672,14 @@ class TestRaidsAPI(APITestCase.ForUser):
                 "spare_partitions": [],
             },
         )
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
-        self.assertIsNone(bd.get_effective_filesystem())
+        assert bd.get_effective_filesystem() is None
 
     def test_create_raid_with_invalid_block_device_fails(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(status=NODE_STATUS.READY)
         # Add no block devices to the node and, instead, invent a couple
         # non-existing block devices.
@@ -703,12 +698,13 @@ class TestRaidsAPI(APITestCase.ForUser):
                 "spare_partitions": [],
             },
         )
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
 
     def test_create_raid_with_invalid_partition_fails(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(status=NODE_STATUS.READY)
         # Add no partitions to the node and, instead, invent a couple
         # non-existing partitions.
@@ -727,12 +723,13 @@ class TestRaidsAPI(APITestCase.ForUser):
                 "spare_partitions": [],
             },
         )
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
 
     def test_create_raid_with_invalid_spare_fails(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(status=NODE_STATUS.READY)
         # Add 10 10TB physical block devices to the node.
         bds = [
@@ -753,14 +750,15 @@ class TestRaidsAPI(APITestCase.ForUser):
                 "spare_partitions": [],
             },
         )
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
         for bd in bds:
-            self.assertIsNone(bd.get_effective_filesystem())
+            assert bd.get_effective_filesystem() is None
 
     def test_create_raid_with_block_device_from_other_node_fails(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node1 = factory.make_Node(status=NODE_STATUS.READY)
         node2 = factory.make_Node(status=NODE_STATUS.READY)
         # Add 10 10TB physical block devices to the node.
@@ -782,14 +780,15 @@ class TestRaidsAPI(APITestCase.ForUser):
                 "spare_partitions": [],
             },
         )
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
         for bd in bds:
-            self.assertIsNone(bd.get_effective_filesystem())
+            assert bd.get_effective_filesystem() is None
 
     def test_create_raid_without_any_element_fails(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(status=NODE_STATUS.READY)
         uuid4 = str(uuid.uuid4())
         uri = get_raid_devices_uri(node)
@@ -805,20 +804,30 @@ class TestRaidsAPI(APITestCase.ForUser):
                 "spare_partitions": [],
             },
         )
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
 
 
-class TestRaidAPI(APITestCase.ForUser):
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user=user,client=oauth", id="user=user,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestRaidAPI:
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maas_user, api_client):
+        self.user = maas_user
+        self.client = api_client
+
     def test_handler_path(self):
         node = factory.make_Node()
         raid = factory.make_FilesystemGroup(
             node=node, group_type=FILESYSTEM_GROUP_TYPE.RAID_0
         )
-        self.assertEqual(
-            f"/MAAS/api/2.0/nodes/{node.system_id}/raid/{raid.id}/",
-            get_raid_device_uri(raid, node=node),
+        assert (
+            f"/MAAS/api/2.0/nodes/{node.system_id}/raid/{raid.id}/"
+            == get_raid_device_uri(raid, node=node)
         )
 
     def test_read(self):
@@ -885,9 +894,7 @@ class TestRaidAPI(APITestCase.ForUser):
         uri = get_raid_device_uri(raid)
         response = self.client.get(uri)
 
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed_raid = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
@@ -895,29 +902,23 @@ class TestRaidAPI(APITestCase.ForUser):
         parsed_spare_device_ids = [
             device["id"] for device in parsed_raid["spare_devices"]
         ]
-        self.assertEqual(parsed_raid.get("id"), raid.id)
-        self.assertEqual(parsed_raid.get("uuid"), raid.uuid)
-        self.assertEqual(parsed_raid.get("name"), raid.name)
-        self.assertEqual(parsed_raid.get("level"), raid.group_type)
-        self.assertEqual(parsed_raid.get("size"), raid.get_size())
-        self.assertEqual(
-            parsed_raid.get("human_size"),
-            human_readable_bytes(raid.get_size()),
+        assert parsed_raid.get("id") == raid.id
+        assert parsed_raid.get("uuid") == raid.uuid
+        assert parsed_raid.get("name") == raid.name
+        assert parsed_raid.get("level") == raid.group_type
+        assert parsed_raid.get("size") == raid.get_size()
+        assert parsed_raid.get("human_size") == human_readable_bytes(
+            raid.get_size()
         )
-        self.assertEqual(
-            parsed_raid.get("resource_uri"), get_raid_device_uri(raid)
+        assert parsed_raid.get("resource_uri") == get_raid_device_uri(raid)
+        assert parsed_raid.get("system_id") == node.system_id
+        assert sorted(block_device_ids + partitions_ids) == sorted(
+            parsed_device_ids
         )
-        self.assertEqual(parsed_raid.get("system_id"), node.system_id)
-        self.assertCountEqual(
-            block_device_ids + partitions_ids, parsed_device_ids
+        assert sorted(spare_block_device_ids + spare_partitions_ids) == sorted(
+            parsed_spare_device_ids
         )
-        self.assertCountEqual(
-            spare_block_device_ids + spare_partitions_ids,
-            parsed_spare_device_ids,
-        )
-        self.assertEqual(
-            raid.virtual_device.id, parsed_raid["virtual_device"]["id"]
-        )
+        assert raid.virtual_device.id == parsed_raid["virtual_device"]["id"]
 
     def test_read_404_when_not_raid(self):
         not_raid = factory.make_FilesystemGroup(
@@ -925,28 +926,26 @@ class TestRaidAPI(APITestCase.ForUser):
         )
         uri = get_raid_device_uri(not_raid)
         response = self.client.get(uri)
-        self.assertEqual(
-            http.client.NOT_FOUND, response.status_code, response.content
-        )
+        assert http.client.NOT_FOUND == response.status_code, response.content
 
     def test_rename_raid(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(status=NODE_STATUS.READY)
         raid = factory.make_FilesystemGroup(
             node=node, group_type=FILESYSTEM_GROUP_TYPE.RAID_5
         )
         uri = get_raid_device_uri(raid, node)
         response = self.client.put(uri, {"name": "raid0"})
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed_device = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertEqual("raid0", parsed_device["name"])
+        assert "raid0" == parsed_device["name"]
 
     def test_change_raid_uuid(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(status=NODE_STATUS.READY)
         raid = factory.make_FilesystemGroup(
             node=node, group_type=FILESYSTEM_GROUP_TYPE.RAID_6
@@ -954,16 +953,15 @@ class TestRaidAPI(APITestCase.ForUser):
         uuid4 = str(uuid.uuid4())
         uri = get_raid_device_uri(raid, node)
         response = self.client.put(uri, {"uuid": uuid4})
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed_device = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
-        self.assertEqual(uuid4, parsed_device["uuid"])
+        assert uuid4 == parsed_device["uuid"]
 
     def test_add_valid_blockdevice(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(status=NODE_STATUS.READY)
         raid = factory.make_FilesystemGroup(
             node=node, group_type=FILESYSTEM_GROUP_TYPE.RAID_6
@@ -971,28 +969,22 @@ class TestRaidAPI(APITestCase.ForUser):
         device = factory.make_PhysicalBlockDevice(node=node)
         uri = get_raid_device_uri(raid, node)
         response = self.client.put(uri, {"add_block_devices": [device.id]})
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed_device = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
         # Makes sure our new device is now part of the array.
-        self.assertIn(
-            device.id,
-            [
-                bd["id"]
-                for bd in parsed_device["devices"]
-                if bd["type"] == "physical"
-                and bd["filesystem"]["fstype"] == FILESYSTEM_TYPE.RAID
-            ],
-        )
-        self.assertEqual(
-            FILESYSTEM_TYPE.RAID, device.get_effective_filesystem().fstype
-        )
+        assert device.id in [
+            bd["id"]
+            for bd in parsed_device["devices"]
+            if bd["type"] == "physical"
+            and bd["filesystem"]["fstype"] == FILESYSTEM_TYPE.RAID
+        ]
+        assert FILESYSTEM_TYPE.RAID == device.get_effective_filesystem().fstype
 
     def test_remove_valid_blockdevice(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(status=NODE_STATUS.READY)
         raid = factory.make_FilesystemGroup(
             node=node, group_type=FILESYSTEM_GROUP_TYPE.RAID_6
@@ -1006,26 +998,22 @@ class TestRaidAPI(APITestCase.ForUser):
         )
         uri = get_raid_device_uri(raid, node)
         response = self.client.put(uri, {"remove_block_devices": [device.id]})
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed_device = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
         # Makes sure our new device is not part of the array.
-        self.assertNotIn(
-            device.id,
-            [
-                bd["id"]
-                for bd in parsed_device["devices"]
-                if bd["type"] == "physical"
-                and bd["filesystem"]["fstype"] == FILESYSTEM_TYPE.RAID
-            ],
-        )
-        self.assertIsNone(device.get_effective_filesystem())
+        assert device.id not in [
+            bd["id"]
+            for bd in parsed_device["devices"]
+            if bd["type"] == "physical"
+            and bd["filesystem"]["fstype"] == FILESYSTEM_TYPE.RAID
+        ]
+        assert device.get_effective_filesystem() is None
 
     def test_add_valid_partition(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(status=NODE_STATUS.READY)
         raid = factory.make_FilesystemGroup(
             node=node, group_type=FILESYSTEM_GROUP_TYPE.RAID_6
@@ -1035,25 +1023,21 @@ class TestRaidAPI(APITestCase.ForUser):
         ).add_partition()
         uri = get_raid_device_uri(raid, node)
         response = self.client.put(uri, {"add_partitions": [partition.id]})
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed_device = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
         # Makes sure our new partition is now part of the array.
-        self.assertIn(
-            partition.id,
-            [
-                p["id"]
-                for p in parsed_device["devices"]
-                if p["type"] == "partition"
-                and p["filesystem"]["fstype"] == FILESYSTEM_TYPE.RAID
-            ],
-        )
+        assert partition.id in [
+            p["id"]
+            for p in parsed_device["devices"]
+            if p["type"] == "partition"
+            and p["filesystem"]["fstype"] == FILESYSTEM_TYPE.RAID
+        ]
 
     def test_remove_valid_partition(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(status=NODE_STATUS.READY)
         raid = factory.make_FilesystemGroup(
             node=node, group_type=FILESYSTEM_GROUP_TYPE.RAID_6
@@ -1069,26 +1053,22 @@ class TestRaidAPI(APITestCase.ForUser):
         )
         uri = get_raid_device_uri(raid, node)
         response = self.client.put(uri, {"remove_partitions": [partition.id]})
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed_device = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
         # Makes sure our new device is not part of the array.
-        self.assertNotIn(
-            partition.id,
-            [
-                bd["id"]
-                for bd in parsed_device["spare_devices"]
-                if bd["type"] == "partition"
-                and bd["filesystem"]["fstype"] == FILESYSTEM_TYPE.RAID
-            ],
-        )
-        self.assertIsNone(partition.get_effective_filesystem())
+        assert partition.id not in [
+            bd["id"]
+            for bd in parsed_device["spare_devices"]
+            if bd["type"] == "partition"
+            and bd["filesystem"]["fstype"] == FILESYSTEM_TYPE.RAID
+        ]
+        assert partition.get_effective_filesystem() is None
 
     def test_add_valid_spare_device(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(status=NODE_STATUS.READY)
         raid = factory.make_FilesystemGroup(
             node=node, group_type=FILESYSTEM_GROUP_TYPE.RAID_6
@@ -1096,24 +1076,20 @@ class TestRaidAPI(APITestCase.ForUser):
         device = factory.make_PhysicalBlockDevice(node=node)
         uri = get_raid_device_uri(raid, node)
         response = self.client.put(uri, {"add_spare_devices": [device.id]})
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed_device = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
         # Makes sure our new device is now part of the array.
-        self.assertIn(
-            device.id,
-            [
-                bd["id"]
-                for bd in parsed_device["spare_devices"]
-                if bd["type"] == "physical"
-            ],
-        )
+        assert device.id in [
+            bd["id"]
+            for bd in parsed_device["spare_devices"]
+            if bd["type"] == "physical"
+        ]
 
     def test_remove_valid_spare_device(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(status=NODE_STATUS.READY)
         raid = factory.make_FilesystemGroup(
             node=node, group_type=FILESYSTEM_GROUP_TYPE.RAID_6
@@ -1127,25 +1103,21 @@ class TestRaidAPI(APITestCase.ForUser):
         )
         uri = get_raid_device_uri(raid, node)
         response = self.client.put(uri, {"remove_spare_devices": [device.id]})
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed_device = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
         # Makes sure our new device is not part of the array.
-        self.assertNotIn(
-            device.id,
-            [
-                bd["id"]
-                for bd in parsed_device["spare_devices"]
-                if bd["type"] == "physical"
-                and bd["filesystem"]["fstype"] == FILESYSTEM_TYPE.RAID_SPARE
-            ],
-        )
+        assert device.id not in [
+            bd["id"]
+            for bd in parsed_device["spare_devices"]
+            if bd["type"] == "physical"
+            and bd["filesystem"]["fstype"] == FILESYSTEM_TYPE.RAID_SPARE
+        ]
 
     def test_add_valid_spare_partition(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(status=NODE_STATUS.READY)
         raid = factory.make_FilesystemGroup(
             node=node, group_type=FILESYSTEM_GROUP_TYPE.RAID_6
@@ -1157,24 +1129,20 @@ class TestRaidAPI(APITestCase.ForUser):
         response = self.client.put(
             uri, {"add_spare_partitions": [partition.id]}
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed_device = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
         # Makes sure our new partition is now part of the array.
-        self.assertIn(
-            partition.id,
-            [
-                p["id"]
-                for p in parsed_device["spare_devices"]
-                if p["type"] == "partition"
-            ],
-        )
+        assert partition.id in [
+            p["id"]
+            for p in parsed_device["spare_devices"]
+            if p["type"] == "partition"
+        ]
 
     def test_remove_valid_spare_partition(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(status=NODE_STATUS.READY)
         raid = factory.make_FilesystemGroup(
             node=node, group_type=FILESYSTEM_GROUP_TYPE.RAID_6
@@ -1192,25 +1160,21 @@ class TestRaidAPI(APITestCase.ForUser):
         response = self.client.put(
             uri, {"remove_spare_partitions": [partition.id]}
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed_device = json.loads(
             response.content.decode(settings.DEFAULT_CHARSET)
         )
         # Makes sure our new device is not part of the array.
-        self.assertNotIn(
-            partition.id,
-            [
-                bd["id"]
-                for bd in parsed_device["spare_devices"]
-                if bd["type"] == "partition"
-                and bd["filesystem"]["fstype"] == FILESYSTEM_TYPE.RAID_SPARE
-            ],
-        )
+        assert partition.id not in [
+            bd["id"]
+            for bd in parsed_device["spare_devices"]
+            if bd["type"] == "partition"
+            and bd["filesystem"]["fstype"] == FILESYSTEM_TYPE.RAID_SPARE
+        ]
 
     def test_add_invalid_blockdevice_fails(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(status=NODE_STATUS.READY)
         raid = factory.make_FilesystemGroup(
             node=node, group_type=FILESYSTEM_GROUP_TYPE.RAID_6
@@ -1218,13 +1182,14 @@ class TestRaidAPI(APITestCase.ForUser):
         device = factory.make_PhysicalBlockDevice()  # From another node.
         uri = get_raid_device_uri(raid, node)
         response = self.client.put(uri, {"add_block_devices": [device.id]})
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
-        self.assertIsNone(device.get_effective_filesystem())
+        assert device.get_effective_filesystem() is None
 
     def test_remove_invalid_blockdevice_fails(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(status=NODE_STATUS.READY)
         raid = factory.make_FilesystemGroup(
             node=node, group_type=FILESYSTEM_GROUP_TYPE.RAID_6
@@ -1232,12 +1197,13 @@ class TestRaidAPI(APITestCase.ForUser):
         device = factory.make_PhysicalBlockDevice()  # From another node.
         uri = get_raid_device_uri(raid, node)
         response = self.client.put(uri, {"remove_block_devices": [device.id]})
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
 
     def test_add_invalid_partition_fails(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(status=NODE_STATUS.READY)
         raid = factory.make_FilesystemGroup(
             node=node, group_type=FILESYSTEM_GROUP_TYPE.RAID_6
@@ -1247,12 +1213,13 @@ class TestRaidAPI(APITestCase.ForUser):
         ).add_partition()
         uri = get_raid_device_uri(raid, node)
         response = self.client.put(uri, {"add_partitions": [partition.id]})
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
 
     def test_remove_invalid_partition_fails(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(status=NODE_STATUS.READY)
         raid = factory.make_FilesystemGroup(
             node=node, group_type=FILESYSTEM_GROUP_TYPE.RAID_6
@@ -1262,12 +1229,13 @@ class TestRaidAPI(APITestCase.ForUser):
         ).add_partition()
         uri = get_raid_device_uri(raid, node)
         response = self.client.put(uri, {"remove_partitions": [partition.id]})
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
 
     def test_add_invalid_spare_device_fails(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(status=NODE_STATUS.READY)
         raid = factory.make_FilesystemGroup(
             node=node, group_type=FILESYSTEM_GROUP_TYPE.RAID_6
@@ -1275,13 +1243,14 @@ class TestRaidAPI(APITestCase.ForUser):
         device = factory.make_PhysicalBlockDevice()  # From another node.
         uri = get_raid_device_uri(raid, node)
         response = self.client.put(uri, {"add_spare_devices": [device.id]})
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
-        self.assertIsNone(device.get_effective_filesystem())
+        assert device.get_effective_filesystem() is None
 
     def test_remove_invalid_spare_device_fails(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(status=NODE_STATUS.READY)
         raid = factory.make_FilesystemGroup(
             node=node, group_type=FILESYSTEM_GROUP_TYPE.RAID_6
@@ -1289,12 +1258,13 @@ class TestRaidAPI(APITestCase.ForUser):
         device = factory.make_PhysicalBlockDevice()  # From another node.
         uri = get_raid_device_uri(raid, node)
         response = self.client.put(uri, {"remove_spare_devices": [device.id]})
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
 
     def test_add_invalid_spare_partition_fails(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(status=NODE_STATUS.READY)
         raid = factory.make_FilesystemGroup(
             node=node, group_type=FILESYSTEM_GROUP_TYPE.RAID_6
@@ -1307,13 +1277,14 @@ class TestRaidAPI(APITestCase.ForUser):
         response = self.client.put(
             uri, {"add_spare_partitions": [partition.id]}
         )
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
-        self.assertIsNone(partition.get_effective_filesystem())
+        assert partition.get_effective_filesystem() is None
 
     def test_remove_invalid_spare_partition_fails(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(status=NODE_STATUS.READY)
         raid = factory.make_FilesystemGroup(
             node=node, group_type=FILESYSTEM_GROUP_TYPE.RAID_6
@@ -1326,22 +1297,21 @@ class TestRaidAPI(APITestCase.ForUser):
         response = self.client.put(
             uri, {"remove_spare_partitions": [partition.id]}
         )
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
 
     def test_delete_deletes_raid(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(status=NODE_STATUS.READY)
         raid = factory.make_FilesystemGroup(
             node=node, group_type=FILESYSTEM_GROUP_TYPE.RAID_5
         )
         uri = get_raid_device_uri(raid)
         response = self.client.delete(uri)
-        self.assertEqual(
-            http.client.NO_CONTENT, response.status_code, response.content
-        )
-        self.assertIsNone(reload_object(raid))
+        assert http.client.NO_CONTENT == response.status_code, response.content
+        assert reload_object(raid) is None
 
     def test_delete_403_when_not_admin(self):
         node = factory.make_Node(status=NODE_STATUS.READY)
@@ -1350,30 +1320,26 @@ class TestRaidAPI(APITestCase.ForUser):
         )
         uri = get_raid_device_uri(raid)
         response = self.client.delete(uri)
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content
 
     def test_delete_404_when_not_raid(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(status=NODE_STATUS.READY)
         not_raid = factory.make_FilesystemGroup(
             node=node, group_type=FILESYSTEM_GROUP_TYPE.BCACHE
         )
         uri = get_raid_device_uri(not_raid)
         response = self.client.delete(uri)
-        self.assertEqual(
-            http.client.NOT_FOUND, response.status_code, response.content
-        )
+        assert http.client.NOT_FOUND == response.status_code, response.content
 
     def test_delete_409_when_not_ready(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(status=NODE_STATUS.ALLOCATED)
         not_raid = factory.make_FilesystemGroup(
             node=node, group_type=FILESYSTEM_GROUP_TYPE.BCACHE
         )
         uri = get_raid_device_uri(not_raid)
         response = self.client.delete(uri)
-        self.assertEqual(
-            http.client.NOT_FOUND, response.status_code, response.content
-        )
+        assert http.client.NOT_FOUND == response.status_code, response.content

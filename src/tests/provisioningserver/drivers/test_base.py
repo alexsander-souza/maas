@@ -8,9 +8,9 @@ import re
 from unittest.mock import sentinel
 
 from jsonschema import validate, ValidationError
+import pytest
 
 from maastesting.factory import factory
-from maastesting.testcase import MAASTestCase
 from provisioningserver.drivers import (
     Architecture,
     ArchitectureRegistry,
@@ -22,13 +22,13 @@ from provisioningserver.drivers import (
 from provisioningserver.utils.testing import RegistryFixture
 
 
-class TestIpExtractor(MAASTestCase):
-    scenarios = (
-        (
-            "no-name",
-            {
-                "val": "http://:555/path",
-                "expected": {
+class TestIpExtractor:
+    @pytest.mark.parametrize(
+        "val,expected",
+        [
+            (
+                "http://:555/path",
+                {
                     "password": None,
                     "port": "555",
                     "path": "/path",
@@ -37,33 +37,15 @@ class TestIpExtractor(MAASTestCase):
                     "user": None,
                     "schema": "http",
                 },
-            },
-        ),
-        (
-            "name-with-brackets",
-            {"val": "http://[localhost]/path", "expected": None},
-        ),
-        (
-            "ipv4-with-brackets",
-            {"val": "http://[127.0.0.1]/path", "expected": None},
-        ),
-        (
-            "ipv4-with-leading-bracket",
-            {"val": "http://[127.0.0.1/path", "expected": None},
-        ),
-        (
-            "ipv4-with-trailing-bracket",
-            {"val": "http://127.0.0.1]/path", "expected": None},
-        ),
-        (
-            "ipv6-no-brackets",
-            {"val": "http://2001:db8::1/path", "expected": None},
-        ),
-        (
-            "name",
-            {
-                "val": "http://localhost:555/path",
-                "expected": {
+            ),
+            ("http://[localhost]/path", None),
+            ("http://[127.0.0.1]/path", None),
+            ("http://[127.0.0.1/path", None),
+            ("http://127.0.0.1]/path", None),
+            ("http://2001:db8::1/path", None),
+            (
+                "http://localhost:555/path",
+                {
                     "password": None,
                     "port": "555",
                     "path": "/path",
@@ -72,13 +54,10 @@ class TestIpExtractor(MAASTestCase):
                     "user": None,
                     "schema": "http",
                 },
-            },
-        ),
-        (
-            "ipv4",
-            {
-                "val": "http://127.0.0.1:555/path",
-                "expected": {
+            ),
+            (
+                "http://127.0.0.1:555/path",
+                {
                     "password": None,
                     "port": "555",
                     "path": "/path",
@@ -87,13 +66,10 @@ class TestIpExtractor(MAASTestCase):
                     "user": None,
                     "schema": "http",
                 },
-            },
-        ),
-        (
-            "ipv6-formatted-ipv4",
-            {
-                "val": "http://[::ffff:127.0.0.1]:555/path",
-                "expected": {
+            ),
+            (
+                "http://[::ffff:127.0.0.1]:555/path",
+                {
                     "password": None,
                     "port": "555",
                     "path": "/path",
@@ -102,184 +78,172 @@ class TestIpExtractor(MAASTestCase):
                     "user": None,
                     "schema": "http",
                 },
-            },
-        ),
-        (
+            ),
+            (
+                "http://[2001:db8::1]:555/path",
+                {
+                    "password": None,
+                    "port": "555",
+                    "path": "/path",
+                    "query": None,
+                    "address": "2001:db8::1",
+                    "user": None,
+                    "schema": "http",
+                },
+            ),
+            (
+                "http://127.0.0.1",
+                {
+                    "password": None,
+                    "port": None,
+                    "path": None,
+                    "query": None,
+                    "address": "127.0.0.1",
+                    "user": None,
+                    "schema": "http",
+                },
+            ),
+            (
+                "http://localhost",
+                {
+                    "password": None,
+                    "port": None,
+                    "path": None,
+                    "query": None,
+                    "address": "localhost",
+                    "user": None,
+                    "schema": "http",
+                },
+            ),
+            (
+                "http://[2001:db8::1]",
+                {
+                    "password": None,
+                    "port": None,
+                    "path": None,
+                    "query": None,
+                    "address": "2001:db8::1",
+                    "user": None,
+                    "schema": "http",
+                },
+            ),
+            (
+                "http://127.0.0.1/path",
+                {
+                    "password": None,
+                    "port": None,
+                    "path": "/path",
+                    "query": None,
+                    "address": "127.0.0.1",
+                    "user": None,
+                    "schema": "http",
+                },
+            ),
+            (
+                "http://localhost/path",
+                {
+                    "password": None,
+                    "port": None,
+                    "path": "/path",
+                    "query": None,
+                    "address": "localhost",
+                    "user": None,
+                    "schema": "http",
+                },
+            ),
+            (
+                "http://[2001:db8::1]/path",
+                {
+                    "password": None,
+                    "port": None,
+                    "path": "/path",
+                    "query": None,
+                    "address": "2001:db8::1",
+                    "user": None,
+                    "schema": "http",
+                },
+            ),
+            (
+                "http://user:pass@127.0.0.1:555/path",
+                {
+                    "password": "pass",
+                    "port": "555",
+                    "path": "/path",
+                    "query": None,
+                    "address": "127.0.0.1",
+                    "user": "user",
+                    "schema": "http",
+                },
+            ),
+            (
+                "http://user:pass@[2001:db8::1]:555/path",
+                {
+                    "password": "pass",
+                    "port": "555",
+                    "path": "/path",
+                    "query": None,
+                    "address": "2001:db8::1",
+                    "user": "user",
+                    "schema": "http",
+                },
+            ),
+            (
+                "http://user:pass@127.0.0.1/path",
+                {
+                    "password": "pass",
+                    "port": None,
+                    "path": "/path",
+                    "query": None,
+                    "address": "127.0.0.1",
+                    "user": "user",
+                    "schema": "http",
+                },
+            ),
+            (
+                "http://user:pass@[2001:db8::1]/path",
+                {
+                    "password": "pass",
+                    "port": None,
+                    "path": "/path",
+                    "query": None,
+                    "address": "2001:db8::1",
+                    "user": "user",
+                    "schema": "http",
+                },
+            ),
+        ],
+        ids=[
+            "no-name",
+            "name-with-brackets",
+            "ipv4-with-brackets",
+            "ipv4-with-leading-bracket",
+            "ipv4-with-trailing-bracket",
+            "ipv6-no-brackets",
+            "name",
+            "ipv4",
+            "ipv6-formatted-ipv4",
             "ipv6",
-            {
-                "val": "http://[2001:db8::1]:555/path",
-                "expected": {
-                    "password": None,
-                    "port": "555",
-                    "path": "/path",
-                    "query": None,
-                    "address": "2001:db8::1",
-                    "user": None,
-                    "schema": "http",
-                },
-            },
-        ),
-        (
             "ipv4-no-slash",
-            {
-                "val": "http://127.0.0.1",
-                "expected": {
-                    "password": None,
-                    "port": None,
-                    "path": None,
-                    "query": None,
-                    "address": "127.0.0.1",
-                    "user": None,
-                    "schema": "http",
-                },
-            },
-        ),
-        (
             "name-no-slash",
-            {
-                "val": "http://localhost",
-                "expected": {
-                    "password": None,
-                    "port": None,
-                    "path": None,
-                    "query": None,
-                    "address": "localhost",
-                    "user": None,
-                    "schema": "http",
-                },
-            },
-        ),
-        (
             "ipv6-no-slash",
-            {
-                "val": "http://[2001:db8::1]",
-                "expected": {
-                    "password": None,
-                    "port": None,
-                    "path": None,
-                    "query": None,
-                    "address": "2001:db8::1",
-                    "user": None,
-                    "schema": "http",
-                },
-            },
-        ),
-        (
             "ipv4-no-port",
-            {
-                "val": "http://127.0.0.1/path",
-                "expected": {
-                    "password": None,
-                    "port": None,
-                    "path": "/path",
-                    "query": None,
-                    "address": "127.0.0.1",
-                    "user": None,
-                    "schema": "http",
-                },
-            },
-        ),
-        (
             "name-no-port",
-            {
-                "val": "http://localhost/path",
-                "expected": {
-                    "password": None,
-                    "port": None,
-                    "path": "/path",
-                    "query": None,
-                    "address": "localhost",
-                    "user": None,
-                    "schema": "http",
-                },
-            },
-        ),
-        (
             "ipv6-no-port",
-            {
-                "val": "http://[2001:db8::1]/path",
-                "expected": {
-                    "password": None,
-                    "port": None,
-                    "path": "/path",
-                    "query": None,
-                    "address": "2001:db8::1",
-                    "user": None,
-                    "schema": "http",
-                },
-            },
-        ),
-        (
             "user-pass-ipv4",
-            {
-                "val": "http://user:pass@127.0.0.1:555/path",
-                "expected": {
-                    "password": "pass",
-                    "port": "555",
-                    "path": "/path",
-                    "query": None,
-                    "address": "127.0.0.1",
-                    "user": "user",
-                    "schema": "http",
-                },
-            },
-        ),
-        (
             "user-pass-ipv6",
-            {
-                "val": "http://user:pass@[2001:db8::1]:555/path",
-                "expected": {
-                    "password": "pass",
-                    "port": "555",
-                    "path": "/path",
-                    "query": None,
-                    "address": "2001:db8::1",
-                    "user": "user",
-                    "schema": "http",
-                },
-            },
-        ),
-        (
             "user-pass-ipv4-no-port",
-            {
-                "val": "http://user:pass@127.0.0.1/path",
-                "expected": {
-                    "password": "pass",
-                    "port": None,
-                    "path": "/path",
-                    "query": None,
-                    "address": "127.0.0.1",
-                    "user": "user",
-                    "schema": "http",
-                },
-            },
-        ),
-        (
             "user-pass-ipv6-no-port",
-            {
-                "val": "http://user:pass@[2001:db8::1]/path",
-                "expected": {
-                    "password": "pass",
-                    "port": None,
-                    "path": "/path",
-                    "query": None,
-                    "address": "2001:db8::1",
-                    "user": "user",
-                    "schema": "http",
-                },
-            },
-        ),
+        ],
     )
-
-    def test_make_ip_extractor(self):
-        actual = re.match(IP_EXTRACTOR_PATTERNS.URL, self.val)
-        if self.expected is None:
-            self.assertIsNone(actual)
+    def test_make_ip_extractor(self, val, expected):
+        actual = re.match(IP_EXTRACTOR_PATTERNS.URL, val)
+        if expected is None:
+            assert actual is None
         else:
-            self.assertEqual(actual.groupdict(), self.expected)
+            assert actual.groupdict() == expected
 
 
-class TestMakeSettingField(MAASTestCase):
+class TestMakeSettingField:
     def test_returns_valid_schema(self):
         setting = make_setting_field(
             factory.make_name("name"), factory.make_name("label")
@@ -291,47 +255,43 @@ class TestMakeSettingField(MAASTestCase):
         setting = make_setting_field(
             factory.make_name("name"), factory.make_name("label")
         )
-        self.assertLess(
-            {
-                "name",
-                "label",
-                "required",
-                "field_type",
-                "choices",
-                "default",
-                "scope",
-            },
-            setting.keys(),
-        )
+        assert {
+            "name",
+            "label",
+            "required",
+            "field_type",
+            "choices",
+            "default",
+            "scope",
+        } < setting.keys()
 
     def test_defaults_field_type_to_string(self):
         setting = make_setting_field(
             factory.make_name("name"), factory.make_name("label")
         )
-        self.assertEqual("string", setting["field_type"])
+        assert "string" == setting["field_type"]
 
     def test_defaults_choices_to_empty_list(self):
         setting = make_setting_field(
             factory.make_name("name"), factory.make_name("label")
         )
-        self.assertEqual([], setting["choices"])
+        assert [] == setting["choices"]
 
     def test_defaults_default_to_empty_string(self):
         setting = make_setting_field(
             factory.make_name("name"), factory.make_name("label")
         )
-        self.assertEqual("", setting["default"])
+        assert "" == setting["default"]
 
     def test_validates_choices(self):
         choices = ["invalid"]
-        self.assertRaises(
-            ValidationError,
-            make_setting_field,
-            factory.make_name("name"),
-            factory.make_name("label"),
-            field_type="choice",
-            choices=choices,
-        )
+        with pytest.raises(ValidationError):
+            make_setting_field(
+                factory.make_name("name"),
+                factory.make_name("label"),
+                field_type="choice",
+                choices=choices,
+            )
 
     def test_returns_dict_with_correct_values(self):
         name = factory.make_name("name")
@@ -351,32 +311,32 @@ class TestMakeSettingField(MAASTestCase):
             required=True,
             scope=SETTING_SCOPE.NODE,
         )
-        self.assertEqual(
-            {
-                "name": name,
-                "label": label,
-                "field_type": field_type,
-                "choices": choices,
-                "default": default,
-                "required": True,
-                "scope": SETTING_SCOPE.NODE,
-                "secret": False,
-            },
-            setting,
-        )
+        assert {
+            "name": name,
+            "label": label,
+            "field_type": field_type,
+            "choices": choices,
+            "default": default,
+            "required": True,
+            "scope": SETTING_SCOPE.NODE,
+            "secret": False,
+        } == setting
 
 
-class TestRegistries(MAASTestCase):
-    def setUp(self):
-        super().setUp()
+class TestRegistries:
+    @pytest.fixture(autouse=True)
+    def _setup(self):
         # Ensure the global registry is empty for each test run.
-        self.useFixture(RegistryFixture())
+        self._fixture = RegistryFixture()
+        self._fixture.setUp()
+        yield
+        self._fixture.cleanUp()
 
     def test_architecture_registry(self):
-        self.assertEqual([], list(ArchitectureRegistry))
+        assert [] == list(ArchitectureRegistry)
         ArchitectureRegistry.register_item("resource", sentinel.resource)
-        self.assertIn(
-            sentinel.resource, (item for name, item in ArchitectureRegistry)
+        assert sentinel.resource in (
+            item for name, item in ArchitectureRegistry
         )
 
     def test_get_by_pxealias_returns_valid_arch(self):
@@ -390,9 +350,7 @@ class TestRegistries(MAASTestCase):
         )
         ArchitectureRegistry.register_item("arch1", arch1)
         ArchitectureRegistry.register_item("arch2", arch2)
-        self.assertEqual(
-            arch1, ArchitectureRegistry.get_by_pxealias("archibald")
-        )
+        assert arch1 == ArchitectureRegistry.get_by_pxealias("archibald")
 
     def test_get_by_pxealias_returns_None_if_none_matching(self):
         arch1 = Architecture(
@@ -403,4 +361,4 @@ class TestRegistries(MAASTestCase):
         arch2 = Architecture(name="arch2", description="arch2")
         ArchitectureRegistry.register_item("arch1", arch1)
         ArchitectureRegistry.register_item("arch2", arch2)
-        self.assertIsNone(ArchitectureRegistry.get_by_pxealias("stinkywinky"))
+        assert ArchitectureRegistry.get_by_pxealias("stinkywinky") is None

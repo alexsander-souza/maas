@@ -3,6 +3,7 @@
 
 
 from django.core.exceptions import ValidationError
+import pytest
 
 from maascommon.dns import get_iface_name_based_hostname, get_ip_based_hostname
 from maasserver.utils.dns import (
@@ -11,12 +12,11 @@ from maasserver.utils.dns import (
     validate_url,
 )
 from maastesting.factory import factory
-from maastesting.testcase import MAASTestCase
 
 EXTENDED_SCHEMES = ["http", "https", "ftp", "ftps", "git", "file", "git+ssh"]
 
 
-class TestURLValidator(MAASTestCase):
+class TestURLValidator:
     """Test for the validation of URLs."""
 
     def assertAccepts(self, url):
@@ -24,7 +24,7 @@ class TestURLValidator(MAASTestCase):
         try:
             validate_url(url)
         except ValidationError as e:
-            raise AssertionError(str(e))  # noqa: B904
+            raise AssertionError(str(e)) from e
 
     def test_accepts_domain_without_explicit_top_level_domain(self):
         self.assertAccepts("http://foo")
@@ -33,106 +33,89 @@ class TestURLValidator(MAASTestCase):
         self.assertAccepts("http://foo/bar/")
 
     def test_accepts_localhost(self):
-        self.assertIsNone(
+        assert (
             validate_url("file://localhost/path", schemes=EXTENDED_SCHEMES)
+            is None
         )
 
     def test_accepts_git_scheme(self):
-        self.assertIsNone(
+        assert (
             validate_url("git://example.com/", schemes=EXTENDED_SCHEMES)
+            is None
         )
 
     def test_accepts_git_ssh_scheme(self):
-        self.assertIsNone(
+        assert (
             validate_url(
                 "git+ssh://git@github.com/example/hg-git.git",
                 schemes=EXTENDED_SCHEMES,
             )
+            is None
         )
 
     def test_accepts_single_digit_port(self):
         self.assertAccepts("http://example.com:5")
 
     def test_fails_hostname_starting_with_hyphen(self):
-        self.assertRaises(
-            ValidationError,
-            validate_url,
-            "git://-invalid.com",
-            EXTENDED_SCHEMES,
-        )
+        with pytest.raises(ValidationError):
+            validate_url("git://-invalid.com", EXTENDED_SCHEMES)
 
     def test_fails_newlines_at_end(self):
-        self.assertRaises(
-            ValidationError, validate_url, "http://www.djangoproject.com/\n"
-        )
-        self.assertRaises(
-            ValidationError, validate_url, "http://[::ffff:192.9.5.5]\n"
-        )
+        with pytest.raises(ValidationError):
+            validate_url("http://www.djangoproject.com/\n")
+        with pytest.raises(ValidationError):
+            validate_url("http://[::ffff:192.9.5.5]\n")
 
     def test_fails_for_trailing_junk(self):
-        self.assertRaises(
-            ValidationError,
-            validate_url,
-            "http://www.asdasdasdasdsadfm.com.br ",
-        )
-        self.assertRaises(
-            ValidationError,
-            validate_url,
-            "http://www.asdasdasdasdsadfm.com.br z",
-        )
+        with pytest.raises(ValidationError):
+            validate_url("http://www.asdasdasdasdsadfm.com.br ")
+        with pytest.raises(ValidationError):
+            validate_url("http://www.asdasdasdasdsadfm.com.br z")
 
 
-class TestIpBasedHostnameGenerator(MAASTestCase):
+class TestIpBasedHostnameGenerator:
     def test_ipv4_numeric(self):
-        self.assertEqual(get_ip_based_hostname(2130706433), "127-0-0-1")
-        self.assertEqual(
-            get_ip_based_hostname(int(pow(2, 32) - 1)),
-            "255-255-255-255",
-        )
+        assert get_ip_based_hostname(2130706433) == "127-0-0-1"
+        assert get_ip_based_hostname(int(pow(2, 32) - 1)) == "255-255-255-255"
 
     def test_ipv4_text(self):
         ipv4 = factory.make_ipv4_address()
-        self.assertEqual(get_ip_based_hostname(ipv4), ipv4.replace(".", "-"))
-        self.assertEqual(get_ip_based_hostname("172.16.0.1"), "172-16-0-1")
+        assert get_ip_based_hostname(ipv4) == ipv4.replace(".", "-")
+        assert get_ip_based_hostname("172.16.0.1") == "172-16-0-1"
 
     def test_ipv6_text(self):
-        self.assertEqual(
-            get_ip_based_hostname("2001:67c8:1562:1511:1:1:1:1"),
-            "2001-67c8-1562-1511-1-1-1-1",
+        assert (
+            get_ip_based_hostname("2001:67c8:1562:1511:1:1:1:1")
+            == "2001-67c8-1562-1511-1-1-1-1"
         )
 
     def test_ipv6_does_not_generate_invalid_name(self):
         ipv6s = ["2001:67c:1562::15", "2001:67c:1562:15::"]
         results = [get_ip_based_hostname(ipv6) for ipv6 in ipv6s]
-        self.assertEqual(
-            results, ["2001-67c-1562-0-0-0-0-15", "2001-67c-1562-15-0-0-0-0"]
-        )
+        assert results == [
+            "2001-67c-1562-0-0-0-0-15",
+            "2001-67c-1562-15-0-0-0-0",
+        ]
 
 
-class TestIfaceBasedHostnameGenerator(MAASTestCase):
+class TestIfaceBasedHostnameGenerator:
     def test_interface_name_changed(self):
-        self.assertEqual(get_iface_name_based_hostname("eth_0"), "eth-0")
+        assert get_iface_name_based_hostname("eth_0") == "eth-0"
 
     def test_interface_name_unchanged(self):
-        self.assertEqual(get_iface_name_based_hostname("eth0"), "eth0")
+        assert get_iface_name_based_hostname("eth0") == "eth0"
 
     def test_interface_name_trailing(self):
-        self.assertEqual(
-            get_iface_name_based_hostname("interface-"), "interface"
-        )
+        assert get_iface_name_based_hostname("interface-") == "interface"
 
     def test_interface_name_leading(self):
-        self.assertEqual(
-            get_iface_name_based_hostname("-interface"), "interface"
-        )
+        assert get_iface_name_based_hostname("-interface") == "interface"
 
     def test_interface_name_leading_nonletter(self):
-        self.assertEqual(
-            get_iface_name_based_hostname("33inter_face"), "inter-face"
-        )
+        assert get_iface_name_based_hostname("33inter_face") == "inter-face"
 
 
-class TestHostnameValidator(MAASTestCase):
+class TestHostnameValidator:
     """Tests for the validation of hostnames.
 
     Specifications based on:
@@ -158,7 +141,7 @@ class TestHostnameValidator(MAASTestCase):
         # to be built up from multiple labels.
         ten_chars = ("a" * 9) + "."
         hostname = ten_chars * 25 + ("b" * 5)
-        self.assertEqual(len(hostname), 255)
+        assert len(hostname) == 255
         return hostname
 
     def assertAccepts(self, hostname):
@@ -166,22 +149,24 @@ class TestHostnameValidator(MAASTestCase):
         try:
             validate_hostname(hostname)
         except ValidationError as e:
-            raise AssertionError(str(e))  # noqa: B904
+            raise AssertionError(str(e)) from e
 
     def assertRejects(self, hostname):
         """Assertion: the validator rejects `hostname`."""
-        self.assertRaises(ValidationError, validate_hostname, hostname)
+        with pytest.raises(ValidationError):
+            validate_hostname(hostname)
 
     def assertDomainValidatorAccepts(self, domain_name):
         """Assertion: the validator rejects `domain_name`."""
         try:
             validate_domain_name(domain_name)
         except ValidationError as e:
-            raise AssertionError(str(e))  # noqa: B904
+            raise AssertionError(str(e)) from e
 
     def assertDomainValidatorRejects(self, hostname):
         """Assertion: the validator rejects `hostname`."""
-        self.assertRaises(ValidationError, validate_domain_name, hostname)
+        with pytest.raises(ValidationError):
+            validate_domain_name(hostname)
 
     def test_accepts_ascii_letters(self):
         self.assertAccepts("abcde")

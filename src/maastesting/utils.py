@@ -8,9 +8,6 @@ import os
 from pathlib import Path
 import re
 
-from testtools.content import Content
-from testtools.content_type import UTF8_TEXT
-
 
 def running_in_docker() -> bool:
     """Return whether tests are running in a docker container."""
@@ -23,21 +20,6 @@ def age_file(path, seconds):
     atime = stat_result.st_atime
     mtime = stat_result.st_mtime
     os.utime(path, (atime, mtime - seconds))
-
-
-def content_from_file(path):
-    """Alternative to testtools' version.
-
-    This keeps an open file-handle, so it can obtain the log even when the
-    file has been unlinked.
-    """
-    fd = open(path, "rb")
-
-    def iterate():
-        fd.seek(0)
-        return iter(fd)
-
-    return Content(UTF8_TEXT, iterate)
 
 
 def extract_word_list(string):

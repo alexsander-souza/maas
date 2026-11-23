@@ -2,8 +2,11 @@
 # GNU Affero General Public License version 3 (see the file LICENSE).
 
 
+from collections import Counter
 import random
 from unittest.mock import Mock
+
+import pytest
 
 from maasserver.enum import INTERFACE_TYPE, IPADDRESS_TYPE
 from maasserver.models import bmc as bmc_module
@@ -11,7 +14,6 @@ from maasserver.models.bmc import BMC, BMCRoutableRackControllerRelationship
 from maasserver.models.staticipaddress import StaticIPAddress
 from maasserver.secrets import SecretManager
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from maasserver.utils.orm import post_commit_hooks, reload_object
 from maastesting.crochet import wait_for
 
@@ -19,7 +21,8 @@ wait_for_reactor = wait_for()
 UNDEFINED = object()
 
 
-class TestBMC(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test")
+class TestBMC:
     def get_machine_ip_address(self, machine):
         return machine.current_config.interface_set.all()[
             0
@@ -38,7 +41,7 @@ class TestBMC(MAASServerTestCase):
             subnet=subnet,
             interface=interface,
         )
-        self.assertEqual(1, machine.current_config.interface_set.count())
+        assert 1 == machine.current_config.interface_set.count()
 
         bmc = factory.make_BMC(
             power_type="virsh",
@@ -50,7 +53,7 @@ class TestBMC(MAASServerTestCase):
         # Make sure they're sharing an IP.
         machine = reload_object(machine)
         machine_ip_addr = self.get_machine_ip_address(machine)
-        self.assertEqual(machine_ip_addr.id, bmc.ip_address.id)
+        assert machine_ip_addr.id == bmc.ip_address.id
         return machine, bmc, machine_ip
 
     def make_machine_and_bmc_differing_ips(self):
@@ -66,7 +69,7 @@ class TestBMC(MAASServerTestCase):
             subnet=subnet,
             interface=interface,
         )
-        self.assertEqual(1, machine.current_config.interface_set.count())
+        assert 1 == machine.current_config.interface_set.count()
 
         ip_address = factory.make_StaticIPAddress(
             alloc_type=IPADDRESS_TYPE.STICKY, subnet=subnet
@@ -84,7 +87,7 @@ class TestBMC(MAASServerTestCase):
         # Make sure they're not sharing an IP.
         machine = reload_object(machine)
         machine_ip_addr = self.get_machine_ip_address(machine)
-        self.assertNotEqual(machine_ip_addr.id, bmc.ip_address.id)
+        assert machine_ip_addr.id != bmc.ip_address.id
         return machine, bmc, machine_ip
 
     def test_make_machine_and_bmc_discovered_ip(self):
@@ -105,11 +108,10 @@ class TestBMC(MAASServerTestCase):
                 % (factory.ip_to_url_format(discovered_ip.ip))
             },
         )
-        self.assertCountEqual(
-            [discovered_ip, sticky_ip],
-            StaticIPAddress.objects.filter(ip=discovered_ip.ip),
+        assert Counter([discovered_ip, sticky_ip]) == Counter(
+            StaticIPAddress.objects.filter(ip=discovered_ip.ip)
         )
-        self.assertEqual(sticky_ip, bmc.ip_address)
+        assert sticky_ip == bmc.ip_address
 
     def test_bmc_save_extracts_ip_address(self):
         subnet = factory.make_Subnet()
@@ -123,8 +125,8 @@ class TestBMC(MAASServerTestCase):
         bmc = factory.make_BMC(
             power_type="virsh", power_parameters=power_parameters
         )
-        self.assertEqual(sticky_ip.ip, bmc.ip_address.ip)
-        self.assertEqual(subnet, bmc.ip_address.subnet)
+        assert sticky_ip.ip == bmc.ip_address.ip
+        assert subnet == bmc.ip_address.subnet
 
     def test_bmc_save_accepts_naked_ipv6_address(self):
         subnet = factory.make_Subnet(cidr=factory.make_ipv6_network())
@@ -135,8 +137,8 @@ class TestBMC(MAASServerTestCase):
         bmc = factory.make_BMC(
             power_type="ipmi", power_parameters=power_parameters
         )
-        self.assertEqual(sticky_ip.ip, bmc.ip_address.ip)
-        self.assertEqual(subnet, bmc.ip_address.subnet)
+        assert sticky_ip.ip == bmc.ip_address.ip
+        assert subnet == bmc.ip_address.subnet
 
     def test_bmc_save_accepts_bracketed_ipv6_address(self):
         subnet = factory.make_Subnet(cidr=factory.make_ipv6_network())
@@ -147,8 +149,8 @@ class TestBMC(MAASServerTestCase):
         bmc = factory.make_BMC(
             power_type="ipmi", power_parameters=power_parameters
         )
-        self.assertEqual(sticky_ip.ip, bmc.ip_address.ip)
-        self.assertEqual(subnet, bmc.ip_address.subnet)
+        assert sticky_ip.ip == bmc.ip_address.ip
+        assert subnet == bmc.ip_address.subnet
 
     def test_bmc_changing_power_parameters_changes_ip(self):
         ip = factory.make_ipv4_address()
@@ -159,8 +161,8 @@ class TestBMC(MAASServerTestCase):
         bmc = factory.make_BMC(
             power_type="virsh", power_parameters=power_parameters
         )
-        self.assertEqual(ip, bmc.ip_address.ip)
-        self.assertIsNone(bmc.ip_address.subnet)
+        assert ip == bmc.ip_address.ip
+        assert bmc.ip_address.subnet is None
 
         subnet = factory.make_Subnet()
         sticky_ip = factory.make_StaticIPAddress(
@@ -173,16 +175,16 @@ class TestBMC(MAASServerTestCase):
             }
         )
         bmc.save()
-        self.assertEqual(sticky_ip.ip, bmc.ip_address.ip)
-        self.assertEqual(subnet, bmc.ip_address.subnet)
+        assert sticky_ip.ip == bmc.ip_address.ip
+        assert subnet == bmc.ip_address.subnet
 
     def test_bmc_changing_power_parameters_ipmi_errors_if_invalid(self):
         ip = factory.make_ipv4_address()
         power_parameters = {
             "power_address": "protocol://%s" % factory.ip_to_url_format(ip)
         }
-        with self.assertRaisesRegex(
-            ValueError, "does not support netmasks or subnet prefixes!"
+        with pytest.raises(
+            ValueError, match="does not support netmasks or subnet prefixes!"
         ):
             factory.make_BMC(
                 power_type="ipmi", power_parameters=power_parameters
@@ -198,11 +200,11 @@ class TestBMC(MAASServerTestCase):
 
         # Check BMC still has old IP.
         bmc = reload_object(bmc)
-        self.assertIsNotNone(bmc.ip_address)
-        self.assertEqual(old_ip, bmc.ip_address.ip)
+        assert bmc.ip_address is not None
+        assert old_ip == bmc.ip_address.ip
 
         # Make sure DB ID's of StaticIPAddress instances differ.
-        self.assertNotEqual(machine_ip.id, bmc.ip_address.id)
+        assert machine_ip.id != bmc.ip_address.id
 
     def test_removing_bmc_ip_when_shared_with_bmc(self):
         machine, bmc, machine_ip = self.make_machine_and_bmc_with_shared_ip()
@@ -211,13 +213,13 @@ class TestBMC(MAASServerTestCase):
         old_ip = bmc.ip_address.ip
         bmc.power_type = "manual"
         bmc.save()
-        self.assertIsNone(bmc.ip_address)
+        assert bmc.ip_address is None
 
         # Check Machine still has same IP address.
         machine = reload_object(machine)
         machine_ip_addr = self.get_machine_ip_address(machine)
-        self.assertEqual(old_ip, machine_ip_addr.ip)
-        self.assertEqual(machine_ip.id, machine_ip_addr.id)
+        assert old_ip == machine_ip_addr.ip
+        assert machine_ip.id == machine_ip_addr.id
 
     def test_changing_machine_ip_when_shared_with_bmc_keeps_both(self):
         machine, bmc, machine_ip = self.make_machine_and_bmc_with_shared_ip()
@@ -231,7 +233,7 @@ class TestBMC(MAASServerTestCase):
         # Remove IP so we can set machine_ip to its address.
         with post_commit_hooks:
             new_ip_address.delete()
-        self.assertNotEqual(new_ip, old_ip)
+        assert new_ip != old_ip
         machine_ip.ip = new_ip
 
         with post_commit_hooks:
@@ -240,15 +242,15 @@ class TestBMC(MAASServerTestCase):
         # Check Machine has new IP address but kept same instance: machine_ip.
         machine = reload_object(machine)
         machine_ip_addr = self.get_machine_ip_address(machine)
-        self.assertEqual(new_ip, machine_ip_addr.ip)
-        self.assertEqual(machine_ip.id, machine_ip_addr.id)
+        assert new_ip == machine_ip_addr.ip
+        assert machine_ip.id == machine_ip_addr.id
 
         # Check BMC still has old IP.
         bmc = reload_object(bmc)
-        self.assertEqual(old_ip, bmc.ip_address.ip)
+        assert old_ip == bmc.ip_address.ip
 
         # Make sure DB ID's of StaticIPAddress instances differ.
-        self.assertNotEqual(machine_ip_addr.id, bmc.ip_address.id)
+        assert machine_ip_addr.id != bmc.ip_address.id
 
     def test_changing_bmc_ip_when_shared_with_machine_keeps_both(self):
         machine, bmc, machine_ip = self.make_machine_and_bmc_with_shared_ip()
@@ -263,7 +265,7 @@ class TestBMC(MAASServerTestCase):
         with post_commit_hooks:
             # Remove IP so we can set machine_ip to its address.
             new_ip_address.delete()
-        self.assertNotEqual(new_ip, old_ip)
+        assert new_ip != old_ip
 
         with post_commit_hooks:
             bmc.set_power_parameters(
@@ -277,15 +279,15 @@ class TestBMC(MAASServerTestCase):
         # Check Machine has old IP address and kept same instance: machine_ip.
         machine = reload_object(machine)
         machine_ip_addr = self.get_machine_ip_address(machine)
-        self.assertEqual(old_ip, machine_ip_addr.ip)
-        self.assertEqual(machine_ip.id, machine_ip_addr.id)
+        assert old_ip == machine_ip_addr.ip
+        assert machine_ip.id == machine_ip_addr.id
 
         # Check BMC has new IP.
         bmc = reload_object(bmc)
-        self.assertEqual(new_ip, bmc.ip_address.ip)
+        assert new_ip == bmc.ip_address.ip
 
         # Make sure DB ID's of StaticIPAddress instances differ.
-        self.assertNotEqual(machine_ip_addr.id, bmc.ip_address.id)
+        assert machine_ip_addr.id != bmc.ip_address.id
 
     def test_bmc_existing_ip_links_to_it(self):
         ip = factory.make_StaticIPAddress(ip="10.10.10.10")
@@ -295,7 +297,7 @@ class TestBMC(MAASServerTestCase):
                 "power_address": f"virsh://{ip.ip}/path/to/thing#tag"
             },
         )
-        self.assertEqual(bmc.ip_address.id, ip.id)
+        assert bmc.ip_address.id == ip.id
 
     def test_merging_bmc_into_machine_ip(self):
         machine, bmc, machine_ip = self.make_machine_and_bmc_differing_ips()
@@ -313,7 +315,7 @@ class TestBMC(MAASServerTestCase):
         # Make sure BMC and Machine are using same StaticIPAddress instance.
         machine = reload_object(machine)
         machine_ip_addr = self.get_machine_ip_address(machine)
-        self.assertEqual(machine_ip_addr.id, bmc.ip_address.id)
+        assert machine_ip_addr.id == bmc.ip_address.id
 
     def test_delete_bmc_deletes_orphaned_ip_address(self):
         bmc = factory.make_BMC(
@@ -326,7 +328,7 @@ class TestBMC(MAASServerTestCase):
         ip = bmc.ip_address
         with post_commit_hooks:
             bmc.delete()
-        self.assertEqual(0, StaticIPAddress.objects.filter(id=ip.id).count())
+        assert 0 == StaticIPAddress.objects.filter(id=ip.id).count()
 
     def test_delete_deletes_bmc_secrets(self):
         bmc = factory.make_BMC()
@@ -337,18 +339,17 @@ class TestBMC(MAASServerTestCase):
 
         with post_commit_hooks:
             bmc.delete()
-        self.assertIsNone(
+        assert (
             secret_manager.get_simple_secret(
                 "power-parameters", obj=bmc, default=None
             )
+            is None
         )
 
     def test_delete_bmc_spares_non_orphaned_ip_address(self):
         machine, bmc, machine_ip = self.make_machine_and_bmc_with_shared_ip()
         bmc.delete()
-        self.assertEqual(
-            1, StaticIPAddress.objects.filter(id=machine_ip.id).count()
-        )
+        assert 1 == StaticIPAddress.objects.filter(id=machine_ip.id).count()
 
     def test_scope_power_parameters(self):
         bmc_parameters = dict(
@@ -361,9 +362,9 @@ class TestBMC(MAASServerTestCase):
         )
         parameters = {**bmc_parameters, **node_parameters}
         result = BMC.scope_power_parameters("vmware", parameters)
-        self.assertTrue(result[0])
-        self.assertEqual(bmc_parameters, result[1])
-        self.assertEqual(node_parameters, result[2])
+        assert result[0]
+        assert bmc_parameters == result[1]
+        assert node_parameters == result[2]
 
     def test_scope_power_parameters_unknown_parameter(self):
         bmc_parameters = dict(power_address=factory.make_string())
@@ -372,59 +373,54 @@ class TestBMC(MAASServerTestCase):
         node_parameters[factory.make_string()] = factory.make_string()
         parameters = {**bmc_parameters, **node_parameters}
         result = BMC.scope_power_parameters("hmc", parameters)
-        self.assertTrue(result[0])
-        self.assertEqual(bmc_parameters, result[1])
-        self.assertEqual(node_parameters, result[2])
+        assert result[0]
+        assert bmc_parameters == result[1]
+        assert node_parameters == result[2]
 
     def test_bmc_extract_ip_address_whole_value(self):
         power_parameters = {"power_address": "192.168.1.1"}
-        self.assertEqual(
-            "192.168.1.1", BMC.extract_ip_address("hmc", power_parameters)
-        )
+        assert "192.168.1.1" == BMC.extract_ip_address("hmc", power_parameters)
 
     def test_bmc_extract_ip_address_empty_power_type_gives_none(self):
         power_parameters = {"power_address": "192.168.1.1"}
-        self.assertIsNone(BMC.extract_ip_address("", power_parameters))
-        self.assertIsNone(BMC.extract_ip_address(None, power_parameters))
+        assert BMC.extract_ip_address("", power_parameters) is None
+        assert BMC.extract_ip_address(None, power_parameters) is None
 
     def test_bmc_extract_ip_address_blank_gives_none(self):
-        self.assertIsNone(BMC.extract_ip_address("hmc", None))
-        self.assertIsNone(BMC.extract_ip_address("hmc", {}))
+        assert BMC.extract_ip_address("hmc", None) is None
+        assert BMC.extract_ip_address("hmc", {}) is None
 
         power_parameters = {"power_address": ""}
-        self.assertIsNone(BMC.extract_ip_address("hmc", power_parameters))
+        assert BMC.extract_ip_address("hmc", power_parameters) is None
 
         power_parameters = {"power_address": None}
-        self.assertIsNone(BMC.extract_ip_address("hmc", power_parameters))
+        assert BMC.extract_ip_address("hmc", power_parameters) is None
 
     def test_bmc_extract_ip_address_from_url_blank_gives_none(self):
-        self.assertIsNone(BMC.extract_ip_address("virsh", None))
-        self.assertIsNone(BMC.extract_ip_address("virsh", {}))
+        assert BMC.extract_ip_address("virsh", None) is None
+        assert BMC.extract_ip_address("virsh", {}) is None
 
         power_parameters = {"power_address": ""}
-        self.assertEqual(
-            None, BMC.extract_ip_address("virsh", power_parameters)
-        )
+        assert BMC.extract_ip_address("virsh", power_parameters) is None
 
         power_parameters = {"power_address": None}
-        self.assertEqual(
-            None, BMC.extract_ip_address("virsh", power_parameters)
-        )
+        assert BMC.extract_ip_address("virsh", power_parameters) is None
 
     def test_bmc_extract_ip_address_from_url_empty_host(self):
         power_parameters = {"power_address": "http://:8080/foo/#baz"}
-        self.assertEqual("", BMC.extract_ip_address("virsh", power_parameters))
+        assert "" == BMC.extract_ip_address("virsh", power_parameters)
 
     def test_bmc_extract_ip_address_with_fqdn_returns_none(self):
-        self.assertIsNone(
+        assert (
             BMC.extract_ip_address(
                 "webhook", {"power_address": factory.make_url()}
             )
+            is None
         )
 
     def test_get_usable_rack_controllers_returns_empty_when_none(self):
         bmc = factory.make_BMC()
-        self.assertEqual(bmc.get_usable_rack_controllers(), [])
+        assert bmc.get_usable_rack_controllers() == []
 
     def test_get_usable_rack_controllers_returns_routable_racks(self):
         bmc = factory.make_BMC()
@@ -438,12 +434,13 @@ class TestBMC(MAASServerTestCase):
             BMCRoutableRackControllerRelationship(
                 bmc=bmc, rack_controller=rack, routable=False
             ).save()
-        self.assertCountEqual(
-            routable_racks,
-            bmc.get_usable_rack_controllers(with_connection=False),
+        assert Counter(routable_racks) == Counter(
+            bmc.get_usable_rack_controllers(with_connection=False)
         )
 
-    def test_get_usable_rack_controllers_returns_routable_racks_conn(self):
+    def test_get_usable_rack_controllers_returns_routable_racks_conn(
+        self, mocker
+    ):
         bmc = factory.make_BMC()
         routable_racks = [factory.make_RackController() for _ in range(3)]
         not_routable_racks = [factory.make_RackController() for _ in range(3)]
@@ -458,10 +455,9 @@ class TestBMC(MAASServerTestCase):
         connected_rack = random.choice(routable_racks)
         client = Mock()
         client.ident = connected_rack.system_id
-        self.patch(bmc_module, "getAllClients").return_value = [client]
-        self.assertEqual(
-            [connected_rack],
-            bmc.get_usable_rack_controllers(with_connection=True),
+        mocker.patch.object(bmc_module, "getAllClients", return_value=[client])
+        assert [connected_rack] == bmc.get_usable_rack_controllers(
+            with_connection=True
         )
 
     def test_get_usable_rack_controllers_updates_subnet_on_sip(self):
@@ -482,7 +478,7 @@ class TestBMC(MAASServerTestCase):
             ip_address=sip,
         )
         bmc.get_usable_rack_controllers()
-        self.assertEqual(subnet, reload_object(sip).subnet)
+        assert subnet == reload_object(sip).subnet
 
     def test_get_usable_rack_controllers_updates_handles_unknown_subnet(self):
         network = factory.make_ipv4_network()
@@ -499,28 +495,29 @@ class TestBMC(MAASServerTestCase):
             ip_address=sip,
         )
         bmc.get_usable_rack_controllers()
-        self.assertIsNone(reload_object(sip).subnet)
+        assert reload_object(sip).subnet is None
 
     def test_get_usable_rack_controllers_returns_rack_controllers(self):
         rack_controller = factory.make_RackController()
         machine = factory.make_Node(bmc_connected_to=rack_controller)
-        self.assertEqual(
-            [rack_controller],
-            machine.bmc.get_usable_rack_controllers(with_connection=False),
+        assert [rack_controller] == machine.bmc.get_usable_rack_controllers(
+            with_connection=False
         )
 
-    def test_get_client_identifiers_returns_rack_controller_system_ids(self):
+    def test_get_client_identifiers_returns_rack_controller_system_ids(
+        self, mocker
+    ):
         rack_controllers = [factory.make_RackController() for _ in range(3)]
         bmc = factory.make_BMC()
-        self.patch(
-            bmc, "get_usable_rack_controllers"
-        ).return_value = rack_controllers
+        mocker.patch.object(
+            bmc, "get_usable_rack_controllers", return_value=rack_controllers
+        )
         expected_system_ids = [rack.system_id for rack in rack_controllers]
-        self.assertEqual(expected_system_ids, bmc.get_client_identifiers())
+        assert expected_system_ids == bmc.get_client_identifiers()
 
-    def test_is_accessible_calls_get_usable_rack_controllers(self):
+    def test_is_accessible_calls_get_usable_rack_controllers(self, mocker):
         bmc = factory.make_BMC()
-        mock_get_usable_rack_controllers = self.patch(
+        mock_get_usable_rack_controllers = mocker.patch.object(
             bmc, "get_usable_rack_controllers"
         )
         bmc.is_accessible()
@@ -528,23 +525,23 @@ class TestBMC(MAASServerTestCase):
             with_connection=True
         )
 
-    def test_is_accessible_returns_true(self):
+    def test_is_accessible_returns_true(self, mocker):
         bmc = factory.make_BMC()
-        mock_get_usable_rack_controllers = self.patch(
+        mock_get_usable_rack_controllers = mocker.patch.object(
             bmc, "get_usable_rack_controllers"
         )
         mock_get_usable_rack_controllers.return_value = [
             factory.make_RackController()
         ]
-        self.assertTrue(bmc.is_accessible())
+        assert bmc.is_accessible()
 
-    def test_is_accessible_returns_false(self):
+    def test_is_accessible_returns_false(self, mocker):
         bmc = factory.make_BMC()
-        mock_get_usable_rack_controllers = self.patch(
+        mock_get_usable_rack_controllers = mocker.patch.object(
             bmc, "get_usable_rack_controllers"
         )
         mock_get_usable_rack_controllers.return_value = []
-        self.assertFalse(bmc.is_accessible())
+        assert not bmc.is_accessible()
 
     def test_update_routable_racks_updates_rack_relationship(self):
         node = factory.make_Node(power_type="virsh")
@@ -567,23 +564,15 @@ class TestBMC(MAASServerTestCase):
             [rack.system_id for rack in non_routable_racks],
         )
 
-        self.assertFalse(
-            BMCRoutableRackControllerRelationship.objects.filter(
-                id__in=old_relationship_ids
-            ).exists()
-        )
-        self.assertEqual(
-            BMCRoutableRackControllerRelationship.objects.filter(
-                rack_controller__in=routable_racks, routable=True
-            ).count(),
-            len(routable_racks),
-        )
-        self.assertEqual(
-            BMCRoutableRackControllerRelationship.objects.filter(
-                rack_controller__in=non_routable_racks, routable=False
-            ).count(),
-            len(non_routable_racks),
-        )
+        assert not BMCRoutableRackControllerRelationship.objects.filter(
+            id__in=old_relationship_ids
+        ).exists()
+        assert BMCRoutableRackControllerRelationship.objects.filter(
+            rack_controller__in=routable_racks, routable=True
+        ).count() == len(routable_racks)
+        assert BMCRoutableRackControllerRelationship.objects.filter(
+            rack_controller__in=non_routable_racks, routable=False
+        ).count() == len(non_routable_racks)
 
     def test_get_power_params(self):
         bmc = factory.make_BMC()
@@ -592,4 +581,4 @@ class TestBMC(MAASServerTestCase):
             "power-parameters", {"foo": "bar"}, obj=bmc
         )
 
-        self.assertEqual({"foo": "bar"}, bmc.get_power_parameters())
+        assert {"foo": "bar"} == bmc.get_power_parameters()

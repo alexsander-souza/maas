@@ -8,16 +8,16 @@ import json
 
 from django.conf import settings
 from django.urls import reverse
+import pytest
 
 from maasserver.sqlalchemy import service_layer
-from maasserver.testing.api import APITestCase
 from maasserver.testing.factory import factory
 from maasservicelayer.db.filters import QuerySpec
 from maasservicelayer.db.repositories.openfga_tuples import (
     OpenFGATuplesClauseFactory,
 )
 from maasservicelayer.models.openfga_tuple import OpenFGATuple
-from tests.maasserver.auth.test_auth import OpenFGAMockMixin
+from tests.maasserver.auth.test_auth import PytestOpenFGAMockMixin
 
 
 def _parse(response):
@@ -54,21 +54,24 @@ def get_openfga_tuple(
     return None
 
 
-class TestUserGroupsAPI(APITestCase.ForUser):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+@pytest.mark.parametrize("api_identity", ["user=user,client=oauth"])
+class TestUserGroupsAPI:
     """Tests for the UserGroups collection endpoint."""
 
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maas_user, api_client):
+        self.user = maas_user
+        self.client = api_client
+
     def test_handler_path(self):
-        self.assertEqual(
-            "/MAAS/api/2.0/groups/", reverse("usergroups_handler")
-        )
+        assert "/MAAS/api/2.0/groups/" == reverse("usergroups_handler")
 
     def test_list_default_groups(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         response = self.client.get(reverse("usergroups_handler"))
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
-        self.assertCountEqual(
+        assert sorted(
             [
                 {
                     "description": "Default administrators group",
@@ -83,31 +86,30 @@ class TestUserGroupsAPI(APITestCase.ForUser):
                     "resource_uri": "/MAAS/api/2.0/groups/2/",
                 },
             ],
-            _parse(response),
-        )
+            key=lambda group: group["id"],
+        ) == sorted(_parse(response), key=lambda group: group["id"])
 
     def test_list_returns_groups(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         _create_group(self.client, "group-a", "Group A")
         _create_group(self.client, "group-b", "Group B")
         response = self.client.get(reverse("usergroups_handler"))
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed = _parse(response)
         names = {g["name"] for g in parsed}
-        self.assertIn("group-a", names)
-        self.assertIn("group-b", names)
+        assert "group-a" in names
+        assert "group-b" in names
 
     def test_list_includes_resource_uri(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         created, _ = _create_group(self.client, "uri-group")
         response = self.client.get(reverse("usergroups_handler"))
         parsed = _parse(response)
         group = [g for g in parsed if g["name"] == "uri-group"][0]
-        self.assertEqual(
-            f"/MAAS/api/2.0/groups/{created['id']}/",
-            group["resource_uri"],
+        assert (
+            f"/MAAS/api/2.0/groups/{created['id']}/" == group["resource_uri"]
         )
 
     def test_create_requires_admin(self):
@@ -115,78 +117,78 @@ class TestUserGroupsAPI(APITestCase.ForUser):
             reverse("usergroups_handler"),
             {"name": "test-group"},
         )
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content
 
     def test_create(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         created, response = _create_group(
             self.client, "new-group", "A new group"
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
-        self.assertEqual("new-group", created["name"])
-        self.assertEqual("A new group", created["description"])
-        self.assertIn("id", created)
-        self.assertIn("resource_uri", created)
+        assert http.client.OK == response.status_code, response.content
+        assert "new-group" == created["name"]
+        assert "A new group" == created["description"]
+        assert "id" in created
+        assert "resource_uri" in created
 
     def test_create_without_description(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         created, response = _create_group(self.client, "no-desc-group")
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
-        self.assertEqual("no-desc-group", created["name"])
-        self.assertEqual("", created["description"])
+        assert http.client.OK == response.status_code, response.content
+        assert "no-desc-group" == created["name"]
+        assert "" == created["description"]
 
     def test_create_requires_name(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         response = self.client.post(
             reverse("usergroups_handler"),
             {"description": "no name"},
         )
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
 
 
-class TestUserGroupAPI(APITestCase.ForUser):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+@pytest.mark.parametrize("api_identity", ["user=user,client=oauth"])
+class TestUserGroupAPI:
     """Tests for the UserGroup single-resource endpoint."""
 
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maas_user, api_client):
+        self.user = maas_user
+        self.client = api_client
+
     def test_handler_path(self):
-        self.assertEqual(
-            "/MAAS/api/2.0/groups/1/",
-            reverse("usergroup_handler", args=[1]),
+        assert "/MAAS/api/2.0/groups/1/" == reverse(
+            "usergroup_handler", args=[1]
         )
 
     def test_read(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         group = factory.make_Usergroup()
 
         response = self.client.get(
             reverse("usergroup_handler", args=[group.id])
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed = _parse(response)
-        self.assertEqual(group.name, parsed["name"])
-        self.assertEqual(group.description, parsed["description"])
-        self.assertEqual(
-            f"/MAAS/api/2.0/groups/{group.id}/", parsed["resource_uri"]
-        )
+        assert group.name == parsed["name"]
+        assert group.description == parsed["description"]
+        assert f"/MAAS/api/2.0/groups/{group.id}/" == parsed["resource_uri"]
 
     def test_read_404(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         response = self.client.get(reverse("usergroup_handler", args=[99999]))
-        self.assertEqual(
-            http.client.NOT_FOUND, response.status_code, response.content
-        )
+        assert http.client.NOT_FOUND == response.status_code, response.content
 
     def test_update_requires_admin(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         group = factory.make_Usergroup()
 
         self.user.is_superuser = False
@@ -196,64 +198,58 @@ class TestUserGroupAPI(APITestCase.ForUser):
             reverse("usergroup_handler", args=[group.id]),
             {"name": "new-name"},
         )
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content
 
     def test_update(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         group = factory.make_Usergroup()
 
         response = self.client.put(
             reverse("usergroup_handler", args=[group.id]),
             {"name": "new-name", "description": "new desc"},
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed = _parse(response)
-        self.assertEqual("new-name", parsed["name"])
-        self.assertEqual("new desc", parsed["description"])
+        assert "new-name" == parsed["name"]
+        assert "new desc" == parsed["description"]
 
     def test_update_name_only(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         group = factory.make_Usergroup()
 
         response = self.client.put(
             reverse("usergroup_handler", args=[group.id]),
             {"name": "changed-name"},
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed = _parse(response)
-        self.assertEqual("changed-name", parsed["name"])
-        self.assertEqual(group.description, parsed["description"])
+        assert "changed-name" == parsed["name"]
+        assert group.description == parsed["description"]
 
     def test_update_description_only(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         group = factory.make_Usergroup()
 
         response = self.client.put(
             reverse("usergroup_handler", args=[group.id]),
             {"description": "updated"},
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed = _parse(response)
-        self.assertEqual(group.name, parsed["name"])
-        self.assertEqual("updated", parsed["description"])
+        assert group.name == parsed["name"]
+        assert "updated" == parsed["description"]
 
     def test_update_404(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         response = self.client.put(
             reverse("usergroup_handler", args=[99999]),
             {"name": "nope"},
         )
-        self.assertEqual(
-            http.client.NOT_FOUND, response.status_code, response.content
-        )
+        assert http.client.NOT_FOUND == response.status_code, response.content
 
     def test_delete_requires_admin(self):
         group = factory.make_Usergroup()
@@ -261,37 +257,31 @@ class TestUserGroupAPI(APITestCase.ForUser):
         response = self.client.delete(
             reverse("usergroup_handler", args=[group.id])
         )
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content
 
     def test_delete(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         group = factory.make_Usergroup()
 
         response = self.client.delete(
             reverse("usergroup_handler", args=[group.id])
         )
-        self.assertEqual(
-            http.client.NO_CONTENT, response.status_code, response.content
-        )
+        assert http.client.NO_CONTENT == response.status_code, response.content
 
         # Verify it's gone
         response = self.client.get(
             reverse("usergroup_handler", args=[group.id])
         )
-        self.assertEqual(
-            http.client.NOT_FOUND, response.status_code, response.content
-        )
+        assert http.client.NOT_FOUND == response.status_code, response.content
 
     def test_delete_404(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         response = self.client.delete(
             reverse("usergroup_handler", args=[99999])
         )
-        self.assertEqual(
-            http.client.NOT_FOUND, response.status_code, response.content
-        )
+        assert http.client.NOT_FOUND == response.status_code, response.content
 
     # Membership endpoints
     def test_list_members_requires_admin(self):
@@ -301,35 +291,32 @@ class TestUserGroupAPI(APITestCase.ForUser):
             reverse("usergroup_handler", args=[group.id]),
             {"op": "list_members"},
         )
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content
 
     def test_list_members_empty(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         group = factory.make_Usergroup()
 
         response = self.client.get(
             reverse("usergroup_handler", args=[group.id]),
             {"op": "list_members"},
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
-        self.assertEqual([], _parse(response))
+        assert http.client.OK == response.status_code, response.content
+        assert [] == _parse(response)
 
     def test_list_members_404(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         response = self.client.get(
             reverse("usergroup_handler", args=[99999]),
             {"op": "list_members"},
         )
-        self.assertEqual(
-            http.client.NOT_FOUND, response.status_code, response.content
-        )
+        assert http.client.NOT_FOUND == response.status_code, response.content
 
     def test_list_members_returns_added_members(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         group = factory.make_Usergroup()
         member = factory.make_User()
 
@@ -342,12 +329,10 @@ class TestUserGroupAPI(APITestCase.ForUser):
             reverse("usergroup_handler", args=[group.id]),
             {"op": "list_members"},
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed = _parse(response)
         usernames = {m["username"] for m in parsed}
-        self.assertIn(member.username, usernames)
+        assert member.username in usernames
 
     def test_add_member_requires_admin(self):
         group = factory.make_Usergroup()
@@ -356,12 +341,11 @@ class TestUserGroupAPI(APITestCase.ForUser):
             reverse("usergroup_handler", args=[group.id]),
             {"op": "add_member", "username": "someone"},
         )
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content
 
     def test_add_member(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         group = factory.make_Usergroup()
         member = factory.make_User()
 
@@ -369,56 +353,55 @@ class TestUserGroupAPI(APITestCase.ForUser):
             reverse("usergroup_handler", args=[group.id]),
             {"op": "add_member", "username": member.username},
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
-        self.assertIsNotNone(
+        assert http.client.OK == response.status_code, response.content
+        assert (
             get_openfga_tuple(
                 f"user:{member.id}",
                 "member",
                 "group",
                 str(group.id),
             )
+            is not None
         )
 
     def test_add_member_requires_username(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         group = factory.make_Usergroup()
 
         response = self.client.post(
             reverse("usergroup_handler", args=[group.id]),
             {"op": "add_member"},
         )
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
 
     def test_add_member_user_not_found(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         group = factory.make_Usergroup()
 
         response = self.client.post(
             reverse("usergroup_handler", args=[group.id]),
             {"op": "add_member", "username": "nonexistent-user"},
         )
-        self.assertEqual(
-            http.client.NOT_FOUND, response.status_code, response.content
-        )
+        assert http.client.NOT_FOUND == response.status_code, response.content
 
     def test_add_member_group_not_found(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         member = factory.make_User()
 
         response = self.client.post(
             reverse("usergroup_handler", args=[99999]),
             {"op": "add_member", "username": member.username},
         )
-        self.assertEqual(
-            http.client.NOT_FOUND, response.status_code, response.content
-        )
+        assert http.client.NOT_FOUND == response.status_code, response.content
 
     def test_add_member_already_in_group(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         group = factory.make_Usergroup()
         member = factory.make_User()
 
@@ -430,16 +413,15 @@ class TestUserGroupAPI(APITestCase.ForUser):
             reverse("usergroup_handler", args=[group.id]),
             {"op": "add_member", "username": member.username},
         )
-        self.assertEqual(
-            http.client.CONFLICT, response.status_code, response.content
-        )
-        self.assertIsNotNone(
+        assert http.client.CONFLICT == response.status_code, response.content
+        assert (
             get_openfga_tuple(
                 f"user:{member.id}",
                 "member",
                 "group",
                 str(group.id),
             )
+            is not None
         )
 
     def test_remove_member_requires_admin(self):
@@ -449,12 +431,11 @@ class TestUserGroupAPI(APITestCase.ForUser):
             reverse("usergroup_handler", args=[group.id]),
             {"op": "remove_member", "username": "someone"},
         )
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content
 
     def test_remove_member(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         group = factory.make_Usergroup()
         member = factory.make_User()
 
@@ -466,56 +447,55 @@ class TestUserGroupAPI(APITestCase.ForUser):
             reverse("usergroup_handler", args=[group.id]),
             {"op": "remove_member", "username": member.username},
         )
-        self.assertEqual(
-            http.client.NO_CONTENT, response.status_code, response.content
-        )
-        self.assertIsNone(
+        assert http.client.NO_CONTENT == response.status_code, response.content
+        assert (
             get_openfga_tuple(
                 f"user:{member.id}",
                 "member",
                 "group",
                 str(group.id),
             )
+            is None
         )
 
     def test_remove_member_requires_username(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         group = factory.make_Usergroup()
 
         response = self.client.post(
             reverse("usergroup_handler", args=[group.id]),
             {"op": "remove_member"},
         )
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
 
     def test_remove_member_group_not_found(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         user = factory.make_User()
 
         response = self.client.post(
             reverse("usergroup_handler", args=[9999]),
             {"op": "remove_member", "username": user.username},
         )
-        self.assertEqual(
-            http.client.NOT_FOUND, response.status_code, response.content
-        )
+        assert http.client.NOT_FOUND == response.status_code, response.content
 
     def test_remove_member_user_not_found(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         group = factory.make_Usergroup()
 
         response = self.client.post(
             reverse("usergroup_handler", args=[group.id]),
             {"op": "remove_member", "username": "nonexistent-user"},
         )
-        self.assertEqual(
-            http.client.NOT_FOUND, response.status_code, response.content
-        )
+        assert http.client.NOT_FOUND == response.status_code, response.content
 
     def test_remove_member_not_in_group_after_removal(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         group = factory.make_Usergroup()
         member = factory.make_User()
 
@@ -532,12 +512,10 @@ class TestUserGroupAPI(APITestCase.ForUser):
             reverse("usergroup_handler", args=[group.id]),
             {"op": "list_members"},
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed = _parse(response)
         usernames = {m["username"] for m in parsed}
-        self.assertNotIn(member.username, usernames)
+        assert member.username not in usernames
 
     # Entitlement endpoints
     def test_list_entitlements_requires_admin(self):
@@ -547,35 +525,32 @@ class TestUserGroupAPI(APITestCase.ForUser):
             reverse("usergroup_handler", args=[group.id]),
             {"op": "list_entitlements"},
         )
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content
 
     def test_list_entitlements_empty(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         group = factory.make_Usergroup()
 
         response = self.client.get(
             reverse("usergroup_handler", args=[group.id]),
             {"op": "list_entitlements"},
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
-        self.assertEqual([], _parse(response))
+        assert http.client.OK == response.status_code, response.content
+        assert [] == _parse(response)
 
     def test_list_entitlements_404(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         response = self.client.get(
             reverse("usergroup_handler", args=[99999]),
             {"op": "list_entitlements"},
         )
-        self.assertEqual(
-            http.client.NOT_FOUND, response.status_code, response.content
-        )
+        assert http.client.NOT_FOUND == response.status_code, response.content
 
     def test_list_entitlements_returns_added_entitlements(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
 
         group = factory.make_Usergroup()
         entitlement = factory.make_Entitlement(
@@ -595,14 +570,12 @@ class TestUserGroupAPI(APITestCase.ForUser):
             reverse("usergroup_handler", args=[group.id]),
             {"op": "list_entitlements"},
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed = _parse(response)
-        self.assertEqual(len(parsed), 1)
-        self.assertEqual(parsed[0]["resource_type"], entitlement.object_type)
-        self.assertEqual(parsed[0]["resource_id"], int(entitlement.object_id))
-        self.assertEqual(parsed[0]["entitlement"], entitlement.relation)
+        assert len(parsed) == 1
+        assert parsed[0]["resource_type"] == entitlement.object_type
+        assert parsed[0]["resource_id"] == int(entitlement.object_id)
+        assert parsed[0]["entitlement"] == entitlement.relation
 
     # add_entitlement
     def test_add_entitlement_requires_admin(self):
@@ -617,17 +590,17 @@ class TestUserGroupAPI(APITestCase.ForUser):
                 "entitlement": "can_edit_machines",
             },
         )
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
-        self.assertIsNone(
+        assert http.client.FORBIDDEN == response.status_code, response.content
+        assert (
             get_openfga_tuple(
                 f"group:{group.id}#member", "can_edit_machines", "maas", "0"
             )
+            is None
         )
 
     def test_add_entitlement_maas(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         group = factory.make_Usergroup()
 
         response = self.client.post(
@@ -639,20 +612,20 @@ class TestUserGroupAPI(APITestCase.ForUser):
                 "entitlement": "can_edit_machines",
             },
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
-        self.assertIsNotNone(
+        assert http.client.OK == response.status_code, response.content
+        assert (
             get_openfga_tuple(
                 f"group:{group.id}#member",
                 "can_edit_machines",
                 "maas",
                 "0",
             )
+            is not None
         )
 
     def test_add_entitlement_pool(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         group = factory.make_Usergroup()
         pool = factory.make_ResourcePool()
 
@@ -665,20 +638,20 @@ class TestUserGroupAPI(APITestCase.ForUser):
                 "entitlement": "can_edit_machines",
             },
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
-        self.assertIsNotNone(
+        assert http.client.OK == response.status_code, response.content
+        assert (
             get_openfga_tuple(
                 f"group:{group.id}#member",
                 "can_edit_machines",
                 "pool",
                 str(pool.id),
             )
+            is not None
         )
 
     def test_add_entitlement_group_not_found(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         response = self.client.post(
             reverse("usergroup_handler", args=[99999]),
             {
@@ -688,12 +661,11 @@ class TestUserGroupAPI(APITestCase.ForUser):
                 "entitlement": "can_edit_machines",
             },
         )
-        self.assertEqual(
-            http.client.NOT_FOUND, response.status_code, response.content
-        )
+        assert http.client.NOT_FOUND == response.status_code, response.content
 
     def test_add_entitlement_invalid_resource_type(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         group = factory.make_Usergroup()
 
         response = self.client.post(
@@ -705,14 +677,13 @@ class TestUserGroupAPI(APITestCase.ForUser):
                 "entitlement": "can_edit_machines",
             },
         )
-        self.assertEqual(
-            http.client.BAD_REQUEST,
-            response.status_code,
-            response.content,
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
 
     def test_add_entitlement_pool_not_found(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         group = factory.make_Usergroup()
 
         response = self.client.post(
@@ -724,12 +695,11 @@ class TestUserGroupAPI(APITestCase.ForUser):
                 "entitlement": "can_edit_machines",
             },
         )
-        self.assertEqual(
-            http.client.NOT_FOUND, response.status_code, response.content
-        )
+        assert http.client.NOT_FOUND == response.status_code, response.content
 
     def test_add_entitlement_maas_invalid(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         group = factory.make_Usergroup()
 
         response = self.client.post(
@@ -741,12 +711,13 @@ class TestUserGroupAPI(APITestCase.ForUser):
                 "entitlement": "can_edit_machines",
             },
         )
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
 
     def test_add_entitlement_invalid_entitlement_name(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         group = factory.make_Usergroup()
 
         response = self.client.post(
@@ -758,8 +729,8 @@ class TestUserGroupAPI(APITestCase.ForUser):
                 "entitlement": "nonexistent",
             },
         )
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
 
     def test_remove_entitlement_requires_admin(self):
@@ -774,12 +745,11 @@ class TestUserGroupAPI(APITestCase.ForUser):
                 "entitlement": "can_edit_machines",
             },
         )
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content
 
     def test_remove_entitlement(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         group = factory.make_Usergroup()
         entitlement = factory.make_Entitlement(group=group)
 
@@ -792,20 +762,20 @@ class TestUserGroupAPI(APITestCase.ForUser):
                 "entitlement": entitlement.relation,
             },
         )
-        self.assertEqual(
-            http.client.NO_CONTENT, response.status_code, response.content
-        )
-        self.assertIsNone(
+        assert http.client.NO_CONTENT == response.status_code, response.content
+        assert (
             get_openfga_tuple(
                 f"group:{group.id}#member",
                 entitlement.relation,
                 entitlement.object_type,
                 entitlement.object_id,
             )
+            is None
         )
 
     def test_remove_entitlement_group_not_found(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         response = self.client.post(
             reverse("usergroup_handler", args=[99999]),
             {
@@ -815,12 +785,11 @@ class TestUserGroupAPI(APITestCase.ForUser):
                 "entitlement": "can_edit_machines",
             },
         )
-        self.assertEqual(
-            http.client.NOT_FOUND, response.status_code, response.content
-        )
+        assert http.client.NOT_FOUND == response.status_code, response.content
 
     def test_remove_entitlement_invalid_entitlement(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         group = factory.make_Usergroup()
 
         response = self.client.post(
@@ -832,12 +801,13 @@ class TestUserGroupAPI(APITestCase.ForUser):
                 "entitlement": "invalid",
             },
         )
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
 
     def test_remove_entitlement_invalid_resource_type(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         group = factory.make_Usergroup()
 
         response = self.client.post(
@@ -849,28 +819,31 @@ class TestUserGroupAPI(APITestCase.ForUser):
                 "entitlement": "can_edit_machines",
             },
         )
-        self.assertEqual(
-            http.client.BAD_REQUEST,
-            response.status_code,
-            response.content,
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
 
 
-class TestUserGroupsOpenFGAIntegration(OpenFGAMockMixin, APITestCase.ForUser):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+@pytest.mark.parametrize("api_identity", ["user=user,client=oauth"])
+class TestUserGroupsOpenFGAIntegration(PytestOpenFGAMockMixin):
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maas_user, api_client):
+        self.user = maas_user
+        self.client = api_client
+
     def _create_group_as_admin(self, name, description="test"):
         """Create a group using edit permission, then return its id."""
         self.openfga_client.can_edit_identities.return_value = True
         created, resp = _create_group(self.client, name, description)
-        self.assertEqual(http.client.OK, resp.status_code, resp.content)
+        assert http.client.OK == resp.status_code, resp.content
         self.openfga_client.reset_mock()
         return created["id"]
 
     def test_list_requires_can_view_identities(self):
         self.openfga_client.can_view_identities.return_value = True
         response = self.client.get(reverse("usergroups_handler"))
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         self.openfga_client.can_view_identities.assert_called_once_with(
             self.user
         )
@@ -878,16 +851,12 @@ class TestUserGroupsOpenFGAIntegration(OpenFGAMockMixin, APITestCase.ForUser):
     def test_list_denied_without_view_permission(self):
         self.openfga_client.can_view_identities.return_value = False
         response = self.client.get(reverse("usergroups_handler"))
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content
 
     def test_create_requires_can_edit_identities(self):
         self.openfga_client.can_edit_identities.return_value = True
         _, response = _create_group(self.client, "openfga-group", "test")
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         self.openfga_client.can_edit_identities.assert_called_once_with(
             self.user
         )
@@ -898,9 +867,7 @@ class TestUserGroupsOpenFGAIntegration(OpenFGAMockMixin, APITestCase.ForUser):
             reverse("usergroups_handler"),
             {"name": "denied-group"},
         )
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content
 
     def test_read_requires_can_view_identities(self):
         group_id = self._create_group_as_admin("view-group")
@@ -908,9 +875,7 @@ class TestUserGroupsOpenFGAIntegration(OpenFGAMockMixin, APITestCase.ForUser):
         response = self.client.get(
             reverse("usergroup_handler", args=[group_id])
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         self.openfga_client.can_view_identities.assert_called_once_with(
             self.user
         )
@@ -921,9 +886,7 @@ class TestUserGroupsOpenFGAIntegration(OpenFGAMockMixin, APITestCase.ForUser):
         response = self.client.get(
             reverse("usergroup_handler", args=[group_id])
         )
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content
 
     def test_update_requires_can_edit_identities(self):
         group_id = self._create_group_as_admin("edit-group")
@@ -932,9 +895,7 @@ class TestUserGroupsOpenFGAIntegration(OpenFGAMockMixin, APITestCase.ForUser):
             reverse("usergroup_handler", args=[group_id]),
             {"name": "edited"},
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         self.openfga_client.can_edit_identities.assert_called_once_with(
             self.user
         )
@@ -946,9 +907,7 @@ class TestUserGroupsOpenFGAIntegration(OpenFGAMockMixin, APITestCase.ForUser):
             reverse("usergroup_handler", args=[group_id]),
             {"name": "nope"},
         )
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content
 
     def test_delete_requires_can_edit_identities(self):
         group_id = self._create_group_as_admin("del-group")
@@ -956,9 +915,7 @@ class TestUserGroupsOpenFGAIntegration(OpenFGAMockMixin, APITestCase.ForUser):
         response = self.client.delete(
             reverse("usergroup_handler", args=[group_id])
         )
-        self.assertEqual(
-            http.client.NO_CONTENT, response.status_code, response.content
-        )
+        assert http.client.NO_CONTENT == response.status_code, response.content
         self.openfga_client.can_edit_identities.assert_called_once_with(
             self.user
         )
@@ -969,9 +926,7 @@ class TestUserGroupsOpenFGAIntegration(OpenFGAMockMixin, APITestCase.ForUser):
         response = self.client.delete(
             reverse("usergroup_handler", args=[group_id])
         )
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content
 
     def test_list_members_requires_can_view_identities(self):
         group = factory.make_Usergroup()
@@ -980,9 +935,7 @@ class TestUserGroupsOpenFGAIntegration(OpenFGAMockMixin, APITestCase.ForUser):
             reverse("usergroup_handler", args=[group.id]),
             {"op": "list_members"},
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         self.openfga_client.can_view_identities.assert_called_once_with(
             self.user
         )
@@ -994,9 +947,7 @@ class TestUserGroupsOpenFGAIntegration(OpenFGAMockMixin, APITestCase.ForUser):
             reverse("usergroup_handler", args=[group.id]),
             {"op": "list_members"},
         )
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content
 
     def test_add_member_requires_can_edit_identities(self):
         group = factory.make_Usergroup()
@@ -1006,9 +957,7 @@ class TestUserGroupsOpenFGAIntegration(OpenFGAMockMixin, APITestCase.ForUser):
             reverse("usergroup_handler", args=[group.id]),
             {"op": "add_member", "username": member.username},
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         self.openfga_client.can_edit_identities.assert_called_once_with(
             self.user
         )
@@ -1020,9 +969,7 @@ class TestUserGroupsOpenFGAIntegration(OpenFGAMockMixin, APITestCase.ForUser):
             reverse("usergroup_handler", args=[group.id]),
             {"op": "add_member", "username": "someone"},
         )
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content
 
     def test_remove_member_requires_can_edit_identities(self):
         group = factory.make_Usergroup()
@@ -1039,9 +986,7 @@ class TestUserGroupsOpenFGAIntegration(OpenFGAMockMixin, APITestCase.ForUser):
             reverse("usergroup_handler", args=[group.id]),
             {"op": "remove_member", "username": member.username},
         )
-        self.assertEqual(
-            http.client.NO_CONTENT, response.status_code, response.content
-        )
+        assert http.client.NO_CONTENT == response.status_code, response.content
         self.openfga_client.can_edit_identities.assert_called_once_with(
             self.user
         )
@@ -1053,9 +998,7 @@ class TestUserGroupsOpenFGAIntegration(OpenFGAMockMixin, APITestCase.ForUser):
             reverse("usergroup_handler", args=[group.id]),
             {"op": "remove_member", "username": "someone"},
         )
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content
 
     def test_add_entitlement_requires_can_edit_identities(self):
         group = factory.make_Usergroup()
@@ -1069,9 +1012,7 @@ class TestUserGroupsOpenFGAIntegration(OpenFGAMockMixin, APITestCase.ForUser):
                 "entitlement": "can_edit_machines",
             },
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
 
     def test_add_entitlement_denied_without_can_edit_permission(self):
         group = factory.make_Usergroup()
@@ -1085,9 +1026,7 @@ class TestUserGroupsOpenFGAIntegration(OpenFGAMockMixin, APITestCase.ForUser):
                 "entitlement": "can_edit_machines",
             },
         )
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content
 
     def test_remove_entitlement_requires_can_edit_identities(self):
         group = factory.make_Usergroup()
@@ -1102,9 +1041,7 @@ class TestUserGroupsOpenFGAIntegration(OpenFGAMockMixin, APITestCase.ForUser):
                 "entitlement": entitlement.relation,
             },
         )
-        self.assertEqual(
-            http.client.NO_CONTENT, response.status_code, response.content
-        )
+        assert http.client.NO_CONTENT == response.status_code, response.content
 
     def test_remove_entitlement_denied_without_can_edit_permission(self):
         group = factory.make_Usergroup()
@@ -1119,9 +1056,7 @@ class TestUserGroupsOpenFGAIntegration(OpenFGAMockMixin, APITestCase.ForUser):
                 "entitlement": entitlement.relation,
             },
         )
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content
 
     def test_list_entitlements_requires_can_view_identities(self):
         group = factory.make_Usergroup()
@@ -1130,9 +1065,7 @@ class TestUserGroupsOpenFGAIntegration(OpenFGAMockMixin, APITestCase.ForUser):
             reverse("usergroup_handler", args=[group.id]),
             {"op": "list_entitlements"},
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
 
     def test_list_entitlements_denied_without_view_permission(self):
         group = factory.make_Usergroup()
@@ -1141,6 +1074,4 @@ class TestUserGroupsOpenFGAIntegration(OpenFGAMockMixin, APITestCase.ForUser):
             reverse("usergroup_handler", args=[group.id]),
             {"op": "list_entitlements"},
         )
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content

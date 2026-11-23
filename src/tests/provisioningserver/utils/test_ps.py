@@ -8,8 +8,9 @@ import random
 from textwrap import dedent
 from unittest.mock import Mock
 
+import pytest
+
 from maastesting.factory import factory
-from maastesting.testcase import MAASTestCase
 from provisioningserver.utils import ps as ps_module
 from provisioningserver.utils.fs import atomic_write
 from provisioningserver.utils.ps import (
@@ -68,102 +69,105 @@ IN_LXC_CONTAINER = dedent(
 )
 
 
-class TestIsPIDRunning(MAASTestCase):
-    scenarios = (
-        ("running", {"result": True, "exception": None}),
-        ("lookup-error", {"result": False, "exception": ProcessLookupError()}),
-        ("permission-error", {"result": True, "exception": PermissionError()}),
-        ("os-error", {"result": False, "exception": OSError()}),
-    )
+@pytest.mark.parametrize(
+    "result,exception",
+    [
+        (True, None),
+        (False, ProcessLookupError()),
+        (True, PermissionError()),
+        (False, OSError()),
+    ],
+    ids=["running", "lookup-error", "permission-error", "os-error"],
+)
+class TestIsPIDRunning:
+    def test_result(self, mocker, result, exception):
+        mocker.patch.object(ps_module.os, "kill").side_effect = exception
+        assert result == is_pid_running(random.randint(100, 200))
 
-    def test_result(self):
-        self.patch(ps_module.os, "kill").side_effect = self.exception
-        self.assertEqual(self.result, is_pid_running(random.randint(100, 200)))
 
-
-class TestIsPIDInContainer(MAASTestCase):
-    scenarios = (
-        ("not_in_container", {"result": False, "cgroup": NOT_IN_CONTAINER}),
-        (
-            "in_docker_container",
-            {"result": True, "cgroup": IN_DOCKER_CONTAINER},
-        ),
-        ("in_lxc_container", {"result": True, "cgroup": IN_LXC_CONTAINER}),
-    )
-
-    def test_result(self):
-        proc_path = self.make_dir()
+@pytest.mark.parametrize(
+    "result,cgroup",
+    [
+        (False, NOT_IN_CONTAINER),
+        (True, IN_DOCKER_CONTAINER),
+        (True, IN_LXC_CONTAINER),
+    ],
+    ids=["not_in_container", "in_docker_container", "in_lxc_container"],
+)
+class TestIsPIDInContainer:
+    def test_result(self, tmp_path, result, cgroup):
+        proc_path = tmp_path
         pid = random.randint(1, 1000)
-        pid_path = os.path.join(proc_path, str(pid))
+        pid_path = os.path.join(str(proc_path), str(pid))
         os.mkdir(pid_path)
-        atomic_write(
-            self.cgroup.encode("ascii"), os.path.join(pid_path, "cgroup")
-        )
-        self.assertEqual(
-            self.result, is_pid_in_container(pid, proc_path=proc_path)
-        )
+        atomic_write(cgroup.encode("ascii"), os.path.join(pid_path, "cgroup"))
+        assert result == is_pid_in_container(pid, proc_path=str(proc_path))
 
 
-class TestRunningInContainer(MAASTestCase):
-    def test_returns_False_when_ExternalProcessError(self):
-        mock_call = self.patch(ps_module, "call_and_check")
+class TestRunningInContainer:
+    def test_returns_False_when_ExternalProcessError(self, mocker):
+        mock_call = mocker.patch.object(ps_module, "call_and_check")
         mock_call.side_effect = ExternalProcessError(
             1, ["systemd-detect-virt", "-c"], output="none"
         )
         running_in_container.cache_clear()
-        self.assertFalse(running_in_container())
+        assert not running_in_container()
 
-    def test_returns_True_when_not_ExternalProcessError(self):
-        self.patch(ps_module, "call_and_check")
+    def test_returns_True_when_not_ExternalProcessError(self, mocker):
+        mocker.patch.object(ps_module, "call_and_check")
         running_in_container.cache_clear()
-        self.assertTrue(running_in_container())
+        assert running_in_container()
 
 
-class TestGetRunningPIDsWithCommand(MAASTestCase):
-    def test_returns_processes_running_on_host_not_container(self):
+class TestGetRunningPIDsWithCommand:
+    def test_returns_processes_running_on_host_not_container(self, mocker):
         command = factory.make_name("command")
 
         ps_output = "     20\n   malformedline\n     30\n     40\n"
 
-        mock_run_command = self.patch(ps_module, "run_command")
+        mock_run_command = mocker.patch.object(ps_module, "run_command")
         mock_run_command.return_value = Mock(stdout=ps_output, returncode=0)
 
-        mock_running_in_container = self.patch(
+        mock_running_in_container = mocker.patch.object(
             ps_module, "running_in_container"
         )
         mock_running_in_container.return_value = False
 
-        mock_is_pid_in_container = self.patch(ps_module, "is_pid_in_container")
+        mock_is_pid_in_container = mocker.patch.object(
+            ps_module, "is_pid_in_container"
+        )
         mock_is_pid_in_container.side_effect = (
             lambda pid, proc_path: pid == 30
         )  # Simulate PID 30 is in a container
 
         result = get_running_pids_with_command(command)
 
-        self.assertCountEqual(result, [20, 40])
+        assert sorted(result) == sorted([20, 40])
 
         mock_run_command.assert_called_once_with(
             "ps", "-C", command, "-o", "pid="
         )
 
-    def test_returns_processes_when_running_in_container(self):
+    def test_returns_processes_when_running_in_container(self, mocker):
         command = factory.make_name("command")
 
         ps_output = "     10\n     20\n     30\n"
 
-        mock_run_command = self.patch(ps_module, "run_command")
+        mock_run_command = mocker.patch.object(ps_module, "run_command")
         mock_run_command.return_value = Mock(stdout=ps_output, returncode=0)
 
-        mock_running_in_container = self.patch(
+        mock_running_in_container = mocker.patch.object(
             ps_module, "running_in_container"
         )
         mock_running_in_container.return_value = True
 
-        mock_is_pid_in_container = self.patch(ps_module, "is_pid_in_container")
+        mock_is_pid_in_container = mocker.patch.object(
+            ps_module, "is_pid_in_container"
+        )
 
         result = get_running_pids_with_command(command)
 
-        self.assertCountEqual(result, [10, 20, 30])
+        assert sorted(result) == sorted([10, 20, 30])
 
         mock_run_command.assert_called_once_with(
             "ps", "-C", command, "-o", "pid="

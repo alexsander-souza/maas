@@ -1,6 +1,7 @@
 # Copyright 2014-2015 Canonical Ltd.  This software is licensed under the
 # GNU Affero General Public License version 3 (see the file LICENSE).
 
+from collections import Counter
 import datetime
 
 from cryptography import x509
@@ -10,15 +11,16 @@ from cryptography.x509.oid import NameOID
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 from OpenSSL import crypto as ossl_crypto
+import pytest
 
 from maasserver.models import SSLKey, sslkey
 from maasserver.models.sslkey import validate_ssl_key
 from maasserver.testing import get_data
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 
 
-class TestSSLKeyValidator(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestSSLKeyValidator:
     def test_validates_x509_public_key(self):
         key_string = get_data("data/test_x509_0.pem")
         validate_ssl_key(key_string)
@@ -26,7 +28,8 @@ class TestSSLKeyValidator(MAASServerTestCase):
 
     def test_does_not_validate_random_data(self):
         key_string = factory.make_string()
-        self.assertRaises(ValidationError, validate_ssl_key, key_string)
+        with pytest.raises(ValidationError):
+            validate_ssl_key(key_string)
 
 
 def _make_ssl_cert(key_type="rsa", key_size=2048, hash_alg="sha256"):
@@ -78,47 +81,53 @@ def _make_ed25519_ssl_cert() -> str:
     return cert.public_bytes(serialization.Encoding.PEM).decode()
 
 
-class TestSSLKeyValidatorFIPS(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestSSLKeyValidatorFIPS:
     """Tests for FIPS-conditional validation in validate_ssl_key."""
 
-    def test_fips_rejects_sha1_cert(self):
+    def test_fips_rejects_sha1_cert(self, mocker):
         pem = _make_ssl_cert(key_type="rsa", key_size=2048, hash_alg="sha1")
-        self.patch(sslkey, "is_fips_enabled").return_value = True
-        error = self.assertRaises(ValidationError, validate_ssl_key, pem)
-        self.assertEqual("fips_violation", error.code)
+        mocker.patch.object(sslkey, "is_fips_enabled").return_value = True
+        with pytest.raises(ValidationError) as error:
+            validate_ssl_key(pem)
+        assert error.value.code == "fips_violation"
 
-    def test_fips_rejects_dsa_cert(self):
+    def test_fips_rejects_dsa_cert(self, mocker):
         pem = _make_ssl_cert(key_type="dsa", key_size=2048, hash_alg="sha256")
-        self.patch(sslkey, "is_fips_enabled").return_value = True
-        error = self.assertRaises(ValidationError, validate_ssl_key, pem)
-        self.assertEqual("fips_violation", error.code)
+        mocker.patch.object(sslkey, "is_fips_enabled").return_value = True
+        with pytest.raises(ValidationError) as error:
+            validate_ssl_key(pem)
+        assert error.value.code == "fips_violation"
 
-    def test_fips_rejects_ed25519_cert(self):
+    def test_fips_rejects_ed25519_cert(self, mocker):
         pem = _make_ed25519_ssl_cert()
-        self.patch(sslkey, "is_fips_enabled").return_value = True
-        error = self.assertRaises(ValidationError, validate_ssl_key, pem)
-        self.assertEqual("fips_violation", error.code)
+        mocker.patch.object(sslkey, "is_fips_enabled").return_value = True
+        with pytest.raises(ValidationError) as error:
+            validate_ssl_key(pem)
+        assert error.value.code == "fips_violation"
 
-    def test_fips_rejects_small_rsa_cert(self):
+    def test_fips_rejects_small_rsa_cert(self, mocker):
         pem = _make_ssl_cert(key_type="rsa", key_size=1024, hash_alg="sha256")
-        self.patch(sslkey, "is_fips_enabled").return_value = True
-        error = self.assertRaises(ValidationError, validate_ssl_key, pem)
-        self.assertEqual("fips_violation", error.code)
+        mocker.patch.object(sslkey, "is_fips_enabled").return_value = True
+        with pytest.raises(ValidationError) as error:
+            validate_ssl_key(pem)
+        assert error.value.code == "fips_violation"
 
-    def test_fips_accepts_sha256_rsa2048_cert(self):
+    def test_fips_accepts_sha256_rsa2048_cert(self, mocker):
         pem = _make_ssl_cert(key_type="rsa", key_size=2048, hash_alg="sha256")
-        self.patch(sslkey, "is_fips_enabled").return_value = True
+        mocker.patch.object(sslkey, "is_fips_enabled").return_value = True
         # No exception should be raised.
         validate_ssl_key(pem)
 
-    def test_no_fips_check_when_disabled(self):
+    def test_no_fips_check_when_disabled(self, mocker):
         pem = _make_ssl_cert(key_type="rsa", key_size=2048, hash_alg="sha1")
-        self.patch(sslkey, "is_fips_enabled").return_value = False
+        mocker.patch.object(sslkey, "is_fips_enabled").return_value = False
         # SHA-1 cert accepted when FIPS is disabled.
         validate_ssl_key(pem)
 
 
-class TestSSLKey(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestSSLKey:
     def test_sslkey_validation_with_valid_key(self):
         key_string = get_data("data/test_x509_0.pem")
         user = factory.make_User()
@@ -130,7 +139,8 @@ class TestSSLKey(MAASServerTestCase):
         key_string = factory.make_string()
         user = factory.make_User()
         key = SSLKey(key=key_string, user=user)
-        self.assertRaises(ValidationError, key.full_clean)
+        with pytest.raises(ValidationError):
+            key.full_clean()
 
     def test_sslkey_user_and_key_unique_together(self):
         key_string = get_data("data/test_x509_0.pem")
@@ -138,7 +148,8 @@ class TestSSLKey(MAASServerTestCase):
         key = SSLKey(key=key_string, user=user)
         key.save()
         key2 = SSLKey(key=key_string, user=user)
-        self.assertRaises(ValidationError, key2.full_clean)
+        with pytest.raises(ValidationError):
+            key2.full_clean()
 
     def test_sslkey_user_and_key_unique_together_db_level(self):
         # Even if we hack our way around model-level checks, uniqueness
@@ -153,11 +164,8 @@ class TestSSLKey(MAASServerTestCase):
         # database.
         redundant_key = SSLKey(key=key_string, user=factory.make_User())
         redundant_key.save()
-        self.assertRaises(
-            IntegrityError,
-            SSLKey.objects.filter(id=redundant_key.id).update,
-            user=user,
-        )
+        with pytest.raises(IntegrityError):
+            SSLKey.objects.filter(id=redundant_key.id).update(user=user)
 
     def test_sslkey_same_key_can_be_used_by_different_users(self):
         key_string = get_data("data/test_x509_0.pem")
@@ -170,11 +178,12 @@ class TestSSLKey(MAASServerTestCase):
         # No ValidationError.
 
 
-class TestSSLKeyManager(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestSSLKeyManager:
     def test_get_keys_for_user_no_keys(self):
         user = factory.make_User()
         keys = SSLKey.objects.get_keys_for_user(user)
-        self.assertCountEqual([], keys)
+        assert Counter([]) == Counter(keys)
 
     def test_get_keys_for_user_with_keys(self):
         user1, created_keys = factory.make_user_with_ssl_keys(
@@ -183,4 +192,4 @@ class TestSSLKeyManager(MAASServerTestCase):
         # user2
         factory.make_user_with_ssl_keys(n_keys=2)
         keys = SSLKey.objects.get_keys_for_user(user1)
-        self.assertCountEqual([key.key for key in created_keys], keys)
+        assert Counter([key.key for key in created_keys]) == Counter(keys)

@@ -4,23 +4,24 @@
 """Model tests for metadata server."""
 
 from django.contrib.auth.models import User
+import pytest
 
 from maasserver.models import UserProfile
-from maasserver.testing.testcase import MAASServerTestCase
 from metadataserver.nodeinituser import get_node_init_user, user_name
 
 
-class TestNodeInitUser(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test")
+class TestNodeInitUser:
     """Test the special "user" that makes metadata requests from nodes."""
 
     def test_always_returns_same_user(self):
         node_init_user = get_node_init_user()
-        self.assertEqual(node_init_user.id, get_node_init_user().id)
+        assert node_init_user.id == get_node_init_user().id
 
     def test_holds_node_init_user(self):
         user = get_node_init_user()
-        self.assertIsInstance(user, User)
-        self.assertEqual(user_name, user.username)
+        assert isinstance(user, User)
+        assert user.username == user_name
 
     def test_node_init_user_has_no_profile(self):
         user = get_node_init_user()
@@ -28,6 +29,5 @@ class TestNodeInitUser(MAASServerTestCase):
         try:
             profile = user.userprofile
         except UserProfile.DoesNotExist:
-            # Expected.
             pass
-        self.assertIsNone(profile)
+        assert profile is None

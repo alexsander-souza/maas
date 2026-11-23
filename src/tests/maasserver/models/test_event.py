@@ -5,18 +5,19 @@ import logging
 import random
 
 from django.db import IntegrityError
+import pytest
 
 from maasserver.models import Event, EventType
 from maasserver.models import event as event_module
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from provisioningserver.events import EVENT_TYPES
 
 
-class TestEvent(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestEvent:
     def test_displays_event_node(self):
         event = factory.make_Event()
-        self.assertIn("%s" % event.node, "%s" % event)
+        assert "%s" % event.node in "%s" % event
 
     def test_register_event_and_event_type_registers_event(self):
         # EvenType exists
@@ -25,7 +26,7 @@ class TestEvent(MAASServerTestCase):
         Event.objects.register_event_and_event_type(
             system_id=node.system_id, type_name=event_type.name
         )
-        self.assertIsNotNone(Event.objects.get(node=node))
+        assert Event.objects.get(node=node) is not None
 
     def test_register_event_and_event_type_registers_event_with_datetime(self):
         # EvenType exists
@@ -37,7 +38,7 @@ class TestEvent(MAASServerTestCase):
             type_name=event_type.name,
             created=created,
         )
-        self.assertEqual(created, event.created)
+        assert created == event.created
 
     def test_register_event_and_event_type_registers_event_for_new_type(self):
         # EventType does not exist
@@ -61,10 +62,10 @@ class TestEvent(MAASServerTestCase):
         event = Event.objects.get(node=node)
 
         # Check if all parameters were correctly saved.
-        self.assertEqual(node, event.node)
-        self.assertEqual(type_name, event.type.name)
-        self.assertEqual(description, event.description)
-        self.assertEqual(action, event.action)
+        assert node == event.node
+        assert type_name == event.type.name
+        assert description == event.description
+        assert action == event.action
 
     def test_register_event_and_event_type_registers_event_type(self):
         # EventType does not exist
@@ -85,7 +86,7 @@ class TestEvent(MAASServerTestCase):
         )
 
         # Check whether we created the event type.
-        self.assertIsNotNone(EventType.objects.get(name=type_name))
+        assert EventType.objects.get(name=type_name) is not None
 
     def test_register_event_and_event_type_registers_event_with_user(self):
         # EventType does not exist
@@ -107,8 +108,8 @@ class TestEvent(MAASServerTestCase):
         )
 
         # Check whether we created the event type.
-        self.assertIsNotNone(EventType.objects.get(name=type_name))
-        self.assertIsNotNone(Event.objects.get(node_system_id=node.system_id))
+        assert EventType.objects.get(name=type_name) is not None
+        assert Event.objects.get(node_system_id=node.system_id) is not None
 
     def test_create_node_event_creates_event(self):
         # EventTypes that are currently being used for
@@ -118,21 +119,26 @@ class TestEvent(MAASServerTestCase):
         Event.objects.create_node_event(
             system_id=node.system_id, event_type=event_type, user=node.owner
         )
-        self.assertIsNotNone(EventType.objects.get(name=event_type))
-        self.assertIsNotNone(Event.objects.get(node=node))
+        assert EventType.objects.get(name=event_type) is not None
+        assert Event.objects.get(node=node) is not None
 
-    def test_create_region_event_creates_region_event(self):
+    def test_create_region_event_creates_region_event(self, mocker):
         region = factory.make_RegionRackController()
-        self.patch(event_module.MAAS_ID, "get").return_value = region.system_id
+        mocker.patch.object(
+            event_module.MAAS_ID, "get", return_value=region.system_id
+        )
         Event.objects.create_region_event(
             event_type=EVENT_TYPES.REGION_IMPORT_ERROR, user=region.owner
         )
-        self.assertIsNotNone(
+        assert (
             EventType.objects.get(name=EVENT_TYPES.REGION_IMPORT_ERROR)
+            is not None
         )
-        self.assertIsNotNone(Event.objects.get(node=region))
+        assert Event.objects.get(node=region) is not None
 
-    def test_register_event_and_event_type_handles_integrity_errors(self):
+    def test_register_event_and_event_type_handles_integrity_errors(
+        self, mocker
+    ):
         # It's possible that two calls to
         # register_event_and_event_type() could arrive at more-or-less
         # the same time. If that happens, we could end up with an
@@ -154,10 +160,9 @@ class TestEvent(MAASServerTestCase):
             event_description=description,
         )
 
-        # Patch EventTypes.object.get() so that it raises DoesNotExist.
-        # This will cause the creation code to be run, which is where
-        # the IntegrityError occurs.
-        self.patch(EventType.objects, "create").side_effect = IntegrityError
+        mocker.patch.object(
+            EventType.objects, "create", side_effect=IntegrityError
+        )
         Event.objects.register_event_and_event_type(
             system_id=node.system_id,
             type_name=type_name,
@@ -172,5 +177,5 @@ class TestEvent(MAASServerTestCase):
         # If we get this far then we have the event type and the
         # events, and more importantly no errors got raised.
         event_type = EventType.objects.get(name=type_name)
-        self.assertIsNotNone(event_type)
-        self.assertEqual(2, Event.objects.filter(node=node).count())
+        assert event_type is not None
+        assert 2 == Event.objects.filter(node=node).count()

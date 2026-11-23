@@ -3,13 +3,15 @@
 
 """Tests for `DeployForm`."""
 
+import pytest
+
 from maasserver.enum import BOOT_RESOURCE_TYPE
 from maasserver.forms import DeployForm
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 
 
-class TestDeployForm(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestDeployForm:
     """Tests for `DeployForm`."""
 
     def test_uses_live_data(self):
@@ -26,8 +28,8 @@ class TestDeployForm(MAASServerTestCase):
         os_names = [name for name, title in os_choices]
         release_choices = deploy_form.fields["default_distro_series"].choices
         release_names = [name for name, title in release_choices]
-        self.assertIn(osystem, os_names)
-        self.assertIn(release_name, release_names)
+        assert osystem in os_names
+        assert release_name in release_names
 
     def test_accepts_new_values(self):
         osystem = factory.make_name("osystem")
@@ -41,4 +43,4 @@ class TestDeployForm(MAASServerTestCase):
             "default_distro_series": release_name,
         }
         form = DeployForm(data=params)
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors

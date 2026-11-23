@@ -11,15 +11,14 @@ from django.urls import reverse
 from piston3 import emitters as piston_emitters
 from piston3.handler import typemapper
 from piston3.utils import Mimer
+import pytest
 
 from maasserver.api.machines import MachinesHandler
 from maasserver.api.support import method_fields_reserved_fields_patch
 from maasserver.api.zones import ZoneHandler
 from maasserver.models import Zone
-from maasserver.testing.api import APITestCase
 from maasserver.testing.factory import factory
 from maastesting.http import make_HttpRequest
-from maastesting.testcase import MAASTestCase
 from tests.maasserver.api.test_nodes import RenderedNodesMixin
 
 
@@ -41,26 +40,27 @@ def load_piston_emitter():
 PistonEmitter = load_piston_emitter()
 
 
-class TestConstruct(RenderedNodesMixin, APITestCase.ForUser):
-    def setUp(self):
-        super().setUp()
-        # Loading the URLconf registers every handler in the typemapper.
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestConstruct(RenderedNodesMixin):
+    @pytest.fixture(autouse=True)
+    def _setup(self, admin, admin_api_client, mocker):
+        self.user = admin
+        self.client = admin_api_client
         reverse("machines_handler")
+        self.setup_rendered_nodes(mocker)
 
-    def assertConstructedLikePiston(self, data, handler, fields):
+    def assert_constructed_like_piston(self, data, handler, fields):
         expected = PistonEmitter(
             data, typemapper, handler, fields, False
         ).construct()
         observed = piston_emitters.Emitter(
             data, typemapper, handler, fields, False
         ).construct()
-        self.assertEqual(
-            json.dumps(observed, cls=DjangoJSONEncoder, indent=1),
-            json.dumps(expected, cls=DjangoJSONEncoder, indent=1),
-        )
+        assert json.dumps(
+            observed, cls=DjangoJSONEncoder, indent=1
+        ) == json.dumps(expected, cls=DjangoJSONEncoder, indent=1)
 
     def test_machines_listing(self):
-        self.become_admin()
         parent = self.make_rich_machine()
         self.make_machine_with_fallbacks(parent)
         factory.make_Machine()
@@ -68,7 +68,7 @@ class TestConstruct(RenderedNodesMixin, APITestCase.ForUser):
         request = make_HttpRequest()
         request.user = self.user
 
-        self.assertConstructedLikePiston(
+        self.assert_constructed_like_piston(
             handler.read(request), handler, handler.fields
         )
 
@@ -88,7 +88,7 @@ class TestConstruct(RenderedNodesMixin, APITestCase.ForUser):
             ("blockdevice_set", ("name", "size")),
         )
 
-        self.assertConstructedLikePiston([machine], handler, fields)
+        self.assert_constructed_like_piston([machine], handler, fields)
 
     def test_mixed_payload(self):
         machine = self.make_rich_machine()
@@ -101,7 +101,7 @@ class TestConstruct(RenderedNodesMixin, APITestCase.ForUser):
             "machines": [machine, machine.zone],
         }
 
-        self.assertConstructedLikePiston(payload, handler, None)
+        self.assert_constructed_like_piston(payload, handler, None)
 
     def test_handlers_registered_while_emitting(self):
         zone = factory.make_Zone()
@@ -127,18 +127,14 @@ class TestConstruct(RenderedNodesMixin, APITestCase.ForUser):
 
         observed = construct(piston_emitters.Emitter)
 
-        self.assertEqual(observed, construct(PistonEmitter))
-        self.assertNotIn("resource_uri", observed[0])
-        self.assertIn("resource_uri", observed[2])
+        assert observed == construct(PistonEmitter)
+        assert "resource_uri" not in observed[0]
+        assert "resource_uri" in observed[2]
 
 
-class TestConstructCircularReferences(MAASTestCase):
-    def test_raises_on_circular_reference(self):
-        data = {"key": []}
-        data["key"].append(data)
+def test_emitter_raises_on_circular_references():
+    data = {"key": []}
+    data["key"].append(data)
 
-        self.assertRaisesRegex(
-            RuntimeError,
-            "Circular reference detected",
-            piston_emitters.Emitter(data, typemapper, None).construct,
-        )
+    with pytest.raises(RuntimeError, match="Circular reference detected"):
+        piston_emitters.Emitter(data, typemapper, None).construct()

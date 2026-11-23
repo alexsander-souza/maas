@@ -5,13 +5,15 @@
 
 import random
 
+import pytest
+
 from maasserver.forms.domain import DomainForm
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from maasserver.utils.orm import post_commit_hooks, reload_object
 
 
-class TestDomainForm(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestDomainForm:
     def test_creates_domain(self):
         domain_name = factory.make_name("domain")
         domain_authoritative = factory.pick_bool()
@@ -23,19 +25,19 @@ class TestDomainForm(MAASServerTestCase):
                 "ttl": ttl,
             }
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
 
         with post_commit_hooks:
             domain = form.save()
 
-        self.assertEqual(domain_name, domain.name)
-        self.assertEqual(domain_authoritative, domain.authoritative)
-        self.assertEqual(ttl, domain.ttl)
+        assert domain_name == domain.name
+        assert domain_authoritative == domain.authoritative
+        assert ttl == domain.ttl
 
     def test_doest_require_name_on_update(self):
         domain = factory.make_Domain()
         form = DomainForm(instance=domain, data={})
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
 
     def test_updates_domain(self):
         new_name = factory.make_name("domain")
@@ -52,15 +54,15 @@ class TestDomainForm(MAASServerTestCase):
                 "ttl": new_ttl,
             },
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
 
         with post_commit_hooks:
             form.save()
 
         domain = reload_object(domain)
-        self.assertEqual(new_name, domain.name)
-        self.assertEqual(new_authoritative, domain.authoritative)
-        self.assertEqual(new_ttl, domain.ttl)
+        assert new_name == domain.name
+        assert new_authoritative == domain.authoritative
+        assert new_ttl == domain.ttl
 
     def test_accepts_ttl(self):
         name = factory.make_name("domain")
@@ -69,14 +71,14 @@ class TestDomainForm(MAASServerTestCase):
         form = DomainForm(
             {"name": name, "authoritative": authoritative, "ttl": ttl}
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
 
         with post_commit_hooks:
             domain = form.save()
 
-        self.assertEqual(name, domain.name)
-        self.assertEqual(authoritative, domain.authoritative)
-        self.assertEqual(ttl, domain.ttl)
+        assert name == domain.name
+        assert authoritative == domain.authoritative
+        assert ttl == domain.ttl
 
     def test_accepts_ttl_equals_none(self):
         name = factory.make_name("domain")
@@ -85,20 +87,20 @@ class TestDomainForm(MAASServerTestCase):
         form = DomainForm(
             {"name": name, "authoritative": authoritative, "ttl": ttl}
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
 
         with post_commit_hooks:
             domain = form.save()
 
         form = DomainForm(instance=domain, data={"ttl": None})
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
 
         with post_commit_hooks:
             domain = form.save()
 
-        self.assertEqual(name, domain.name)
-        self.assertEqual(authoritative, domain.authoritative)
-        self.assertIsNone(domain.ttl)
+        assert name == domain.name
+        assert authoritative == domain.authoritative
+        assert domain.ttl is None
 
     def test_can_create_forward_dns_server(self):
         name = factory.make_name("domain")
@@ -110,20 +112,17 @@ class TestDomainForm(MAASServerTestCase):
                 "forward_dns_servers": "  ".join(forward_dns_servers),
             }
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
 
         with post_commit_hooks:
             domain = form.save()
 
-        self.assertEqual(
-            forward_dns_servers,
-            [
-                fwd_dns_srvr.ip_address
-                for fwd_dns_srvr in domain.forward_dns_servers
-            ],
-        )
+        assert forward_dns_servers == [
+            fwd_dns_srvr.ip_address
+            for fwd_dns_srvr in domain.forward_dns_servers
+        ]
         for fwd_dns_srvr in domain.forward_dns_servers:
-            self.assertEqual(fwd_dns_srvr.port, 53)
+            assert fwd_dns_srvr.port == 53
 
     def test_can_create_forward_dns_server_with_port(self):
         name = factory.make_name("domain")
@@ -137,18 +136,15 @@ class TestDomainForm(MAASServerTestCase):
                 "forward_dns_servers": "  ".join(forward_dns_servers),
             }
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
 
         with post_commit_hooks:
             domain = form.save()
 
-        self.assertEqual(
-            forward_dns_servers,
-            [
-                fwd_dns_srvr.ip_and_port
-                for fwd_dns_srvr in domain.forward_dns_servers
-            ],
-        )
+        assert forward_dns_servers == [
+            fwd_dns_srvr.ip_and_port
+            for fwd_dns_srvr in domain.forward_dns_servers
+        ]
 
     def test_validate_authority(self):
         name = factory.make_name("domain")
@@ -160,7 +156,8 @@ class TestDomainForm(MAASServerTestCase):
                 "forward_dns_servers": " ".join(forward_dns_servers),
             }
         )
-        self.assertRaises(ValueError, form.save)
+        with pytest.raises(ValueError):
+            form.save()
 
     def test_default_authoritative_with_forward_dns_servers_is_not_valid(self):
         name = factory.make_name("domain")
@@ -171,7 +168,7 @@ class TestDomainForm(MAASServerTestCase):
                 "forward_dns_servers": " ".join(forward_dns_servers),
             }
         )
-        self.assertFalse(form.is_valid(), form.errors)
+        assert not form.is_valid(), form.errors
 
     def test_authoritative_with_forward_dns_servers_is_not_valid(self):
         name = factory.make_name("domain")
@@ -183,7 +180,7 @@ class TestDomainForm(MAASServerTestCase):
                 "forward_dns_servers": " ".join(forward_dns_servers),
             }
         )
-        self.assertFalse(form.is_valid(), form.errors)
+        assert not form.is_valid(), form.errors
 
     def test_non_authoritative_with_forward_dns_servers_is_valid(self):
         name = factory.make_name("domain")
@@ -195,4 +192,4 @@ class TestDomainForm(MAASServerTestCase):
                 "forward_dns_servers": " ".join(forward_dns_servers),
             }
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors

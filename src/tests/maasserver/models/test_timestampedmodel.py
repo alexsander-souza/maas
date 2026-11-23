@@ -1,17 +1,122 @@
 # Copyright 2012-2016 Canonical Ltd.  This software is licensed under the
 # GNU Affero General Public License version 3 (see the file LICENSE).
 
-"""Gap-free tests for `maasserver.models.timestampedmodel`, split out of the
-legacy `src/maasserver/models/tests/test_timestampedmodel.py`: the legacy
-`TestTimestampedModel` class stays there in the region-legacy pytest leg,
-while this class runs in the main pytest suite."""
+"""Tests for timestamped models."""
 
-from datetime import datetime
+from datetime import datetime, timedelta
+from random import randint
+
+from django.db import transaction
+from django.utils import timezone
+import pytest
 
 from maasserver.models.timestampedmodel import now
-from maasserver.testing.testcase import MAASServerTestCase
+from maasserver.tests.models import (
+    GenericTestModel,
+    TimestampedModelTestModel,
+    TimestampedOneToOneTestModel,
+)
 
 
-class TestUtilities(MAASServerTestCase):
+def make_time_in_the_recent_past():
+    many_seconds_ago = timedelta(seconds=randint(1, 999999))
+    return timezone.now() - many_seconds_ago
+
+
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "transactional_maasdb")
+@pytest.mark.allow_transactions
+class TestTimestampedModel:
+    def test_created_populated_when_object_saved(self):
+        obj = TimestampedModelTestModel()
+        obj.save()
+        assert obj.created is not None
+
+    def test_updated_populated_when_object_saved(self):
+        obj = TimestampedModelTestModel()
+        obj.save()
+        assert obj.updated is not None
+
+    def test_updated_and_created_are_the_same_after_first_save(self):
+        obj = TimestampedModelTestModel()
+        obj.save()
+        assert obj.created == obj.updated
+
+    def test_created_not_modified_by_subsequent_calls_to_save(self):
+        obj = TimestampedModelTestModel()
+        obj.save()
+        old_created = obj.created
+        obj.save()
+        assert old_created == obj.created
+
+    def test_on_first_save_created_not_clobbered(self):
+        created = make_time_in_the_recent_past()
+        obj = TimestampedModelTestModel(created=created)
+        obj.save()
+        assert created == obj.created
+
+    def test_on_first_save_created_and_updated_same_if_created_set(self):
+        created = make_time_in_the_recent_past()
+        obj = TimestampedModelTestModel(created=created)
+        obj.save()
+        assert created == obj.created
+        assert created == obj.updated
+
+    def test_on_first_save_updated_set_same_as_created_even_if_set(self):
+        created = make_time_in_the_recent_past()
+        updated = make_time_in_the_recent_past()
+        obj = TimestampedModelTestModel(created=created, updated=updated)
+        obj.save()
+        assert created == obj.created
+        assert created == obj.updated
+
+    def test_created_bracketed_by_before_and_after_time(self):
+        before = now()
+        obj = TimestampedModelTestModel()
+        obj.save()
+        transaction.commit()
+        after = now()
+        assert before <= obj.created
+        assert after >= obj.created
+
+    def test_updated_is_updated_when_object_saved(self):
+        obj = TimestampedModelTestModel()
+        obj.save()
+        old_updated = obj.updated
+        transaction.commit()
+        obj.save()
+        assert old_updated <= obj.updated
+
+    def test_updated_allows_override(self):
+        last_year = timezone.now() - timedelta(days=365)
+        # Perform a write database operation.
+        created = make_time_in_the_recent_past()
+        updated = make_time_in_the_recent_past()
+        obj = TimestampedModelTestModel(created=created, updated=updated)
+        obj.save(_updated=last_year)
+        # The created time should be set to last year, since the override value
+        # was less than the creation date.
+        assert last_year == obj.created
+        assert last_year == obj.updated
+
+    def test_created_allows_override(self):
+        last_year = timezone.now() - timedelta(days=365)
+        # Perform a write database operation.
+        created = make_time_in_the_recent_past()
+        updated = make_time_in_the_recent_past()
+        obj = TimestampedModelTestModel(created=created, updated=updated)
+        obj.save(_created=last_year)
+        assert last_year == obj.created
+        assert created == obj.updated
+
+    def test_created_works_with_one_to_one_models(self):
+        generic = GenericTestModel()
+        generic.save()
+        ts_1to1 = TimestampedOneToOneTestModel(generic=generic)
+        ts_1to1.save()
+        assert ts_1to1.created is not None
+        assert ts_1to1.updated is not None
+
+
+class TestUtilities:
     def test_now_returns_datetime(self):
-        self.assertIsInstance(now(), datetime)
+        assert isinstance(now(), datetime)

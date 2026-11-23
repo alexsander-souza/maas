@@ -10,8 +10,10 @@ import string
 from unittest.mock import ANY, AsyncMock
 
 from django.conf import settings
+from django.contrib.auth.models import AnonymousUser
 from django.urls import reverse
 from piston3.doc import generate_doc
+import pytest
 
 from maascommon.events import AUDIT
 from maasserver import urls_api as urlconf
@@ -24,9 +26,7 @@ from maasserver.models import Config, SSHKey
 from maasserver.models.event import Event
 from maasserver.models.user import get_auth_tokens
 from maasserver.testing import get_data
-from maasserver.testing.api import APITestCase, APITransactionTestCase
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from maasserver.testing.testclient import (
     MAASSensibleClient,
     MAASSensibleOAuthClient,
@@ -35,10 +35,9 @@ from maasserver.utils.converters import json_load_bytes
 from maasserver.utils.orm import get_one
 from maasservicelayer.exceptions.catalog import ValidationException
 import maasservicelayer.services.sshkeys as servicelayer_sshkeys
-from maastesting.testcase import MAASTestCase
 
 
-class TestResourceURIs(MAASTestCase):
+class TestResourceURIs:
     """Tests for `resource_uri` usage in handlers."""
 
     def test_resource_uri_in_docs_matches_handlers_idea_of_resource_uri(self):
@@ -98,10 +97,11 @@ class TestResourceURIs(MAASTestCase):
                     "the observed fields match what is expected."
                 ],
             )
-            self.fail("\n--\n".join(messages))
+            raise AssertionError("\n--\n".join(messages))
 
 
-class TestAuthentication(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestAuthentication:
     """Tests for `maasserver.api.auth`."""
 
     def test_invalid_oauth_request(self):
@@ -111,60 +111,85 @@ class TestAuthentication(MAASServerTestCase):
         # Delete the user's API keys.
         get_auth_tokens(user).delete()
         response = client.post(reverse("nodes_handler"), {"op": "start"})
-        self.assertEqual(response.status_code, http.client.UNAUTHORIZED)
-        self.assertIn(b"Invalid access token:", response.content)
+        assert response.status_code == http.client.UNAUTHORIZED
+        assert b"Invalid access token:" in response.content
 
 
-class TestXSSBugs(APITestCase.ForUser):
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user=user,client=oauth", id="user=user,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestXSSBugs:
     """Tests for making sure we don't allow cross-site scripting bugs."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maas_user, api_client):
+        self.user = maas_user
+        self.client = api_client
 
     def test_invalid_signature_response_is_textplain(self):
         response = self.client.get(
             reverse("nodes_handler"),
             {"op": "<script>alert(document.domain)</script>"},
         )
-        self.assertIn("text/plain", response.get("Content-Type"))
-        self.assertNotIn("text/html", response.get("Content-Type"))
+        assert "text/plain" in response.get("Content-Type")
+        assert "text/html" not in response.get("Content-Type")
 
 
-class TestAccountAPI(APITestCase.ForUser):
-    clientfactories = {
-        "user+pass": MAASSensibleClient,
-        "oauth": MAASSensibleOAuthClient,
-    }
+@pytest.mark.parametrize(
+    "api_identity",
+    [
+        pytest.param(
+            "user=user,client=user+pass", id="user=user,client=user+pass"
+        ),
+        pytest.param("user=user,client=oauth", id="user=user,client=oauth"),
+    ],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestAccountAPI:
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maas_user, api_client, mocker):
+        self.user = maas_user
+        if "client=user+pass" in api_identity:
+            self.client = MAASSensibleClient()
+            self.client.login(user=self.user)
+        else:
+            self.client = api_client
+        self.mocker = mocker
 
     def test_handler_path(self):
-        self.assertEqual("/MAAS/api/2.0/account/", reverse("account_handler"))
+        assert "/MAAS/api/2.0/account/" == reverse("account_handler")
 
     def test_create_authorisation_token(self):
         # The api operation create_authorisation_token returns a json dict
         # with the consumer_key, the token_key, the token_secret and the
         # consumer_name in it.
-        mock_create_audit_event = self.patch(
+        mock_create_audit_event = self.mocker.patch.object(
             account_module, "create_audit_event"
         )
         response = self.client.post(
             reverse("account_handler"), {"op": "create_authorisation_token"}
         )
-        self.assertEqual(http.client.OK, response.status_code)
-        self.assertEqual(
-            "application/json; charset=utf-8", response["content-type"]
-        )
+        assert http.client.OK == response.status_code
+        assert "application/json; charset=utf-8" == response["content-type"]
         parsed_result = json_load_bytes(response.content)
-        self.assertCountEqual(
-            ["consumer_key", "name", "token_key", "token_secret"],
-            parsed_result,
-        )
-        self.assertIsInstance(parsed_result["consumer_key"], str)
-        self.assertIsInstance(parsed_result["token_key"], str)
-        self.assertIsInstance(parsed_result["token_secret"], str)
-        self.assertIsInstance(parsed_result["name"], str)
+        assert set(parsed_result) == {
+            "consumer_key",
+            "name",
+            "token_key",
+            "token_secret",
+        }
+        assert isinstance(parsed_result["consumer_key"], str)
+        assert isinstance(parsed_result["token_key"], str)
+        assert isinstance(parsed_result["token_secret"], str)
+        assert isinstance(parsed_result["name"], str)
         mock_create_audit_event.assert_called_once()
 
     def test_create_authorisation_token_with_token_name(self):
         # The api operation create_authorisation_token can also accept
         # a new name for the generated token.
-        mock_create_audit_event = self.patch(
+        mock_create_audit_event = self.mocker.patch.object(
             account_module, "create_audit_event"
         )
         token_name = "Test_Token"
@@ -172,18 +197,16 @@ class TestAccountAPI(APITestCase.ForUser):
             reverse("account_handler"),
             {"op": "create_authorisation_token", "name": token_name},
         )
-        self.assertEqual(http.client.OK, response.status_code)
-        self.assertEqual(
-            "application/json; charset=utf-8", response["content-type"]
-        )
+        assert http.client.OK == response.status_code
+        assert "application/json; charset=utf-8" == response["content-type"]
         parsed_result = json_load_bytes(response.content)
-        self.assertEqual(parsed_result["name"], token_name)
+        assert parsed_result["name"] == token_name
         mock_create_audit_event.assert_called_once()
 
     def test_delete_authorisation_token_not_found(self):
         # If the provided token_key does not exist (for the currently
         # logged-in user), the api returns a 'Not Found' (404) error.
-        mock_create_audit_event = self.patch(
+        mock_create_audit_event = self.mocker.patch.object(
             account_module, "create_audit_event"
         )
         response = self.client.post(
@@ -191,27 +214,27 @@ class TestAccountAPI(APITestCase.ForUser):
             {"op": "delete_authorisation_token", "token_key": "no-such-token"},
         )
 
-        self.assertEqual(http.client.NOT_FOUND, response.status_code)
+        assert http.client.NOT_FOUND == response.status_code
         mock_create_audit_event.assert_not_called()
 
     def test_delete_authorisation_token_bad_request_no_token(self):
         # token_key is a mandatory parameter when calling
         # delete_authorisation_token. It it is not present in the request's
         # parameters, the api returns a 'Bad Request' (400) error.
-        mock_create_audit_event = self.patch(
+        mock_create_audit_event = self.mocker.patch.object(
             account_module, "create_audit_event"
         )
         response = self.client.post(
             reverse("account_handler"), {"op": "delete_authorisation_token"}
         )
 
-        self.assertEqual(http.client.BAD_REQUEST, response.status_code)
+        assert http.client.BAD_REQUEST == response.status_code
         mock_create_audit_event.assert_not_called()
 
     def test_update_authorisation_token(self):
         token_name_orig = "Test_Token"
         token_name_updated = "Test_Token update"
-        mock_create_audit_event = self.patch(
+        mock_create_audit_event = self.mocker.patch.object(
             account_module, "create_audit_event"
         )
         response_creation = self.client.post(
@@ -240,7 +263,7 @@ class TestAccountAPI(APITestCase.ForUser):
         parsed_list_response = json_load_bytes(response_list.content)
         for token in parsed_list_response:
             if token["token"] == created_token:
-                self.assertEqual(token["name"], token_name_updated)
+                assert token["name"] == token_name_updated
         mock_create_audit_event.assert_has_calls([ANY, ANY])
 
     def test_update_authorisation_token_with_token_key(self):
@@ -248,7 +271,7 @@ class TestAccountAPI(APITestCase.ForUser):
         # to update the token name.
         token_name_orig = "Test_Token"
         token_name_updated = "Test_Token update"
-        mock_create_audit_event = self.patch(
+        mock_create_audit_event = self.mocker.patch.object(
             account_module, "create_audit_event"
         )
         response_creation = self.client.post(
@@ -277,13 +300,13 @@ class TestAccountAPI(APITestCase.ForUser):
         parsed_list_response = json_load_bytes(response_list.content)
         for token in parsed_list_response:
             if token["token"] == created_token:
-                self.assertEqual(token["name"], token_name_updated)
+                assert token["name"] == token_name_updated
         mock_create_audit_event.assert_has_calls([ANY, ANY])
 
     def test_update_authorisation_token_name_not_found(self):
         # If the provided token_key does not exist (for the currently
         # logged-in user), the api returns a 'Not Found' (404) error.
-        mock_create_audit_event = self.patch(
+        mock_create_audit_event = self.mocker.patch.object(
             account_module, "create_audit_event"
         )
         response = self.client.post(
@@ -295,26 +318,26 @@ class TestAccountAPI(APITestCase.ForUser):
             },
         )
 
-        self.assertEqual(http.client.NOT_FOUND, response.status_code)
+        assert http.client.NOT_FOUND == response.status_code
         mock_create_audit_event.assert_not_called()
 
     def test_update_authorisation_token_name_bad_request_no_token(self):
         # `token` and `name` are mandatory parameters when calling
         # update_token_name. If it is not present in the request's
         # parameters, the api returns a 'Bad Request' (400) error.
-        mock_create_audit_event = self.patch(
+        mock_create_audit_event = self.mocker.patch.object(
             account_module, "create_audit_event"
         )
         response = self.client.post(
             reverse("account_handler"), {"op": "update_token_name"}
         )
 
-        self.assertEqual(http.client.BAD_REQUEST, response.status_code)
+        assert http.client.BAD_REQUEST == response.status_code
         mock_create_audit_event.assert_not_called()
 
     def test_list_tokens(self):
         token1_name = "Test Token 1"
-        mock_create_audit_event = self.patch(
+        mock_create_audit_event = self.mocker.patch.object(
             account_module, "create_audit_event"
         )
         response_creation = self.client.post(
@@ -326,18 +349,16 @@ class TestAccountAPI(APITestCase.ForUser):
             reverse("account_handler"), {"op": "list_authorisation_tokens"}
         )
         parsed_list_response = json_load_bytes(response.content)
-        self.assertEqual(len(json_load_bytes(response.content)), 2)
+        assert len(json_load_bytes(response.content)) == 2
         for token in parsed_list_response:
             if token["name"] == token1_name:
                 token_fields = token["token"].split(":")
-                self.assertEqual(
-                    token_fields[0], parsed_creation_response["consumer_key"]
+                assert (
+                    token_fields[0] == parsed_creation_response["consumer_key"]
                 )
-                self.assertEqual(
-                    token_fields[1], parsed_creation_response["token_key"]
-                )
-                self.assertEqual(
-                    token_fields[2], parsed_creation_response["token_secret"]
+                assert token_fields[1] == parsed_creation_response["token_key"]
+                assert (
+                    token_fields[2] == parsed_creation_response["token_secret"]
                 )
         mock_create_audit_event.assert_called_once()
 
@@ -349,29 +370,39 @@ class TestAccountAPI(APITestCase.ForUser):
             reverse("account_handler"), {"op": "list_authorisation_tokens"}
         )
         parsed_list_response = json_load_bytes(response.content)
-        self.assertIsInstance(parsed_list_response, list)
+        assert isinstance(parsed_list_response, list)
         for token in parsed_list_response:
-            self.assertCountEqual(["name", "token"], token)
-            self.assertIsInstance(token["name"], str)
-            self.assertIsInstance(token["token"], str)
+            assert set(token) == {"name", "token"}
+            assert isinstance(token["name"], str)
+            assert isinstance(token["token"], str)
 
 
-class TestSSHKeyHandlers(APITestCase.ForUser):
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user=user,client=oauth", id="user=user,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestSSHKeyHandlers:
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maas_user, api_client, mocker):
+        self.user = maas_user
+        self.client = api_client
+        self.mocker = mocker
+
     def test_sshkeys_handler_path(self):
-        self.assertEqual(
-            "/MAAS/api/2.0/account/prefs/sshkeys/", reverse("sshkeys_handler")
+        assert "/MAAS/api/2.0/account/prefs/sshkeys/" == reverse(
+            "sshkeys_handler"
         )
 
     def test_sshkey_handler_path(self):
-        self.assertEqual(
-            "/MAAS/api/2.0/account/prefs/sshkeys/key/",
-            reverse("sshkey_handler", args=["key"]),
+        assert "/MAAS/api/2.0/account/prefs/sshkeys/key/" == reverse(
+            "sshkey_handler", args=["key"]
         )
 
     def test_list_works(self):
         _, keys = factory.make_user_with_keys(user=self.user)
         response = self.client.get(reverse("sshkeys_handler"))
-        self.assertEqual(http.client.OK, response.status_code, response)
+        assert http.client.OK == response.status_code, response
         parsed_result = json_load_bytes(response.content)
         expected_result = [
             dict(
@@ -387,13 +418,13 @@ class TestSSHKeyHandlers(APITestCase.ForUser):
                 resource_uri=reverse("sshkey_handler", args=[keys[1].id]),
             ),
         ]
-        self.assertEqual(expected_result, parsed_result)
+        assert expected_result == parsed_result
 
     def test_get_by_id_works(self):
         _, keys = factory.make_user_with_keys(n_keys=1, user=self.user)
         key = keys[0]
         response = self.client.get(reverse("sshkey_handler", args=[key.id]))
-        self.assertEqual(http.client.OK, response.status_code, response)
+        assert http.client.OK == response.status_code, response
         parsed_result = json_load_bytes(response.content)
         expected = dict(
             id=key.id,
@@ -401,46 +432,43 @@ class TestSSHKeyHandlers(APITestCase.ForUser):
             keysource=f"{key.protocol}:{key.auth_id}",
             resource_uri=reverse("sshkey_handler", args=[key.id]),
         )
-        self.assertEqual(expected, parsed_result)
+        assert expected == parsed_result
 
     def test_delete_by_id_works_and_creates_audit_event(self):
         _, keys = factory.make_user_with_keys(n_keys=2, user=self.user)
         response = self.client.delete(
             reverse("sshkey_handler", args=[keys[0].id])
         )
-        self.assertEqual(
-            http.client.NO_CONTENT, response.status_code, response
-        )
+        assert http.client.NO_CONTENT == response.status_code, response
         keys_after = SSHKey.objects.filter(user=self.user)
-        self.assertEqual(1, len(keys_after))
-        self.assertEqual(keys[1].id, keys_after[0].id)
+        assert 1 == len(keys_after)
+        assert keys[1].id == keys_after[0].id
         event = Event.objects.get(type__level=AUDIT)
-        self.assertIsNotNone(event)
-        self.assertEqual(
-            event.description, "Deleted SSH key id='%s'." % keys[0].id
-        )
+        assert event is not None
+        assert event.description == "Deleted SSH key id='%s'." % keys[0].id
 
     def test_delete_fails_if_not_your_key(self):
         user, keys = factory.make_user_with_keys(n_keys=1)
         response = self.client.delete(
             reverse("sshkey_handler", args=[keys[0].id])
         )
-        self.assertEqual(http.client.FORBIDDEN, response.status_code, response)
-        self.assertEqual(1, len(SSHKey.objects.filter(user=user)))
+        assert http.client.FORBIDDEN == response.status_code, response
+        assert 1 == len(SSHKey.objects.filter(user=user))
 
     def test_adding_works(self):
         key_string = get_data("data/test_rsa0.pub")
         response = self.client.post(
             reverse("sshkeys_handler"), data=dict(key=key_string)
         )
-        self.assertEqual(http.client.CREATED, response.status_code)
+        assert http.client.CREATED == response.status_code
         parsed_response = json_load_bytes(response.content)
-        self.assertEqual(key_string, parsed_response["key"])
+        assert key_string == parsed_response["key"]
         added_key = get_one(SSHKey.objects.filter(user=self.user))
-        self.assertEqual(key_string, added_key.key)
+        assert key_string == added_key.key
 
     def test_adding_works_with_user(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         username = factory.make_name("user")
         user = factory.make_User(username=username)
         key_string = get_data("data/test_rsa0.pub")
@@ -448,24 +476,23 @@ class TestSSHKeyHandlers(APITestCase.ForUser):
             reverse("sshkeys_handler"),
             data=dict(key=key_string, user=username),
         )
-        self.assertEqual(http.client.CREATED, response.status_code)
+        assert http.client.CREATED == response.status_code
         parsed_response = json_load_bytes(response.content)
-        self.assertEqual(key_string, parsed_response["key"])
+        assert key_string == parsed_response["key"]
         added_key = get_one(SSHKey.objects.filter(user=user))
-        self.assertEqual(key_string, added_key.key)
+        assert key_string == added_key.key
 
     def test_adding_does_not_work_with_unknown_user(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         username = factory.make_name("user")
         key_string = get_data("data/test_rsa0.pub")
         response = self.client.post(
             reverse("sshkeys_handler"),
             data=dict(key=key_string, user=username),
         )
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response
-        )
-        self.assertIn(b"Supplied username", response.content)
+        assert http.client.BAD_REQUEST == response.status_code, response
+        assert b"Supplied username" in response.content
 
     def test_adding_does_not_work_with_user_for_non_admin(self):
         username = factory.make_name("user")
@@ -475,42 +502,33 @@ class TestSSHKeyHandlers(APITestCase.ForUser):
             reverse("sshkeys_handler"),
             data=dict(key=key_string, user=username),
         )
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response
-        )
-        self.assertIn(b"Only administrators", response.content)
+        assert http.client.BAD_REQUEST == response.status_code, response
+        assert b"Only administrators" in response.content
 
     def test_adding_catches_key_validation_errors(self):
         key_string = factory.make_string()
         response = self.client.post(
             reverse("sshkeys_handler"), data=dict(key=key_string)
         )
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response
-        )
-        self.assertIn(b"Invalid", response.content)
+        assert http.client.BAD_REQUEST == response.status_code, response
+        assert b"Invalid" in response.content
 
     def test_adding_rejects_ed25519_key_when_fips_enabled(self):
         from maasserver.models import sshkey
 
-        self.patch(sshkey, "is_fips_enabled").return_value = True
+        self.mocker.patch.object(sshkey, "is_fips_enabled").return_value = True
         key_string = get_data("data/test_ed25519.pub")
         response = self.client.post(
             reverse("sshkeys_handler"), data=dict(key=key_string)
         )
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response
-        )
-        self.assertIn(b"FIPS", response.content)
+        assert http.client.BAD_REQUEST == response.status_code, response
+        assert b"FIPS" in response.content
 
     def test_adding_returns_badrequest_when_key_not_in_form(self):
         response = self.client.post(reverse("sshkeys_handler"))
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response
-        )
-        self.assertEqual(
-            dict(key=["This field is required."]),
-            json_load_bytes(response.content),
+        assert http.client.BAD_REQUEST == response.status_code, response
+        assert dict(key=["This field is required."]) == json_load_bytes(
+            response.content
         )
 
     def test_import_ssh_keys_creates_keys_keysource_and_audit_event(self):
@@ -521,16 +539,16 @@ class TestSSHKeyHandlers(APITestCase.ForUser):
         ks = f"{protocol}:{auth_id}"
         key_string = get_data("data/test_rsa0.pub")
         if protocol == KEYS_PROTOCOL_TYPE.LP:
-            mock_get_ssh_key = self.patch(
+            mock_get_ssh_key = self.mocker.patch.object(
                 servicelayer_sshkeys.SshKeysService,
                 "_get_ssh_key_from_launchpad",
-                mock_class=AsyncMock,
+                new_callable=AsyncMock,
             )
         else:
-            mock_get_ssh_key = self.patch(
+            mock_get_ssh_key = self.mocker.patch.object(
                 servicelayer_sshkeys.SshKeysService,
                 "_get_ssh_key_from_github",
-                mock_class=AsyncMock,
+                new_callable=AsyncMock,
             )
         mock_get_ssh_key.return_value = [key_string]
 
@@ -538,14 +556,14 @@ class TestSSHKeyHandlers(APITestCase.ForUser):
             reverse("sshkeys_handler"), data=dict(op="import", keysource=ks)
         )
         added_key = get_one(SSHKey.objects.filter(user=self.user))
-        self.assertEqual(key_string, added_key.key)
-        self.assertEqual(protocol, added_key.protocol)
-        self.assertEqual(auth_id, added_key.auth_id)
-        self.assertEqual(http.client.OK, response.status_code, response)
+        assert key_string == added_key.key
+        assert protocol == added_key.protocol
+        assert auth_id == added_key.auth_id
+        assert http.client.OK == response.status_code, response
         mock_get_ssh_key.assert_called_once_with(auth_id)
         event = Event.objects.get(type__level=AUDIT)
-        self.assertIsNotNone(event)
-        self.assertEqual(event.description, "Imported SSH keys.")
+        assert event is not None
+        assert event.description == "Imported SSH keys."
 
     def test_import_ssh_keys_crashes_for_ImportSSHKeysERROR(self):
         protocol = random.choice(
@@ -554,16 +572,16 @@ class TestSSHKeyHandlers(APITestCase.ForUser):
         auth_id = factory.make_name("auth_id")
         ks = f"{protocol}:{auth_id}"
         if protocol == KEYS_PROTOCOL_TYPE.LP:
-            mock_get_ssh_key = self.patch(
+            mock_get_ssh_key = self.mocker.patch.object(
                 servicelayer_sshkeys.SshKeysService,
                 "_get_ssh_key_from_launchpad",
-                mock_class=AsyncMock,
+                new_callable=AsyncMock,
             )
         else:
-            mock_get_ssh_key = self.patch(
+            mock_get_ssh_key = self.mocker.patch.object(
                 servicelayer_sshkeys.SshKeysService,
                 "_get_ssh_key_from_github",
-                mock_class=AsyncMock,
+                new_callable=AsyncMock,
             )
 
         mock_get_ssh_key.side_effect = ValidationException.build_for_field(
@@ -573,81 +591,152 @@ class TestSSHKeyHandlers(APITestCase.ForUser):
         response = self.client.post(
             reverse("sshkeys_handler"), data=dict(op="import", keysource=ks)
         )
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
 
 
-class TestMAASAPIAnon(APITestCase.ForAnonymous):
-    """The MAAS' handler is not accessible to anon users."""
+@pytest.mark.parametrize(
+    "api_identity",
+    [
+        pytest.param(
+            "user=anonymous,client=oauth", id="user=anonymous,client=oauth"
+        )
+    ],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestMAASAPIAnon:
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity):
+        self.user = AnonymousUser()
+        self.client = MAASSensibleOAuthClient(user=self.user)
 
     def test_anon_get_config_unauthorized(self):
         response = self.client.get(
             reverse("maas_handler"), {"op": "get_config"}
         )
 
-        self.assertEqual(http.client.UNAUTHORIZED, response.status_code)
+        assert http.client.UNAUTHORIZED == response.status_code
 
     def test_anon_set_config_unauthorized(self):
         response = self.client.post(
             reverse("maas_handler"), {"op": "set_config"}
         )
 
-        self.assertEqual(http.client.UNAUTHORIZED, response.status_code)
+        assert http.client.UNAUTHORIZED == response.status_code
 
 
-class TestMAASAPIVersioning(APITestCase.ForAnonymousAndUserAndAdmin):
-    clientfactories = {
-        "user+pass": MAASSensibleClient,
-        "oauth": MAASSensibleOAuthClient,
-    }
+@pytest.mark.parametrize(
+    "api_identity",
+    [
+        pytest.param(
+            "user=anonymous,client=user+pass",
+            id="user=anonymous,client=user+pass",
+        ),
+        pytest.param(
+            "user=anonymous,client=oauth", id="user=anonymous,client=oauth"
+        ),
+        pytest.param(
+            "user=user,client=user+pass", id="user=user,client=user+pass"
+        ),
+        pytest.param("user=user,client=oauth", id="user=user,client=oauth"),
+        pytest.param(
+            "user=admin,client=user+pass", id="user=admin,client=user+pass"
+        ),
+        pytest.param("user=admin,client=oauth", id="user=admin,client=oauth"),
+    ],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestMAASAPIVersioning:
+    @pytest.fixture(autouse=True)
+    def _setup(
+        self, api_identity, admin, admin_api_client, api_client, maas_user
+    ):
+        user_kind, client_kind = api_identity.split(",")
+        user_kind = user_kind.partition("=")[2]
+        client_kind = client_kind.partition("=")[2]
+        if user_kind == "anonymous":
+            self.user = AnonymousUser()
+            if client_kind == "oauth":
+                self.client = MAASSensibleOAuthClient(user=self.user)
+            else:
+                self.client = MAASSensibleClient()
+                self.client.login(user=self.user)
+        elif user_kind == "admin":
+            self.user = admin
+            if client_kind == "oauth":
+                self.client = admin_api_client
+            else:
+                self.client = MAASSensibleClient()
+                self.client.login(user=self.user)
+        else:
+            self.user = maas_user
+            if client_kind == "oauth":
+                self.client = api_client
+            else:
+                self.client = MAASSensibleClient()
+                self.client.login(user=self.user)
 
     def test_api_version_handler_path(self):
-        self.assertEqual("/MAAS/api/version/", reverse("api_version"))
+        assert "/MAAS/api/version/" == reverse("api_version")
 
     def test_v1_error_handler_path(self):
-        self.assertEqual("/MAAS/api/1.0/", reverse("api_v1_error"))
+        assert "/MAAS/api/1.0/" == reverse("api_v1_error")
 
     def test_get_api_version(self):
         response = self.client.get(reverse("api_version"))
-        self.assertEqual(http.client.OK, response.status_code)
-        self.assertIn("text/plain", response["Content-Type"])
-        self.assertEqual(b"2.0", response.content)
+        assert http.client.OK == response.status_code
+        assert "text/plain" in response["Content-Type"]
+        assert b"2.0" == response.content
 
     def test_old_api_request(self):
         old_api_url = reverse("api_v1_error") + "maas/" + factory.make_string()
         response = self.client.get(old_api_url)
-        self.assertEqual(http.client.GONE, response.status_code)
-        self.assertIn("text/plain", response["Content-Type"])
-        self.assertEqual(
-            b"The 1.0 API is no longer available. Please use API version 2.0.",
-            response.content,
+        assert http.client.GONE == response.status_code
+        assert "text/plain" in response["Content-Type"]
+        assert (
+            b"The 1.0 API is no longer available. Please use API version 2.0."
+            == response.content
         )
 
 
-class TestMAASAPI(APITestCase.ForUser):
-    clientfactories = {
-        "user+pass": MAASSensibleClient,
-        "oauth": MAASSensibleOAuthClient,
-    }
+@pytest.mark.parametrize(
+    "api_identity",
+    [
+        pytest.param(
+            "user=user,client=user+pass", id="user=user,client=user+pass"
+        ),
+        pytest.param("user=user,client=oauth", id="user=user,client=oauth"),
+    ],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestMAASAPI:
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maas_user, api_client):
+        self.user = maas_user
+        if "client=user+pass" in api_identity:
+            self.client = MAASSensibleClient()
+            self.client.login(user=self.user)
+        else:
+            self.client = api_client
 
     def test_handler_path(self):
-        self.assertEqual("/MAAS/api/2.0/maas/", reverse("maas_handler"))
+        assert "/MAAS/api/2.0/maas/" == reverse("maas_handler")
 
     def test_simple_user_set_config_forbidden(self):
         response = self.client.post(
             reverse("maas_handler"), {"op": "set_config"}
         )
 
-        self.assertEqual(http.client.FORBIDDEN, response.status_code)
+        assert http.client.FORBIDDEN == response.status_code
 
     def test_get_config_requires_name_param(self):
         response = self.client.get(
             reverse("maas_handler"), {"op": "get_config"}
         )
 
-        self.assertEqual(http.client.BAD_REQUEST, response.status_code)
-        self.assertEqual(b"No provided name!", response.content)
+        assert http.client.BAD_REQUEST == response.status_code
+        assert b"No provided name!" == response.content
 
     def test_get_config_returns_config(self):
         name = "maas_name"
@@ -657,10 +746,10 @@ class TestMAASAPI(APITestCase.ForUser):
             reverse("maas_handler"), {"op": "get_config", "name": name}
         )
 
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code
         parsed_result = json_load_bytes(response.content)
-        self.assertIn("application/json", response["Content-Type"])
-        self.assertEqual(value, parsed_result)
+        assert "application/json" in response["Content-Type"]
+        assert value == parsed_result
 
     def test_get_config_rejects_unknown_config_item(self):
         name = factory.make_string()
@@ -670,26 +759,25 @@ class TestMAASAPI(APITestCase.ForUser):
             reverse("maas_handler"), {"op": "get_config", "name": name}
         )
 
-        self.assertEqual(
-            (
-                http.client.BAD_REQUEST,
-                {name: [INVALID_SETTING_MSG_TEMPLATE % name]},
-            ),
-            (response.status_code, json_load_bytes(response.content)),
-        )
+        assert (
+            http.client.BAD_REQUEST,
+            {name: [INVALID_SETTING_MSG_TEMPLATE % name]},
+        ) == (response.status_code, json_load_bytes(response.content))
 
     def test_set_config_requires_name_param(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         response = self.client.post(
             reverse("maas_handler"),
             {"op": "set_config", "value": factory.make_string()},
         )
 
-        self.assertEqual(http.client.BAD_REQUEST, response.status_code)
-        self.assertEqual(b"No provided name!", response.content)
+        assert http.client.BAD_REQUEST == response.status_code
+        assert b"No provided name!" == response.content
 
     def test_set_config_requires_string_name_param(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         value = factory.make_string()
         response = self.client.post(
             reverse("maas_handler"),
@@ -700,23 +788,23 @@ class TestMAASAPI(APITestCase.ForUser):
             },
         )
 
-        self.assertEqual(http.client.BAD_REQUEST, response.status_code)
-        self.assertEqual(
-            b"Invalid name: Please enter a value", response.content
-        )
+        assert http.client.BAD_REQUEST == response.status_code
+        assert b"Invalid name: Please enter a value" == response.content
 
     def test_set_config_requires_value_param(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         response = self.client.post(
             reverse("maas_handler"),
             {"op": "set_config", "name": factory.make_string()},
         )
 
-        self.assertEqual(http.client.BAD_REQUEST, response.status_code)
-        self.assertEqual(b"No provided value!", response.content)
+        assert http.client.BAD_REQUEST == response.status_code
+        assert b"No provided value!" == response.content
 
     def test_admin_set_config(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         name = "maas_name"
         value = factory.make_string()
         response = self.client.post(
@@ -724,14 +812,13 @@ class TestMAASAPI(APITestCase.ForUser):
             {"op": "set_config", "name": name, "value": value},
         )
 
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         stored_value = Config.objects.get_config(name)
-        self.assertEqual(stored_value, value)
+        assert stored_value == value
 
     def test_admin_set_config_rejects_unknown_config_item(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         name = factory.make_string()
         value = factory.make_string()
         response = self.client.post(
@@ -739,16 +826,38 @@ class TestMAASAPI(APITestCase.ForUser):
             {"op": "set_config", "name": name, "value": value},
         )
 
-        self.assertEqual(
-            (
-                http.client.BAD_REQUEST,
-                {name: [INVALID_SETTING_MSG_TEMPLATE % name]},
-            ),
-            (response.status_code, json_load_bytes(response.content)),
-        )
+        assert (
+            http.client.BAD_REQUEST,
+            {name: [INVALID_SETTING_MSG_TEMPLATE % name]},
+        ) == (response.status_code, json_load_bytes(response.content))
 
 
-class TestAPIErrors(APITransactionTestCase.ForUserAndAdmin):
+@pytest.mark.parametrize(
+    "api_identity",
+    [
+        pytest.param("user=user,client=oauth", id="user=user,client=oauth"),
+        pytest.param("user=admin,client=oauth", id="user=admin,client=oauth"),
+    ],
+)
+@pytest.mark.allow_transactions
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestAPIErrors:
+    @pytest.fixture(autouse=True)
+    def _setup(
+        self,
+        api_identity,
+        admin,
+        admin_api_client,
+        api_client,
+        maas_user,
+        mocker,
+    ):
+        if "user=admin" in api_identity:
+            self.user, self.client = admin, admin_api_client
+        else:
+            self.user, self.client = maas_user, api_client
+        self.mocker = mocker
+
     def test_internal_error_generates_proper_api_response(self):
         error_message = factory.make_string()
 
@@ -756,13 +865,12 @@ class TestAPIErrors(APITransactionTestCase.ForUserAndAdmin):
         def raise_exception(*args, **kwargs):
             raise RuntimeError(error_message)
 
-        self.patch(machines_module, "create_machine", raise_exception)
+        self.mocker.patch.object(
+            machines_module, "create_machine", raise_exception
+        )
         response = self.client.post(reverse("machines_handler"), {})
 
-        self.assertEqual(
-            (
-                http.client.INTERNAL_SERVER_ERROR,
-                error_message.encode(settings.DEFAULT_CHARSET),
-            ),
-            (response.status_code, response.content),
-        )
+        assert (
+            http.client.INTERNAL_SERVER_ERROR,
+            error_message.encode(settings.DEFAULT_CHARSET),
+        ) == (response.status_code, response.content)

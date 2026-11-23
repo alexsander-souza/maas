@@ -11,6 +11,7 @@ from unittest.mock import ANY, call, MagicMock, Mock, sentinel
 
 from django.db import connection
 from psycopg2 import OperationalError
+import pytest
 from twisted.internet import error, reactor
 from twisted.internet.defer import (
     CancelledError,
@@ -29,7 +30,6 @@ from maasserver.listener import (
     PostgresListenerUnregistrationError,
 )
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from maasserver.utils.orm import transactional
 from maasserver.utils.threads import deferToDatabase
 from maastesting.crochet import wait_for
@@ -77,7 +77,16 @@ class PostgresListenerServiceSpy(PostgresListenerService):
                 return notice
 
 
-class TestPostgresListenerService(MAASServerTestCase):
+@pytest.mark.allow_transactions
+@pytest.mark.usefixtures("transactional_maasdb", "maas_region_test", "factory")
+class TestPostgresListenerService:
+    @pytest.fixture(autouse=True)
+    def _setup(self, maasdb, mocker):
+        self.mocker = mocker
+
+    def patch(self, obj, attribute=None):
+        return self.mocker.patch.object(obj, attribute)
+
     @transactional
     def send_notification(self, event, obj_id):
         cursor = connection.cursor()
@@ -95,22 +104,26 @@ class TestPostgresListenerService(MAASServerTestCase):
     def test_isSystemChannel_returns_true_for_channel_starting_with_sys(self):
         channel = factory.make_name("sys_", sep="")
         listener = PostgresListenerService()
-        self.assertTrue(listener.isSystemChannel(channel))
+        assert listener.isSystemChannel(channel)
 
     def test_isSystemChannel_returns_false_for_channel_not__sys(self):
         channel = factory.make_name("node_", sep="")
         listener = PostgresListenerService()
-        self.assertFalse(listener.isSystemChannel(channel))
+        assert not (listener.isSystemChannel(channel))
 
     def test_raises_error_if_system_handler_registered_more_than_once(self):
         channel = factory.make_name("sys_", sep="")
         listener = PostgresListenerService()
-        listener.register(channel, lambda *args: None)
-        with self.assertRaisesRegex(
+
+        def handler(*args):
+            pass
+
+        listener.register(channel, handler)
+        with pytest.raises(
             PostgresListenerRegistrationError,
-            rf"System channel '{escape(channel)}' has already been registered\.",
+            match=rf"System channel '{escape(channel)}' has already been registered\.",
         ):
-            listener.register(channel, lambda *args: None)
+            listener.register(channel, handler)
 
     @wait_for_reactor
     @inlineCallbacks
@@ -127,7 +140,7 @@ class TestPostgresListenerService(MAASServerTestCase):
         try:
             yield deferToDatabase(self.send_notification, "sys_test", 1)
             yield dv.get(timeout=2)
-            self.assertEqual(("sys_test", "1"), dv.value)
+            assert dv.value == ("sys_test", "1")
         finally:
             yield listener.stopService()
 
@@ -144,11 +157,11 @@ class TestPostgresListenerService(MAASServerTestCase):
             lambda reason: stop_calls.append(reason)
         )
         yield listener.startService()
-        self.assertEqual(len(start_calls), 1)
+        assert 1 == len(start_calls)
         yield listener.stopService()
-        self.assertEqual(len(stop_calls), 1)
+        assert 1 == len(stop_calls)
         [failure] = stop_calls
-        self.assertIsInstance(failure.value, error.ConnectionDone)
+        assert isinstance(failure.value, error.ConnectionDone)
 
     @wait_for_reactor
     @inlineCallbacks
@@ -159,7 +172,7 @@ class TestPostgresListenerService(MAASServerTestCase):
         # Use a randomised channel name even though LISTEN/NOTIFY is
         # per-database and _not_ per-cluster.
         channel = factory.make_name("sys_test", sep="_").lower()
-        self.assertTrue(listener.isSystemChannel(channel))
+        assert listener.isSystemChannel(channel)
         payload = factory.make_name("payload")
 
         yield deferToDatabase(listener.registerChannel, channel)
@@ -170,9 +183,9 @@ class TestPostgresListenerService(MAASServerTestCase):
             # Notify our channel with a payload and wait for it to come
             yield deferToDatabase(self.send_notification, channel, payload)
             notice = yield deferred
-            self.assertEqual(notice.payload, payload)
+            assert payload == notice.payload
             # Our channel has been deleted from the listeners map.
-            self.assertNotIn(channel, listener.listeners)
+            assert channel not in listener.listeners
         finally:
             yield listener.stopService()
 
@@ -186,8 +199,8 @@ class TestPostgresListenerService(MAASServerTestCase):
             deferred = listener.wait_notification("sys_test")
             yield deferToDatabase(self.send_notification, "sys_test", "msg")
             notice = yield deferred
-            self.assertEqual(notice.payload, "msg")
-            self.assertNotIn("sys_test", listener.listeners)
+            assert "msg" == notice.payload
+            assert "sys_test" not in listener.listeners
         finally:
             yield listener.stopService()
 
@@ -203,7 +216,7 @@ class TestPostgresListenerService(MAASServerTestCase):
         try:
             yield deferToDatabase(self.send_notification, "machine_create", 1)
             yield dv.get(timeout=2)
-            self.assertEqual(("create", "1"), dv.value)
+            assert dv.value == ("create", "1")
         finally:
             yield listener.stopService()
 
@@ -221,7 +234,7 @@ class TestPostgresListenerService(MAASServerTestCase):
             yield listener.channelRegistrarDone
             yield deferToDatabase(self.send_notification, "machine_create", 1)
             yield dv.get(timeout=2)
-            self.assertEqual(("create", "1"), dv.value)
+            assert dv.value == ("create", "1")
         finally:
             yield listener.stopService()
 
@@ -232,7 +245,7 @@ class TestPostgresListenerService(MAASServerTestCase):
 
         yield listener.tryConnection()
         try:
-            self.assertTrue(listener.connected())
+            assert listener.connected()
         finally:
             yield listener.stopService()
 
@@ -244,25 +257,22 @@ class TestPostgresListenerService(MAASServerTestCase):
         exception_type = factory.make_exception_type()
         exception_message = factory.make_name("message")
 
-        startConnection = self.patch(listener, "startConnection")
+        startConnection = self.mocker.patch.object(listener, "startConnection")
         startConnection.side_effect = exception_type(exception_message)
 
         with TwistedLoggerFixture() as logger:
-            with self.assertRaisesRegex(
-                exception_type, escape(exception_message)
+            with pytest.raises(
+                exception_type, match=escape(exception_message)
             ):
                 yield listener.tryConnection()
 
-        self.assertEqual(len(logger.events), 1)
-        [
-            log_event,
-        ] = logger.events
-        self.assertEqual(
-            log_event.get("log_format"),
-            "Unable to connect to database: {error}",
+        assert 1 == len(logger.events)
+        [log_event] = logger.events
+        assert "Unable to connect to database: {error}" == log_event.get(
+            "log_format"
         )
-        self.assertEqual(log_event.get("log_level"), LogLevel.error)
-        self.assertEqual(log_event.get("error"), exception_message)
+        assert LogLevel.error == log_event.get("log_level")
+        assert exception_message == log_event.get("error")
 
     @wait_for_reactor
     @inlineCallbacks
@@ -270,14 +280,14 @@ class TestPostgresListenerService(MAASServerTestCase):
         listener = PostgresListenerService()
         listener.autoReconnect = True
 
-        startConnection = self.patch(listener, "startConnection")
+        startConnection = self.mocker.patch.object(listener, "startConnection")
         startConnection.side_effect = factory.make_exception()
-        deferLater = self.patch(listener_module, "deferLater")
+        deferLater = self.mocker.patch.object(listener_module, "deferLater")
         deferLater.return_value = sentinel.retry
 
         result = yield listener.tryConnection()
 
-        self.assertIs(result, sentinel.retry)
+        assert sentinel.retry is result
         deferLater.assert_called_with(reactor, 3, ANY)
 
     @wait_for_reactor
@@ -289,12 +299,12 @@ class TestPostgresListenerService(MAASServerTestCase):
         exception_type = factory.make_exception_type()
         exception_message = factory.make_name("message")
 
-        startConnection = self.patch(listener, "startConnection")
+        startConnection = self.mocker.patch.object(listener, "startConnection")
         startConnection.side_effect = exception_type(exception_message)
-        deferLater = self.patch(listener_module, "deferLater")
+        deferLater = self.mocker.patch.object(listener_module, "deferLater")
         deferLater.return_value = sentinel.retry
 
-        with self.assertRaisesRegex(exception_type, escape(exception_message)):
+        with pytest.raises(exception_type, match=escape(exception_message)):
             yield listener.tryConnection()
 
         deferLater.assert_not_called()
@@ -313,11 +323,9 @@ class TestPostgresListenerService(MAASServerTestCase):
         yield listener.tryConnection()
         yield listener.channelRegistrarDone
         try:
-            self.assertEqual(
-                [call("channel")], listener.registerChannel.mock_calls
-            )
-            self.assertEqual({"channel": [handler]}, listener.listeners)
-            self.assertEqual({"channel"}, listener.registeredChannels)
+            assert listener.registerChannel.mock_calls == [call("channel")]
+            assert listener.listeners == {"channel": [handler]}
+            assert listener.registeredChannels == {"channel"}
         finally:
             yield listener.stopService()
 
@@ -333,31 +341,31 @@ class TestPostgresListenerService(MAASServerTestCase):
         stopping = listener.stopService()
 
         # Both `starting` and `stopping` have callbacks yet to fire.
-        self.assertNotEqual([], starting.callbacks)
-        self.assertNotEqual([], stopping.callbacks)
+        assert starting.callbacks != []
+        assert stopping.callbacks != []
 
         # Wait for the listener to stop.
         yield stopping
 
         # Neither `starting` nor `stopping` have callbacks. This is because
         # `stopping` chained itself onto the end of `starting`.
-        self.assertEqual([], starting.callbacks)
-        self.assertEqual([], stopping.callbacks)
+        assert starting.callbacks == []
+        assert stopping.callbacks == []
 
         # Confirmation that `starting` was cancelled.
-        with self.assertRaisesRegex(CancelledError, "^$"):
+        with pytest.raises(CancelledError, match="^$"):
             yield starting_spy.get()
 
     @wait_for_reactor
     def test_multiple_starts_return_same_Deferred(self):
         listener = PostgresListenerService()
-        self.assertIs(listener.startService(), listener.startService())
+        assert listener.startService() is listener.startService()
         return listener.stopService()
 
     @wait_for_reactor
     def test_multiple_stops_return_same_Deferred(self):
         listener = PostgresListenerService()
-        self.assertIs(listener.stopService(), listener.stopService())
+        assert listener.stopService() is listener.stopService()
         return listener.stopService()
 
     @wait_for_reactor
@@ -366,7 +374,9 @@ class TestPostgresListenerService(MAASServerTestCase):
         listener = PostgresListenerService()
 
         # Spy on calls to reactor.addReader.
-        self.patch(reactor, "addReader").side_effect = reactor.addReader
+        self.mocker.patch.object(
+            reactor, "addReader"
+        ).side_effect = reactor.addReader
 
         yield listener.tryConnection()
         try:
@@ -380,13 +390,13 @@ class TestPostgresListenerService(MAASServerTestCase):
         listener = PostgresListenerService()
 
         exc_type = factory.make_exception_type()
-        startReading = self.patch(listener, "startReading")
+        startReading = self.mocker.patch.object(listener, "startReading")
         startReading.side_effect = exc_type("no reason")
 
-        with self.assertRaisesRegex(exc_type, "no reason"):
+        with pytest.raises(exc_type, match="no reason"):
             yield listener.tryConnection()
 
-        self.assertIsNone(listener.connection)
+        assert listener.connection is None
 
     @wait_for_reactor
     @inlineCallbacks
@@ -396,10 +406,7 @@ class TestPostgresListenerService(MAASServerTestCase):
         with TwistedLoggerFixture() as logger:
             yield listener.tryConnection()
             try:
-                self.assertEqual(
-                    "Listening for database notifications.",
-                    logger.output,
-                )
+                assert logger.output == "Listening for database notifications."
             finally:
                 yield listener.stopService()
 
@@ -411,15 +418,12 @@ class TestPostgresListenerService(MAASServerTestCase):
         with TwistedLoggerFixture() as logger:
             listener.connectionLost(failure)
 
-        self.assertEqual(
-            dedent(
-                f"""\
-            Connection lost.
-            Traceback (most recent call last):
-            Failure: maastesting.factory.{failure.type.__name__}: Treason!
-            """
-            ),
-            logger.output,
+        assert logger.output == dedent(
+            f"""\
+        Connection lost.
+        Traceback (most recent call last):
+        Failure: maastesting.factory.{failure.type.__name__}: Treason!
+        """
         )
 
     @wait_for_reactor
@@ -429,7 +433,7 @@ class TestPostgresListenerService(MAASServerTestCase):
         with TwistedLoggerFixture() as logger:
             listener.connectionLost(Failure(error.ConnectionDone()))
 
-        self.assertEqual(logger.errors, [])
+        assert [] == logger.errors
 
     @wait_for_reactor
     @inlineCallbacks
@@ -441,8 +445,8 @@ class TestPostgresListenerService(MAASServerTestCase):
         yield listener.startService()
         try:
             yield listener.channelRegistrarDone
-            self.assertEqual([sentinel.handler], listener.listeners[channel])
-            self.assertIn(channel, listener.registeredChannels)
+            assert listener.listeners[channel] == [sentinel.handler]
+            assert channel in listener.registeredChannels
         finally:
             yield listener.stopService()
 
@@ -450,43 +454,39 @@ class TestPostgresListenerService(MAASServerTestCase):
         listener = PostgresListenerService()
         channel = factory.make_name("channel", sep="_").lower()
         listener.register(channel, sentinel.handler)
-        self.assertIsNone(listener.channelRegistrarDone)
-        self.assertEqual([sentinel.handler], listener.listeners[channel])
-        self.assertNotIn(channel, listener.registeredChannels)
+        assert listener.channelRegistrarDone is None
+        assert listener.listeners[channel] == [sentinel.handler]
+        assert channel not in listener.registeredChannels
 
     def test_convertChannel_raises_exception_if_not_valid_channel(self):
         listener = PostgresListenerService()
-        self.assertRaises(
-            PostgresListenerNotifyError, listener.convertChannel, "node_create"
-        )
+        with pytest.raises(PostgresListenerNotifyError):
+            listener.convertChannel("node_create")
 
     def test_convertChannel_raises_exception_if_not_valid_action(self):
         listener = PostgresListenerService()
-        self.assertRaises(
-            PostgresListenerNotifyError,
-            listener.convertChannel,
-            "node_unknown",
-        )
+        with pytest.raises(PostgresListenerNotifyError):
+            listener.convertChannel("node_unknown")
 
     @wait_for_reactor
     @inlineCallbacks
     def test_doRead_removes_self_from_reactor_on_error(self):
         listener = PostgresListenerService()
 
-        connection = self.patch(listener, "connection")
+        connection = self.mocker.patch.object(listener, "connection")
         connection.connection.poll.side_effect = OperationalError()
 
-        self.patch(reactor, "removeReader")
-        self.patch(listener, "connectionLost")
+        self.mocker.patch.object(reactor, "removeReader")
+        self.mocker.patch.object(listener, "connectionLost")
 
         failure = listener.doRead()
 
         # No failure is returned; see the comment in
         # PostgresListenerService.doRead() that explains why we don't do that.
-        self.assertIsNone(failure)
+        assert failure is None
 
         # The listener has begun disconnecting.
-        self.assertIsInstance(listener.disconnecting, Deferred)
+        assert isinstance(listener.disconnecting, Deferred)
         # Wait for disconnection to complete.
         yield listener.disconnecting
         # The listener has removed itself from the reactor.
@@ -494,8 +494,8 @@ class TestPostgresListenerService(MAASServerTestCase):
         # connectionLost() has been called with a simple ConnectionLost.
         listener.connectionLost.assert_called_once_with(ANY)
         [failure] = listener.connectionLost.call_args[0]
-        self.assertIsInstance(failure, Failure)
-        self.assertIsInstance(failure.value, error.ConnectionLost)
+        assert isinstance(failure, Failure)
+        assert isinstance(failure.value, error.ConnectionLost)
 
     def test_doRead_adds_notifies_to_notifications(self):
         listener = PostgresListenerService()
@@ -507,23 +507,23 @@ class TestPostgresListenerService(MAASServerTestCase):
             for _ in range(3)
         ]
 
-        connection = self.patch(listener, "connection")
+        connection = self.mocker.patch.object(listener, "connection")
         connection.connection.poll.return_value = None
         # Add the notifications twice, so it can test that duplicates are
         # accumulated together.
         connection.connection.notifies = notifications + notifications
-        self.patch(listener, "handleNotify")
+        self.mocker.patch.object(listener, "handleNotify")
 
         listener.doRead()
-        self.assertCountEqual(listener.notifications, set(notifications))
+        assert sorted(set(notifications)) == sorted(listener.notifications)
 
     @wait_for_reactor
     @inlineCallbacks
     def test_listener_ignores_ENOENT_when_removing_itself_from_reactor(self):
         listener = PostgresListenerService()
 
-        self.patch(reactor, "addReader")
-        self.patch(reactor, "removeReader")
+        self.mocker.patch.object(reactor, "addReader")
+        self.mocker.patch.object(reactor, "removeReader")
 
         # removeReader() is going to have a nasty accident.
         enoent = IOError("ENOENT")
@@ -545,17 +545,17 @@ class TestPostgresListenerService(MAASServerTestCase):
 
         yield listener.startService()
         try:
-            self.assertTrue(listener.notifier.running)
+            assert listener.notifier.running
         finally:
             yield listener.stopService()
-            self.assertFalse(listener.notifier.running)
+            assert not (listener.notifier.running)
 
     def test_unregister_raises_error_if_channel_not_registered(self):
         listener = PostgresListenerService()
         channel_name = factory.make_name("channel")
-        with self.assertRaisesRegex(
+        with pytest.raises(
             PostgresListenerUnregistrationError,
-            rf"Channel '{escape(channel_name)}' is not registered with the listener\.",
+            match=rf"Channel '{escape(channel_name)}' is not registered with the listener\.",
         ):
             listener.unregister(channel_name, sentinel.handler)
 
@@ -563,9 +563,9 @@ class TestPostgresListenerService(MAASServerTestCase):
         listener = PostgresListenerService()
         channel = factory.make_name("channel", sep="_").lower()
         listener.register(channel, sentinel.handler)
-        with self.assertRaisesRegex(
+        with pytest.raises(
             PostgresListenerUnregistrationError,
-            rf"Handler is not registered on that channel '{channel}'\.",
+            match=rf"Handler is not registered on that channel '{channel}'\.",
         ):
             listener.unregister(channel, sentinel.other_handler)
 
@@ -573,9 +573,9 @@ class TestPostgresListenerService(MAASServerTestCase):
         listener = PostgresListenerService()
         channel = factory.make_name("channel", sep="_").lower()
         listener.register(channel, sentinel.handler)
-        self.assertEqual({channel: [sentinel.handler]}, listener.listeners)
+        assert listener.listeners == {channel: [sentinel.handler]}
         listener.unregister(channel, sentinel.handler)
-        self.assertEqual({}, listener.listeners)
+        assert listener.listeners == {}
 
     def test_unregister_removes_handler_others(self):
         listener = PostgresListenerService()
@@ -583,7 +583,7 @@ class TestPostgresListenerService(MAASServerTestCase):
         listener.register(channel, sentinel.handler1)
         listener.register(channel, sentinel.handler2)
         listener.unregister(channel, sentinel.handler2)
-        self.assertEqual({channel: [sentinel.handler1]}, listener.listeners)
+        assert listener.listeners == {channel: [sentinel.handler1]}
 
     @wait_for_reactor
     @inlineCallbacks
@@ -595,13 +595,13 @@ class TestPostgresListenerService(MAASServerTestCase):
         yield listener.startService()
         try:
             yield listener.channelRegistrarDone
-            self.assertIn(channel, listener.registeredChannels)
+            assert channel in listener.registeredChannels
             listener.unregister(channel, sentinel.handler)
             yield listener.channelRegistrarDone
         finally:
             yield listener.stopService()
 
-        self.assertNotIn(channel, listener.registeredChannels)
+        assert channel not in listener.registeredChannels
 
     @wait_for_reactor
     @inlineCallbacks
@@ -613,7 +613,9 @@ class TestPostgresListenerService(MAASServerTestCase):
         listener.register(channel, sentinel.other_handler)
         listener.registeredChannels = set()
         listener.connection = MagicMock()
-        mock_unregisterChannel = self.patch(listener, "unregisterChannel")
+        mock_unregisterChannel = self.mocker.patch.object(
+            listener, "unregisterChannel"
+        )
         listener.unregister(channel, sentinel.handler)
         yield listener.channelRegistrarDone
         mock_unregisterChannel.assert_not_called()
@@ -675,7 +677,7 @@ class TestPostgresListenerService(MAASServerTestCase):
         listener.unregister = MagicMock()
         channel = factory.make_name("sys", sep="_").lower()
         exception_text = "Expected exception"
-        with self.assertRaisesRegex(Exception, f"^{exception_text}$"):
+        with pytest.raises(Exception, match=f"^{exception_text}$"):
             with listener.listen(channel, sentinel.handler):
                 listener.register.assert_called_once_with(
                     channel, sentinel.handler

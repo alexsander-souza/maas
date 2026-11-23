@@ -6,104 +6,125 @@
 import http.client
 
 from django.urls import reverse
+import pytest
 
 from maasserver.api.networks import convert_to_network_name
 from maasserver.enum import INTERFACE_TYPE, IPADDRESS_TYPE, NODE_STATUS
-from maasserver.testing.api import APITestCase
 from maasserver.testing.factory import factory
 from maasserver.utils.converters import json_load_bytes
 
 
-class TestNetwork(APITestCase.ForUser):
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user=user,client=oauth", id="user=user,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestNetwork:
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maas_user, api_client):
+        self.user = maas_user
+        self.client = api_client
+
     def get_url(self, subnet):
         """Return the URL for the network of the given subnet."""
         return reverse("network_handler", args=["subnet-%d" % subnet.id])
 
     def test_handler_path(self):
         subnet = factory.make_Subnet()
-        self.assertEqual(
-            "/MAAS/api/2.0/networks/subnet-%d/" % subnet.id,
-            self.get_url(subnet),
+        assert "/MAAS/api/2.0/networks/subnet-%d/" % subnet.id == self.get_url(
+            subnet
         )
 
     def test_POST_is_prohibited(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         subnet = factory.make_Subnet()
         response = self.client.post(
             self.get_url(subnet), {"description": "New description"}
         )
-        self.assertEqual(http.client.BAD_REQUEST, response.status_code)
+        assert http.client.BAD_REQUEST == response.status_code
 
     def test_GET_returns_network(self):
         subnet = factory.make_Subnet()
 
         response = self.client.get(self.get_url(subnet))
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code, response.content
 
         parsed_result = json_load_bytes(response.content)
         cidr = subnet.get_ipnetwork()
-        self.assertEqual(
-            (
-                "subnet-%d" % subnet.id,
-                str(cidr.ip),
-                str(cidr.netmask),
-                subnet.vlan.vid,
-                subnet.name,
-                subnet.gateway_ip,
-                subnet.dns_servers,
-                reverse("network_handler", args=["subnet-%d" % subnet.id]),
-            ),
-            (
-                parsed_result["name"],
-                parsed_result["ip"],
-                parsed_result["netmask"],
-                parsed_result["vlan_tag"],
-                parsed_result["description"],
-                parsed_result["default_gateway"],
-                parsed_result["dns_servers"],
-                parsed_result["resource_uri"],
-            ),
+        assert (
+            "subnet-%d" % subnet.id,
+            str(cidr.ip),
+            str(cidr.netmask),
+            subnet.vlan.vid,
+            subnet.name,
+            subnet.gateway_ip,
+            subnet.dns_servers,
+            reverse("network_handler", args=["subnet-%d" % subnet.id]),
+        ) == (
+            parsed_result["name"],
+            parsed_result["ip"],
+            parsed_result["netmask"],
+            parsed_result["vlan_tag"],
+            parsed_result["description"],
+            parsed_result["default_gateway"],
+            parsed_result["dns_servers"],
+            parsed_result["resource_uri"],
         )
 
     def test_GET_returns_404_for_unknown_network(self):
-        self.assertEqual(
-            http.client.NOT_FOUND,
-            self.client.get(
+        assert (
+            http.client.NOT_FOUND
+            == self.client.get(
                 reverse("network_handler", args=["subnet-unknown"])
-            ).status_code,
+            ).status_code
         )
 
     def test_PUT_returns_410(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         subnet = factory.make_Subnet()
         response = self.client.put(self.get_url(subnet))
-        self.assertEqual(http.client.GONE, response.status_code)
+        assert http.client.GONE == response.status_code
 
     def test_DELETE_returns_410(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         subnet = factory.make_Subnet()
         response = self.client.delete(self.get_url(subnet))
-        self.assertEqual(http.client.GONE, response.status_code)
+        assert http.client.GONE == response.status_code
 
     def test_POST_connect_macs_returns_410(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         subnet = factory.make_Subnet()
         response = self.client.post(
             self.get_url(subnet), {"op": "connect_macs"}
         )
-        self.assertEqual(http.client.GONE, response.status_code)
+        assert http.client.GONE == response.status_code
 
     def test_POST_disconnect_macs_returns_410(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         subnet = factory.make_Subnet()
         response = self.client.post(
             self.get_url(subnet), {"op": "disconnect_macs"}
         )
-        self.assertEqual(http.client.GONE, response.status_code)
+        assert http.client.GONE == response.status_code
 
 
-class TestListConnectedMACs(APITestCase.ForUser):
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user=user,client=oauth", id="user=user,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestListConnectedMACs:
     """Tests for /api/2.0/network/s<network>/?op=list_connected_macs."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maas_user, api_client):
+        self.user = maas_user
+        self.client = api_client
 
     def make_interface(self, subnets=None, owner=None, node=None):
         """Create a Interface.
@@ -140,7 +161,7 @@ class TestListConnectedMACs(APITestCase.ForUser):
             "network_handler", args=[convert_to_network_name(subnet)]
         )
         response = self.client.get(url, {"op": "list_connected_macs"})
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code, response.content
         return json_load_bytes(response.content)
 
     def extract_macs(self, returned_macs):
@@ -153,30 +174,26 @@ class TestListConnectedMACs(APITestCase.ForUser):
             self.make_interface(subnets=[subnet], owner=self.user)
             for _ in range(3)
         ]
-        self.assertEqual(
-            {interface.mac_address for interface in interfaces},
-            set(self.extract_macs(self.request_connected_macs(subnet))),
+        assert {interface.mac_address for interface in interfaces} == set(
+            self.extract_macs(self.request_connected_macs(subnet))
         )
 
     def test_ignores_unconnected_macs(self):
         self.make_interface(subnets=[factory.make_Subnet()], owner=self.user)
         self.make_interface(subnets=[], owner=self.user)
-        self.assertEqual(
-            [], self.request_connected_macs(factory.make_Subnet())
-        )
+        assert [] == self.request_connected_macs(factory.make_Subnet())
 
     def test_includes_MACs_for_nodes_visible_to_user(self):
         subnet = factory.make_Subnet()
         interface = self.make_interface(subnets=[subnet], owner=self.user)
-        self.assertEqual(
-            [interface.mac_address],
-            self.extract_macs(self.request_connected_macs(subnet)),
+        assert [interface.mac_address] == self.extract_macs(
+            self.request_connected_macs(subnet)
         )
 
     def test_excludes_MACs_for_nodes_not_visible_to_user(self):
         subnet = factory.make_Subnet()
         self.make_interface(subnets=[subnet])
-        self.assertEqual([], self.request_connected_macs(subnet))
+        assert [] == self.request_connected_macs(subnet)
 
     def test_returns_sorted_MACs(self):
         subnet = factory.make_Subnet()
@@ -204,7 +221,6 @@ class TestListConnectedMACs(APITestCase.ForUser):
                 x.mac_address,
             ),
         )
-        self.assertEqual(
-            [nic.mac_address for nic in sorted_interfaces],
-            self.extract_macs(self.request_connected_macs(subnet)),
-        )
+        assert [
+            nic.mac_address for nic in sorted_interfaces
+        ] == self.extract_macs(self.request_connected_macs(subnet))

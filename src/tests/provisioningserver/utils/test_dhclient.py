@@ -8,7 +8,6 @@ import random
 from textwrap import dedent
 
 from maastesting.factory import factory
-from maastesting.testcase import MAASTestCase
 from provisioningserver.utils import dhclient as dhclient_module
 from provisioningserver.utils.dhclient import (
     get_dhclient_info,
@@ -17,7 +16,7 @@ from provisioningserver.utils.dhclient import (
 from provisioningserver.utils.fs import atomic_write
 
 
-class TestGetLatestFixedAddress(MAASTestCase):
+class TestGetLatestFixedAddress:
     IPV4_LEASE_FILE = dedent(
         """\
         lease {
@@ -53,35 +52,33 @@ class TestGetLatestFixedAddress(MAASTestCase):
     )
 
     def test_missing(self):
-        self.assertIsNone(
-            get_lastest_fixed_address(factory.make_name("lease"))
-        )
+        assert get_lastest_fixed_address(factory.make_name("lease")) is None
 
-    def test_empty(self):
-        path = self.make_file(contents="")
-        self.assertIsNone(get_lastest_fixed_address(path))
+    def test_empty(self, tmp_path):
+        path = factory.make_file(tmp_path, contents="")
+        assert get_lastest_fixed_address(path) is None
 
-    def test_random(self):
-        path = self.make_file()
-        self.assertIsNone(get_lastest_fixed_address(path))
+    def test_random(self, tmp_path):
+        path = factory.make_file(tmp_path)
+        assert get_lastest_fixed_address(path) is None
 
-    def test_ipv4(self):
-        path = self.make_file(contents=self.IPV4_LEASE_FILE)
-        self.assertEqual("192.168.1.113", get_lastest_fixed_address(path))
+    def test_ipv4(self, tmp_path):
+        path = factory.make_file(tmp_path, contents=self.IPV4_LEASE_FILE)
+        assert "192.168.1.113" == get_lastest_fixed_address(path)
 
-    def test_ipv6(self):
-        path = self.make_file(contents=self.IPV6_LEASE_FILE)
-        self.assertEqual(
-            "2001:db8:a0b:12f0::3", get_lastest_fixed_address(path)
-        )
+    def test_ipv6(self, tmp_path):
+        path = factory.make_file(tmp_path, contents=self.IPV6_LEASE_FILE)
+        assert "2001:db8:a0b:12f0::3" == get_lastest_fixed_address(path)
 
 
-class TestGetDhclientInfo(MAASTestCase):
-    def test_returns_interface_name_with_address(self):
-        proc_path = self.make_dir()
-        leases_path = self.make_dir()
+class TestGetDhclientInfo:
+    def test_returns_interface_name_with_address(self, tmp_path, mocker):
+        proc_path = os.path.join(tmp_path, factory.make_name("proc"))
+        leases_path = os.path.join(tmp_path, factory.make_name("leases"))
+        os.mkdir(proc_path)
+        os.mkdir(leases_path)
         running_pids = {random.randint(2, 999) for _ in range(3)}
-        self.patch(
+        mocker.patch.object(
             dhclient_module, "get_running_pids_with_command"
         ).return_value = running_pids
         interfaces = {}
@@ -115,4 +112,4 @@ class TestGetDhclientInfo(MAASTestCase):
             cmdline = "\x00".join(cmdline) + "\x00"
             os.mkdir(os.path.join(proc_path, str(pid)))
             atomic_write(cmdline.encode("ascii"), cmdline_path)
-        self.assertEqual(interfaces, get_dhclient_info(proc_path=proc_path))
+        assert interfaces == get_dhclient_info(proc_path=proc_path)

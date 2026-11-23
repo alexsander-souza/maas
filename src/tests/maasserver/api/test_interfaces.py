@@ -2,10 +2,12 @@
 # GNU Affero General Public License version 3 (see the file LICENSE).
 
 
+from collections import Counter
 import http.client
 import random
 
 from django.urls import reverse
+import pytest
 
 from maasserver.enum import (
     INTERFACE_LINK_TYPE,
@@ -17,11 +19,10 @@ from maasserver.enum import (
 )
 from maasserver.models import Interface
 from maasserver.models.vlan import DEFAULT_MTU
-from maasserver.testing.api import APITestCase, APITransactionTestCase
 from maasserver.testing.factory import factory
 from maasserver.utils.converters import json_load_bytes
 from maasserver.utils.orm import reload_object
-from maastesting.djangotestcase import count_queries
+from maastesting.querycounter import count_queries
 
 EDITABLE_STATUSES = (
     NODE_STATUS.NEW,
@@ -119,13 +120,19 @@ def make_complex_interface(node, name=None):
     return bond_interface, parents, [vlan_nic_10, vlan_nic_11]
 
 
-class TestInterfacesAPI(APITestCase.ForUser):
+@pytest.mark.parametrize("api_identity", ["user=user,client=oauth"])
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestInterfacesAPI:
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maas_user, api_client):
+        self.user = maas_user
+        self.client = api_client
+
     def test_handler_path(self):
         node = factory.make_Node()
-        self.assertEqual(
-            "/MAAS/api/2.0/nodes/%s/interfaces/" % (node.system_id),
-            get_interfaces_uri(node),
-        )
+        assert (
+            "/MAAS/api/2.0/nodes/%s/interfaces/" % node.system_id
+        ) == get_interfaces_uri(node)
 
     def test_read(self):
         node = factory.make_Node()
@@ -133,12 +140,10 @@ class TestInterfacesAPI(APITestCase.ForUser):
         uri = get_interfaces_uri(node)
         response = self.client.get(uri)
 
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         expected_ids = [nic.id for nic in [bond] + parents + children]
         result_ids = [nic["id"] for nic in json_load_bytes(response.content)]
-        self.assertCountEqual(expected_ids, result_ids)
+        assert Counter(expected_ids) == Counter(result_ids)
 
     def test_read_physical_includes_numa_node(self):
         numa_node = factory.make_NUMANode()
@@ -146,11 +151,9 @@ class TestInterfacesAPI(APITestCase.ForUser):
         uri = get_interfaces_uri(numa_node.node)
         response = self.client.get(uri)
 
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         [interface] = json_load_bytes(response.content)
-        self.assertEqual(interface["numa_node"], numa_node.index)
+        assert interface["numa_node"] == numa_node.index
 
     def test_read_includes_sriov_max_vf(self):
         node = factory.make_Node()
@@ -160,11 +163,9 @@ class TestInterfacesAPI(APITestCase.ForUser):
         uri = get_interfaces_uri(node)
         response = self.client.get(uri)
 
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         [interface] = json_load_bytes(response.content)
-        self.assertEqual(interface["sriov_max_vf"], 16)
+        assert interface["sriov_max_vf"] == 16
 
     def test_read_on_device(self):
         parent = factory.make_Node()
@@ -175,12 +176,8 @@ class TestInterfacesAPI(APITestCase.ForUser):
         uri = get_interfaces_uri(device)
         response = self.client.get(uri)
 
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
-        self.assertEqual(
-            interface.id, json_load_bytes(response.content)[0]["id"]
-        )
+        assert http.client.OK == response.status_code, response.content
+        assert interface.id == json_load_bytes(response.content)[0]["id"]
 
     def test_read_uses_constant_number_of_queries(self):
         node = factory.make_Node()
@@ -196,30 +193,22 @@ class TestInterfacesAPI(APITestCase.ForUser):
         # number of queries if they are not.
         parsed_result_1 = json_load_bytes(response1.content)
         parsed_result_2 = json_load_bytes(response2.content)
-        self.assertEqual(
-            [
-                http.client.OK,
-                http.client.OK,
-                len([bond1] + parents1 + children1),
-                len(
-                    [bond1, bond2]
-                    + parents1
-                    + parents2
-                    + children1
-                    + children2
-                ),
-            ],
-            [
-                response1.status_code,
-                response2.status_code,
-                len(parsed_result_1),
-                len(parsed_result_2),
-            ],
-        )
-        self.assertEqual(num_queries1, num_queries2)
+        assert [
+            http.client.OK,
+            http.client.OK,
+            len([bond1] + parents1 + children1),
+            len([bond1, bond2] + parents1 + parents2 + children1 + children2),
+        ] == [
+            response1.status_code,
+            response2.status_code,
+            len(parsed_result_1),
+            len(parsed_result_2),
+        ]
+        assert num_queries1 == num_queries2
 
     def test_create_physical(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         for status in EDITABLE_STATUSES:
             node = factory.make_Node(status=status)
             mac = factory.make_mac_address()
@@ -238,16 +227,14 @@ class TestInterfacesAPI(APITestCase.ForUser):
                 },
             )
 
-            self.assertEqual(
-                http.client.OK, response.status_code, response.content
-            )
+            assert http.client.OK == response.status_code, response.content
             interface_dict = response.json()
-            self.assertEqual(interface_dict.get("mac_address"), mac)
-            self.assertEqual(interface_dict.get("name"), name)
-            self.assertEqual(interface_dict.get("vlan", {}).get("id"), vlan.id)
-            self.assertEqual(interface_dict.get("type"), "physical")
-            self.assertEqual(interface_dict.get("tags"), tags)
-            self.assertTrue(interface_dict.get("enabled"))
+            assert interface_dict.get("mac_address") == mac
+            assert interface_dict.get("name") == name
+            assert interface_dict.get("vlan", {}).get("id") == vlan.id
+            assert interface_dict.get("type") == "physical"
+            assert interface_dict.get("tags") == tags
+            assert interface_dict.get("enabled")
 
     def test_create_physical_on_device(self):
         parent = factory.make_Node()
@@ -268,19 +255,18 @@ class TestInterfacesAPI(APITestCase.ForUser):
             },
         )
 
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         interface_dict = response.json()
-        self.assertEqual(interface_dict.get("mac_address"), mac)
-        self.assertEqual(interface_dict.get("name"), name)
-        self.assertEqual(interface_dict.get("vlan", {}).get("id"), vlan.id)
-        self.assertEqual(interface_dict.get("type"), "physical")
-        self.assertEqual(interface_dict.get("tags"), tags)
-        self.assertTrue(interface_dict.get("enabled"))
+        assert interface_dict.get("mac_address") == mac
+        assert interface_dict.get("name") == name
+        assert interface_dict.get("vlan", {}).get("id") == vlan.id
+        assert interface_dict.get("type") == "physical"
+        assert interface_dict.get("tags") == tags
+        assert interface_dict.get("enabled")
 
     def test_create_physical_disabled(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         for status in EDITABLE_STATUSES:
             node = factory.make_Node(status=status)
             mac = factory.make_mac_address()
@@ -300,16 +286,14 @@ class TestInterfacesAPI(APITestCase.ForUser):
                 },
             )
 
-            self.assertEqual(
-                http.client.OK, response.status_code, response.content
-            )
+            assert http.client.OK == response.status_code, response.content
             interface_dict = response.json()
-            self.assertEqual(interface_dict.get("mac_address"), mac)
-            self.assertEqual(interface_dict.get("name"), name)
-            self.assertEqual(interface_dict.get("vlan", {}).get("id"), vlan.id)
-            self.assertEqual(interface_dict.get("type"), "physical")
-            self.assertEqual(interface_dict.get("tags"), tags)
-            self.assertFalse(interface_dict.get("enabled"))
+            assert interface_dict.get("mac_address") == mac
+            assert interface_dict.get("name") == name
+            assert interface_dict.get("vlan", {}).get("id") == vlan.id
+            assert interface_dict.get("type") == "physical"
+            assert interface_dict.get("tags") == tags
+            assert not interface_dict.get("enabled")
 
     def test_create_physical_requires_admin(self):
         node = factory.make_Node()
@@ -326,12 +310,11 @@ class TestInterfacesAPI(APITestCase.ForUser):
                 "vlan": vlan.id,
             },
         )
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content
 
     def test_create_physical_409_when_invalid_status(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         for status in BLOCKED_STATUSES:
             node = factory.make_Node(status=status)
             mac = factory.make_mac_address()
@@ -347,27 +330,28 @@ class TestInterfacesAPI(APITestCase.ForUser):
                     "vlan": vlan.id,
                 },
             )
-            self.assertEqual(
-                http.client.CONFLICT, response.status_code, response.content
+            assert http.client.CONFLICT == response.status_code, (
+                response.content
             )
 
     def test_create_physical_requires_mac(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(
             status=random.choice(EDITABLE_STATUSES), bmc=factory.make_BMC()
         )
         uri = get_interfaces_uri(node)
         response = self.client.post(uri, {"op": "create_physical"})
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
-        self.assertEqual(
-            {"mac_address": ["This field is required."]},
-            json_load_bytes(response.content),
+        assert {"mac_address": ["This field is required."]} == json_load_bytes(
+            response.content
         )
 
     def test_create_physical_doesnt_allow_mac_already_register(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(status=random.choice(EDITABLE_STATUSES))
         interface_on_other_node = factory.make_Interface(
             INTERFACE_TYPE.PHYSICAL
@@ -384,21 +368,19 @@ class TestInterfacesAPI(APITestCase.ForUser):
                 "vlan": vlan.id,
             },
         )
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
-        self.assertEqual(
-            {
-                "mac_address": [
-                    "This MAC address is already in use by %s."
-                    % (interface_on_other_node.get_log_string())
-                ]
-            },
-            json_load_bytes(response.content),
-        )
+        assert {
+            "mac_address": [
+                "This MAC address is already in use by %s."
+                % (interface_on_other_node.get_log_string())
+            ]
+        } == json_load_bytes(response.content)
 
     def test_create_bond(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         for status in EDITABLE_STATUSES:
             node = factory.make_Node(status=status)
             vlan = factory.make_VLAN()
@@ -423,21 +405,18 @@ class TestInterfacesAPI(APITestCase.ForUser):
                 },
             )
 
-            self.assertEqual(
-                http.client.OK, response.status_code, response.content
-            )
+            assert http.client.OK == response.status_code, response.content
             interface_dict = response.json()
-            self.assertEqual(
-                interface_dict.get("mac_address"), parent_1_iface.mac_address
+            assert (
+                interface_dict.get("mac_address") == parent_1_iface.mac_address
             )
-            self.assertEqual(interface_dict.get("name"), name)
-            self.assertEqual(interface_dict.get("vlan", {}).get("id"), vlan.id)
-            self.assertEqual(interface_dict.get("type"), "bond")
-            self.assertEqual(interface_dict.get("tags"), tags)
-            self.assertCountEqual(
-                [parent_1_iface.name, parent_2_iface.name],
-                interface_dict["parents"],
-            )
+            assert interface_dict.get("name") == name
+            assert interface_dict.get("vlan", {}).get("id") == vlan.id
+            assert interface_dict.get("type") == "bond"
+            assert interface_dict.get("tags") == tags
+            assert Counter(
+                [parent_1_iface.name, parent_2_iface.name]
+            ) == Counter(interface_dict["parents"])
 
     def test_create_bond_404_on_device(self):
         parent = factory.make_Node()
@@ -446,9 +425,7 @@ class TestInterfacesAPI(APITestCase.ForUser):
         )
         uri = get_interfaces_uri(device)
         response = self.client.post(uri, {"op": "create_bond"})
-        self.assertEqual(
-            http.client.NOT_FOUND, response.status_code, response.content
-        )
+        assert http.client.NOT_FOUND == response.status_code, response.content
 
     def test_create_bond_requires_admin(self):
         node = factory.make_Node()
@@ -471,12 +448,11 @@ class TestInterfacesAPI(APITestCase.ForUser):
                 "parents": [parent_1_iface.id, parent_2_iface.id],
             },
         )
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content
 
     def test_create_bond_409_when_invalid_status(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         for status in BLOCKED_STATUSES:
             node = factory.make_Node(status=status)
             vlan = factory.make_VLAN()
@@ -498,30 +474,29 @@ class TestInterfacesAPI(APITestCase.ForUser):
                     "parents": [parent_1_iface.id, parent_2_iface.id],
                 },
             )
-            self.assertEqual(
-                http.client.CONFLICT, response.status_code, response.content
+            assert http.client.CONFLICT == response.status_code, (
+                response.content
             )
 
     def test_create_bond_requires_name_vlan_and_parents(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(status=random.choice(EDITABLE_STATUSES))
         uri = get_interfaces_uri(node)
         response = self.client.post(uri, {"op": "create_bond"})
 
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
-        self.assertEqual(
-            {
-                "mac_address": ["This field cannot be blank."],
-                "name": ["This field is required."],
-                "parents": ["A bond interface must have one or more parents."],
-            },
-            json_load_bytes(response.content),
-        )
+        assert {
+            "mac_address": ["This field cannot be blank."],
+            "name": ["This field is required."],
+            "parents": ["A bond interface must have one or more parents."],
+        } == json_load_bytes(response.content)
 
     def test_create_vlan(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(status=random.choice(EDITABLE_STATUSES))
         untagged_vlan = factory.make_VLAN()
         parent_iface = factory.make_Interface(
@@ -540,19 +515,13 @@ class TestInterfacesAPI(APITestCase.ForUser):
             },
         )
 
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         interface_dict = response.json()
-        self.assertEqual(
-            interface_dict.get("mac_address"), parent_iface.mac_address
-        )
-        self.assertEqual(
-            interface_dict.get("vlan", {}).get("id"), tagged_vlan.id
-        )
-        self.assertEqual(interface_dict.get("parents"), [parent_iface.name])
-        self.assertEqual(interface_dict.get("type"), "vlan")
-        self.assertEqual(interface_dict.get("tags"), tags)
+        assert interface_dict.get("mac_address") == parent_iface.mac_address
+        assert interface_dict.get("vlan", {}).get("id") == tagged_vlan.id
+        assert interface_dict.get("parents") == [parent_iface.name]
+        assert interface_dict.get("type") == "vlan"
+        assert interface_dict.get("tags") == tags
 
     def test_create_vlan_404_on_device(self):
         parent = factory.make_Node()
@@ -561,9 +530,7 @@ class TestInterfacesAPI(APITestCase.ForUser):
         )
         uri = get_interfaces_uri(device)
         response = self.client.post(uri, {"op": "create_vlan"})
-        self.assertEqual(
-            http.client.NOT_FOUND, response.status_code, response.content
-        )
+        assert http.client.NOT_FOUND == response.status_code, response.content
 
     def test_create_vlan_requires_admin(self):
         node = factory.make_Node(status=random.choice(EDITABLE_STATUSES))
@@ -581,31 +548,26 @@ class TestInterfacesAPI(APITestCase.ForUser):
                 "parent": parent_iface.id,
             },
         )
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content
 
     def test_create_vlan_requires_vlan_and_parent(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(status=random.choice(EDITABLE_STATUSES))
         uri = get_interfaces_uri(node)
         response = self.client.post(uri, {"op": "create_vlan"})
 
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
-        self.assertEqual(
-            {
-                "vlan": [
-                    "A VLAN interface must be connected to a tagged VLAN."
-                ],
-                "parent": ["A VLAN interface must have exactly one parent."],
-            },
-            json_load_bytes(response.content),
-        )
+        assert {
+            "vlan": ["A VLAN interface must be connected to a tagged VLAN."],
+            "parent": ["A VLAN interface must have exactly one parent."],
+        } == json_load_bytes(response.content)
 
     def test_create_bridge(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         name = factory.make_name("br")
         node = factory.make_Node(status=random.choice(EDITABLE_STATUSES))
         untagged_vlan = factory.make_VLAN()
@@ -625,20 +587,14 @@ class TestInterfacesAPI(APITestCase.ForUser):
             },
         )
 
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         interface_dict = response.json()
-        self.assertEqual(interface_dict.get("name"), name)
-        self.assertEqual(
-            interface_dict.get("mac_address"), parent_iface.mac_address
-        )
-        self.assertEqual(
-            interface_dict.get("vlan", {}).get("id"), untagged_vlan.id
-        )
-        self.assertEqual(interface_dict.get("parents"), [parent_iface.name])
-        self.assertEqual(interface_dict.get("type"), "bridge")
-        self.assertEqual(interface_dict.get("tags"), tags)
+        assert interface_dict.get("name") == name
+        assert interface_dict.get("mac_address") == parent_iface.mac_address
+        assert interface_dict.get("vlan", {}).get("id") == untagged_vlan.id
+        assert interface_dict.get("parents") == [parent_iface.name]
+        assert interface_dict.get("type") == "bridge"
+        assert interface_dict.get("tags") == tags
 
     def test_create_bridge_404_on_device(self):
         parent = factory.make_Node()
@@ -647,9 +603,7 @@ class TestInterfacesAPI(APITestCase.ForUser):
         )
         uri = get_interfaces_uri(device)
         response = self.client.post(uri, {"op": "create_bridge"})
-        self.assertEqual(
-            http.client.NOT_FOUND, response.status_code, response.content
-        )
+        assert http.client.NOT_FOUND == response.status_code, response.content
 
     def test_create_bridge_requires_admin(self):
         node = factory.make_Node(status=random.choice(EDITABLE_STATUSES))
@@ -666,32 +620,27 @@ class TestInterfacesAPI(APITestCase.ForUser):
                 "parent": parent_iface.id,
             },
         )
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content
 
     def test_create_bridge_requires_name_and_parent(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(status=random.choice(EDITABLE_STATUSES))
         uri = get_interfaces_uri(node)
         response = self.client.post(uri, {"op": "create_bridge"})
 
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
-        self.assertEqual(
-            {
-                "name": ["This field is required."],
-                "parent": [
-                    "A bridge interface must have at least one parent."
-                ],
-                "mac_address": ["This field cannot be blank."],
-            },
-            json_load_bytes(response.content),
-        )
+        assert {
+            "name": ["This field is required."],
+            "parent": ["A bridge interface must have at least one parent."],
+            "mac_address": ["This field cannot be blank."],
+        } == json_load_bytes(response.content)
 
     def test_create_acquired_bridge(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         name = factory.make_name("br")
         node = factory.make_Node(status=NODE_STATUS.ALLOCATED, owner=self.user)
         parent_fabric = factory.make_Fabric()
@@ -718,26 +667,18 @@ class TestInterfacesAPI(APITestCase.ForUser):
             },
         )
 
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         interface_dict = response.json()
-        self.assertEqual(
-            interface_dict.get("mac_address"), parent_iface.mac_address
-        )
-        self.assertEqual(
-            interface_dict.get("vlan", {}).get("id"), parent_vlan.id
-        )
-        self.assertEqual(interface_dict.get("parents"), [parent_iface.name])
-        self.assertEqual(interface_dict.get("type"), "bridge")
-        self.assertEqual(interface_dict.get("tags"), tags)
-        self.assertEqual(len(interface_dict.get("links")), 1)
+        assert interface_dict.get("mac_address") == parent_iface.mac_address
+        assert interface_dict.get("vlan", {}).get("id") == parent_vlan.id
+        assert interface_dict.get("parents") == [parent_iface.name]
+        assert interface_dict.get("type") == "bridge"
+        assert interface_dict.get("tags") == tags
+        assert len(interface_dict.get("links")) == 1
         link = interface_dict.get("links")[0]
-        self.assertEqual(link.get("id"), parent_sip.id)
-        self.assertEqual(link.get("ip_address"), parent_sip.ip)
-        self.assertEqual(
-            link.get("subnet", {}).get("cidr"), parent_subnet.cidr
-        )
+        assert link.get("id") == parent_sip.id
+        assert link.get("ip_address") == parent_sip.ip
+        assert link.get("subnet", {}).get("cidr") == parent_subnet.cidr
 
     def test_create_acquired_bridge_not_allowed_in_ready(self):
         name = factory.make_name("br")
@@ -753,14 +694,13 @@ class TestInterfacesAPI(APITestCase.ForUser):
             {"op": "create_bridge", "name": name, "parent": parent_iface.id},
         )
 
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content
 
     def test_create_bridge_not_allowed_with_both_parent_and_parents_parameter(
         self,
     ):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         name = factory.make_name("br")
         node = factory.make_Node(status=random.choice(EDITABLE_STATUSES))
         untagged_vlan = factory.make_VLAN()
@@ -779,16 +719,17 @@ class TestInterfacesAPI(APITestCase.ForUser):
             },
         )
 
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
-        self.assertIn(
-            b"Cannot specify both parent and parents fields.",
-            response.content,
+        assert (
+            b"Cannot specify both parent and parents fields."
+            in response.content
         )
 
     def test_create_bridge_with_multiple_parents(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         name = factory.make_name("br")
         node = factory.make_Node(status=random.choice(EDITABLE_STATUSES))
         untagged_vlan = factory.make_VLAN()
@@ -809,30 +750,37 @@ class TestInterfacesAPI(APITestCase.ForUser):
             },
         )
 
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         interface_dict = response.json()
-        self.assertEqual(interface_dict.get("name"), name)
-        self.assertEqual(
-            interface_dict.get("mac_address"), parent_iface1.mac_address
+        assert interface_dict.get("name") == name
+        assert interface_dict.get("mac_address") == parent_iface1.mac_address
+        assert interface_dict.get("vlan", {}).get("id") == untagged_vlan.id
+        assert Counter(interface_dict.get("parents")) == Counter(
+            [parent_iface1.name, parent_iface2.name]
         )
-        self.assertEqual(
-            interface_dict.get("vlan", {}).get("id"), untagged_vlan.id
-        )
-        self.assertCountEqual(
-            interface_dict.get("parents"),
-            [parent_iface1.name, parent_iface2.name],
-        )
-        self.assertEqual(interface_dict.get("type"), "bridge")
+        assert interface_dict.get("type") == "bridge"
 
 
-class TestInterfacesAPIForControllers(APITestCase.ForUser):
-    scenarios = (
-        ("region", {"maker": factory.make_RegionController}),
-        ("rack", {"maker": factory.make_RackController}),
-        ("region-rack", {"maker": factory.make_RegionRackController}),
-    )
+@pytest.mark.parametrize("api_identity", ["user=user,client=oauth"])
+@pytest.mark.parametrize(
+    "maker",
+    [
+        pytest.param(
+            factory.make_RegionController, id="make_RegionController"
+        ),
+        pytest.param(factory.make_RackController, id="make_RackController"),
+        pytest.param(
+            factory.make_RegionRackController, id="make_RegionRackController"
+        ),
+    ],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestInterfacesAPIForControllers:
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maker, maas_user, api_client):
+        self.user = maas_user
+        self.client = api_client
+        self.maker = maker
 
     def test_read(self):
         node = self.maker()
@@ -842,20 +790,19 @@ class TestInterfacesAPIForControllers(APITestCase.ForUser):
         uri = get_interfaces_uri(node)
         response = self.client.get(uri)
 
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         output_content = json_load_bytes(response.content)
         expected_ids = [
             nic.id for nic in node.current_config.interface_set.all()
         ]
         result_ids = [nic["id"] for nic in output_content]
-        self.assertCountEqual(expected_ids, result_ids)
+        assert Counter(expected_ids) == Counter(result_ids)
         for nic in output_content:
-            self.assertIn("links", nic)
+            assert "links" in nic
 
     def test_create_physical_is_forbidden(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = self.maker()
         mac = factory.make_mac_address()
         name = factory.make_name("eth")
@@ -872,12 +819,11 @@ class TestInterfacesAPIForControllers(APITestCase.ForUser):
                 "tags": ",".join(tags),
             },
         )
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content
 
     def test_create_bond_is_forbidden(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = self.maker()
         vlan = factory.make_VLAN()
         parent_1_iface = factory.make_Interface(
@@ -901,12 +847,11 @@ class TestInterfacesAPIForControllers(APITestCase.ForUser):
             },
         )
 
-        self.assertEqual(
-            http.client.NOT_FOUND, response.status_code, response.content
-        )
+        assert http.client.NOT_FOUND == response.status_code, response.content
 
     def test_create_vlan_is_forbidden(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = self.maker()
         untagged_vlan = factory.make_VLAN()
         parent_iface = factory.make_Interface(
@@ -925,20 +870,25 @@ class TestInterfacesAPIForControllers(APITestCase.ForUser):
             },
         )
 
-        self.assertEqual(
-            http.client.NOT_FOUND, response.status_code, response.content
-        )
+        assert http.client.NOT_FOUND == response.status_code, response.content
 
 
-class TestNodeInterfaceAPI(APITransactionTestCase.ForUser):
+@pytest.mark.allow_transactions
+@pytest.mark.parametrize("api_identity", ["user=user,client=oauth"])
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestNodeInterfaceAPI:
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maas_user, api_client):
+        self.user = maas_user
+        self.client = api_client
+
     def test_handler_path(self):
         node = factory.make_Node(interface=True)
         interface = node.get_boot_interface()
-        self.assertEqual(
+        assert (
             "/MAAS/api/2.0/nodes/%s/interfaces/%s/"
-            % (node.system_id, interface.id),
-            get_interface_uri(interface, node=node),
-        )
+            % (node.system_id, interface.id)
+        ) == get_interface_uri(interface, node=node)
 
     def test_read_basic(self):
         node = factory.make_Node()
@@ -960,41 +910,35 @@ class TestNodeInterfaceAPI(APITransactionTestCase.ForUser):
 
         uri = get_interface_uri(interface)
         response = self.client.get(uri)
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed_interface = json_load_bytes(response.content)
-        self.maxDiff = None
-        self.assertEqual(
-            {
-                "system_id": node.system_id,
-                "id": interface.id,
-                "name": "eno1",
-                "type": INTERFACE_TYPE.PHYSICAL,
-                "vlan": None,
-                "mac_address": "11:11:11:11:11:11",
-                "parents": [],
-                "children": [],
-                "tags": [],
-                "enabled": False,
-                "links": [],
-                "params": "",
-                "discovered": None,
-                "effective_mtu": DEFAULT_MTU,
-                "vendor": "my-vendor",
-                "product": "my-product",
-                "firmware_version": "1.2.3",
-                "link_connected": False,
-                "interface_speed": 100,
-                "link_speed": 0,
-                "numa_node": 0,
-                "sriov_max_vf": 0,
-                "resource_uri": (
-                    f"/MAAS/api/2.0/nodes/{node.system_id}/interfaces/{interface.id}/"
-                ),
-            },
-            parsed_interface,
-        )
+        assert {
+            "system_id": node.system_id,
+            "id": interface.id,
+            "name": "eno1",
+            "type": INTERFACE_TYPE.PHYSICAL,
+            "vlan": None,
+            "mac_address": "11:11:11:11:11:11",
+            "parents": [],
+            "children": [],
+            "tags": [],
+            "enabled": False,
+            "links": [],
+            "params": "",
+            "discovered": None,
+            "effective_mtu": DEFAULT_MTU,
+            "vendor": "my-vendor",
+            "product": "my-product",
+            "firmware_version": "1.2.3",
+            "link_connected": False,
+            "interface_speed": 100,
+            "link_speed": 0,
+            "numa_node": 0,
+            "sriov_max_vf": 0,
+            "resource_uri": (
+                f"/MAAS/api/2.0/nodes/{node.system_id}/interfaces/{interface.id}/"
+            ),
+        } == parsed_interface
 
     def test_read_connected(self):
         vlan = factory.make_VLAN(name="my-vlan", mtu=1234)
@@ -1009,9 +953,7 @@ class TestNodeInterfaceAPI(APITransactionTestCase.ForUser):
 
         uri = get_interface_uri(interface)
         response = self.client.get(uri)
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed_interface = json_load_bytes(response.content)
         expected_parts = {
             "id": interface.id,
@@ -1039,7 +981,7 @@ class TestNodeInterfaceAPI(APITransactionTestCase.ForUser):
             },
         }
         for key, value in expected_parts.items():
-            self.assertEqual(parsed_interface[key], value)
+            assert parsed_interface[key] == value
 
     def test_read(self):
         node = factory.make_Node()
@@ -1089,9 +1031,7 @@ class TestNodeInterfaceAPI(APITransactionTestCase.ForUser):
 
         uri = get_interface_uri(bond)
         response = self.client.get(uri)
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed_interface = json_load_bytes(response.content)
 
         expected_parts = {
@@ -1107,45 +1047,39 @@ class TestNodeInterfaceAPI(APITransactionTestCase.ForUser):
             "system_id": node.system_id,
         }
         for key, value in expected_parts.items():
-            self.assertEqual(parsed_interface[key], value)
-        self.assertCountEqual(
-            [nic.name for nic in parents], parsed_interface["parents"]
+            assert parsed_interface[key] == value
+        assert Counter([nic.name for nic in parents]) == Counter(
+            parsed_interface["parents"]
         )
-        self.assertCountEqual(
-            [nic.name for nic in children], parsed_interface["children"]
+        assert Counter([nic.name for nic in children]) == Counter(
+            parsed_interface["children"]
         )
 
-        self.assertEqual(
-            [
-                {
-                    "id": dhcp_ip.id,
-                    "mode": "dhcp",
-                    "ip_address": discovered_ip,
-                    "subnet": serialize_subnet(dhcp_subnet),
-                },
-                {
-                    "id": sip.id,
-                    "mode": "static",
-                    "ip_address": static_ip,
-                    "subnet": serialize_subnet(static_subnet),
-                },
-                {
-                    "id": link_ip.id,
-                    "mode": "link_up",
-                    "subnet": serialize_subnet(link_subnet),
-                },
-            ],
-            parsed_interface["links"],
-        )
-        self.assertEqual(
-            [
-                {
-                    "ip_address": discovered_ip,
-                    "subnet": serialize_subnet(dhcp_subnet),
-                },
-            ],
-            parsed_interface["discovered"],
-        )
+        assert [
+            {
+                "id": dhcp_ip.id,
+                "mode": "dhcp",
+                "ip_address": discovered_ip,
+                "subnet": serialize_subnet(dhcp_subnet),
+            },
+            {
+                "id": sip.id,
+                "mode": "static",
+                "ip_address": static_ip,
+                "subnet": serialize_subnet(static_subnet),
+            },
+            {
+                "id": link_ip.id,
+                "mode": "link_up",
+                "subnet": serialize_subnet(link_subnet),
+            },
+        ] == parsed_interface["links"]
+        assert [
+            {
+                "ip_address": discovered_ip,
+                "subnet": serialize_subnet(dhcp_subnet),
+            },
+        ] == parsed_interface["discovered"]
 
     def test_read_effective_mtu(self):
         node = factory.make_Node()
@@ -1157,13 +1091,11 @@ class TestNodeInterfaceAPI(APITransactionTestCase.ForUser):
 
         uri = get_interface_uri(bond)
         response = self.client.get(uri)
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed_interface = json_load_bytes(response.content)
 
-        self.assertEqual(bond.id, parsed_interface["id"])
-        self.assertEqual(2000, parsed_interface["effective_mtu"])
+        assert bond.id == parsed_interface["id"]
+        assert 2000 == parsed_interface["effective_mtu"]
 
     def test_read_by_specifier(self):
         node = factory.make_Node(hostname="tasty-biscuits")
@@ -1172,11 +1104,9 @@ class TestNodeInterfaceAPI(APITransactionTestCase.ForUser):
             "hostname:tasty-biscuits,name:bond0", node=node
         )
         response = self.client.get(uri)
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed_interface = json_load_bytes(response.content)
-        self.assertEqual(bond0.id, parsed_interface["id"])
+        assert bond0.id == parsed_interface["id"]
 
     def test_read_device_interface(self):
         parent = factory.make_Node()
@@ -1186,11 +1116,9 @@ class TestNodeInterfaceAPI(APITransactionTestCase.ForUser):
         )
         uri = get_interface_uri(interface)
         response = self.client.get(uri)
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed_interface = json_load_bytes(response.content)
-        self.assertEqual(interface.id, parsed_interface["id"])
+        assert interface.id == parsed_interface["id"]
 
     def test_read_404_when_invalid_id(self):
         node = factory.make_Node()
@@ -1199,12 +1127,11 @@ class TestNodeInterfaceAPI(APITransactionTestCase.ForUser):
             args=[node.system_id, random.randint(100, 1000)],
         )
         response = self.client.get(uri)
-        self.assertEqual(
-            http.client.NOT_FOUND, response.status_code, response.content
-        )
+        assert http.client.NOT_FOUND == response.status_code, response.content
 
     def test_update_deployed_machine_interface(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(status=NODE_STATUS.DEPLOYED)
         interface = factory.make_Interface(INTERFACE_TYPE.PHYSICAL, node=node)
         new_name = factory.make_name("name")
@@ -1213,15 +1140,14 @@ class TestNodeInterfaceAPI(APITransactionTestCase.ForUser):
         response = self.client.put(
             uri, {"name": new_name, "mac_address": new_mac}
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed_interface = json_load_bytes(response.content)
-        self.assertEqual(new_name, parsed_interface["name"])
-        self.assertEqual(new_mac, parsed_interface["mac_address"])
+        assert new_name == parsed_interface["name"]
+        assert new_mac == parsed_interface["mac_address"]
 
     def test_update_physical_interface(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         for status in EDITABLE_STATUSES:
             node = factory.make_Node(status=status)
             interface = factory.make_Interface(
@@ -1243,19 +1169,13 @@ class TestNodeInterfaceAPI(APITransactionTestCase.ForUser):
                     "interface_speed": new_interface_speed,
                 },
             )
-            self.assertEqual(
-                http.client.OK, response.status_code, response.content
-            )
+            assert http.client.OK == response.status_code, response.content
             parsed_interface = json_load_bytes(response.content)
-            self.assertEqual(new_name, parsed_interface["name"])
-            self.assertEqual(new_vlan.vid, parsed_interface["vlan"]["vid"])
-            self.assertEqual(
-                new_link_connected, parsed_interface["link_connected"]
-            )
-            self.assertEqual(new_link_speed, parsed_interface["link_speed"])
-            self.assertEqual(
-                new_interface_speed, parsed_interface["interface_speed"]
-            )
+            assert new_name == parsed_interface["name"]
+            assert new_vlan.vid == parsed_interface["vlan"]["vid"]
+            assert new_link_connected == parsed_interface["link_connected"]
+            assert new_link_speed == parsed_interface["link_speed"]
+            assert new_interface_speed == parsed_interface["interface_speed"]
 
     def test_update_device_physical_interface(self):
         node = factory.make_Node()
@@ -1269,15 +1189,14 @@ class TestNodeInterfaceAPI(APITransactionTestCase.ForUser):
         response = self.client.put(
             uri, {"name": new_name, "vlan": new_vlan.id}
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed_interface = json_load_bytes(response.content)
-        self.assertEqual(new_name, parsed_interface["name"])
-        self.assertEqual(new_vlan.vid, parsed_interface["vlan"]["vid"])
+        assert new_name == parsed_interface["name"]
+        assert new_vlan.vid == parsed_interface["vlan"]["vid"]
 
     def test_update_bond_interface(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         for status in EDITABLE_STATUSES:
             node = factory.make_Node(status=status)
             bond, [nic_0, nic_1], [vlan_10, vlan_11] = make_complex_interface(
@@ -1285,14 +1204,13 @@ class TestNodeInterfaceAPI(APITransactionTestCase.ForUser):
             )
             uri = get_interface_uri(bond)
             response = self.client.put(uri, {"parents": [nic_0.id]})
-            self.assertEqual(
-                http.client.OK, response.status_code, response.content
-            )
+            assert http.client.OK == response.status_code, response.content
             parsed_interface = json_load_bytes(response.content)
-            self.assertEqual([nic_0.name], parsed_interface["parents"])
+            assert [nic_0.name] == parsed_interface["parents"]
 
     def test_update_vlan_interface(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         for status in EDITABLE_STATUSES:
             node = factory.make_Node(status=status)
             bond, [nic_0, nic_1], [vlan_10, vlan_11] = make_complex_interface(
@@ -1303,13 +1221,9 @@ class TestNodeInterfaceAPI(APITransactionTestCase.ForUser):
             )
             uri = get_interface_uri(vlan_10)
             response = self.client.put(uri, {"parent": physical_interface.id})
-            self.assertEqual(
-                http.client.OK, response.status_code, response.content
-            )
+            assert http.client.OK == response.status_code, response.content
             parsed_interface = json_load_bytes(response.content)
-            self.assertEqual(
-                [physical_interface.name], parsed_interface["parents"]
-            )
+            assert [physical_interface.name] == parsed_interface["parents"]
 
     def test_update_requires_admin(self):
         node = factory.make_Node()
@@ -1317,12 +1231,11 @@ class TestNodeInterfaceAPI(APITransactionTestCase.ForUser):
         new_name = factory.make_name("name")
         uri = get_interface_uri(interface)
         response = self.client.put(uri, {"name": new_name})
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content
 
     def test_update_409_when_not_ready_broken_or_deployed(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         for status in BLOCKED_STATUSES:
             # Update is the only call that a deployed node can have called on
             # its interface.
@@ -1335,21 +1248,22 @@ class TestNodeInterfaceAPI(APITransactionTestCase.ForUser):
             new_name = factory.make_name("name")
             uri = get_interface_uri(interface)
             response = self.client.put(uri, {"name": new_name})
-            self.assertEqual(
-                http.client.CONFLICT, response.status_code, response.content
+            assert http.client.CONFLICT == response.status_code, (
+                response.content
             )
 
     def test_delete_deletes_interface(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         for status in EDITABLE_STATUSES:
             node = factory.make_Node(interface=True, status=status)
             interface = node.get_boot_interface()
             uri = get_interface_uri(interface)
             response = self.client.delete(uri)
-            self.assertEqual(
-                http.client.NO_CONTENT, response.status_code, response.content
+            assert http.client.NO_CONTENT == response.status_code, (
+                response.content
             )
-            self.assertIsNone(reload_object(interface))
+            assert reload_object(interface) is None
 
     def test_delete_deletes_device_interface(self):
         parent = factory.make_Node()
@@ -1359,49 +1273,46 @@ class TestNodeInterfaceAPI(APITransactionTestCase.ForUser):
         )
         uri = get_interface_uri(interface)
         response = self.client.delete(uri)
-        self.assertEqual(
-            http.client.NO_CONTENT, response.status_code, response.content
-        )
-        self.assertIsNone(reload_object(interface))
+        assert http.client.NO_CONTENT == response.status_code, response.content
+        assert reload_object(interface) is None
 
     def test_delete_403_when_not_admin(self):
         node = factory.make_Node(interface=True)
         interface = node.get_boot_interface()
         uri = get_interface_uri(interface)
         response = self.client.delete(uri)
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
-        self.assertIsNotNone(reload_object(interface))
+        assert http.client.FORBIDDEN == response.status_code, response.content
+        assert reload_object(interface) is not None
 
     def test_delete_404_when_invalid_id(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node()
         uri = reverse(
             "interface_handler",
             args=[node.system_id, random.randint(100, 1000)],
         )
         response = self.client.delete(uri)
-        self.assertEqual(
-            http.client.NOT_FOUND, response.status_code, response.content
-        )
+        assert http.client.NOT_FOUND == response.status_code, response.content
 
     def test_delete_409_when_invalid_status(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         for status in BLOCKED_STATUSES:
             node = factory.make_Node(interface=True, status=status)
             interface = node.get_boot_interface()
             uri = get_interface_uri(interface)
             response = self.client.delete(uri)
-            self.assertEqual(
-                http.client.CONFLICT, response.status_code, response.content
+            assert http.client.CONFLICT == response.status_code, (
+                response.content
             )
 
     def test_link_subnet_creates_link(self):
         # The form that is used is fully tested in test_forms_interface_link.
         # This just tests that the form is saved and the updated interface
         # is returned.
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         for status in EDITABLE_STATUSES:
             node = factory.make_Node(interface=True, status=status)
             interface = node.get_boot_interface()
@@ -1409,13 +1320,11 @@ class TestNodeInterfaceAPI(APITransactionTestCase.ForUser):
             response = self.client.post(
                 uri, {"op": "link_subnet", "mode": INTERFACE_LINK_TYPE.DHCP}
             )
-            self.assertEqual(
-                http.client.OK, response.status_code, response.content
-            )
+            assert http.client.OK == response.status_code, response.content
             parsed_response = response.json()
-            self.assertEqual(
-                parsed_response["links"][0].get("mode"),
-                INTERFACE_LINK_TYPE.DHCP,
+            assert (
+                parsed_response["links"][0].get("mode")
+                == INTERFACE_LINK_TYPE.DHCP
             )
 
     def test_link_subnet_creates_link_on_device(self):
@@ -1434,17 +1343,16 @@ class TestNodeInterfaceAPI(APITransactionTestCase.ForUser):
                 "subnet": subnet.id,
             },
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed_response = response.json()
-        self.assertEqual(
-            parsed_response["links"][0].get("mode"),
-            INTERFACE_LINK_TYPE.STATIC,
+        assert (
+            parsed_response["links"][0].get("mode")
+            == INTERFACE_LINK_TYPE.STATIC
         )
 
     def test_link_subnet_allows_subnet_with_link_up(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(
             owner=self.user, status=random.choice(EDITABLE_STATUSES)
         )
@@ -1459,20 +1367,17 @@ class TestNodeInterfaceAPI(APITransactionTestCase.ForUser):
                 "subnet": subnet.id,
             },
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed_response = response.json()
-        self.assertEqual(
-            parsed_response["links"][0].get("mode"),
-            INTERFACE_LINK_TYPE.LINK_UP,
+        assert (
+            parsed_response["links"][0].get("mode")
+            == INTERFACE_LINK_TYPE.LINK_UP
         )
-        self.assertEqual(
-            subnet.id, parsed_response["links"][0]["subnet"]["id"]
-        )
+        assert subnet.id == parsed_response["links"][0]["subnet"]["id"]
 
     def test_link_subnet_allows_link_up_subnet_to_be_cleared(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(
             owner=self.user, status=random.choice(EDITABLE_STATUSES)
         )
@@ -1490,18 +1395,17 @@ class TestNodeInterfaceAPI(APITransactionTestCase.ForUser):
         response = self.client.post(
             uri, {"op": "link_subnet", "mode": INTERFACE_LINK_TYPE.LINK_UP}
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed_response = response.json()
-        self.assertEqual(
-            parsed_response["links"][0].get("mode"),
-            INTERFACE_LINK_TYPE.LINK_UP,
+        assert (
+            parsed_response["links"][0].get("mode")
+            == INTERFACE_LINK_TYPE.LINK_UP
         )
-        self.assertNotIn("subnet", parsed_response["links"][0])
+        assert "subnet" not in parsed_response["links"][0]
 
     def test_link_subnet_allows_link_up_subnet_to_be_changed(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(
             owner=self.user, status=random.choice(EDITABLE_STATUSES)
         )
@@ -1525,20 +1429,17 @@ class TestNodeInterfaceAPI(APITransactionTestCase.ForUser):
                 "subnet": subnet2.id,
             },
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed_response = response.json()
-        self.assertEqual(
-            parsed_response["links"][0].get("mode"),
-            INTERFACE_LINK_TYPE.LINK_UP,
+        assert (
+            parsed_response["links"][0].get("mode")
+            == INTERFACE_LINK_TYPE.LINK_UP
         )
-        self.assertEqual(
-            subnet2.id, parsed_response["links"][0]["subnet"]["id"]
-        )
+        assert subnet2.id == parsed_response["links"][0]["subnet"]["id"]
 
     def test_link_subnet_disallows_subnets_on_another_vlan(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(
             owner=self.user, status=random.choice(EDITABLE_STATUSES)
         )
@@ -1563,12 +1464,13 @@ class TestNodeInterfaceAPI(APITransactionTestCase.ForUser):
                 "subnet": subnet2.id,
             },
         )
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
 
     def test_link_subnet_allows_link_up_subnet_to_be_forcibly_changed(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(
             owner=self.user, status=random.choice(EDITABLE_STATUSES)
         )
@@ -1594,20 +1496,17 @@ class TestNodeInterfaceAPI(APITransactionTestCase.ForUser):
                 "subnet": subnet2.id,
             },
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed_response = response.json()
-        self.assertEqual(
-            parsed_response["links"][0].get("mode"),
-            INTERFACE_LINK_TYPE.LINK_UP,
+        assert (
+            parsed_response["links"][0].get("mode")
+            == INTERFACE_LINK_TYPE.LINK_UP
         )
-        self.assertEqual(
-            subnet2.id, parsed_response["links"][0]["subnet"]["id"]
-        )
+        assert subnet2.id == parsed_response["links"][0]["subnet"]["id"]
 
     def test_link_subnet_force_link_up_deletes_existing_links(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(
             owner=self.user, status=random.choice(EDITABLE_STATUSES)
         )
@@ -1633,20 +1532,17 @@ class TestNodeInterfaceAPI(APITransactionTestCase.ForUser):
                 "subnet": subnet2.id,
             },
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed_response = response.json()
-        self.assertEqual(
-            parsed_response["links"][0].get("mode"),
-            INTERFACE_LINK_TYPE.LINK_UP,
+        assert (
+            parsed_response["links"][0].get("mode")
+            == INTERFACE_LINK_TYPE.LINK_UP
         )
-        self.assertEqual(
-            subnet2.id, parsed_response["links"][0]["subnet"]["id"]
-        )
+        assert subnet2.id == parsed_response["links"][0]["subnet"]["id"]
 
     def test_link_subnet_without_force_link_up_returns_bad_request(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = factory.make_Node(
             owner=self.user, status=random.choice(EDITABLE_STATUSES)
         )
@@ -1672,8 +1568,8 @@ class TestNodeInterfaceAPI(APITransactionTestCase.ForUser):
                 "subnet": subnet2.id,
             },
         )
-        self.assertEqual(
-            http.client.BAD_REQUEST, response.status_code, response.content
+        assert http.client.BAD_REQUEST == response.status_code, (
+            response.content
         )
 
     def test_link_subnet_on_device_only_allows_static(self):
@@ -1691,23 +1587,23 @@ class TestNodeInterfaceAPI(APITransactionTestCase.ForUser):
             response = self.client.post(
                 uri, {"op": "link_subnet", "mode": link_type}
             )
-            self.assertEqual(
-                http.client.BAD_REQUEST, response.status_code, response.content
+            assert http.client.BAD_REQUEST == response.status_code, (
+                response.content
             )
 
     def test_link_subnet_raises_error(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         for status in EDITABLE_STATUSES:
             node = factory.make_Node(interface=True, status=status)
             interface = node.get_boot_interface()
             uri = get_interface_uri(interface)
             response = self.client.post(uri, {"op": "link_subnet"})
-            self.assertEqual(
-                http.client.BAD_REQUEST, response.status_code, response.content
+            assert http.client.BAD_REQUEST == response.status_code, (
+                response.content
             )
-            self.assertEqual(
-                {"mode": ["This field is required."]},
-                json_load_bytes(response.content),
+            assert {"mode": ["This field is required."]} == json_load_bytes(
+                response.content
             )
 
     def test_link_subnet_requries_admin(self):
@@ -1715,12 +1611,11 @@ class TestNodeInterfaceAPI(APITransactionTestCase.ForUser):
         interface = node.get_boot_interface()
         uri = get_interface_uri(interface)
         response = self.client.post(uri, {"op": "link_subnet"})
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content
 
     def test_link_subnet_409_when_invalid_status(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         for status in BLOCKED_STATUSES:
             node = factory.make_Node(interface=True, status=status)
             interface = node.get_boot_interface()
@@ -1728,15 +1623,16 @@ class TestNodeInterfaceAPI(APITransactionTestCase.ForUser):
             response = self.client.post(
                 uri, {"op": "link_subnet", "mode": INTERFACE_LINK_TYPE.DHCP}
             )
-            self.assertEqual(
-                http.client.CONFLICT, response.status_code, response.content
+            assert http.client.CONFLICT == response.status_code, (
+                response.content
             )
 
     def test_unlink_subnet_deletes_link(self):
         # The form that is used is fully tested in test_forms_interface_link.
         # This just tests that the form is saved and the updated interface
         # is returned.
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         for status in EDITABLE_STATUSES:
             node = factory.make_Node(interface=True, status=status)
             interface = node.get_boot_interface()
@@ -1751,10 +1647,8 @@ class TestNodeInterfaceAPI(APITransactionTestCase.ForUser):
             response = self.client.post(
                 uri, {"op": "unlink_subnet", "id": dhcp_ip.id}
             )
-            self.assertEqual(
-                http.client.OK, response.status_code, response.content
-            )
-            self.assertIsNone(reload_object(dhcp_ip))
+            assert http.client.OK == response.status_code, response.content
+            assert reload_object(dhcp_ip) is None
 
     def test_unlink_subnet_deletes_link_on_device(self):
         parent = factory.make_Node()
@@ -1772,24 +1666,22 @@ class TestNodeInterfaceAPI(APITransactionTestCase.ForUser):
         response = self.client.post(
             uri, {"op": "unlink_subnet", "id": static_ip.id}
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
-        self.assertIsNone(reload_object(static_ip))
+        assert http.client.OK == response.status_code, response.content
+        assert reload_object(static_ip) is None
 
     def test_unlink_subnet_raises_error(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         for status in EDITABLE_STATUSES:
             node = factory.make_Node(interface=True, status=status)
             interface = node.get_boot_interface()
             uri = get_interface_uri(interface)
             response = self.client.post(uri, {"op": "unlink_subnet"})
-            self.assertEqual(
-                http.client.BAD_REQUEST, response.status_code, response.content
+            assert http.client.BAD_REQUEST == response.status_code, (
+                response.content
             )
-            self.assertEqual(
-                {"id": ["This field is required."]},
-                json_load_bytes(response.content),
+            assert {"id": ["This field is required."]} == json_load_bytes(
+                response.content
             )
 
     def test_unlink_subnet_requries_admin(self):
@@ -1797,26 +1689,26 @@ class TestNodeInterfaceAPI(APITransactionTestCase.ForUser):
         interface = node.get_boot_interface()
         uri = get_interface_uri(interface)
         response = self.client.post(uri, {"op": "unlink_subnet"})
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content
 
     def test_unlink_subnet_409_when_invalid_status(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         for status in BLOCKED_STATUSES:
             node = factory.make_Node(interface=True, status=status)
             interface = node.get_boot_interface()
             uri = get_interface_uri(interface)
             response = self.client.post(uri, {"op": "unlink_subnet"})
-            self.assertEqual(
-                http.client.CONFLICT, response.status_code, response.content
+            assert http.client.CONFLICT == response.status_code, (
+                response.content
             )
 
     def test_disconnect_deletes_links_and_clears_vlan(self):
         # The form that is used is fully tested in test_forms_interface_link.
         # This just tests that the form is saved and the updated interface
         # is returned.
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         for status in EDITABLE_STATUSES:
             node = factory.make_Node(interface=True, status=status)
             interface = node.get_boot_interface()
@@ -1829,36 +1721,34 @@ class TestNodeInterfaceAPI(APITransactionTestCase.ForUser):
             )
             uri = get_interface_uri(interface)
             response = self.client.post(uri, {"op": "disconnect"})
-            self.assertEqual(
-                http.client.OK, response.status_code, response.content
-            )
-            self.assertIsNone(reload_object(dhcp_ip))
-            self.assertIsNone(reload_object(interface).vlan)
+            assert http.client.OK == response.status_code, response.content
+            assert reload_object(dhcp_ip) is None
+            assert reload_object(interface).vlan is None
 
     def test_disconnect_requries_admin(self):
         node = factory.make_Node(interface=True)
         interface = node.get_boot_interface()
         uri = get_interface_uri(interface)
         response = self.client.post(uri, {"op": "disconnect"})
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content
 
     def test_disconnect_409_when_invalid_status(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         for status in BLOCKED_STATUSES:
             node = factory.make_Node(interface=True, status=status)
             interface = node.get_boot_interface()
             uri = get_interface_uri(interface)
             response = self.client.post(uri, {"op": "disconnect"})
-            self.assertEqual(
-                http.client.CONFLICT, response.status_code, response.content
+            assert http.client.CONFLICT == response.status_code, (
+                response.content
             )
 
     def test_set_default_gateway_sets_gateway_link_ipv4_on_node(self):
         # The form that is used is fully tested in test_forms_interface_link.
         # This just tests that the form is saved and the node link is created.
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         for status in EDITABLE_STATUSES:
             node = factory.make_Node(interface=True, status=status)
             interface = node.get_boot_interface()
@@ -1876,15 +1766,14 @@ class TestNodeInterfaceAPI(APITransactionTestCase.ForUser):
             response = self.client.post(
                 uri, {"op": "set_default_gateway", "link_id": link_ip.id}
             )
-            self.assertEqual(
-                http.client.OK, response.status_code, response.content
-            )
-            self.assertEqual(link_ip, reload_object(node).gateway_link_ipv4)
+            assert http.client.OK == response.status_code, response.content
+            assert link_ip == reload_object(node).gateway_link_ipv4
 
     def test_set_default_gateway_sets_gateway_link_ipv6_on_node(self):
         # The form that is used is fully tested in test_forms_interface_link.
         # This just tests that the form is saved and the node link is created.
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         for status in EDITABLE_STATUSES:
             node = factory.make_Node(interface=True, status=status)
             interface = node.get_boot_interface()
@@ -1902,44 +1791,41 @@ class TestNodeInterfaceAPI(APITransactionTestCase.ForUser):
             response = self.client.post(
                 uri, {"op": "set_default_gateway", "link_id": link_ip.id}
             )
-            self.assertEqual(
-                http.client.OK, response.status_code, response.content
-            )
-            self.assertEqual(link_ip, reload_object(node).gateway_link_ipv6)
+            assert http.client.OK == response.status_code, response.content
+            assert link_ip == reload_object(node).gateway_link_ipv6
 
     def test_set_default_gateway_raises_error(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         for status in EDITABLE_STATUSES:
             node = factory.make_Node(interface=True, status=status)
             interface = node.get_boot_interface()
             uri = get_interface_uri(interface)
             response = self.client.post(uri, {"op": "set_default_gateway"})
-            self.assertEqual(
-                http.client.BAD_REQUEST, response.status_code, response.content
+            assert http.client.BAD_REQUEST == response.status_code, (
+                response.content
             )
-            self.assertEqual(
-                {"__all__": ["This interface has no usable gateways."]},
-                json_load_bytes(response.content),
-            )
+            assert {
+                "__all__": ["This interface has no usable gateways."]
+            } == json_load_bytes(response.content)
 
     def test_set_default_gateway_requries_admin(self):
         node = factory.make_Node(interface=True)
         interface = node.get_boot_interface()
         uri = get_interface_uri(interface)
         response = self.client.post(uri, {"op": "set_default_gateway"})
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content
 
     def test_set_default_gateway_409_when_invalid_status(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         for status in BLOCKED_STATUSES:
             node = factory.make_Node(interface=True, status=status)
             interface = node.get_boot_interface()
             uri = get_interface_uri(interface)
             response = self.client.post(uri, {"op": "set_default_gateway"})
-            self.assertEqual(
-                http.client.CONFLICT, response.status_code, response.content
+            assert http.client.CONFLICT == response.status_code, (
+                response.content
             )
 
     def test_add_tag_returns_403_when_not_admin(self):
@@ -1948,24 +1834,22 @@ class TestNodeInterfaceAPI(APITransactionTestCase.ForUser):
         response = self.client.post(
             uri, {"op": "add_tag", "tag": factory.make_name("tag")}
         )
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content
 
     def test_add_tag_returns_404_when_system_id_doesnt_match(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         interface = factory.make_Interface(INTERFACE_TYPE.PHYSICAL)
         other_node = factory.make_Node()
         uri = get_interface_uri(interface, node=other_node)
         response = self.client.post(
             uri, {"op": "add_tag", "tag": factory.make_name("tag")}
         )
-        self.assertEqual(
-            http.client.NOT_FOUND, response.status_code, response.content
-        )
+        assert http.client.NOT_FOUND == response.status_code, response.content
 
     def test_add_tag_to_interface(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         interface = factory.make_Interface(INTERFACE_TYPE.PHYSICAL)
         tag_to_be_added = factory.make_name("tag")
         uri = get_interface_uri(interface)
@@ -1973,13 +1857,11 @@ class TestNodeInterfaceAPI(APITransactionTestCase.ForUser):
             uri, {"op": "add_tag", "tag": tag_to_be_added}
         )
 
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed_device = json_load_bytes(response.content)
-        self.assertIn(tag_to_be_added, parsed_device["tags"])
+        assert tag_to_be_added in parsed_device["tags"]
         interface = reload_object(interface)
-        self.assertIn(tag_to_be_added, interface.tags)
+        assert tag_to_be_added in interface.tags
 
     def test_remove_tag_returns_403_when_not_admin(self):
         interface = factory.make_Interface(INTERFACE_TYPE.PHYSICAL)
@@ -1988,12 +1870,11 @@ class TestNodeInterfaceAPI(APITransactionTestCase.ForUser):
             uri, {"op": "remove_tag", "tag": factory.make_name("tag")}
         )
 
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content
 
     def test_remove_tag_returns_404_when_system_id_doesnt_match(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         interface = factory.make_Interface(INTERFACE_TYPE.PHYSICAL)
         other_node = factory.make_Node()
         uri = get_interface_uri(interface, node=other_node)
@@ -2001,12 +1882,11 @@ class TestNodeInterfaceAPI(APITransactionTestCase.ForUser):
             uri, {"op": "remove_tag", "tag": factory.make_name("tag")}
         )
 
-        self.assertEqual(
-            http.client.NOT_FOUND, response.status_code, response.content
-        )
+        assert http.client.NOT_FOUND == response.status_code, response.content
 
     def test_remove_tag_from_block_device(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         interface = factory.make_Interface(INTERFACE_TYPE.PHYSICAL)
         tag_to_be_removed = interface.tags[0]
         uri = get_interface_uri(interface)
@@ -2014,21 +1894,33 @@ class TestNodeInterfaceAPI(APITransactionTestCase.ForUser):
             uri, {"op": "remove_tag", "tag": tag_to_be_removed}
         )
 
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed_device = json_load_bytes(response.content)
-        self.assertNotIn(tag_to_be_removed, parsed_device["tags"])
+        assert tag_to_be_removed not in parsed_device["tags"]
         interface = reload_object(interface)
-        self.assertNotIn(tag_to_be_removed, interface.tags)
+        assert tag_to_be_removed not in interface.tags
 
 
-class TestInterfaceAPIForControllers(APITestCase.ForUser):
-    scenarios = (
-        ("region", {"maker": factory.make_RegionController}),
-        ("rack", {"maker": factory.make_RackController}),
-        ("region-rack", {"maker": factory.make_RegionRackController}),
-    )
+@pytest.mark.parametrize("api_identity", ["user=user,client=oauth"])
+@pytest.mark.parametrize(
+    "maker",
+    [
+        pytest.param(
+            factory.make_RegionController, id="make_RegionController"
+        ),
+        pytest.param(factory.make_RackController, id="make_RackController"),
+        pytest.param(
+            factory.make_RegionRackController, id="make_RegionRackController"
+        ),
+    ],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestInterfaceAPIForControllers:
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maker, maas_user, api_client):
+        self.user = maas_user
+        self.client = api_client
+        self.maker = maker
 
     def test_read(self):
         node = self.maker()
@@ -2078,51 +1970,48 @@ class TestInterfaceAPIForControllers(APITestCase.ForUser):
 
         uri = get_interface_uri(interface)
         response = self.client.get(uri)
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed_interface = response.json()
-        self.assertEqual(parsed_interface.get("id"), interface.id)
-        self.assertEqual(parsed_interface.get("name"), interface.name)
-        self.assertEqual(parsed_interface.get("type"), interface.type)
-        self.assertEqual(
-            parsed_interface.get("vlan", {}).get("id"), interface.vlan.id
+        assert parsed_interface.get("id") == interface.id
+        assert parsed_interface.get("name") == interface.name
+        assert parsed_interface.get("type") == interface.type
+        assert parsed_interface.get("vlan", {}).get("id") == interface.vlan.id
+        assert parsed_interface.get("mac_address") == str(
+            interface.mac_address
         )
-        self.assertEqual(
-            parsed_interface.get("mac_address"), str(interface.mac_address)
+        assert parsed_interface.get("tags") == interface.tags
+        assert parsed_interface.get("resource_uri") == get_interface_uri(
+            interface
         )
-        self.assertEqual(parsed_interface.get("tags"), interface.tags)
-        self.assertEqual(
-            parsed_interface.get("resource_uri"), get_interface_uri(interface)
+        assert parsed_interface.get("params") == interface.params
+        assert (
+            parsed_interface.get("effective_mtu")
+            == interface.get_effective_mtu()
         )
-        self.assertEqual(parsed_interface.get("params"), interface.params)
-        self.assertEqual(
-            parsed_interface.get("effective_mtu"),
-            interface.get_effective_mtu(),
-        )
-        self.assertEqual(parsed_interface.get("numa_node"), 0)
+        assert parsed_interface.get("numa_node") == 0
 
         dhcp, static, link = parsed_interface["links"]
-        self.assertEqual(dhcp.get("id"), dhcp_ip.id)
-        self.assertEqual(dhcp.get("mode"), INTERFACE_LINK_TYPE.DHCP)
-        self.assertEqual(dhcp.get("subnet", {}).get("id"), dhcp_subnet.id)
-        self.assertEqual(dhcp.get("ip_address"), discovered_ip)
+        assert dhcp.get("id") == dhcp_ip.id
+        assert dhcp.get("mode") == INTERFACE_LINK_TYPE.DHCP
+        assert dhcp.get("subnet", {}).get("id") == dhcp_subnet.id
+        assert dhcp.get("ip_address") == discovered_ip
 
-        self.assertEqual(static.get("id"), sip.id)
-        self.assertEqual(static.get("mode"), INTERFACE_LINK_TYPE.STATIC)
-        self.assertEqual(static.get("subnet", {}).get("id"), static_subnet.id)
-        self.assertEqual(static.get("ip_address"), static_ip)
+        assert static.get("id") == sip.id
+        assert static.get("mode") == INTERFACE_LINK_TYPE.STATIC
+        assert static.get("subnet", {}).get("id") == static_subnet.id
+        assert static.get("ip_address") == static_ip
 
-        self.assertEqual(link.get("id"), link_ip.id)
-        self.assertEqual(link.get("mode"), INTERFACE_LINK_TYPE.LINK_UP)
-        self.assertEqual(link.get("subnet", {}).get("id"), link_subnet.id)
+        assert link.get("id") == link_ip.id
+        assert link.get("mode") == INTERFACE_LINK_TYPE.LINK_UP
+        assert link.get("subnet", {}).get("id") == link_subnet.id
 
         json_discovered = parsed_interface["discovered"][0]
-        self.assertEqual(dhcp_subnet.id, json_discovered["subnet"]["id"])
-        self.assertEqual(discovered_ip, json_discovered["ip_address"])
+        assert dhcp_subnet.id == json_discovered["subnet"]["id"]
+        assert discovered_ip == json_discovered["ip_address"]
 
     def test_update(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = self.maker()
         interface = factory.make_Interface(INTERFACE_TYPE.PHYSICAL, node=node)
 
@@ -2130,14 +2019,13 @@ class TestInterfaceAPIForControllers(APITestCase.ForUser):
         new_vlan = new_fabric.get_default_vlan()
         uri = get_interface_uri(interface)
         response = self.client.put(uri, {"vlan": new_vlan.id})
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed_interface = json_load_bytes(response.content)
-        self.assertEqual(new_vlan.id, parsed_interface["vlan"]["id"])
+        assert new_vlan.id == parsed_interface["vlan"]["id"]
 
     def test_update_only_works_for_vlan_field(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = self.maker()
         interface = factory.make_Interface(INTERFACE_TYPE.PHYSICAL, node=node)
 
@@ -2148,15 +2036,14 @@ class TestInterfaceAPIForControllers(APITestCase.ForUser):
         response = self.client.put(
             uri, {"name": new_name, "vlan": new_vlan.id}
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed_interface = json_load_bytes(response.content)
-        self.assertEqual(new_vlan.id, parsed_interface["vlan"]["id"])
-        self.assertEqual(interface.name, parsed_interface["name"])
+        assert new_vlan.id == parsed_interface["vlan"]["id"]
+        assert interface.name == parsed_interface["name"]
 
     def test_update_forbidden_for_vlan_interface(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = self.maker()
         parent = factory.make_Interface(INTERFACE_TYPE.PHYSICAL, node=node)
         vlan_interface = factory.make_Interface(
@@ -2166,34 +2053,31 @@ class TestInterfaceAPIForControllers(APITestCase.ForUser):
         new_vlan = factory.make_VLAN()
         uri = get_interface_uri(vlan_interface)
         response = self.client.put(uri, {"vlan": new_vlan.id})
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content
 
     def test_delete_is_forbidden(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = self.maker()
         interface = factory.make_Interface(INTERFACE_TYPE.PHYSICAL, node=node)
         uri = get_interface_uri(interface)
         response = self.client.delete(uri)
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content
 
     def test_link_subnet_is_forbidden(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = self.maker()
         interface = factory.make_Interface(INTERFACE_TYPE.PHYSICAL, node=node)
         uri = get_interface_uri(interface)
         response = self.client.post(
             uri, {"op": "link_subnet", "mode": INTERFACE_LINK_TYPE.DHCP}
         )
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
+        assert http.client.FORBIDDEN == response.status_code, response.content
 
     def test_unlink_subnet_is_forbidden(self):
-        self.become_admin()
+        self.user.is_superuser = True
+        self.user.save()
         node = self.maker()
         interface = factory.make_Interface(INTERFACE_TYPE.PHYSICAL, node=node)
         subnet = factory.make_Subnet()
@@ -2207,7 +2091,5 @@ class TestInterfaceAPIForControllers(APITestCase.ForUser):
         response = self.client.post(
             uri, {"op": "unlink_subnet", "id": dhcp_ip.id}
         )
-        self.assertEqual(
-            http.client.FORBIDDEN, response.status_code, response.content
-        )
-        self.assertIsNotNone(reload_object(dhcp_ip))
+        assert http.client.FORBIDDEN == response.status_code, response.content
+        assert reload_object(dhcp_ip) is not None

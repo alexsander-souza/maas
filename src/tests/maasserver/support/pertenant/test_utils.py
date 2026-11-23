@@ -4,6 +4,7 @@
 """Test the utilities of the per-tenant file storage work."""
 
 from django.urls import reverse
+import pytest
 
 from maasserver.support.pertenant.utils import (
     extract_bootstrap_node_system_id,
@@ -11,7 +12,6 @@ from maasserver.support.pertenant.utils import (
     PROVIDER_STATE_FILENAME,
 )
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from maastesting.utils import sample_binary_data
 
 
@@ -29,14 +29,21 @@ def make_provider_state_file(node=None):
     )
 
 
-class TestExtractBootstrapNodeSystemId(MAASServerTestCase):
+@pytest.mark.usefixtures(
+    "maasdb",
+    "maas_region_test",
+    "factory",
+    "mock_openfga",
+    "mock_start_workflows",
+)
+class TestExtractBootstrapNodeSystemId:
     def test_parses_valid_provider_state_file(self):
         node = factory.make_Node()
         provider_state_file = make_provider_state_file(node=node)
         system_id = extract_bootstrap_node_system_id(
             provider_state_file.content
         )
-        self.assertEqual(system_id, node.system_id)
+        assert system_id == node.system_id
 
     def test_returns_None_if_parsing_fails(self):
         invalid_contents = [
@@ -46,29 +53,34 @@ class TestExtractBootstrapNodeSystemId(MAASServerTestCase):
             "zookeeper-instances: []",  # no instances listed
         ]
         for invalid_content in invalid_contents:
-            self.assertIsNone(
-                extract_bootstrap_node_system_id(invalid_content)
-            )
+            assert extract_bootstrap_node_system_id(invalid_content) is None
 
 
-class TestGetBootstrapNodeOwner(MAASServerTestCase):
+@pytest.mark.usefixtures(
+    "maasdb",
+    "maas_region_test",
+    "factory",
+    "mock_openfga",
+    "mock_start_workflows",
+)
+class TestGetBootstrapNodeOwner:
     def test_returns_None_if_no_provider_state_file(self):
-        self.assertIsNone(get_bootstrap_node_owner())
+        assert get_bootstrap_node_owner() is None
 
     def test_returns_owner_if_node_found(self):
         node = factory.make_Node(owner=factory.make_User())
         make_provider_state_file(node=node)
-        self.assertEqual(node.owner, get_bootstrap_node_owner())
+        assert node.owner == get_bootstrap_node_owner()
 
     def test_returns_None_if_node_does_not_exist(self):
         node = factory.make_Node(owner=factory.make_User())
         make_provider_state_file(node=node)
         node.delete()
-        self.assertIsNone(get_bootstrap_node_owner())
+        assert get_bootstrap_node_owner() is None
 
     def test_returns_None_if_invalid_yaml(self):
         invalid_content = b"%"
         factory.make_FileStorage(
             filename=PROVIDER_STATE_FILENAME, content=invalid_content
         )
-        self.assertIsNone(get_bootstrap_node_owner())
+        assert get_bootstrap_node_owner() is None

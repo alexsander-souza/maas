@@ -10,14 +10,15 @@ import pprint
 from unittest.mock import Mock, patch
 import uuid
 
+import pytest
+
 from maastesting.factory import factory
-from maastesting.testcase import MAASTestCase
 from provisioningserver import cluster_config_command
 from provisioningserver.config import ClusterConfiguration
 from provisioningserver.testing.config import ClusterConfigurationFixture
 
 
-class TestAddArguments(MAASTestCase):
+class TestAddArguments:
     def test_accepts_all_args(self):
         all_test_arguments = cluster_config_command.all_arguments
 
@@ -59,7 +60,7 @@ class TestAddArguments(MAASTestCase):
                 # gets caught and sent to exit.
                 if "--init" in test_arg_names and "--uuid" in test_arg_names:
                     with (
-                        self.assertRaisesRegex(SystemExit, "2"),
+                        pytest.raises(SystemExit, match="2"),
                         patch("sys.stderr"),
                     ):
                         parser.parse_known_args(args_under_test)
@@ -101,13 +102,15 @@ class TestAddArguments(MAASTestCase):
         )
         pp = pprint.PrettyPrinter(depth=3, stream=error_message)
         pp.pprint(failures)
-        self.assertDictEqual({}, failures, error_message.getvalue())
+        assert failures == {}, error_message.getvalue()
 
 
-class TestUpdateMaasClusterConf(MAASTestCase):
-    def setUp(self):
-        super().setUp()
-        self.useFixture(ClusterConfigurationFixture())
+class TestUpdateMaasClusterConf:
+    @pytest.fixture(autouse=True)
+    def _setup(self, request):
+        cluster_fixture = ClusterConfigurationFixture()
+        cluster_fixture.setUp()
+        request.addfinalizer(cluster_fixture.cleanUp)
 
     def make_args(self, **kwargs):
         args = Mock()
@@ -119,7 +122,7 @@ class TestUpdateMaasClusterConf(MAASTestCase):
         cluster_config_command.run(self.make_args(region_url=expected))
         with ClusterConfiguration.open() as config:
             observed = config.maas_url
-        self.assertEqual([expected], observed)
+        assert [expected] == observed
 
     def test_config_set_maas_url_without_setting_does_nothing(self):
         with ClusterConfiguration.open() as config:
@@ -127,14 +130,14 @@ class TestUpdateMaasClusterConf(MAASTestCase):
         cluster_config_command.run(self.make_args(region_url=None))
         with ClusterConfiguration.open() as config:
             observed = config.maas_url
-        self.assertEqual(expected, observed)
+        assert expected == observed
 
     def test_config_set_tftp_port_sets_tftp_port(self):
         expected = factory.pick_port()
         cluster_config_command.run(self.make_args(tftp_port=expected))
         with ClusterConfiguration.open() as config:
             observed = config.tftp_port
-        self.assertEqual(expected, observed)
+        assert expected == observed
 
     def test_config_set_tftp_port_without_setting_does_nothing(self):
         with ClusterConfiguration.open() as config:
@@ -142,14 +145,14 @@ class TestUpdateMaasClusterConf(MAASTestCase):
         cluster_config_command.run(self.make_args(tftp_port=None))
         with ClusterConfiguration.open() as config:
             observed = config.tftp_port
-        self.assertEqual(expected, observed)
+        assert expected == observed
 
-    def test_config_set_tftp_root_sets_tftp_root(self):
-        expected = self.make_dir()
+    def test_config_set_tftp_root_sets_tftp_root(self, tmp_path):
+        expected = str(tmp_path)
         cluster_config_command.run(self.make_args(tftp_root=expected))
         with ClusterConfiguration.open() as config:
             observed = config.tftp_root
-        self.assertEqual(expected, observed)
+        assert expected == observed
 
     def test_config_set_tftp_root_without_setting_does_nothing(self):
         with ClusterConfiguration.open() as config:
@@ -157,14 +160,14 @@ class TestUpdateMaasClusterConf(MAASTestCase):
         cluster_config_command.run(self.make_args(tftp_root=None))
         with ClusterConfiguration.open() as config:
             observed = config.tftp_root
-        self.assertEqual(expected, observed)
+        assert expected == observed
 
     def test_config_set_debug_sets_debug(self):
         expected = factory.pick_bool()
         cluster_config_command.run(self.make_args(debug=expected))
         with ClusterConfiguration.open() as config:
             observed = config.debug
-        self.assertEqual(expected, observed)
+        assert expected == observed
 
     def test_config_set_debug_without_setting_does_nothing(self):
         with ClusterConfiguration.open() as config:
@@ -172,4 +175,4 @@ class TestUpdateMaasClusterConf(MAASTestCase):
         cluster_config_command.run(self.make_args(debug=None))
         with ClusterConfiguration.open() as config:
             observed = config.debug
-        self.assertEqual(expected, observed)
+        assert expected == observed

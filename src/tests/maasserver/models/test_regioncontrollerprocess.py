@@ -6,22 +6,19 @@
 import random
 
 from django.core.exceptions import ValidationError
+import pytest
 
 from maasserver.models.regioncontrollerprocess import RegionControllerProcess
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 
 
-class TestRegionControllerProcess(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb")
+class TestRegionControllerProcess:
     """Tests for the `RegionControllerProcess` model."""
 
     def test_pid_and_region_are_unique(self):
         region = factory.make_RegionController()
         pid = random.randint(1, 5000)
         RegionControllerProcess.objects.create(pid=pid, region=region)
-        self.assertRaises(
-            ValidationError,
-            RegionControllerProcess.objects.create,
-            pid=pid,
-            region=region,
-        )
+        with pytest.raises(ValidationError):
+            RegionControllerProcess.objects.create(pid=pid, region=region)

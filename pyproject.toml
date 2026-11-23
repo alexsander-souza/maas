@@ -38,8 +38,6 @@ optional-dependencies.testing = [
   "pytest-cov>=7,<7.1",
   "pytest-mock>=3.15,<3.16",
   "pytest-xdist>=3.8,<3.9",
-  "testscenarios>=0.5,<0.6",
-  "testtools>=2.8,<2.9",
 ]
 urls.Documentation = "https://canonical.com/maas/docs"
 urls.Homepage = "https://canonical.com/maas"
@@ -162,6 +160,7 @@ lint.isort.order-by-type = false
 lint.isort.split-on-trailing-comma = false
 
 [tool.pytest]
+ini_options.asyncio_default_fixture_loop_scope = "function"
 ini_options.asyncio_mode = "auto"
 ini_options.filterwarnings = "error::BytesWarning"
 ini_options.testpaths = [ "src/tests" ]

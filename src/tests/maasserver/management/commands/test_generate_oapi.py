@@ -6,16 +6,17 @@
 from io import StringIO
 
 from django.core.management import call_command
+import pytest
 import yaml
 
 from maasserver.api.doc_oapi import get_api_endpoint
-from maasserver.testing.testcase import MAASServerTestCase
 
 
-class TestOAPIDoc(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestOAPIDoc:
     def test_generate_spec(self):
         spec = get_api_endpoint()
         spec["externalDocs"]["url"] = "https://maas.io/docs"
         out = StringIO()
         call_command("generate_oapi_spec", stdout=out)
-        self.assertEqual(yaml.dump(spec), out.getvalue())
+        assert yaml.dump(spec) == out.getvalue()

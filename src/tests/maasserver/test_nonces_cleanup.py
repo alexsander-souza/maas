@@ -3,9 +3,11 @@
 
 """Tests for the nonces cleanup module."""
 
+from collections import Counter
 import time
 
 from piston3.models import Nonce
+import pytest
 from twisted.internet.defer import maybeDeferred
 from twisted.internet.task import Clock
 
@@ -22,24 +24,26 @@ from maasserver.nonces_cleanup import (
 )
 from maasserver.nonces_cleanup import time as module_time
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 
 
-class TestCleanupOldNonces(MAASServerTestCase):
+@pytest.mark.usefixtures(
+    "maasdb", "factory", "mock_openfga", "mock_start_workflows"
+)
+class TestCleanupOldNonces:
     def test_cleanup_old_nonces_returns_0_if_no_checkpoint(self):
-        self.assertEqual(0, cleanup_old_nonces())
+        assert 0 == cleanup_old_nonces()
 
-    def test_cleanup_old_nonces_cleans_up_old_nonces(self):
+    def test_cleanup_old_nonces_cleans_up_old_nonces(self, mocker):
         now = time.time()
         # Patch the module's time module so that the nonces appear as if
         # they were created now - timestamp_threshold seconds ago.
-        timemod = self.patch(module_time, "time")
+        timemod = mocker.patch.object(module_time, "time")
         timemod.return_value = now - timestamp_threshold
         old_nonces = [
             Nonce.objects.create(token_key=factory.make_string())
             for _ in range(3)
         ]
-        self.assertEqual(0, cleanup_old_nonces())
+        assert 0 == cleanup_old_nonces()
         # Patch the module's time module back.
         timemod.return_value = now
         new_nonces = [
@@ -50,24 +54,27 @@ class TestCleanupOldNonces(MAASServerTestCase):
         cleanup_count = cleanup_old_nonces()
 
         # The old nonces plus the checkpoint nonce are deleted.
-        self.assertEqual(len(old_nonces) + 1, cleanup_count)
-        self.assertGreaterEqual(set(Nonce.objects.all()), set(new_nonces))
-        self.assertEqual(len(new_nonces) + 1, Nonce.objects.all().count())
+        assert len(old_nonces) + 1 == cleanup_count
+        assert set(Nonce.objects.all()) >= set(new_nonces)
+        assert len(new_nonces) + 1 == Nonce.objects.all().count()
 
 
-class TestUtilities(MAASServerTestCase):
+@pytest.mark.usefixtures(
+    "maasdb", "factory", "mock_openfga", "mock_start_workflows"
+)
+class TestUtilities:
     def test_create_checkpoint_nonce_creates_checkpoint_nonce(self):
         before = time.time()
         create_checkpoint_nonce()
         checkpoint = Nonce.objects.get(token_key="", consumer_key="")
         after = time.time()
         checkpoint_time = checkpoint.key[len(key_prefix) :]
-        self.assertLessEqual(before, float(checkpoint_time))
-        self.assertGreaterEqual(after, float(checkpoint_time))
+        assert before <= float(checkpoint_time)
+        assert after >= float(checkpoint_time)
 
-    def test_create_checkpoint_nonce_gets_checkpoint_if_exists(self):
+    def test_create_checkpoint_nonce_gets_checkpoint_if_exists(self, mocker):
         now = time.time()
-        self.patch(module_time, "time").return_value = now
+        mocker.patch.object(module_time, "time").return_value = now
         create_checkpoint_nonce()
         nonce1 = Nonce.objects.filter(token_key="", consumer_key="").latest(
             "id"
@@ -76,7 +83,7 @@ class TestUtilities(MAASServerTestCase):
         nonce2 = Nonce.objects.filter(token_key="", consumer_key="").latest(
             "id"
         )
-        self.assertEqual(nonce1.id, nonce2.id)
+        assert nonce1.id == nonce2.id
 
     def test_delete_old_nonces_delete_nonces(self):
         # Create old nonces.
@@ -90,14 +97,16 @@ class TestUtilities(MAASServerTestCase):
             for _ in range(3)
         ]
         delete_old_nonces(checkpoint)
-        self.assertCountEqual(new_nonces, Nonce.objects.all())
+        assert Counter(new_nonces) == Counter(Nonce.objects.all())
 
     def test_find_checkpoint_nonce_returns_None_if_no_checkpoint(self):
-        self.assertIsNone(find_checkpoint_nonce())
+        assert find_checkpoint_nonce() is None
 
-    def test_find_checkpoint_nonce_returns_most_recent_checkpoint(self):
+    def test_find_checkpoint_nonce_returns_most_recent_checkpoint(
+        self, mocker
+    ):
         now = time.time()
-        self.patch(module_time, "time").return_value = now
+        mocker.patch.object(module_time, "time").return_value = now
         # Create a "checkpoint" nonce created timestamp_threshold + 5
         # seconds ago.
         Nonce.objects.create(
@@ -117,26 +126,29 @@ class TestUtilities(MAASServerTestCase):
             token_key="", consumer_key="", key=get_time_string(now - 1)
         )
 
-        self.assertEqual(checkpoint, find_checkpoint_nonce())
+        assert checkpoint == find_checkpoint_nonce()
 
     def test_get_time_string_returns_comparable_string(self):
         now = time.time()
-        self.assertGreater(get_time_string(now + 1), get_time_string(now))
+        assert get_time_string(now + 1) > get_time_string(now)
 
     def test_get_time_string_ends_with_suffix(self):
         now = time.time()
-        self.assertTrue(get_time_string(now).startswith(key_prefix))
+        assert get_time_string(now).startswith(key_prefix)
 
 
-class TestNonceCleanupService(MAASServerTestCase):
-    def test_init_with_default_interval(self):
+@pytest.mark.usefixtures(
+    "maasdb", "factory", "mock_openfga", "mock_start_workflows"
+)
+class TestNonceCleanupService:
+    def test_init_with_default_interval(self, mocker):
         # The service itself calls `cleanup_old_nonces` in a thread, via
         # a couple of decorators. This indirection makes it clearer to
         # mock `cleanup_old_nonces` here and track calls to it.
-        cleanup_old_nonces = self.patch(nonces_cleanup, "cleanup_old_nonces")
-        # Making `deferToDatabase` use the current thread helps testing.
-        self.patch(nonces_cleanup, "deferToDatabase", maybeDeferred)
-
+        cleanup_old_nonces = mocker.patch.object(
+            nonces_cleanup, "cleanup_old_nonces"
+        )
+        mocker.patch.object(nonces_cleanup, "deferToDatabase", maybeDeferred)
         service = NonceCleanupService()
         # Use a deterministic clock instead of the reactor for testing.
         service.clock = Clock()
@@ -144,7 +156,7 @@ class TestNonceCleanupService(MAASServerTestCase):
         # The interval is stored as `step` by TimerService,
         # NonceCleanupService's parent class.
         interval = 24 * 60 * 60  # seconds.
-        self.assertEqual(service.step, interval)
+        assert service.step == interval
 
         # `cleanup_old_nonces` is not called before the service is
         # started.
@@ -164,6 +176,6 @@ class TestNonceCleanupService(MAASServerTestCase):
         cleanup_old_nonces.assert_called_once_with()
 
     def test_interval_can_be_set(self):
-        interval = self.getUniqueInteger()
+        interval = 37
         service = NonceCleanupService(interval)
-        self.assertEqual(interval, service.step)
+        assert interval == service.step

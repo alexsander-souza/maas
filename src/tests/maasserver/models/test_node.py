@@ -1,6 +1,7 @@
 import logging
 
 from maasserver.enum import NODE_STATUS
+from maasserver.utils.orm import post_commit_hooks
 
 
 def test_node_mark_failed_deployment_logs_failure(factory, caplog, mocker):
@@ -8,8 +9,9 @@ def test_node_mark_failed_deployment_logs_failure(factory, caplog, mocker):
     node = factory.make_Node(
         status=NODE_STATUS.DEPLOYING, with_boot_disk=False
     )
-    with caplog.at_level(logging.DEBUG):
-        node.mark_failed()
+    with caplog.at_level(logging.DEBUG, logger="maas.node"):
+        with post_commit_hooks:
+            node.mark_failed()
     assert node.status == NODE_STATUS.FAILED_DEPLOYMENT
     record_tuple = (
         "maas.node",

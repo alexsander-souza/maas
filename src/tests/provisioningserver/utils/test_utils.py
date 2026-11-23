@@ -9,9 +9,9 @@ import os
 from unittest.mock import sentinel
 
 from fixtures import EnvironmentVariableFixture
+import pytest
 
 from maastesting.factory import factory
-from maastesting.testcase import MAASTestCase
 from provisioningserver import utils as utils_module
 from provisioningserver.utils import (
     CircularDependency,
@@ -30,64 +30,56 @@ def get_run_path(*path):
     return os.path.abspath(os.path.join(maas_root, *path))
 
 
-class TestLocateConfig(MAASTestCase):
+class TestLocateConfig:
     """Tests for `locate_config`."""
 
     def test_returns_branch_etc_maas(self):
         config_path = locate_config()
-        self.assertEqual(get_run_path("etc/maas"), config_path)
-        self.assertTrue(os.path.isdir(config_path))
+        assert get_run_path("etc/maas") == config_path
+        assert os.path.isdir(config_path)
 
     def test_defaults_to_global_etc_maas_if_variable_is_unset(self):
-        self.useFixture(EnvironmentVariableFixture("MAAS_ROOT", None))
-        self.assertEqual("/etc/maas", locate_config())
+        with EnvironmentVariableFixture("MAAS_ROOT", None):
+            assert "/etc/maas" == locate_config()
 
     def test_defaults_to_global_etc_maas_if_variable_is_empty(self):
-        self.useFixture(EnvironmentVariableFixture("MAAS_ROOT", ""))
-        self.assertEqual("/etc/maas", locate_config())
+        with EnvironmentVariableFixture("MAAS_ROOT", ""):
+            assert "/etc/maas" == locate_config()
 
     def test_returns_absolute_path(self):
-        self.useFixture(EnvironmentVariableFixture("MAAS_ROOT", "."))
-        self.assertTrue(os.path.isabs(locate_config()))
+        with EnvironmentVariableFixture("MAAS_ROOT", "."):
+            assert os.path.isabs(locate_config())
 
     def test_locates_config_file(self):
         filename = factory.make_string()
-        self.assertEqual(
-            get_run_path("etc/maas/", filename), locate_config(filename)
-        )
+        assert get_run_path("etc/maas/", filename) == locate_config(filename)
 
     def test_locates_full_path(self):
         path = [factory.make_string() for counter in range(3)]
-        self.assertEqual(
-            get_run_path("etc/maas/", *path), locate_config(*path)
-        )
+        assert get_run_path("etc/maas/", *path) == locate_config(*path)
 
     def test_normalizes_path(self):
-        self.assertEqual(
-            get_run_path("etc/maas/bar/szot"),
-            locate_config("foo/.././bar///szot"),
+        assert get_run_path("etc/maas/bar/szot") == locate_config(
+            "foo/.././bar///szot"
         )
 
 
-class TestLocateTemplate(MAASTestCase):
+class TestLocateTemplate:
     """Tests for `locate_template`."""
 
     def test_returns_test_path(self):
-        self.assertEqual(
-            os.path.abspath(
-                os.path.join(
-                    os.path.dirname(utils_module.__file__),
-                    "..",
-                    "templates",
-                )
-            ),
-            locate_template(""),
-        )
+        assert os.path.abspath(
+            os.path.join(
+                os.path.dirname(utils_module.__file__),
+                "..",
+                "templates",
+            )
+        ) == locate_template("")
 
 
-class TestClassify(MAASTestCase):
+class TestClassify:
     def test_no_subjects(self):
-        self.assertSequenceEqual(([], []), classify(sentinel.func, []))
+        assert ([], []) == classify(sentinel.func, [])
 
     def test_subjects(self):
         subjects = [("one", 1), ("two", 2), ("three", 3)]
@@ -95,59 +87,53 @@ class TestClassify(MAASTestCase):
         def is_even(subject):
             return subject % 2 == 0
 
-        self.assertSequenceEqual(
-            (["two"], ["one", "three"]), classify(is_even, subjects)
-        )
+        assert (["two"], ["one", "three"]) == classify(is_even, subjects)
 
 
-class TestFlatten(MAASTestCase):
+class TestFlatten:
     def test_returns_iterator(self):
-        self.assertIsInstance(flatten(()), Iterator)
+        assert isinstance(flatten(()), Iterator)
 
     def test_returns_empty_when_nothing_provided(self):
-        self.assertEqual([], list(flatten([])))
-        self.assertEqual([], list(flatten(())))
-        self.assertEqual([], list(flatten({})))
-        self.assertEqual([], list(flatten(set())))
-        self.assertEqual([], list(flatten(([], (), {}, set()))))
-        self.assertEqual([], list(flatten(([[]], ((),)))))
+        assert [] == list(flatten([]))
+        assert [] == list(flatten(()))
+        assert [] == list(flatten({}))
+        assert [] == list(flatten(set()))
+        assert [] == list(flatten(([], (), {}, set())))
+        assert [] == list(flatten(([[]], ((),))))
 
     def test_flattens_list(self):
-        self.assertEqual([1, 2, 3, "abc"], list(flatten([1, 2, 3, "abc"])))
+        assert [1, 2, 3, "abc"] == list(flatten([1, 2, 3, "abc"]))
 
     def test_flattens_nested_lists(self):
-        self.assertEqual([1, 2, 3, "abc"], list(flatten([[[1, 2, 3, "abc"]]])))
+        assert [1, 2, 3, "abc"] == list(flatten([[[1, 2, 3, "abc"]]]))
 
     def test_flattens_arbitrarily_nested_lists(self):
-        self.assertEqual(
-            [1, "two", "three", 4, 5, 6],
-            list(flatten([[1], ["two", "three"], [4], [5, 6]])),
+        assert [1, "two", "three", 4, 5, 6] == list(
+            flatten([[1], ["two", "three"], [4], [5, 6]])
         )
 
     def test_flattens_other_iterables(self):
-        self.assertEqual(
-            [1, 2, 3.3, 4, 5, 6], list(flatten([1, 2, {3.3, 4, (5, 6)}]))
-        )
+        assert [1, 2, 3.3, 4, 5, 6] == list(flatten([1, 2, {3.3, 4, (5, 6)}]))
 
     def test_treats_string_like_objects_as_leaves(self):
         # Strings are iterable, but we know they cannot be flattened further.
-        self.assertEqual(["abcdef"], list(flatten("abcdef")))
+        assert ["abcdef"] == list(flatten("abcdef"))
 
     def test_takes_star_args(self):
-        self.assertEqual(
-            ["a", "b", "c", "d", "e", "f"],
-            list(flatten("a", "b", "c", "d", "e", "f")),
+        assert ["a", "b", "c", "d", "e", "f"] == list(
+            flatten("a", "b", "c", "d", "e", "f")
         )
 
 
 EMPTY = frozenset()
 
 
-class TestSortTop(MAASTestCase):
+class TestSortTop:
     """Tests for `sorttop`."""
 
     def assertSort(self, data, *batches):
-        self.assertEqual(batches, tuple(sorttop(data)))
+        assert batches == tuple(sorttop(data))
 
     def test_empty_yields_no_batches(self):
         self.assertSort({})
@@ -170,13 +156,14 @@ class TestSortTop(MAASTestCase):
         self.assertSort({1: {2}, 3: EMPTY}, {2, 3}, {1})
 
     def test_circular_dependency_results_in_an_exception(self):
-        self.assertRaises(CircularDependency, list, sorttop({1: {2}, 2: {1}}))
+        with pytest.raises(CircularDependency):
+            list(sorttop({1: {2}, 2: {1}}))
 
     def test_input_not_modified(self):
         data = {1: {2, 5}, 2: {3, 4, 5}, 6: {2}}
         orig = deepcopy(data)
         self.assertSort(data, {3, 4, 5}, {2}, {1, 6})
-        self.assertEqual(orig, data)
+        assert orig == data
 
     def test_can_sort_non_numeric_things_too(self):
         computers = object()
@@ -216,43 +203,42 @@ class Baz(Bar):
     pass
 
 
-class TestIsInstanceOrSubclass(MAASTestCase):
+@pytest.mark.parametrize(
+    "foo,bar,baz",
+    [
+        (Foo(), Bar(), Baz()),
+        (Foo, Bar, Baz),
+    ],
+    ids=["instances", "types"],
+)
+class TestIsInstanceOrSubclass:
     """Tests for `is_instance_or_subclass`."""
 
-    scenarios = (
-        ("instances", {"foo": Foo(), "bar": Bar(), "baz": Baz()}),
-        ("types", {"foo": Foo, "bar": Bar, "baz": Baz}),
-    )
+    def test_accepts_correct_type(self, foo, bar, baz):
+        assert is_instance_or_subclass(foo, Foo)
+        assert is_instance_or_subclass(bar, Bar)
+        assert is_instance_or_subclass(baz, Baz)
 
-    def test_accepts_correct_type(self):
-        self.assertTrue(is_instance_or_subclass(self.foo, Foo))
-        self.assertTrue(is_instance_or_subclass(self.bar, Bar))
-        self.assertTrue(is_instance_or_subclass(self.baz, Baz))
+    def test_returns_false_if_object_is_not_relevant(self, foo, bar, baz):
+        assert not is_instance_or_subclass("Bar", Bar)
 
-    def test_returns_false_if_object_is_not_relevant(self):
-        self.assertFalse(is_instance_or_subclass("Bar", Bar))
+    def test_accept_subclass(self, foo, bar, baz):
+        assert is_instance_or_subclass(baz, Bar)
 
-    def test_accept_subclass(self):
-        self.assertTrue(is_instance_or_subclass(self.baz, Bar))
+    def test_rejects_incorrect_type(self, foo, bar, baz):
+        assert not is_instance_or_subclass(foo, Bar)
+        assert not is_instance_or_subclass(bar, Baz)
+        assert not is_instance_or_subclass(baz, Foo)
 
-    def test_rejects_incorrect_type(self):
-        self.assertFalse(is_instance_or_subclass(self.foo, Bar))
-        self.assertFalse(is_instance_or_subclass(self.bar, Baz))
-        self.assertFalse(is_instance_or_subclass(self.baz, Foo))
+    def test_accepts_tuple_or_list(self, foo, bar, baz):
+        assert is_instance_or_subclass(foo, (Baz, Foo, Bar))
+        assert not is_instance_or_subclass(bar, (Baz, Foo))
+        assert is_instance_or_subclass(baz, [Bar, Foo])
 
-    def test_accepts_tuple_or_list(self):
-        self.assertTrue(is_instance_or_subclass(self.foo, (Baz, Foo, Bar)))
-        self.assertFalse(is_instance_or_subclass(self.bar, (Baz, Foo)))
-        self.assertTrue(is_instance_or_subclass(self.baz, [Bar, Foo]))
+    def test_accepts_variable_args(self, foo, bar, baz):
+        assert is_instance_or_subclass(foo, Baz, Foo, Bar)
+        assert not is_instance_or_subclass(foo, Baz, Bar)
 
-    def test_accepts_variable_args(self):
-        self.assertTrue(is_instance_or_subclass(self.foo, Baz, Foo, Bar))
-        self.assertFalse(is_instance_or_subclass(self.foo, Baz, Bar))
-
-    def test_accepts_non_flat_list(self):
-        self.assertTrue(
-            is_instance_or_subclass(self.foo, (Baz, (Bar, (Foo,))))
-        )
-        self.assertTrue(
-            is_instance_or_subclass(self.bar, *[Baz, [Bar, [Foo]]])
-        )
+    def test_accepts_non_flat_list(self, foo, bar, baz):
+        assert is_instance_or_subclass(foo, (Baz, (Bar, (Foo,))))
+        assert is_instance_or_subclass(bar, *[Baz, [Bar, [Foo]]])

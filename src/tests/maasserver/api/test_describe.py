@@ -8,62 +8,63 @@ from urllib.parse import urlparse
 
 from django.test.client import RequestFactory
 from django.urls import get_script_prefix, reverse, set_script_prefix
-from testscenarios import multiply_scenarios
+import pytest
 
 from maasserver.api.doc import get_api_description
 from maasserver.api.doc_handler import describe
-from maasserver.testing.api import APITestCase
 from maasserver.testing.factory import factory
+from maasserver.testing.testclient import MAASSensibleOAuthClient
 from maasserver.utils.converters import json_load_bytes
-from maastesting.testcase import MAASTestCase
 
 
-class TestDescribe(APITestCase.ForAnonymousAndUserAndAdmin):
+@pytest.mark.usefixtures("maasdb", "mock_openfga")
+class TestDescribe:
     """Tests for the `describe` view."""
 
-    def test_describe_returns_json(self):
-        response = self.client.get(reverse("describe"))
-        self.assertEqual(response.status_code, http.client.OK)
-        self.assertEqual(response["Content-Type"], "application/json")
-        self.assertIsNotNone(response.json())
+    @pytest.fixture(
+        params=["anonymous", "user", "admin"],
+        ids=[
+            "user=anonymous,client=oauth",
+            "user=user,client=oauth",
+            "user=admin,client=oauth",
+        ],
+    )
+    def client(self, request):
+        if request.param == "user":
+            return request.getfixturevalue("api_client")
+        elif request.param == "admin":
+            return request.getfixturevalue("admin_api_client")
+        else:
+            return MAASSensibleOAuthClient()
 
-    def test_describe(self):
-        response = self.client.get(reverse("describe"))
+    def test_describe_returns_json(self, client):
+        response = client.get(reverse("describe"))
+        assert response.status_code == http.client.OK
+        assert response["Content-Type"] == "application/json"
+        assert response.json() is not None
+
+    def test_describe(self, client):
+        response = client.get(reverse("describe"))
         description = json_load_bytes(response.content)
-        self.assertSetEqual(
-            {"doc", "handlers", "resources", "hash"}, set(description)
-        )
-        self.assertIsInstance(description["handlers"], list)
+        assert set(description) == {"doc", "handlers", "resources", "hash"}
+        assert isinstance(description["handlers"], list)
 
-    def test_describe_hash_is_the_api_hash(self):
-        response = self.client.get(reverse("describe"))
+    def test_describe_hash_is_the_api_hash(self, client):
+        response = client.get(reverse("describe"))
         description = json_load_bytes(response.content)
-        self.assertEqual(description["hash"], get_api_description()["hash"])
+        assert description["hash"] == get_api_description()["hash"]
 
 
-class TestDescribeAbsoluteURIs(MAASTestCase):
+class TestDescribeAbsoluteURIs:
     """Tests for the `describe` view's URI manipulation."""
 
-    scenarios_schemes = (
-        ("http", dict(scheme="http")),
-        ("https", dict(scheme="https")),
-    )
-
-    scenarios_paths = (
-        ("script-at-root", dict(script_name="", path_info="")),
-        ("script-below-root-1", dict(script_name="/foo/bar", path_info="")),
-        ("script-below-root-2", dict(script_name="/foo", path_info="/bar")),
-    )
-
-    scenarios = multiply_scenarios(scenarios_schemes, scenarios_paths)
-
-    def make_params(self):
+    def make_params(self, path_info, script_name, scheme):
         """Create parameters for http request, based on current scenario."""
         return {
-            "PATH_INFO": self.path_info,
-            "SCRIPT_NAME": self.script_name,
+            "PATH_INFO": path_info,
+            "SCRIPT_NAME": script_name,
             "SERVER_NAME": factory.make_name("server").lower(),
-            "wsgi.url_scheme": self.scheme,
+            "wsgi.url_scheme": scheme,
         }
 
     def get_description(self, params):
@@ -71,11 +72,12 @@ class TestDescribeAbsoluteURIs(MAASTestCase):
         path = "/%s/describe" % factory.make_name("path")
         request = RequestFactory().get(path, **params)
         response = describe(request)
-        self.assertEqual(
-            http.client.OK,
-            response.status_code,
+        assert http.client.OK == response.status_code, (
             "API description failed with code %s:\n%s"
-            % (response.status_code, response.content),
+            % (
+                response.status_code,
+                response.content,
+            )
         )
         return json_load_bytes(response.content)
 
@@ -94,31 +96,45 @@ class TestDescribeAbsoluteURIs(MAASTestCase):
         # set the prefix.  But clean this up after the test or it will
         # break other tests!
         original_prefix = get_script_prefix()
-        self.addCleanup(set_script_prefix, original_prefix)
         set_script_prefix(script_name)
+        return original_prefix
 
-    def test_handler_uris_are_absolute(self):
-        params = self.make_params()
+    @pytest.mark.parametrize(
+        "scheme", ["http", "https"], ids=["http", "https"]
+    )
+    @pytest.mark.parametrize(
+        "script_name,path_info",
+        [
+            ("", ""),
+            ("/foo/bar", ""),
+            ("/foo", "/bar"),
+        ],
+        ids=["script-at-root", "script-below-root-1", "script-below-root-2"],
+    )
+    def test_handler_uris_are_absolute(self, scheme, script_name, path_info):
+        params = self.make_params(path_info, script_name, scheme)
         server = params["SERVER_NAME"]
 
         # Without this, the test wouldn't be able to detect accidental
         # duplication of the script_name portion of the URL path:
         # /MAAS/MAAS/api/...
-        self.patch_script_prefix(self.script_name)
+        original_prefix = self.patch_script_prefix(script_name)
+        try:
+            description = self.get_description(params)
+            resources = description["resources"]
 
-        description = self.get_description(params)
-        resources = description["resources"]
+            assert resources != []
+            for resource in resources:
+                anon_response = resource["anon"]
+                auth_response = resource["auth"]
 
-        self.assertNotEqual([], resources)
-        for resource in resources:
-            anon_response = resource["anon"]
-            auth_response = resource["auth"]
-
-            if anon_response is None:
-                matcher = auth_response
-            else:
-                matcher = anon_response
-            url = urlparse(matcher["uri"])
-            self.assertEqual(url.scheme, self.scheme)
-            self.assertEqual(url.hostname, server)
-            self.assertTrue(url.path.startswith(f"{self.script_name}/api/"))
+                if anon_response is None:
+                    matcher = auth_response
+                else:
+                    matcher = anon_response
+                url = urlparse(matcher["uri"])
+                assert url.scheme == scheme
+                assert url.hostname == server
+                assert url.path.startswith(f"{script_name}/api/")
+        finally:
+            set_script_prefix(original_prefix)

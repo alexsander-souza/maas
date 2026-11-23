@@ -6,6 +6,7 @@ from itertools import product
 from unittest.mock import patch
 
 from crochet import TimeoutError
+import pytest
 
 from maascommon.osystem import NoSuchOperatingSystem
 from maasserver import forms
@@ -20,6 +21,7 @@ from maasserver.forms import (
 )
 from maasserver.models import NodeKey
 from maasserver.testing.architecture import (
+    make_arch,
     make_usable_architecture,
     patch_usable_architectures,
 )
@@ -29,7 +31,7 @@ from maasserver.testing.osystems import (
     make_usable_osystem,
     patch_usable_osystems,
 )
-from maasserver.testing.testcase import MAASServerTestCase
+from maasserver.testing.testclient import MAASSensibleClient
 from maasserver.utils.orm import post_commit_hooks, reload_object
 from provisioningserver.certificates import Certificate
 from provisioningserver.rpc.exceptions import NoConnectionsAvailable
@@ -42,41 +44,44 @@ class FakeRequest:
         self.user = user
 
 
-class TestMachineForm(MAASServerTestCase):
-    def setUp(self):
-        super().setUp()
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestMachineForm:
+    @pytest.fixture(autouse=True)
+    def _setup(self, mocker, request, maas_region_test):
         self.region = factory.make_RegionController()
+        self.client = MAASSensibleClient()
+        self.patch = mocker.patch.object
+        self.addCleanup = lambda function, *args, **kwargs: (
+            request.addfinalizer(lambda: function(*args, **kwargs))
+        )
 
     def test_contains_limited_set_of_fields(self):
         form = MachineForm()
 
-        self.assertEqual(
-            {
-                "hostname",
-                "domain",
-                "architecture",
-                "osystem",
-                "distro_series",
-                "license_key",
-                "disable_ipv4",
-                "swap_size",
-                "min_hwe_kernel",
-                "hwe_kernel",
-                "ephemeral_deploy",
-                "enable_hw_sync",
-                "commission",
-                "enable_kernel_crash_dump",
-                "is_dpu",
-            },
-            form.fields.keys(),
-        )
+        assert {
+            "hostname",
+            "domain",
+            "architecture",
+            "osystem",
+            "distro_series",
+            "license_key",
+            "disable_ipv4",
+            "swap_size",
+            "min_hwe_kernel",
+            "hwe_kernel",
+            "ephemeral_deploy",
+            "enable_hw_sync",
+            "commission",
+            "enable_kernel_crash_dump",
+            "is_dpu",
+        } == form.fields.keys()
 
     def test_accepts_usable_architecture(self):
         arch = make_usable_architecture(self)
         form = MachineForm(
             data={"hostname": factory.make_name("host"), "architecture": arch}
         )
-        self.assertTrue(form.is_valid(), form._errors)
+        assert form.is_valid(), form._errors
 
     def test_rejects_unusable_architecture(self):
         patch_usable_architectures(self)
@@ -86,16 +91,16 @@ class TestMachineForm(MAASServerTestCase):
                 "architecture": factory.make_name("arch"),
             }
         )
-        self.assertFalse(form.is_valid())
-        self.assertEqual({"architecture"}, form._errors.keys())
+        assert not form.is_valid()
+        assert {"architecture"} == form._errors.keys()
 
     def test_starts_with_default_architecture(self):
         arches = sorted(factory.make_name("arch") for _ in range(5))
         patch_usable_architectures(self, arches)
         form = MachineForm()
-        self.assertEqual(
-            pick_default_architecture(arches),
-            form.fields["architecture"].initial,
+        assert (
+            pick_default_architecture(arches)
+            == form.fields["architecture"].initial
         )
 
     def test_form_validates_hwe_kernel_by_passing_invalid_config(self):
@@ -113,17 +118,17 @@ class TestMachineForm(MAASServerTestCase):
             },
             instance=node,
         )
-        self.assertFalse(form.is_valid())
+        assert not form.is_valid()
 
     def test_form_validates_min_hwe_kernel_by_passing_invalid_config(self):
         node = factory.make_Node(min_hwe_kernel="hwe-t")
         form = MachineForm(instance=node)
-        self.assertFalse(form.is_valid())
+        assert not form.is_valid()
 
     def test_adds_blank_default_when_no_arches_available(self):
         patch_usable_architectures(self, [])
         form = MachineForm()
-        self.assertEqual([BLANK_CHOICE], form.fields["architecture"].choices)
+        assert [BLANK_CHOICE] == form.fields["architecture"].choices
 
     def test_accepts_osystem(self):
         user = factory.make_User()
@@ -138,7 +143,7 @@ class TestMachineForm(MAASServerTestCase):
             },
             instance=node,
         )
-        self.assertTrue(form.is_valid(), form._errors)
+        assert form.is_valid(), form._errors
 
     def test_rejects_invalid_osystem(self):
         user = factory.make_User()
@@ -153,8 +158,8 @@ class TestMachineForm(MAASServerTestCase):
             },
             instance=node,
         )
-        self.assertFalse(form.is_valid())
-        self.assertEqual({"osystem"}, form._errors.keys())
+        assert not form.is_valid()
+        assert {"osystem"} == form._errors.keys()
 
     def test_starts_with_default_osystem(self):
         user = factory.make_User()
@@ -163,7 +168,7 @@ class TestMachineForm(MAASServerTestCase):
         osystems = [make_osystem_with_releases(self) for _ in range(5)]
         patch_usable_osystems(self, osystems)
         form = MachineForm(instance=node)
-        self.assertEqual("", form.fields["osystem"].initial)
+        assert "" == form.fields["osystem"].initial
 
     def test_accepts_osystem_distro_series(self):
         user = factory.make_User()
@@ -180,7 +185,7 @@ class TestMachineForm(MAASServerTestCase):
             },
             instance=node,
         )
-        self.assertTrue(form.is_valid(), form._errors)
+        assert form.is_valid(), form._errors
 
     def test_rejects_invalid_osystem_distro_series(self):
         user = factory.make_User()
@@ -197,8 +202,8 @@ class TestMachineForm(MAASServerTestCase):
             },
             instance=node,
         )
-        self.assertFalse(form.is_valid())
-        self.assertEqual({"distro_series"}, form._errors.keys())
+        assert not form.is_valid()
+        assert {"distro_series"} == form._errors.keys()
 
     def test_set_distro_series_accepts_short_distro_series(self):
         user = factory.make_User()
@@ -218,7 +223,7 @@ class TestMachineForm(MAASServerTestCase):
         form.set_distro_series(release)
         with post_commit_hooks:
             form.save()
-        self.assertEqual(release + "6", node.distro_series)
+        assert release + "6" == node.distro_series
 
     def test_set_distro_series_accepts_short_alias_series(self):
         user = factory.make_User()
@@ -242,7 +247,7 @@ class TestMachineForm(MAASServerTestCase):
         form.set_distro_series(alias)
         with post_commit_hooks:
             form.save()
-        self.assertEqual(release, node.distro_series)
+        assert release == node.distro_series
 
     def test_set_distro_series_accepts_full_alias_series(self):
         user = factory.make_User()
@@ -267,7 +272,7 @@ class TestMachineForm(MAASServerTestCase):
         form.set_distro_series(f"ubuntu/{alias}")
         with post_commit_hooks:
             form.save()
-        self.assertEqual(release, node.distro_series)
+        assert release == node.distro_series
 
     def test_set_distro_series_doesnt_allow_short_ubuntu_series(self):
         user = factory.make_User()
@@ -282,7 +287,7 @@ class TestMachineForm(MAASServerTestCase):
             instance=node,
         )
         form.set_distro_series("trust")
-        self.assertFalse(form.is_valid())
+        assert not form.is_valid()
 
     def test_starts_with_default_distro_series(self):
         user = factory.make_User()
@@ -291,7 +296,7 @@ class TestMachineForm(MAASServerTestCase):
         osystems = [make_osystem_with_releases(self) for _ in range(5)]
         patch_usable_osystems(self, osystems)
         form = MachineForm(instance=node)
-        self.assertEqual("", form.fields["distro_series"].initial)
+        assert "" == form.fields["distro_series"].initial
 
     def test_rejects_mismatch_osystem_distro_series(self):
         user = factory.make_User()
@@ -309,8 +314,8 @@ class TestMachineForm(MAASServerTestCase):
             },
             instance=node,
         )
-        self.assertFalse(form.is_valid())
-        self.assertEqual({"distro_series"}, form._errors.keys())
+        assert not form.is_valid()
+        assert {"distro_series"} == form._errors.keys()
 
     def test_rejects_enable_hw_sync_on_non_linux_osystem(self):
         user = factory.make_User()
@@ -328,8 +333,8 @@ class TestMachineForm(MAASServerTestCase):
             },
             instance=machine,
         )
-        self.assertFalse(form.is_valid())
-        self.assertEqual({"enable_hw_sync"}, form._errors.keys())
+        assert not form.is_valid()
+        assert {"enable_hw_sync"} == form._errors.keys()
 
     def test_accepts_enable_hw_sync_on_linux_osystem(self):
         user = factory.make_User()
@@ -353,7 +358,7 @@ class TestMachineForm(MAASServerTestCase):
                 },
                 instance=machine,
             )
-            self.assertTrue(form.is_valid(), form._errors.keys())
+            assert form.is_valid(), form._errors.keys()
 
     def test_rejects_when_validate_license_key_returns_False(self):
         user = factory.make_User()
@@ -377,8 +382,8 @@ class TestMachineForm(MAASServerTestCase):
             },
             instance=node,
         )
-        self.assertFalse(form.is_valid())
-        self.assertEqual({"license_key"}, form._errors.keys())
+        assert not form.is_valid()
+        assert {"license_key"} == form._errors.keys()
 
     def test_rejects_when_validate_license_key_for_returns_False(self):
         user = factory.make_User()
@@ -401,8 +406,8 @@ class TestMachineForm(MAASServerTestCase):
             },
             instance=node,
         )
-        self.assertFalse(form.is_valid())
-        self.assertEqual({"license_key"}, form._errors.keys())
+        assert not form.is_valid()
+        assert {"license_key"} == form._errors.keys()
 
     def test_rejects_when_validate_license_key_for_raise_no_connection(self):
         user = factory.make_User()
@@ -425,8 +430,8 @@ class TestMachineForm(MAASServerTestCase):
             },
             instance=node,
         )
-        self.assertFalse(form.is_valid())
-        self.assertEqual({"license_key"}, form._errors.keys())
+        assert not form.is_valid()
+        assert {"license_key"} == form._errors.keys()
 
     def test_rejects_when_validate_license_key_for_raise_timeout(self):
         user = factory.make_User()
@@ -449,8 +454,8 @@ class TestMachineForm(MAASServerTestCase):
             },
             instance=node,
         )
-        self.assertFalse(form.is_valid())
-        self.assertEqual({"license_key"}, form._errors.keys())
+        assert not form.is_valid()
+        assert {"license_key"} == form._errors.keys()
 
     def test_rejects_when_validate_license_key_for_raise_no_os(self):
         user = factory.make_User()
@@ -473,8 +478,8 @@ class TestMachineForm(MAASServerTestCase):
             },
             instance=node,
         )
-        self.assertFalse(form.is_valid())
-        self.assertEqual({"license_key"}, form._errors.keys())
+        assert not form.is_valid()
+        assert {"license_key"} == form._errors.keys()
 
     def test_rejects_invalid_osystem_and_distro_series(self):
         user = factory.make_User()
@@ -493,7 +498,7 @@ class TestMachineForm(MAASServerTestCase):
             },
             instance=node,
         )
-        self.assertFalse(form.is_valid())
+        assert not form.is_valid()
 
     def test_accepts_osystem_and_distro_series_if_deployed(self):
         user = factory.make_User()
@@ -512,7 +517,7 @@ class TestMachineForm(MAASServerTestCase):
             },
             instance=node,
         )
-        self.assertTrue(form.is_valid(), form._errors)
+        assert form.is_valid(), form._errors
 
     @patch(
         "maasserver.utils.osystems.BootResource.objects.get_supported_kernel_compatibility_levels"
@@ -537,7 +542,7 @@ class TestMachineForm(MAASServerTestCase):
             },
             instance=node,
         )
-        self.assertTrue(form.is_valid(), form._errors)
+        assert form.is_valid(), form._errors
 
     @patch(
         "maasserver.utils.osystems.BootResource.objects.get_supported_kernel_compatibility_levels"
@@ -562,10 +567,19 @@ class TestMachineForm(MAASServerTestCase):
             },
             instance=node,
         )
-        self.assertFalse(form.is_valid())
+        assert not form.is_valid()
 
 
-class TestAdminMachineForm(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestAdminMachineForm:
+    @pytest.fixture(autouse=True)
+    def _setup(self, mocker, request):
+        self.client = MAASSensibleClient()
+        self.patch = mocker.patch.object
+        self.addCleanup = lambda function, *args, **kwargs: (
+            request.addfinalizer(lambda: function(*args, **kwargs))
+        )
+
     def test_removed_power_driver_cannot_be_selected(self):
         for power_type, skip_check in product(
             (
@@ -586,8 +600,8 @@ class TestAdminMachineForm(MAASServerTestCase):
                     "power_parameters_skip_check": skip_check,
                 }
             )
-            self.assertFalse(new_form.is_valid())
-            self.assertIn("power_type", new_form.errors)
+            assert not new_form.is_valid()
+            assert "power_type" in new_form.errors
             node = factory.make_Node(power_type="manual", interface=True)
             form = AdminMachineForm(
                 instance=node,
@@ -596,9 +610,9 @@ class TestAdminMachineForm(MAASServerTestCase):
                     "power_parameters_skip_check": skip_check,
                 },
             )
-            self.assertFalse(form.is_valid())
-            self.assertIn("power_type", form.errors)
-            self.assertEqual("manual", reload_object(node).power_type)
+            assert not form.is_valid()
+            assert "power_type" in form.errors
+            assert "manual" == reload_object(node).power_type
 
     def test_AdminMachineForm_contains_limited_set_of_fields(self):
         user = factory.make_User()
@@ -606,40 +620,36 @@ class TestAdminMachineForm(MAASServerTestCase):
         node = factory.make_Node(owner=user)
         form = AdminMachineForm(instance=node)
 
-        self.assertEqual(
-            {
-                "hostname",
-                "description",
-                "domain",
-                "architecture",
-                "osystem",
-                "distro_series",
-                "license_key",
-                "disable_ipv4",
-                "swap_size",
-                "min_hwe_kernel",
-                "hwe_kernel",
-                "ephemeral_deploy",
-                "cpu_count",
-                "memory",
-                "zone",
-                "power_parameters",
-                "power_type",
-                "pool",
-                "commission",
-                "enable_hw_sync",
-                "enable_kernel_crash_dump",
-                "is_dpu",
-            },
-            form.fields.keys(),
-        )
+        assert {
+            "hostname",
+            "description",
+            "domain",
+            "architecture",
+            "osystem",
+            "distro_series",
+            "license_key",
+            "disable_ipv4",
+            "swap_size",
+            "min_hwe_kernel",
+            "hwe_kernel",
+            "ephemeral_deploy",
+            "cpu_count",
+            "memory",
+            "zone",
+            "power_parameters",
+            "power_type",
+            "pool",
+            "commission",
+            "enable_hw_sync",
+            "enable_kernel_crash_dump",
+            "is_dpu",
+        } == form.fields.keys()
 
     def test_AdminMachineForm_populates_power_type_choices(self):
         form = AdminMachineForm()
-        self.assertEqual(
-            [""] + [choice[0] for choice in get_driver_choices()],
-            [choice[0] for choice in form.fields["power_type"].choices],
-        )
+        assert [""] + [choice[0] for choice in get_driver_choices()] == [
+            choice[0] for choice in form.fields["power_type"].choices
+        ]
 
     def test_AdminMachineForm_new_machine_deployed(self):
         hostname = factory.make_string()
@@ -651,10 +661,10 @@ class TestAdminMachineForm(MAASServerTestCase):
                 "deployed": True,
             },
         )
-        self.assertTrue(form.is_valid())
+        assert form.is_valid()
         node = form.save()
-        self.assertEqual(node.status, NODE_STATUS.DEPLOYED)
-        self.assertEqual(user, node.owner)
+        assert node.status == NODE_STATUS.DEPLOYED
+        assert user == node.owner
 
     def test_AdminMachineForm_new_machine_no_deployed_no_owner(self):
         hostname = factory.make_string()
@@ -669,17 +679,17 @@ class TestAdminMachineForm(MAASServerTestCase):
                 "power_parameters_skip_check": "true",
             },
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
 
         with post_commit_hooks:
             node = form.save()
-        self.assertEqual(node.status, NODE_STATUS.NEW)
-        self.assertIsNone(node.owner)
+        assert node.status == NODE_STATUS.NEW
+        assert node.owner is None
 
     def test_AdminMachineForm_populates_power_type_initial(self):
         node = factory.make_Node()
         form = AdminMachineForm(instance=node)
-        self.assertEqual(node.power_type, form.fields["power_type"].initial)
+        assert node.power_type == form.fields["power_type"].initial
 
     def test_AdminMachineForm_changes_power_parameters_with_skip_check(self):
         node = factory.make_Node(interface=True)
@@ -701,9 +711,10 @@ class TestAdminMachineForm(MAASServerTestCase):
         with post_commit_hooks:
             form.save()
 
-        self.assertEqual(
-            (hostname, power_type, {"field": power_parameters_field}),
-            (node.hostname, node.power_type, node.get_power_parameters()),
+        assert (hostname, power_type, {"field": power_parameters_field}) == (
+            node.hostname,
+            node.power_type,
+            node.get_power_parameters(),
         )
 
     def test_AdminMachineForm_doesnt_changes_power_parameters(self):
@@ -722,7 +733,7 @@ class TestAdminMachineForm(MAASServerTestCase):
 
         with post_commit_hooks:
             node = form.save()
-        self.assertEqual(power_parameters, node.get_power_parameters())
+        assert power_parameters == node.get_power_parameters()
 
     def test_AdminMachineForm_doesnt_change_power_type(self):
         power_type = factory.pick_power_type(but_not=["lxd"])
@@ -740,7 +751,7 @@ class TestAdminMachineForm(MAASServerTestCase):
 
         with post_commit_hooks:
             node = form.save()
-        self.assertEqual(power_type, node.power_type)
+        assert power_type == node.power_type
 
     def test_AdminMachineForm_changes_power_type(self):
         node = factory.make_Node(interface=True)
@@ -759,7 +770,7 @@ class TestAdminMachineForm(MAASServerTestCase):
 
         with post_commit_hooks:
             node = form.save()
-        self.assertEqual(power_type, node.power_type)
+        assert power_type == node.power_type
 
     def test_AdminMachineForm_needs_interface_for_power_types(self):
         node = factory.make_Node(power_type=None)
@@ -772,15 +783,12 @@ class TestAdminMachineForm(MAASServerTestCase):
             },
             instance=node,
         )
-        self.assertFalse(form.is_valid())
-        self.assertEqual(
-            dict(form.errors),
-            {
-                "power_type": [
-                    "Can't set power type to manual without network interfaces"
-                ]
-            },
-        )
+        assert not form.is_valid()
+        assert dict(form.errors) == {
+            "power_type": [
+                "Can't set power type to manual without network interfaces"
+            ]
+        }
 
     def test_AdminMachineForm_creates_scriptset_for_deployed(self):
         hostname = factory.make_string()
@@ -795,7 +803,7 @@ class TestAdminMachineForm(MAASServerTestCase):
 
         with post_commit_hooks:
             machine = form.save()
-        self.assertIsNotNone(machine.current_commissioning_script_set)
+        assert machine.current_commissioning_script_set is not None
 
     def test_AdminMachineForm_creates_node_token_for_deployed(self):
         hostname = factory.make_string()
@@ -810,7 +818,7 @@ class TestAdminMachineForm(MAASServerTestCase):
 
         with post_commit_hooks:
             machine = form.save()
-        self.assertTrue(NodeKey.objects.filter(node=machine).exists())
+        assert NodeKey.objects.filter(node=machine).exists()
 
     def test_AdminMachineForm_sets_is_dpu(self):
         node = factory.make_Node(interface=True)
@@ -829,7 +837,7 @@ class TestAdminMachineForm(MAASServerTestCase):
 
         with post_commit_hooks:
             node = form.save()
-        self.assertTrue(node.is_dpu)
+        assert node.is_dpu
 
     def test_AdminMachineForm_sets_is_dpu_with_invalid_architecture(self):
         node = factory.make_Node(interface=True)
@@ -846,7 +854,7 @@ class TestAdminMachineForm(MAASServerTestCase):
             instance=node,
         )
 
-        with post_commit_hooks, self.assertRaises(ValueError):
+        with post_commit_hooks, pytest.raises(ValueError):
             form.save()
 
     @patch(
@@ -899,20 +907,30 @@ class TestAdminMachineForm(MAASServerTestCase):
                 },
                 instance=node,
             )
-            with post_commit_hooks, self.assertRaises(ValueError):
+            with post_commit_hooks, pytest.raises(ValueError):
                 form.save()
 
 
-class TestAdminMachineWithMACAddressForm(MAASServerTestCase):
-    def test_generate_certs_for_lxd_power_type(self):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestAdminMachineWithMACAddressForm:
+    def test_generate_certs_for_lxd_power_type(self, mocker):
         sample_cert = get_sample_cert()
-        self.patch_autospec(
-            forms, "generate_certificate"
-        ).return_value = sample_cert
+        mocker.patch.object(
+            forms,
+            "generate_certificate",
+            autospec=True,
+            return_value=sample_cert,
+        )
         hostname = factory.make_string()
+        architecture = make_arch()
+        mocker.patch.object(
+            forms,
+            "list_all_usable_architectures",
+            return_value=[architecture],
+        )
         form = AdminMachineWithMACAddressesForm(
             data={
-                "architecture": make_usable_architecture(self),
+                "architecture": architecture,
                 "hostname": hostname,
                 "mac_addresses": [factory.make_mac_address()],
                 "power_type": "lxd",
@@ -922,20 +940,18 @@ class TestAdminMachineWithMACAddressForm(MAASServerTestCase):
                 },
             },
         )
-        self.assertTrue(form.is_valid())
+        assert form.is_valid(), form._errors
 
         with post_commit_hooks:
             machine = form.save()
 
         power_params = machine.bmc.get_power_parameters()
-        self.assertIn("certificate", power_params)
-        self.assertIn("key", power_params)
+        assert "certificate" in power_params
+        assert "key" in power_params
         cert = Certificate.from_pem(
             power_params["certificate"], power_params["key"]
         )
-        self.assertEqual(cert.cn(), sample_cert.cn())
+        assert cert.cn() == sample_cert.cn()
         # cert/key are not per-instance parameters
-        self.assertNotIn(
-            "certificate", machine.get_instance_power_parameters()
-        )
-        self.assertNotIn("key", machine.get_instance_power_parameters())
+        assert "certificate" not in machine.get_instance_power_parameters()
+        assert "key" not in machine.get_instance_power_parameters()

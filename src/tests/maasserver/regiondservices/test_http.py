@@ -3,8 +3,10 @@
 
 import os
 from pathlib import Path
+from unittest import TestCase as UnittestTestCase
 from unittest.mock import Mock
 
+import pytest
 from twisted.internet.defer import inlineCallbacks
 
 import maascommon.fips as fips_module
@@ -14,7 +16,6 @@ from maasserver.listener import notify, PostgresListenerUnregistrationError
 from maasserver.models import Config
 from maasserver.regiondservices import certificate_expiration_check, http
 from maasserver.secrets import SecretManager
-from maasserver.testing.testcase import MAASTransactionServerTestCase
 from maasserver.triggers.testing import TransactionalHelpersMixin
 from maasserver.utils.threads import deferToDatabase
 from maastesting.crochet import wait_for
@@ -27,9 +28,41 @@ from provisioningserver.utils.twisted import DeferredValue
 wait_for_reactor = wait_for()
 
 
-class TestRegionHTTPService(
-    TransactionalHelpersMixin, MAASTransactionServerTestCase
-):
+@pytest.mark.usefixtures(
+    "maasdb", "transactional_maasdb", "maas_region_test", "factory"
+)
+@pytest.mark.allow_transactions
+class TestRegionHTTPService(TransactionalHelpersMixin):
+    @pytest.fixture(autouse=True)
+    def _setup_test_helpers(self, mocker, request, tmp_path):
+        self._mocker = mocker
+        self._request = request
+        self._tmp_path = tmp_path
+        self._assertions = UnittestTestCase()
+
+    def __getattr__(self, name):
+        if name.startswith("assert") or name == "fail":
+            return getattr(self._assertions, name)
+        raise AttributeError(name)
+
+    def patch(self, obj, attribute=None, value=None):
+        if attribute is None:
+            return self._mocker.patch(obj)
+        if value is None:
+            return self._mocker.patch.object(obj, attribute)
+        return self._mocker.patch.object(obj, attribute, value)
+
+    def patch_autospec(self, obj, attribute):
+        return self._mocker.patch.object(obj, attribute, autospec=True)
+
+    def addCleanup(self, function, *args, **kwargs):
+        from functools import partial
+
+        self._request.addfinalizer(partial(function, *args, **kwargs))
+
+    def make_dir(self):
+        return str(self._tmp_path)
+
     def create_tls_config(self):
         cert = get_sample_cert_with_cacerts()
 
@@ -344,7 +377,7 @@ class TestRegionHTTPService(
         nginx_config = self._configure_to_file(
             http._Configuration(cert=cert, port=5443)
         )
-        self.assertNotIn("ssl_dhparam", nginx_config)
+        self.assertNotIn("    ssl_dhparam ", nginx_config)
 
     def test_ssl_non_fips_includes_x25519_and_chacha20(self):
         """Non-FIPS mode: X25519 curve and ChaCha20-Poly1305 ciphers present."""

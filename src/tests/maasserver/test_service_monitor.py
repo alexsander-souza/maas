@@ -2,39 +2,33 @@
 # GNU Affero General Public License version 3 (see the file LICENSE).
 
 
-import os
-
+import pytest
 from twisted.internet.defer import inlineCallbacks, maybeDeferred
 
 from maasserver.models.config import Config
 from maasserver.models.signals import bootsources
 from maasserver.service_monitor import ProxyService, service_monitor
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASTransactionServerTestCase
 from maasserver.utils.orm import transactional
 from maasserver.utils.threads import deferToDatabase
 from maastesting.crochet import wait_for
-from maastesting.testcase import MAASTestCase
 from provisioningserver.proxy import config
 from provisioningserver.utils.service_monitor import SERVICE_STATE
 
 wait_for_reactor = wait_for()
 
 
-class TestGlobalServiceMonitor(MAASTestCase):
+class TestGlobalServiceMonitor:
     def test_includes_all_services(self):
-        self.assertEqual(
-            {
-                "bind9",
-                "ntp_region",
-                "proxy",
-                "reverse_proxy",
-                "syslog_region",
-                "temporal",
-                "temporal-worker",
-            },
-            service_monitor._services.keys(),
-        )
+        assert {
+            "bind9",
+            "ntp_region",
+            "proxy",
+            "reverse_proxy",
+            "syslog_region",
+            "temporal",
+            "temporal-worker",
+        } == service_monitor._services.keys()
 
     @wait_for_reactor
     @inlineCallbacks
@@ -57,15 +51,16 @@ class TestGlobalServiceMonitor(MAASTestCase):
                 actual_active_state,
                 actual_process_state,
             ) = yield service_monitor.getServiceState(service_name)
-            self.assertEqual(actual_active_state, new_active_state)
-            self.assertEqual(actual_process_state, new_process_state)
+            assert actual_active_state == new_active_state
+            assert actual_process_state == new_process_state
 
 
-class TestProxyService(MAASTransactionServerTestCase):
-    def setUp(self):
-        super().setUp()
-        self.addCleanup(bootsources.signals.enable)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestProxyService:
+    @pytest.fixture(autouse=True)
+    def _setup(self, request):
         bootsources.signals.disable()
+        request.addfinalizer(bootsources.signals.enable)
 
     def make_proxy_service(self):
         class FakeProxyService(ProxyService):
@@ -76,39 +71,40 @@ class TestProxyService(MAASTransactionServerTestCase):
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_getExpectedState_returns_off_for_proxy_off_and_unset(self):
+    def test_getExpectedState_returns_off_for_proxy_off_and_unset(
+        self, mocker
+    ):
         service = self.make_proxy_service()
         yield deferToDatabase(
             transactional(Config.objects.set_config),
             "enable_http_proxy",
             False,
         )
-        self.patch(config, "is_config_present").return_value = True
+        mocker.patch.object(config, "is_config_present", return_value=True)
         expected_state = yield maybeDeferred(service.getExpectedState)
-        self.assertEqual(
-            (SERVICE_STATE.OFF, "proxy disabled."), expected_state
-        )
+        assert (SERVICE_STATE.OFF, "proxy disabled.") == expected_state
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_getExpectedState_returns_off_for_no_config(self):
+    def test_getExpectedState_returns_off_for_no_config(self, monkeypatch):
         yield deferToDatabase(
             transactional(Config.objects.set_config),
             "enable_http_proxy",
             True,
         )
         service = self.make_proxy_service()
-        os.environ["MAAS_PROXY_CONFIG_DIR"] = "/tmp/%s" % factory.make_name()
-        expected_state = yield maybeDeferred(service.getExpectedState)
-        self.assertEqual(
-            (SERVICE_STATE.OFF, "no configuration file present."),
-            expected_state,
+        monkeypatch.setenv(
+            "MAAS_PROXY_CONFIG_DIR", "/tmp/%s" % factory.make_name()
         )
-        del os.environ["MAAS_PROXY_CONFIG_DIR"]
+        expected_state = yield maybeDeferred(service.getExpectedState)
+        assert (
+            SERVICE_STATE.OFF,
+            "no configuration file present.",
+        ) == expected_state
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_getExpectedState_returns_off_for_proxy_off_and_set(self):
+    def test_getExpectedState_returns_off_for_proxy_off_and_set(self, mocker):
         service = self.make_proxy_service()
         yield deferToDatabase(
             transactional(Config.objects.set_config),
@@ -120,15 +116,13 @@ class TestProxyService(MAASTransactionServerTestCase):
             "http_proxy",
             factory.make_url(),
         )
-        self.patch(config, "is_config_present").return_value = True
+        mocker.patch.object(config, "is_config_present", return_value=True)
         expected_state = yield maybeDeferred(service.getExpectedState)
-        self.assertEqual(
-            (SERVICE_STATE.OFF, "proxy disabled."), expected_state
-        )
+        assert (SERVICE_STATE.OFF, "proxy disabled.") == expected_state
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_getExpectedState_returns_on_for_proxy_on_but_unset(self):
+    def test_getExpectedState_returns_on_for_proxy_on_but_unset(self, mocker):
         service = self.make_proxy_service()
         yield deferToDatabase(
             transactional(Config.objects.set_config), "enable_http_proxy", True
@@ -136,13 +130,13 @@ class TestProxyService(MAASTransactionServerTestCase):
         yield deferToDatabase(
             transactional(Config.objects.set_config), "http_proxy", ""
         )
-        self.patch(config, "is_config_present").return_value = True
+        mocker.patch.object(config, "is_config_present", return_value=True)
         expected_state = yield maybeDeferred(service.getExpectedState)
-        self.assertEqual((SERVICE_STATE.ON, None), expected_state)
+        assert (SERVICE_STATE.ON, None) == expected_state
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_getExpectedState_returns_off_for_proxy_on_and_set(self):
+    def test_getExpectedState_returns_off_for_proxy_on_and_set(self, mocker):
         service = self.make_proxy_service()
         yield deferToDatabase(
             transactional(Config.objects.set_config), "enable_http_proxy", True
@@ -152,19 +146,18 @@ class TestProxyService(MAASTransactionServerTestCase):
             "http_proxy",
             factory.make_url(),
         )
-        self.patch(config, "is_config_present").return_value = True
+        mocker.patch.object(config, "is_config_present", return_value=True)
         expected_state = yield maybeDeferred(service.getExpectedState)
-        self.assertEqual(
-            (
-                SERVICE_STATE.OFF,
-                "disabled, alternate proxy is configured in settings.",
-            ),
-            expected_state,
-        )
+        assert (
+            SERVICE_STATE.OFF,
+            "disabled, alternate proxy is configured in settings.",
+        ) == expected_state
 
     @wait_for_reactor
     @inlineCallbacks
-    def test_getExpectedState_returns_on_for_proxy_on_and_set_peer_proxy(self):
+    def test_getExpectedState_returns_on_for_proxy_on_and_set_peer_proxy(
+        self, mocker
+    ):
         service = self.make_proxy_service()
         yield deferToDatabase(
             transactional(Config.objects.set_config), "enable_http_proxy", True
@@ -177,6 +170,6 @@ class TestProxyService(MAASTransactionServerTestCase):
             "http_proxy",
             factory.make_url(),
         )
-        self.patch(config, "is_config_present").return_value = True
+        mocker.patch.object(config, "is_config_present", return_value=True)
         expected_state = yield maybeDeferred(service.getExpectedState)
-        self.assertEqual((SERVICE_STATE.ON, None), expected_state)
+        assert (SERVICE_STATE.ON, None) == expected_state

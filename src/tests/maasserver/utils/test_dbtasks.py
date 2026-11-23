@@ -4,9 +4,11 @@
 """Tests for `maasserver.utils.dbtasks`."""
 
 import random
+import re
 import threading
 from unittest.mock import sentinel
 
+import pytest
 from twisted.internet import reactor
 from twisted.internet.defer import (
     Deferred,
@@ -15,7 +17,6 @@ from twisted.internet.defer import (
     QueueOverflow,
 )
 
-from maasserver.testing.testcase import MAASTransactionServerTestCase
 from maasserver.utils.dbtasks import (
     DatabaseTaskAlreadyRunning,
     DatabaseTasksService,
@@ -24,7 +25,6 @@ from maasserver.utils.orm import transactional
 from maastesting import get_testing_timeout
 from maastesting.crochet import wait_for
 from maastesting.factory import factory
-from maastesting.testcase import MAASTestCase
 from maastesting.twisted import TwistedLoggerFixture
 
 TIMEOUT = get_testing_timeout()
@@ -35,37 +35,41 @@ def noop():
     pass
 
 
-class TestDatabaseTaskService(MAASTestCase):
+class TestDatabaseTaskService:
     """Tests for `DatabaseTasksService`."""
 
     def test_init(self):
         service = DatabaseTasksService()
-        self.assertIsInstance(service.queue, DeferredQueue)
-        self.assertEqual(service.queue.size, 0)
-        self.assertEqual(service.queue.backlog, 1)
+        assert isinstance(service.queue, DeferredQueue)
+        assert service.queue.size == 0
+        assert service.queue.backlog == 1
 
     def test_cannot_add_task_to_unstarted_service(self):
         service = DatabaseTasksService()
-        self.assertRaises(QueueOverflow, service.addTask, noop)
+        with pytest.raises(QueueOverflow):
+            service.addTask(noop)
 
     def test_cannot_add_task_to_stopped_service(self):
         service = DatabaseTasksService()
         service.startService()
         service.stopService()
-        self.assertRaises(QueueOverflow, service.addTask, noop)
+        with pytest.raises(QueueOverflow):
+            service.addTask(noop)
 
     def test_startup_creates_queue_with_previously_defined(self):
         service = DatabaseTasksService()
         service.startService()
         try:
-            self.assertIsInstance(service.queue, DeferredQueue)
-            self.assertEqual(service.queue.backlog, 1)
+            assert isinstance(service.queue, DeferredQueue)
+            assert service.queue.backlog == 1
         finally:
             service.stopService()
 
 
-class TestDatabaseTaskServiceWithActualDatabase(MAASTransactionServerTestCase):
-    """Tests for `DatabaseTasksService` with the databse."""
+@pytest.mark.allow_transactions
+@pytest.mark.usefixtures("transactional_maasdb", "maas_region_test", "factory")
+class TestDatabaseTaskServiceWithActualDatabase:
+    """Tests for `DatabaseTasksService` with the database."""
 
     def test_task_can_access_database_from_other_thread(self):
         @transactional
@@ -77,7 +81,7 @@ class TestDatabaseTaskServiceWithActualDatabase(MAASTransactionServerTestCase):
         service.startService()
         try:
             result = service.deferTask(database_task).wait(TIMEOUT)
-            self.assertIs(result, sentinel.beenhere)
+            assert result is sentinel.beenhere
         finally:
             service.stopService()
 
@@ -90,8 +94,8 @@ class TestDatabaseTaskServiceWithActualDatabase(MAASTransactionServerTestCase):
         try:
             ident_from_task = service.deferTask(get_thread_ident).wait(TIMEOUT)
             ident_from_here = get_thread_ident()
-            self.assertIsInstance(ident_from_task, int)
-            self.assertNotEqual(ident_from_task, ident_from_here)
+            assert isinstance(ident_from_task, int)
+            assert ident_from_task != ident_from_here
         finally:
             service.stopService()
 
@@ -105,10 +109,11 @@ class TestDatabaseTaskServiceWithActualDatabase(MAASTransactionServerTestCase):
             result = service.deferTask(
                 return_args, sentinel.arg, kw=sentinel.kw
             ).wait(TIMEOUT)
-            self.assertEqual(
-                (sentinel.here, (sentinel.arg,), {"kw": sentinel.kw}),
-                result,
-            )
+            assert (
+                sentinel.here,
+                (sentinel.arg,),
+                {"kw": sentinel.kw},
+            ) == result
         finally:
             service.stopService()
 
@@ -122,14 +127,12 @@ class TestDatabaseTaskServiceWithActualDatabase(MAASTransactionServerTestCase):
         service = DatabaseTasksService()
         service.startService()
         try:
-            service.deferTaskWithCallbacks(
+            result = service.deferTaskWithCallbacks(
                 simple_function, [callback], "Hello"
             )
+            result.wait(TIMEOUT)
             service.syncTask().wait(TIMEOUT)
-            self.assertEqual(
-                "Hello world",
-                sentinel.callback,
-            )
+            assert "Hello world" == sentinel.callback
         finally:
             service.stopService()
 
@@ -144,13 +147,13 @@ class TestDatabaseTaskServiceWithActualDatabase(MAASTransactionServerTestCase):
                 service.addTask(event.wait)
             # The queue has `count` tasks (or `count - 1` tasks; the first may
             # have already been pulled off the queue) still pending.
-            self.assertIn(len(queue.pending), (count, count - 1))
+            assert len(queue.pending) in (count, count - 1)
         finally:
             event.set()
             service.stopService()
         # The queue is empty and nothing is waiting.
-        self.assertEqual(queue.waiting, [])
-        self.assertEqual(queue.pending, [])
+        assert queue.waiting == []
+        assert queue.pending == []
 
     @wait_for_reactor
     @inlineCallbacks
@@ -167,7 +170,7 @@ class TestDatabaseTaskServiceWithActualDatabase(MAASTransactionServerTestCase):
             event.set()
             yield service.stopService()
 
-        self.assertEqual([], things)
+        assert [] == things
 
     @wait_for_reactor
     @inlineCallbacks
@@ -183,7 +186,8 @@ class TestDatabaseTaskServiceWithActualDatabase(MAASTransactionServerTestCase):
             yield ready
             # We have the reactor thread. Even if the task completes its
             # status will not be updated until the reactor's next iteration.
-            self.assertRaises(DatabaseTaskAlreadyRunning, d.cancel)
+            with pytest.raises(DatabaseTaskAlreadyRunning):
+                d.cancel()
         finally:
             yield service.stopService()
 
@@ -202,13 +206,13 @@ class TestDatabaseTaskServiceWithActualDatabase(MAASTransactionServerTestCase):
             event.set()
             yield service.stopService()
 
-        self.assertEqual([], things)
+        assert [] == things
 
     def test_sync_task_fires_with_service(self):
         service = DatabaseTasksService()
         service.startService()
         try:
-            self.assertIs(service.syncTask().wait(TIMEOUT), service)
+            assert service.syncTask().wait(TIMEOUT) is service
         finally:
             service.stopService()
 
@@ -223,14 +227,13 @@ class TestDatabaseTaskServiceWithActualDatabase(MAASTransactionServerTestCase):
         service.startService()
         try:
             service.deferTask(things.append, 1).wait(TIMEOUT)
-            self.assertRaises(
-                exception_type, service.deferTask(be_bad).wait, TIMEOUT
-            )
+            with pytest.raises(exception_type):
+                service.deferTask(be_bad).wait(TIMEOUT)
             service.deferTask(things.append, 2).wait(TIMEOUT)
         finally:
             service.stopService()
 
-        self.assertEqual([1, 2], things)
+        assert [1, 2] == things
 
     def test_failure_in_added_task_does_not_crash_service(self):
         things = []  # This will be populated by tasks.
@@ -248,19 +251,17 @@ class TestDatabaseTaskServiceWithActualDatabase(MAASTransactionServerTestCase):
         finally:
             service.stopService()
 
-        self.assertEqual([1, 2], things)
+        assert [1, 2] == things
 
     def test_failure_in_task_is_logged(self):
-        logger = self.useFixture(TwistedLoggerFixture())
-
-        service = DatabaseTasksService()
-        service.startService()
-        try:
-            service.addTask(lambda: 0 / 0)
-        finally:
-            service.stopService()
-
-        self.assertRegex(
-            logger.output,
+        with TwistedLoggerFixture() as logger:
+            service = DatabaseTasksService()
+            service.startService()
+            try:
+                service.addTask(lambda: 0 / 0)
+            finally:
+                service.stopService()
+        assert re.search(
             r"(?s)Unhandled failure in database task\..*Traceback \(most recent call last\):.*builtins.ZeroDivision.*",
+            logger.output,
         )

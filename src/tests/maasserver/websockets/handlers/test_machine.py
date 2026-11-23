@@ -11,7 +11,7 @@ from maasserver.storage_layouts import MIN_BOOT_PARTITION_SIZE
 from maasserver.testing.factory import factory
 from maasserver.websockets.base import HandlerValidationError
 from maasserver.websockets.handlers.machine import MachineHandler
-from maastesting.djangotestcase import count_queries
+from maastesting.querycounter import count_queries
 from metadataserver.enum import (
     HARDWARE_TYPE,
     RESULT_TYPE,

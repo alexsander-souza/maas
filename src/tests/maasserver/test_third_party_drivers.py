@@ -5,9 +5,10 @@
 
 import os
 
+import pytest
+
 from maasserver import third_party_drivers
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from maasserver.third_party_drivers import (
     DriversConfig,
     get_third_party_driver,
@@ -20,7 +21,8 @@ from provisioningserver.refresh.node_info_scripts import (
 )
 
 
-class TestNodeModaliases(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestNodeModaliases:
     def test_uses_commissioning_modaliases(self):
         test_data = b"hulla\nbaloo"
         node = factory.make_Node(with_empty_script_sets=True)
@@ -31,12 +33,12 @@ class TestNodeModaliases(MAASServerTestCase):
         script_result.store_result(exit_status=0, stdout=test_data)
 
         aliases = node.modaliases
-        self.assertEqual(["hulla", "baloo"], aliases)
+        assert aliases == ["hulla", "baloo"]
 
     def test_survives_no_commissioning_data(self):
         node = factory.make_Node()
         aliases = node.modaliases
-        self.assertEqual([], aliases)
+        assert aliases == []
 
     def test_only_returns_data_from_passed_results(self):
         test_data = b"hulla\nbaloo"
@@ -48,10 +50,11 @@ class TestNodeModaliases(MAASServerTestCase):
         script_result.store_result(exit_status=1, stdout=test_data)
 
         aliases = node.modaliases
-        self.assertEqual([], aliases)
+        assert aliases == []
 
 
-class TestMatchAliasesToDriver(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestMatchAliasesToDriver:
     def test_finds_first_match(self):
         drivers = [
             {"modaliases": ["foo*"], "comment": "first"},
@@ -61,95 +64,96 @@ class TestMatchAliasesToDriver(MAASServerTestCase):
         aliases = ["foobar"]
 
         driver = match_aliases_to_driver(aliases, drivers)
-        self.assertEqual(drivers[0], driver)
+        assert driver == drivers[0]
 
     def test_finds_no_match(self):
         drivers = [{"modaliases": ["foo*"]}]
         aliases = ["bar"]
         driver = match_aliases_to_driver(aliases, drivers)
-        self.assertIsNone(driver)
+        assert driver is None
 
 
-class TestPopulateKernelOpts(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestPopulateKernelOpts:
     def test_blacklist_provided(self):
         driver = {"blacklist": "bad"}
         driver = populate_kernel_opts(driver)
-        self.assertEqual("modprobe.blacklist=bad", driver["kernel_opts"])
+        assert driver["kernel_opts"] == "modprobe.blacklist=bad"
 
     def test_no_blacklist_provided(self):
         driver = {}
         driver = populate_kernel_opts(driver)
-        self.assertNotIn("kernel_opts", driver)
+        assert "kernel_opts" not in driver
 
 
-class TestGetThirdPartyDriver(MAASServerTestCase):
-    def test_finds_match(self):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestGetThirdPartyDriver:
+    def test_finds_match(self, mocker):
         node = factory.make_Node()
-        mock = self.patch(third_party_drivers, "match_aliases_to_driver")
+        mock = mocker.patch.object(
+            third_party_drivers, "match_aliases_to_driver"
+        )
         base_driver = dict(comment="hooray")
         mock.return_value = base_driver
 
         driver = get_third_party_driver(node)
-        self.assertEqual(base_driver, driver)
+        assert driver == base_driver
 
         # ensure driver is a copy, not the original
         base_driver["comment"] = "boo"
-        self.assertEqual("hooray", driver["comment"])
+        assert driver["comment"] == "hooray"
 
-    def test_finds_no_match(self):
+    def test_finds_no_match(self, mocker):
         node = factory.make_Node()
-        mock = self.patch(third_party_drivers, "match_aliases_to_driver")
-        mock.return_value = None
+        mocker.patch.object(
+            third_party_drivers, "match_aliases_to_driver", return_value=None
+        )
         driver = get_third_party_driver(node)
-        self.assertEqual({}, driver)
+        assert driver == {}
 
-    def test_matching_series(self):
+    def test_matching_series(self, mocker):
         node = factory.make_Node()
         driver = {"series": ["xenial", "bionic"], "name": "somedriver"}
-        self.patch(
-            third_party_drivers, "match_aliases_to_driver"
-        ).return_value = driver
-        self.assertEqual(get_third_party_driver(node, series="bionic"), driver)
+        mocker.patch.object(
+            third_party_drivers, "match_aliases_to_driver", return_value=driver
+        )
+        assert get_third_party_driver(node, series="bionic") == driver
 
-    def test_not_matching_series(self):
+    def test_not_matching_series(self, mocker):
         node = factory.make_Node()
         driver = {"series": ["xenial", "bionic"], "name": "somedriver"}
-        self.patch(
-            third_party_drivers, "match_aliases_to_driver"
-        ).return_value = driver
-        self.assertEqual(get_third_party_driver(node, series="precise"), {})
+        mocker.patch.object(
+            third_party_drivers, "match_aliases_to_driver", return_value=driver
+        )
+        assert get_third_party_driver(node, series="precise") == {}
 
-    def test_series_without_available_series(self):
+    def test_series_without_available_series(self, mocker):
         node = factory.make_Node()
         driver = {"name": "somedriver"}
-        self.patch(
-            third_party_drivers, "match_aliases_to_driver"
-        ).return_value = driver
-        self.assertEqual(
-            get_third_party_driver(node, series="precise"), driver
+        mocker.patch.object(
+            third_party_drivers, "match_aliases_to_driver", return_value=driver
         )
+        assert get_third_party_driver(node, series="precise") == driver
 
 
-class TestDriversConfig(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestDriversConfig:
     def test_get_defaults_returns_empty_drivers_list(self):
         observed = DriversConfig.get_defaults()
-        self.assertEqual({"drivers": []}, observed)
+        assert observed == {"drivers": []}
 
     def test_load_from_yaml(self):
         filename = os.path.join(
             dev_root, "package-files", "etc", "maas", "drivers.yaml"
         )
         for entry in DriversConfig.load(filename)["drivers"]:
-            self.assertEqual(
-                {
-                    "blacklist",
-                    "comment",
-                    "key_binary",
-                    "modaliases",
-                    "module",
-                    "repository",
-                    "package",
-                    "series",
-                },
-                entry.keys(),
-            )
+            assert entry.keys() == {
+                "blacklist",
+                "comment",
+                "key_binary",
+                "modaliases",
+                "module",
+                "repository",
+                "package",
+                "series",
+            }

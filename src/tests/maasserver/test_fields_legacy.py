@@ -1,22 +1,23 @@
 # Copyright 2012-2025 Canonical Ltd.  This software is licensed under the
 # GNU Affero General Public License version 3 (see the file LICENSE).
 
-"""Gap-free tests for `maasserver.fields`, split out of the legacy
-`src/maasserver/tests/test_fields.py`: the legacy `TestXMLField`,
-`TestLargeObjectField`, `TestCIDRField` and `TestIPv4CIDRField` classes stay
-there in the region-legacy pytest leg, while these classes run in the
-main pytest suite."""
+"""Tests for MAAS fields from the region test suite."""
 
-from random import choice
+from random import choice, randint
 import re
 
 from django.core.exceptions import ValidationError
+from django.db import connection, DatabaseError, transaction
+from psycopg2 import OperationalError
+import pytest
 
 from maasserver.fields import (
     HostListFormField,
     IPListFormField,
     IPPortListFormField,
     IPWithOptionalPort,
+    LargeObjectField,
+    LargeObjectFile,
     MODEL_NAME_VALIDATOR,
     NodeChoiceField,
     SubnetListFormField,
@@ -28,100 +29,99 @@ from maasserver.fields import (
 from maasserver.models import Node, VersionedTextFile
 from maasserver.models.interface import Interface
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
-from maastesting.testcase import MAASTestCase
+from maasserver.tests.models import (
+    CIDRTestModel,
+    IPv4CIDRTestModel,
+    LargeObjectFieldModel,
+    XMLFieldModel,
+)
+from maasserver.utils.orm import reload_object
 
 
-class TestModelNameValidator(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "mock_openfga")
+class TestModelNameValidator:
     def test_valid_name(self):
-        self.assertIsNone(MODEL_NAME_VALIDATOR("a-valid-name"))
+        assert MODEL_NAME_VALIDATOR("a-valid-name") is None
 
     def test_valid_with_number(self):
-        self.assertIsNone(MODEL_NAME_VALIDATOR("with-number-10"))
+        assert MODEL_NAME_VALIDATOR("with-number-10") is None
 
     def test_valid_with_spaces(self):
-        self.assertIsNone(MODEL_NAME_VALIDATOR("with spaces"))
+        assert MODEL_NAME_VALIDATOR("with spaces") is None
 
     def test_invalid_start_space(self):
-        self.assertRaises(
-            ValidationError, MODEL_NAME_VALIDATOR, " not-at-start"
-        )
+        with pytest.raises(ValidationError):
+            MODEL_NAME_VALIDATOR(" not-at-start")
 
     def test_invalid_start_dash(self):
-        self.assertRaises(
-            ValidationError, MODEL_NAME_VALIDATOR, "-not-at-start"
-        )
+        with pytest.raises(ValidationError):
+            MODEL_NAME_VALIDATOR("-not-at-start")
 
 
-class TestIPListFormField(MAASTestCase):
+class TestIPListFormField:
     def test_accepts_none(self):
-        self.assertIsNone(IPListFormField().clean(None))
+        assert IPListFormField().clean(None) is None
 
     def test_accepts_single_ip(self):
         ip = factory.make_ip_address()
-        self.assertEqual(ip, IPListFormField().clean(ip))
+        assert ip == IPListFormField().clean(ip)
 
     def test_accepts_space_separated_ips(self):
         ips = [factory.make_ip_address() for _ in range(5)]
         input = " ".join(ips)
-        self.assertEqual(input, IPListFormField().clean(input))
+        assert input == IPListFormField().clean(input)
 
     def test_accepts_comma_separated_ips(self):
         ips = [factory.make_ip_address() for _ in range(5)]
         input = ",".join(ips)
-        self.assertEqual(" ".join(ips), IPListFormField().clean(input))
+        assert " ".join(ips) == IPListFormField().clean(input)
 
     def test_rejects_invalid_input(self):
         invalid = factory.make_name("invalid")
         input = " ".join([factory.make_ip_address(), invalid])
-        error = self.assertRaises(
-            ValidationError, IPListFormField().clean, input
-        )
-        self.assertIn("Invalid IP address: %s" % invalid, error.message)
+        with pytest.raises(ValidationError) as excinfo:
+            IPListFormField().clean(input)
+        assert "Invalid IP address: %s" % invalid in excinfo.value.message
 
     def test_separators_dont_conflict_with_ipv4_address(self):
-        self.assertIsNone(
+        assert (
             re.search(IPListFormField.separators, factory.make_ipv4_address())
+            is None
         )
 
     def test_separators_dont_conflict_with_ipv6_address(self):
-        self.assertIsNone(
+        assert (
             re.search(IPListFormField.separators, factory.make_ipv6_address())
+            is None
         )
 
 
-class TestIPPortListFormField(MAASTestCase):
+class TestIPPortListFormField:
     def test_accepts_ipv4_with_port(self):
         ips = [factory.make_ip_address(ipv6=False) for _ in range(5)]
         ip_ports = [f"{ip}:80" for ip in ips]
         input = ",".join(ip_ports)
-        self.assertEqual(
-            [(ip, 80) for ip in ips], IPPortListFormField().clean(input)
-        )
+        assert [(ip, 80) for ip in ips] == IPPortListFormField().clean(input)
 
     def test_accepts_ipv4_without_port(self):
         ips = [factory.make_ip_address(ipv6=False) for _ in range(5)]
         input = ",".join(ips)
-        self.assertEqual(
-            [(ip, 80) for ip in ips],
-            IPPortListFormField(default_port=80).clean(input),
-        )
+        assert [(ip, 80) for ip in ips] == IPPortListFormField(
+            default_port=80
+        ).clean(input)
 
     def test_accepts_ipv6_with_port(self):
         ips = [factory.make_ip_address(ipv6=True) for _ in range(5)]
         ip_ports = [f"[{ip}]:80" for ip in ips]
         input = ",".join(ip_ports)
-        self.assertEqual(
-            [(ip, 80) for ip in ips], IPPortListFormField().clean(input)
-        )
+        assert [(ip, 80) for ip in ips] == IPPortListFormField().clean(input)
 
     def test_accepts_ipv6_without_port(self):
         ips = [factory.make_ip_address(ipv6=True) for _ in range(5)]
         input = ",".join(ips)
-        self.assertEqual(
-            [(ip, 80) for ip in ips],
-            IPPortListFormField(default_port=80).clean(input),
-        )
+        assert [(ip, 80) for ip in ips] == IPPortListFormField(
+            default_port=80
+        ).clean(input)
 
     def test_rejects_invalid_ip(self):
         ip_ports = [
@@ -130,45 +130,45 @@ class TestIPPortListFormField(MAASTestCase):
         invalid = f"{factory.make_name()}:80"
         ip_ports.append(invalid)
         input = ",".join(ip_ports)
-        error = self.assertRaises(
-            ValidationError, IPPortListFormField().clean, input
-        )
-        self.assertIn(
-            f"Invalid IP and port combination: {invalid}", error.message
+        with pytest.raises(ValidationError) as excinfo:
+            IPPortListFormField().clean(input)
+        assert (
+            f"Invalid IP and port combination: {invalid}"
+            in excinfo.value.message
         )
 
 
-class TestHostListFormField(MAASTestCase):
+class TestHostListFormField:
     def test_accepts_none(self):
-        self.assertIsNone(HostListFormField().clean(None))
+        assert HostListFormField().clean(None) is None
 
     def test_accepts_single_ip(self):
         ip = factory.make_ip_address()
-        self.assertEqual(ip, HostListFormField().clean(ip))
+        assert ip == HostListFormField().clean(ip)
 
     def test_accepts_space_separated_ips(self):
         ips = [factory.make_ip_address() for _ in range(5)]
         input = " ".join(ips)
-        self.assertEqual(input, HostListFormField().clean(input))
+        assert input == HostListFormField().clean(input)
 
     def test_accepts_comma_separated_ips(self):
         ips = [factory.make_ip_address() for _ in range(5)]
         input = ",".join(ips)
-        self.assertEqual(" ".join(ips), HostListFormField().clean(input))
+        assert " ".join(ips) == HostListFormField().clean(input)
 
     def test_accepts_hostname(self):
         hostname = factory.make_hostname()
-        self.assertEqual(hostname, HostListFormField().clean(hostname))
+        assert hostname == HostListFormField().clean(hostname)
 
     def test_accepts_space_separated_hostnames(self):
         hostnames = factory.make_hostname(), factory.make_hostname()
         input = " ".join(hostnames)
-        self.assertEqual(input, HostListFormField().clean(input))
+        assert input == HostListFormField().clean(input)
 
     def test_accepts_comma_separated_hostnames(self):
         hostnames = factory.make_hostname(), factory.make_hostname()
         input = ",".join(hostnames)
-        self.assertEqual(" ".join(hostnames), HostListFormField().clean(input))
+        assert " ".join(hostnames) == HostListFormField().clean(input)
 
     def test_accepts_misc(self):
         servers = {
@@ -181,61 +181,58 @@ class TestHostListFormField(MAASTestCase):
             "::127.0.0.1",
         }
         input = ",".join(servers)
-        self.assertEqual(" ".join(servers), HostListFormField().clean(input))
+        assert " ".join(servers) == HostListFormField().clean(input)
 
     def test_rejects_invalid_ipv4_address(self):
         input = "%s 12.34.56.999" % factory.make_hostname()
-        error = self.assertRaises(
-            ValidationError, HostListFormField().clean, input
-        )
-        self.assertEqual(
-            "Failed to detect a valid IP address from '12.34.56.999'.",
-            error.message,
+        with pytest.raises(ValidationError) as excinfo:
+            HostListFormField().clean(input)
+        assert (
+            "Failed to detect a valid IP address from '12.34.56.999'."
+            == excinfo.value.message
         )
 
     def test_rejects_invalid_ipv6_address(self):
         input = "%s fe80::abcde" % factory.make_hostname()
-        error = self.assertRaises(
-            ValidationError, HostListFormField().clean, input
-        )
-        self.assertEqual(
-            "Failed to detect a valid IP address from 'fe80::abcde'.",
-            error.message,
+        with pytest.raises(ValidationError) as excinfo:
+            HostListFormField().clean(input)
+        assert (
+            "Failed to detect a valid IP address from 'fe80::abcde'."
+            == excinfo.value.message
         )
 
     def test_rejects_invalid_hostname(self):
         input = "%s abc-.foo" % factory.make_hostname()
-        error = self.assertRaises(
-            ValidationError, HostListFormField().clean, input
-        )
-        self.assertEqual(
-            error.message,
-            "Invalid hostname: Label cannot start or end with hyphen: 'abc-'.",
+        with pytest.raises(ValidationError) as excinfo:
+            HostListFormField().clean(input)
+        assert (
+            excinfo.value.message
+            == "Invalid hostname: Label cannot start or end with hyphen: 'abc-'."
         )
 
 
-class TestNodeChoiceField(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "mock_openfga")
+class TestNodeChoiceField:
     def test_allows_selecting_by_system_id(self):
         node = factory.make_Node()
         for _ in range(3):
             factory.make_Node()
         node_field = NodeChoiceField(Node.objects.filter())
-        self.assertEqual(node, node_field.clean(node.system_id))
+        assert node == node_field.clean(node.system_id)
 
     def test_allows_selecting_by_hostname(self):
         node = factory.make_Node()
         for _ in range(3):
             factory.make_Node()
         node_field = NodeChoiceField(Node.objects.filter())
-        self.assertEqual(node, node_field.clean(node.hostname))
+        assert node == node_field.clean(node.hostname)
 
     def test_raises_exception_when_not_found(self):
         for _ in range(3):
             factory.make_Node()
         node_field = NodeChoiceField(Node.objects.filter())
-        self.assertRaises(
-            ValidationError, node_field.clean, factory.make_name("query")
-        )
+        with pytest.raises(ValidationError):
+            node_field.clean(factory.make_name("query"))
 
     def test_works_with_multiple_entries_in_queryset(self):
         # Regression test for lp:1551399
@@ -245,57 +242,55 @@ class TestNodeChoiceField(MAASServerTestCase):
         qs = Node.objects.filter_by_vids([vlan.vid])
         node_field = NodeChoiceField(qs)
         # Double check that we have duplicated entires
-        self.assertEqual(2, len(qs.filter(system_id=node.system_id)))
-        self.assertEqual(node, node_field.clean(node.system_id))
+        assert 2 == len(qs.filter(system_id=node.system_id))
+        assert node == node_field.clean(node.system_id)
 
 
-class TestSubnetListFormField(MAASTestCase):
+class TestSubnetListFormField:
     def test_accepts_none(self):
-        self.assertIsNone(SubnetListFormField().clean(None))
+        assert SubnetListFormField().clean(None) is None
 
     def test_accepts_single_ip(self):
         ip = factory.make_ip_address()
-        self.assertEqual(ip, SubnetListFormField().clean(ip))
+        assert ip == SubnetListFormField().clean(ip)
 
     def test_accepts_space_separated_ips(self):
         ips = [factory.make_ip_address() for _ in range(5)]
         input = " ".join(ips)
-        self.assertEqual(input, SubnetListFormField().clean(input))
+        assert input == SubnetListFormField().clean(input)
 
     def test_accepts_comma_separated_ips(self):
         ips = [factory.make_ip_address() for _ in range(5)]
         input = ",".join(ips)
-        self.assertEqual(" ".join(ips), SubnetListFormField().clean(input))
+        assert " ".join(ips) == SubnetListFormField().clean(input)
 
     def test_accepts_single_subnet(self):
         subnet = str(factory.make_ipv4_network())
-        self.assertEqual(subnet, SubnetListFormField().clean(subnet))
+        assert subnet == SubnetListFormField().clean(subnet)
 
     def test_accepts_space_separated_subnets(self):
         subnets = [str(factory.make_ipv6_network()) for _ in range(5)]
         input = " ".join(subnets)
-        self.assertEqual(input, SubnetListFormField().clean(input))
+        assert input == SubnetListFormField().clean(input)
 
     def test_accepts_comma_separated_subnets(self):
         subnets = [str(factory.make_ipv4_network()) for _ in range(5)]
         input = ",".join(subnets)
-        self.assertEqual(" ".join(subnets), SubnetListFormField().clean(input))
+        assert " ".join(subnets) == SubnetListFormField().clean(input)
 
     def test_accepts_hostname(self):
         hostname = factory.make_hostname()
-        self.assertEqual(hostname, SubnetListFormField().clean(hostname))
+        assert hostname == SubnetListFormField().clean(hostname)
 
     def test_accepts_space_separated_hostnames(self):
         hostnames = factory.make_hostname(), factory.make_hostname()
         input = " ".join(hostnames)
-        self.assertEqual(input, SubnetListFormField().clean(input))
+        assert input == SubnetListFormField().clean(input)
 
     def test_accepts_comma_separated_hostnames(self):
         hostnames = factory.make_hostname(), factory.make_hostname()
         input = ",".join(hostnames)
-        self.assertEqual(
-            " ".join(hostnames), SubnetListFormField().clean(input)
-        )
+        assert " ".join(hostnames) == SubnetListFormField().clean(input)
 
     def test_accepts_misc(self):
         servers = {
@@ -308,60 +303,55 @@ class TestSubnetListFormField(MAASTestCase):
             "::127.0.0.1",
         }
         input = ",".join(servers)
-        self.assertEqual(" ".join(servers), SubnetListFormField().clean(input))
+        assert " ".join(servers) == SubnetListFormField().clean(input)
 
     def test_rejects_invalid_ipv4_address(self):
         input = "%s 12.34.56.999" % factory.make_hostname()
-        error = self.assertRaises(
-            ValidationError, SubnetListFormField().clean, input
-        )
-        self.assertEqual("Invalid IP address: 12.34.56.999.", error.message)
+        with pytest.raises(ValidationError) as excinfo:
+            SubnetListFormField().clean(input)
+        assert "Invalid IP address: 12.34.56.999." == excinfo.value.message
 
     def test_rejects_invalid_ipv6_address(self):
         input = "%s fe80::abcde" % factory.make_hostname()
-        error = self.assertRaises(
-            ValidationError, SubnetListFormField().clean, input
-        )
-        self.assertEqual("Invalid IP address: fe80::abcde.", error.message)
+        with pytest.raises(ValidationError) as excinfo:
+            SubnetListFormField().clean(input)
+        assert "Invalid IP address: fe80::abcde." == excinfo.value.message
 
     def test_rejects_invalid_ipv4_subnet(self):
         input = "%s 10.10.10.300/24" % factory.make_ipv4_network()
-        error = self.assertRaises(
-            ValidationError, SubnetListFormField().clean, input
-        )
-        self.assertEqual("Invalid network: 10.10.10.300/24.", error.message)
+        with pytest.raises(ValidationError) as excinfo:
+            SubnetListFormField().clean(input)
+        assert "Invalid network: 10.10.10.300/24." == excinfo.value.message
 
     def test_rejects_invalid_ipv6_subnet(self):
         input = "%s 100::/300" % factory.make_ipv6_network()
-        error = self.assertRaises(
-            ValidationError, SubnetListFormField().clean, input
-        )
-        self.assertEqual("Invalid network: 100::/300.", error.message)
+        with pytest.raises(ValidationError) as excinfo:
+            SubnetListFormField().clean(input)
+        assert "Invalid network: 100::/300." == excinfo.value.message
 
     def test_rejects_invalid_hostname(self):
         input = "%s abc-.foo" % factory.make_hostname()
-        error = self.assertRaises(
-            ValidationError, SubnetListFormField().clean, input
-        )
-        self.assertEqual(
-            error.message,
-            "Invalid hostname: Label cannot start or end with hyphen: 'abc-'.",
+        with pytest.raises(ValidationError) as excinfo:
+            SubnetListFormField().clean(input)
+        assert (
+            excinfo.value.message
+            == "Invalid hostname: Label cannot start or end with hyphen: 'abc-'."
         )
 
 
-class TestVersionedTextFileField(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "mock_openfga")
+class TestVersionedTextFileField:
     def test_creates_new(self):
         data = factory.make_string()
         versioned_text_file_field = VersionedTextFileField()
         versioned_text_file = versioned_text_file_field.clean(data)
-        self.assertEqual(data, versioned_text_file.data)
-        self.assertIsNone(versioned_text_file.previous_version)
+        assert data == versioned_text_file.data
+        assert versioned_text_file.previous_version is None
 
     def test_create_requires_value(self):
         versioned_text_file_field = VersionedTextFileField()
-        self.assertRaises(
-            ValidationError, versioned_text_file_field.clean, None
-        )
+        with pytest.raises(ValidationError):
+            versioned_text_file_field.clean(None)
 
     def test_create_new_accepts_dict_with_comment(self):
         data = factory.make_string()
@@ -370,22 +360,22 @@ class TestVersionedTextFileField(MAASServerTestCase):
         versioned_text_file = versioned_text_file_field.clean(
             {"data": data, "comment": comment}
         )
-        self.assertEqual(data, versioned_text_file.data)
-        self.assertEqual(comment, versioned_text_file.comment)
-        self.assertIsNone(versioned_text_file.previous_version)
+        assert data == versioned_text_file.data
+        assert comment == versioned_text_file.comment
+        assert versioned_text_file.previous_version is None
 
     def test_update_does_nothing_on_none(self):
         data = VersionedTextFile.objects.create(data=factory.make_string())
         versioned_text_file_field = VersionedTextFileField(initial=data)
-        self.assertEqual(data, versioned_text_file_field.clean(None))
+        assert data == versioned_text_file_field.clean(None)
 
     def test_creates_new_link(self):
         old_ver = VersionedTextFile.objects.create(data=factory.make_string())
         versioned_text_file_field = VersionedTextFileField(initial=old_ver)
         data = factory.make_string()
         new_ver = versioned_text_file_field.clean(data)
-        self.assertEqual(data, new_ver.data)
-        self.assertEqual(old_ver, new_ver.previous_version)
+        assert data == new_ver.data
+        assert old_ver == new_ver.previous_version
 
     def test_creates_new_link_accepts_dict(self):
         old_ver = VersionedTextFile.objects.create(data=factory.make_string())
@@ -395,33 +385,36 @@ class TestVersionedTextFileField(MAASServerTestCase):
         new_ver = versioned_text_file_field.clean(
             {"new_data": data, "comment": comment}
         )
-        self.assertEqual(data, new_ver.data)
-        self.assertEqual(comment, new_ver.comment)
-        self.assertEqual(old_ver, new_ver.previous_version)
+        assert data == new_ver.data
+        assert comment == new_ver.comment
+        assert old_ver == new_ver.previous_version
 
 
-class TestURLOrPPAValidator(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "mock_openfga")
+class TestURLOrPPAValidator:
     def test_URLOrPPAValidator_validates_URL(self):
         validator = URLOrPPAValidator()
-        self.assertIsNone(validator(factory.make_url(scheme="http")))
-        self.assertIsNone(validator(factory.make_url(scheme="https")))
+        assert validator(factory.make_url(scheme="http")) is None
+        assert validator(factory.make_url(scheme="https")) is None
 
     def test_URLOrPPAValidator_catches_bad_url(self):
         validator = URLOrPPAValidator()
         bad_url = factory.make_name("bad_url")
-        error = self.assertRaises(ValidationError, validator, bad_url)
-        self.assertEqual(
-            "Enter a valid repository URL or PPA location.",
-            error.message,
+        with pytest.raises(ValidationError) as excinfo:
+            validator(bad_url)
+        assert (
+            "Enter a valid repository URL or PPA location."
+            == excinfo.value.message
         )
 
     def test_URLOrPPAValidator_catches_bad_scheme(self):
         validator = URLOrPPAValidator()
         bad_url = factory.make_url(scheme="bad_scheme")
-        error = self.assertRaises(ValidationError, validator, bad_url)
-        self.assertEqual(
-            "Enter a valid repository URL or PPA location.",
-            error.message,
+        with pytest.raises(ValidationError) as excinfo:
+            validator(bad_url)
+        assert (
+            "Enter a valid repository URL or PPA location."
+            == excinfo.value.message
         )
 
     def test_URLOrPPAValidator_validates_PPA(self):
@@ -430,15 +423,16 @@ class TestURLOrPPAValidator(MAASServerTestCase):
             factory.make_hostname(),
             factory.make_hostname(),
         )
-        self.assertIsNone(validator(good_ppa))
+        assert validator(good_ppa) is None
 
     def test_URLOrPPAValidator_catches_bad_PPA_format(self):
         validator = URLOrPPAValidator()
         bad_ppa = "ppa:%s" % factory.make_hostname()
-        error = self.assertRaises(ValidationError, validator, bad_ppa)
-        self.assertEqual(
-            "Enter a valid repository URL or PPA location.",
-            error.message,
+        with pytest.raises(ValidationError) as excinfo:
+            validator(bad_ppa)
+        assert (
+            "Enter a valid repository URL or PPA location."
+            == excinfo.value.message
         )
 
     def test_URLOrPPAValidator_catches_bad_PPA_hostname(self):
@@ -447,56 +441,54 @@ class TestURLOrPPAValidator(MAASServerTestCase):
             factory.make_hostname(),
             factory.make_hostname(),
         )
-        error = self.assertRaises(ValidationError, validator, bad_ppa)
-        self.assertEqual(
-            "Enter a valid repository URL or PPA location.",
-            error.message,
+        with pytest.raises(ValidationError) as excinfo:
+            validator(bad_ppa)
+        assert (
+            "Enter a valid repository URL or PPA location."
+            == excinfo.value.message
         )
 
 
-class TestURLOrPPAFormField(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "mock_openfga")
+class TestURLOrPPAFormField:
     def test_rejects_none(self):
-        error = self.assertRaises(
-            ValidationError, URLOrPPAFormField().clean, None
-        )
-        self.assertEqual("This field is required.", error.message)
+        with pytest.raises(ValidationError) as excinfo:
+            URLOrPPAFormField().clean(None)
+        assert "This field is required." == excinfo.value.message
 
     def test_URLOrPPAFormField_validates_URL(self):
         url = factory.make_url(scheme="http")
-        self.assertEqual(url, URLOrPPAFormField().clean(url))
+        assert url == URLOrPPAFormField().clean(url)
 
     def test_URLOrPPAFormField_catches_bad_url(self):
         bad_url = factory.make_name("bad_url")
-        error = self.assertRaises(
-            ValidationError, URLOrPPAFormField().clean, bad_url
-        )
-        self.assertEqual(
-            "Enter a valid repository URL or PPA location.",
-            error.messages[0],
+        with pytest.raises(ValidationError) as excinfo:
+            URLOrPPAFormField().clean(bad_url)
+        assert (
+            "Enter a valid repository URL or PPA location."
+            == excinfo.value.messages[0]
         )
 
     def test_URLOrPPAFormField_catches_bad_scheme(self):
         bad_url = factory.make_url(scheme="bad_scheme")
-        error = self.assertRaises(
-            ValidationError, URLOrPPAFormField().clean, bad_url
-        )
-        self.assertEqual(
-            "Enter a valid repository URL or PPA location.",
-            error.messages[0],
+        with pytest.raises(ValidationError) as excinfo:
+            URLOrPPAFormField().clean(bad_url)
+        assert (
+            "Enter a valid repository URL or PPA location."
+            == excinfo.value.messages[0]
         )
 
     def test_URLOrPPAFormField_validates_PPA(self):
         url = f"ppa:{factory.make_hostname()}/{factory.make_hostname()}"
-        self.assertEqual(url, URLOrPPAFormField().clean(url))
+        assert url == URLOrPPAFormField().clean(url)
 
     def test_URLOrPPAFormField_catches_bad_PPA_format(self):
         bad_url = "ppa:%s" % factory.make_hostname()
-        error = self.assertRaises(
-            ValidationError, URLOrPPAFormField().clean, bad_url
-        )
-        self.assertEqual(
-            "Enter a valid repository URL or PPA location.",
-            error.messages[0],
+        with pytest.raises(ValidationError) as excinfo:
+            URLOrPPAFormField().clean(bad_url)
+        assert (
+            "Enter a valid repository URL or PPA location."
+            == excinfo.value.messages[0]
         )
 
     def test_URLOrPPAFormField_catches_bad_PPA_hostname(self):
@@ -504,16 +496,16 @@ class TestURLOrPPAFormField(MAASServerTestCase):
             factory.make_hostname(),
             factory.make_hostname(),
         )
-        error = self.assertRaises(
-            ValidationError, URLOrPPAFormField().clean, bad_url
-        )
-        self.assertEqual(
-            "Enter a valid repository URL or PPA location.",
-            error.messages[0],
+        with pytest.raises(ValidationError) as excinfo:
+            URLOrPPAFormField().clean(bad_url)
+        assert (
+            "Enter a valid repository URL or PPA location."
+            == excinfo.value.messages[0]
         )
 
 
-class TestURLOrPPAField(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "mock_openfga")
+class TestURLOrPPAField:
     def test_create_package_repository_ppa(self):
         # PackageRepository contains a URLOrPPAField. Make one with PPA.
         ppa_url = "ppa:{}/{}".format(
@@ -530,27 +522,26 @@ class TestURLOrPPAField(MAASServerTestCase):
     def test_cannot_create_package_repository_bad_url(self):
         # PackageRepository contains a URLOrPPAField. Make one with bad URL.
         bad_url = factory.make_name("bad_url")
-        error = self.assertRaises(
-            ValidationError, factory.make_PackageRepository, url=bad_url
-        )
-        self.assertEqual(
-            "Enter a valid repository URL or PPA location.",
-            error.messages[0],
+        with pytest.raises(ValidationError) as excinfo:
+            factory.make_PackageRepository(url=bad_url)
+        assert (
+            "Enter a valid repository URL or PPA location."
+            == excinfo.value.messages[0]
         )
 
     def test_cannot_create_package_repository_bad_ppa(self):
         # PackageRepository contains a URLOrPPAField. Make one with bad PPA.
         bad_url = "ppa:%s" % factory.make_hostname()
-        error = self.assertRaises(
-            ValidationError, factory.make_PackageRepository, url=bad_url
-        )
-        self.assertEqual(
-            "Enter a valid repository URL or PPA location.",
-            error.messages[0],
+        with pytest.raises(ValidationError) as excinfo:
+            factory.make_PackageRepository(url=bad_url)
+        assert (
+            "Enter a valid repository URL or PPA location."
+            == excinfo.value.messages[0]
         )
 
 
-class TestSystemdIntervalField(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "mock_openfga")
+class TestSystemdIntervalField:
     def test_valid_interval(self):
         intervals = [
             "h",
@@ -569,18 +560,19 @@ class TestSystemdIntervalField(MAASServerTestCase):
         interval = choice(intervals)
         value = f"1{interval}"
         field = SystemdIntervalField()
-        self.assertEqual(value, field.clean(value))
+        assert value == field.clean(value)
 
     def test_invalid_interval(self):
         value = "1 year"
         field = SystemdIntervalField()
-        self.assertRaises(ValidationError, field.clean, value)
+        with pytest.raises(ValidationError):
+            field.clean(value)
 
 
-class TestIPWithOptionalPort(MAASTestCase):
+class TestIPWithOptionalPort:
     def test_accepts_ipv4(self):
         ip = factory.make_ip_address(ipv6=False)
-        self.assertEqual(ip, IPWithOptionalPort().clean(ip))
+        assert ip == IPWithOptionalPort().clean(ip)
 
     def test_accepts_ipv6(self):
         ips = [
@@ -591,12 +583,12 @@ class TestIPWithOptionalPort(MAASTestCase):
             factory.make_ip_address(ipv6=True),
         ]
         for ip in ips:
-            self.assertEqual(ip, IPWithOptionalPort().clean(ip))
+            assert ip == IPWithOptionalPort().clean(ip)
 
     def test_accepts_ipv4_with_port(self):
         ip = factory.make_ip_address(ipv6=False)
         ip_port = f"{ip}:5000"
-        self.assertEqual(ip_port, IPWithOptionalPort().clean(ip_port))
+        assert ip_port == IPWithOptionalPort().clean(ip_port)
 
     def test_accepts_ipv6_with_port(self):
         ips = [
@@ -609,42 +601,43 @@ class TestIPWithOptionalPort(MAASTestCase):
         for ip in ips:
             # test ipv6 with and without square brackets
             ip_port = f"{ip}:5000"
-            self.assertEqual(ip_port, IPWithOptionalPort().clean(ip_port))
+            assert ip_port == IPWithOptionalPort().clean(ip_port)
             ip_port = f"[{ip}]:5000"
-            self.assertEqual(ip_port, IPWithOptionalPort().clean(ip_port))
+            assert ip_port == IPWithOptionalPort().clean(ip_port)
 
     def test_rejects_invalid_ipv4_address(self):
         ip = "12.34.56.999"
-        error = self.assertRaises(
-            ValidationError, IPWithOptionalPort().clean, ip
-        )
-        self.assertEqual(
-            "Invalid IPv4/IPv6 address with optional port.", error.message
+        with pytest.raises(ValidationError) as excinfo:
+            IPWithOptionalPort().clean(ip)
+        assert (
+            "Invalid IPv4/IPv6 address with optional port."
+            == excinfo.value.message
         )
 
     def test_rejects_invalid_ipv6_address(self):
         ips = ["fe80::abcde", "fe800:0:0:0:abcdfe:0"]
         for ip in ips:
-            error = self.assertRaises(
-                ValidationError, IPWithOptionalPort().clean, ip
-            )
-            self.assertEqual(
-                "Invalid IPv4/IPv6 address with optional port.", error.message
+            with pytest.raises(ValidationError) as excinfo:
+                IPWithOptionalPort().clean(ip)
+            assert (
+                "Invalid IPv4/IPv6 address with optional port."
+                == excinfo.value.message
             )
 
     def test_rejects_invalid_port(self):
         ip = "12.34.56.78"
         ports = [-1, 65536, 99999]
         for port in ports:
-            error = self.assertRaises(
-                ValidationError, IPWithOptionalPort().clean, f"{ip}:{port}"
-            )
-            self.assertEqual(
-                "Invalid IPv4/IPv6 address with optional port.", error.message
+            with pytest.raises(ValidationError) as excinfo:
+                IPWithOptionalPort().clean(f"{ip}:{port}")
+            assert (
+                "Invalid IPv4/IPv6 address with optional port."
+                == excinfo.value.message
             )
 
 
-class TestMACAddressFieldLookups(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "mock_openfga")
+class TestMACAddressFieldLookups:
     """Format-agnostic ``startswith``/``contains`` lookups on mac_address."""
 
     def make_interface(self, mac_address):
@@ -653,38 +646,231 @@ class TestMACAddressFieldLookups(MAASServerTestCase):
     def test_startswith_ignores_separator_and_case(self):
         interface = self.make_interface("00:16:3e:55:60:96")
         for term in ("00:16:3E", "00-16-3e", "00163E", "0016.3e55"):
-            self.assertEqual(
-                [interface],
-                list(Interface.objects.filter(mac_address__startswith=term)),
-                term,
-            )
+            assert [interface] == list(
+                Interface.objects.filter(mac_address__startswith=term)
+            ), term
 
     def test_startswith_does_not_match_other_prefix(self):
         self.make_interface("00:16:3e:55:60:96")
-        self.assertEqual(
-            [],
-            list(Interface.objects.filter(mac_address__startswith="aa:bb")),
+        assert [] == list(
+            Interface.objects.filter(mac_address__startswith="aa:bb")
         )
 
     def test_contains_ignores_separator_and_case(self):
         interface = self.make_interface("00:16:3e:55:60:96")
         for term in ("3E:55", "3e-55", "3e55"):
-            self.assertEqual(
-                [interface],
-                list(Interface.objects.filter(mac_address__contains=term)),
-                term,
-            )
+            assert [interface] == list(
+                Interface.objects.filter(mac_address__contains=term)
+            ), term
 
     def test_contains_does_not_match_absent_fragment(self):
         self.make_interface("00:16:3e:55:60:96")
-        self.assertEqual(
-            [],
-            list(Interface.objects.filter(mac_address__contains="ffff")),
+        assert [] == list(
+            Interface.objects.filter(mac_address__contains="ffff")
         )
 
     def test_icontains_behaves_like_contains(self):
         interface = self.make_interface("00:16:3e:55:60:96")
-        self.assertEqual(
-            [interface],
-            list(Interface.objects.filter(mac_address__icontains="3E-55")),
+        assert [interface] == list(
+            Interface.objects.filter(mac_address__icontains="3E-55")
+        )
+
+
+@pytest.mark.usefixtures("maasdb", "maas_region_test")
+class TestXMLField:
+    def test_loads_string(self):
+        name = factory.make_string()
+        value = "<test/>"
+        XMLFieldModel.objects.create(name=name, value=value)
+        instance = XMLFieldModel.objects.get(name=name)
+        assert value == instance.value
+
+    def test_lookup_xpath_exists_result(self):
+        name = factory.make_string()
+        XMLFieldModel.objects.create(name=name, value="<test/>")
+        result = XMLFieldModel.objects.raw(
+            "SELECT * FROM docs WHERE xpath_exists(%s, value)", ["//test"]
+        )
+        assert name == result[0].name
+
+    def test_lookup_xpath_exists_no_result(self):
+        name = factory.make_string()
+        XMLFieldModel.objects.create(name=name, value="<test/>")
+        result = XMLFieldModel.objects.raw(
+            "SELECT * FROM docs WHERE xpath_exists(%s, value)", ["//miss"]
+        )
+        assert [] == list(result)
+
+    def test_save_non_wellformed_rejected(self):
+        with pytest.raises(DatabaseError):
+            XMLFieldModel.objects.create(value="<bad>")
+
+    def test_lookup_none(self):
+        XMLFieldModel.objects.create(value=None)
+        test_instance = XMLFieldModel.objects.get(value__isnull=True)
+        assert test_instance.value is None
+
+
+@pytest.mark.usefixtures("maasdb", "maas_region_test")
+class TestLargeObjectField:
+    def test_stores_data(self):
+        data = factory.make_bytes()
+        test_name = factory.make_name("name")
+        test_instance = LargeObjectFieldModel(name=test_name)
+        large_object = LargeObjectFile()
+        with large_object.open("wb") as stream:
+            stream.write(data)
+        test_instance.large_object = large_object
+        test_instance.save()
+        test_instance = LargeObjectFieldModel.objects.get(name=test_name)
+        with test_instance.large_object.open("rb") as stream:
+            saved_data = stream.read()
+        assert data == saved_data
+
+    def test_insists_on_binary_mode(self):
+        message = "Large objects must be opened in binary mode."
+        with pytest.raises(ValueError, match=message):
+            large_object = LargeObjectFile()
+            large_object.open("w")
+
+    def test_with_exit_calls_close(self, mocker, request):
+        data = factory.make_bytes()
+        large_object = LargeObjectFile()
+        with large_object.open("wb") as stream:
+            request.addfinalizer(large_object.close)
+            mock_close = mocker.patch.object(large_object, "close")
+            stream.write(data)
+        mock_close.assert_called_once_with()
+
+    def test_unlink(self):
+        data = factory.make_bytes()
+        large_object = LargeObjectFile()
+        with large_object.open("wb") as stream:
+            stream.write(data)
+        oid = large_object.oid
+        large_object.unlink()
+        with transaction.atomic():
+            with pytest.raises(OperationalError):
+                connection.connection.lobject(oid)
+            transaction.set_rollback(True)
+
+    def test_interates_on_block_size(self):
+        # String size is multiple of block_size in the testing model
+        data = factory.make_bytes(10 * 2)
+        test_name = factory.make_name("name")
+        test_instance = LargeObjectFieldModel(name=test_name)
+        large_object = LargeObjectFile()
+        with large_object.open("wb") as stream:
+            stream.write(data)
+        test_instance.large_object = large_object
+        test_instance.save()
+        test_instance = LargeObjectFieldModel.objects.get(name=test_name)
+        with test_instance.large_object.open("rb") as stream:
+            offset = 0
+            for block in stream:
+                assert data[offset : offset + 10] == block
+                offset += 10
+
+    def test_get_db_prep_value_returns_None_when_value_None(self):
+        field = LargeObjectField()
+        assert field.get_db_prep_value(None) is None
+
+    def test_get_db_prep_value_returns_oid_when_value_LargeObjectFile(self):
+        oid = randint(1, 100)
+        field = LargeObjectField()
+        obj_file = LargeObjectFile()
+        obj_file.oid = oid
+        assert oid == field.get_db_prep_value(obj_file)
+
+    def test_get_db_prep_value_raises_error_when_oid_less_than_zero(self):
+        oid = randint(-100, 0)
+        field = LargeObjectField()
+        obj_file = LargeObjectFile()
+        obj_file.oid = oid
+        with pytest.raises(AssertionError):
+            field.get_db_prep_value(obj_file)
+
+    def test_get_db_prep_value_raises_error_when_not_LargeObjectFile(self):
+        field = LargeObjectField()
+        with pytest.raises(AssertionError):
+            field.get_db_prep_value(factory.make_string())
+
+    def test_to_python_returns_None_when_value_None(self):
+        field = LargeObjectField()
+        assert field.to_python(None) is None
+
+    def test_to_python_returns_value_when_value_LargeObjectFile(self):
+        field = LargeObjectField()
+        obj_file = LargeObjectFile()
+        assert obj_file == field.to_python(obj_file)
+
+    def test_to_python_returns_LargeObjectFile_when_value_int(self, mocker):
+        oid = randint(1, 100)
+        field = LargeObjectField()
+        # South normally substitutes a FakeModel here, but with a baseline
+        # schema, we can skip the migration that creates LargeObjectField.
+        mocker.patch.object(field, "model", create=True)
+        obj_file = field.to_python(oid)
+        assert oid == obj_file.oid
+
+    def test_to_python_returns_LargeObjectFile_when_value_long(self, mocker):
+        oid = int(randint(1, 100))
+        field = LargeObjectField()
+        # South normally substitutes a FakeModel here, but with a baseline
+        # schema, we can skip the migration that creates LargeObjectField.
+        mocker.patch.object(field, "model", create=True)
+        obj_file = field.to_python(oid)
+        assert oid == obj_file.oid
+
+    def test_to_python_raises_error_when_not_valid_type(self):
+        field = LargeObjectField()
+        with pytest.raises(AssertionError):
+            field.to_python(factory.make_string())
+
+
+@pytest.mark.usefixtures("maasdb", "maas_region_test")
+class TestCIDRField:
+    def test_stores_cidr(self):
+        cidr = "192.0.2.0/24"
+        instance = CIDRTestModel.objects.create(cidr=cidr)
+        assert cidr == reload_object(instance).cidr
+
+    def test_validates_cidr(self):
+        cidr = "invalid-cidr"
+        with pytest.raises(ValidationError) as error:
+            CIDRTestModel.objects.create(cidr=cidr)
+        assert ["invalid IPNetwork %s" % cidr] == error.value.messages
+
+    def test_stores_cidr_with_bit_set_in_host_part(self):
+        cidr = "192.0.2.1/24"
+        normalized_cidr = "192.0.2.0/24"
+        instance = CIDRTestModel.objects.create(cidr=cidr)
+        assert normalized_cidr == reload_object(instance).cidr
+
+
+@pytest.mark.usefixtures("maasdb", "maas_region_test")
+class TestIPv4CIDRField:
+    def test_stores_cidr(self):
+        cidr = "192.0.2.0/24"
+        instance = IPv4CIDRTestModel.objects.create(cidr=cidr)
+        assert cidr == reload_object(instance).cidr
+
+    def test_validates_cidr(self):
+        cidr = "invalid-cidr"
+        with pytest.raises(ValidationError) as error:
+            IPv4CIDRTestModel.objects.create(cidr=cidr)
+        assert ["Invalid network: %s" % cidr] == error.value.messages
+
+    def test_stores_cidr_with_bit_set_in_host_part(self):
+        cidr = "192.0.2.1/24"
+        normalized_cidr = "192.0.2.0/24"
+        instance = IPv4CIDRTestModel.objects.create(cidr=cidr)
+        assert normalized_cidr == reload_object(instance).cidr
+
+    def test_fails_to_store_ipv6_cidr(self):
+        cidr = "2001:DB8::/32"
+        with pytest.raises(ValidationError) as error:
+            IPv4CIDRTestModel.objects.create(cidr=cidr)
+        assert ["2001:DB8::/32: Only IPv4 networks supported."] == (
+            error.value.messages
         )

@@ -3,12 +3,11 @@ import prometheus_client
 
 from maasserver.prometheus.middleware import PrometheusRequestMetricsMiddleware
 from maasserver.testing.factory import factory
-from maastesting.testcase import MAASTestCase
 from provisioningserver.prometheus.metrics import METRICS_DEFINITIONS
 from provisioningserver.prometheus.utils import create_metrics
 
 
-class TestPrometheusRequestMetricsMiddleware(MAASTestCase):
+class TestPrometheusRequestMetricsMiddleware:
     def get_response(self, request):
         status = 200 if request.path.startswith("/MAAS/accounts") else 404
         return HttpResponse(status=status)
@@ -34,38 +33,31 @@ class TestPrometheusRequestMetricsMiddleware(MAASTestCase):
             )
         )
         metrics_text = prometheus_metrics.generate_latest().decode("ascii")
-        self.assertIn(
+        assert (
             'maas_http_request_latency_count{method="GET",op="",'
-            'path="/MAAS/accounts/login/",status="200"} 2.0',
-            metrics_text,
-        )
-        self.assertIn(
+            'path="/MAAS/accounts/login/",status="200"} 2.0'
+        ) in metrics_text
+        assert (
             'maas_http_request_latency_count{method="GET",op="do-foo",'
-            'path="/MAAS/other/path",status="404"} 1.0',
-            metrics_text,
-        )
-        self.assertIn(
+            'path="/MAAS/other/path",status="404"} 1.0'
+        ) in metrics_text
+        assert (
             'maas_http_request_latency_count{method="POST",op="do-bar",'
-            'path="/MAAS/other/path",status="404"} 1.0',
-            metrics_text,
-        )
-        self.assertIn(
+            'path="/MAAS/other/path",status="404"} 1.0'
+        ) in metrics_text
+        assert (
             'maas_http_response_size_count{method="GET",op="",'
-            'path="/MAAS/accounts/login/",status="200"} 2.0',
-            metrics_text,
-        )
-        self.assertIn(
+            'path="/MAAS/accounts/login/",status="200"} 2.0'
+        ) in metrics_text
+        assert (
             'maas_http_response_size_count{method="GET",op="do-foo",'
-            'path="/MAAS/other/path",status="404"} 1.0',
-            metrics_text,
-        )
-        self.assertIn(
+            'path="/MAAS/other/path",status="404"} 1.0'
+        ) in metrics_text
+        assert (
             'maas_http_response_size_count{method="POST",op="do-bar",'
-            'path="/MAAS/other/path",status="404"} 1.0',
-            metrics_text,
-        )
-        self.assertIn(
+            'path="/MAAS/other/path",status="404"} 1.0'
+        ) in metrics_text
+        assert (
             'maas_http_request_query_count_count{method="GET",op="",'
-            'path="/MAAS/accounts/login/",status="200"} 2.0',
-            metrics_text,
-        )
+            'path="/MAAS/accounts/login/",status="200"} 2.0'
+        ) in metrics_text

@@ -3,6 +3,7 @@
 
 from django import forms
 import jsonschema
+import pytest
 
 from maasserver.clusterrpc import driver_parameters
 from maasserver.clusterrpc.driver_parameters import (
@@ -17,24 +18,19 @@ from maasserver.clusterrpc.driver_parameters import (
 from maasserver.config_forms import DictCharField
 from maasserver.fields import MACAddressFormField
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from maasserver.utils.forms import compose_invalid_choice_text
-from maastesting.testcase import MAASTestCase
 from provisioningserver.drivers import make_setting_field
 
 
-class TestGetPowerTypeParametersFromJSON(MAASServerTestCase):
+class TestGetPowerTypeParametersFromJSON:
     """Test that get_power_type_parametrs_from_json."""
 
     def test_validates_json_power_type_parameters(self):
         invalid_parameters = [
             {"name": "invalid_power_type", "fields": "nothing to see here"}
         ]
-        self.assertRaises(
-            jsonschema.ValidationError,
-            get_driver_parameters_from_json,
-            invalid_parameters,
-        )
+        with pytest.raises(jsonschema.ValidationError):
+            get_driver_parameters_from_json(invalid_parameters)
 
     def test_includes_empty_power_type(self):
         json_parameters = [
@@ -55,7 +51,7 @@ class TestGetPowerTypeParametersFromJSON(MAASServerTestCase):
         power_type_parameters = get_driver_parameters_from_json(
             json_parameters
         )
-        self.assertEqual(["", "something"], list(power_type_parameters))
+        assert ["", "something"] == list(power_type_parameters)
 
     def test_creates_dict_char_fields(self):
         json_parameters = [
@@ -77,7 +73,7 @@ class TestGetPowerTypeParametersFromJSON(MAASServerTestCase):
             json_parameters
         )
         for name, field in power_type_parameters.items():  # noqa: B007
-            self.assertIsInstance(field, DictCharField)
+            assert isinstance(field, DictCharField)
 
     def test_overrides_defaults(self):
         name = factory.make_name("name")
@@ -102,9 +98,7 @@ class TestGetPowerTypeParametersFromJSON(MAASServerTestCase):
         power_type_parameters = get_driver_parameters_from_json(
             json_parameters, {field_name: new_default}
         )
-        self.assertEqual(
-            new_default, power_type_parameters[name].fields[0].initial
-        )
+        assert new_default == power_type_parameters[name].fields[0].initial
 
     def test_manual_does_not_require_power_params(self):
         json_parameters = [
@@ -126,7 +120,7 @@ class TestGetPowerTypeParametersFromJSON(MAASServerTestCase):
         power_type_parameters = get_driver_parameters_from_json(
             json_parameters
         )
-        self.assertFalse(power_type_parameters["manual"].required)
+        assert not power_type_parameters["manual"].required
 
     def test_parameter_with_multiple_choice(self):
         json_parameters = [
@@ -152,10 +146,10 @@ class TestGetPowerTypeParametersFromJSON(MAASServerTestCase):
         power_type_parameters = get_driver_parameters_from_json(
             json_parameters
         )
-        self.assertTrue(power_type_parameters["ipmi"])
+        assert power_type_parameters["ipmi"]
 
 
-class TestMakeFormField(MAASServerTestCase):
+class TestMakeFormField:
     """Test that make_form_field() converts JSON fields to Django."""
 
     def test_creates_char_field_for_strings(self):
@@ -166,7 +160,7 @@ class TestMakeFormField(MAASServerTestCase):
             "required": False,
         }
         django_field = make_form_field(json_field)
-        self.assertIsInstance(django_field, forms.CharField)
+        assert isinstance(django_field, forms.CharField)
 
     def test_creates_string_field_for_passwords(self):
         json_field = {
@@ -176,7 +170,7 @@ class TestMakeFormField(MAASServerTestCase):
             "required": False,
         }
         django_field = make_form_field(json_field)
-        self.assertIsInstance(django_field, forms.CharField)
+        assert isinstance(django_field, forms.CharField)
 
     def test_creates_choice_field_for_choices(self):
         json_field = {
@@ -191,18 +185,15 @@ class TestMakeFormField(MAASServerTestCase):
             "required": False,
         }
         django_field = make_form_field(json_field)
-        self.assertIsInstance(django_field, forms.ChoiceField)
-        self.assertEqual(
-            [tuple(choice) for choice in json_field["choices"]],
-            django_field.choices,
+        assert isinstance(django_field, forms.ChoiceField)
+        assert [tuple(choice) for choice in json_field["choices"]] == (
+            django_field.choices
         )
         invalid_msg = compose_invalid_choice_text(
             json_field["name"], json_field["choices"]
         )
-        self.assertEqual(
-            invalid_msg, django_field.error_messages["invalid_choice"]
-        )
-        self.assertEqual(json_field["default"], django_field.initial)
+        assert invalid_msg == django_field.error_messages["invalid_choice"]
+        assert json_field["default"] == django_field.initial
 
     def test_creates_mac_address_field_for_mac_addresses(self):
         json_field = {
@@ -212,7 +203,7 @@ class TestMakeFormField(MAASServerTestCase):
             "required": False,
         }
         django_field = make_form_field(json_field)
-        self.assertIsInstance(django_field, MACAddressFormField)
+        assert isinstance(django_field, MACAddressFormField)
 
     def test_creates_multiple_choice_field_for_multiple_choice(self):
         json_field = {
@@ -223,7 +214,7 @@ class TestMakeFormField(MAASServerTestCase):
             "required": False,
         }
         django_field = make_form_field(json_field)
-        self.assertIsInstance(django_field, forms.MultipleChoiceField)
+        assert isinstance(django_field, forms.MultipleChoiceField)
 
     def test_sets_properties_on_form_field(self):
         json_field = {
@@ -233,9 +224,9 @@ class TestMakeFormField(MAASServerTestCase):
             "required": False,
         }
         django_field = make_form_field(json_field)
-        self.assertEqual(
-            (json_field["label"], json_field["required"]),
-            (django_field.label, django_field.required),
+        assert (json_field["label"], json_field["required"]) == (
+            django_field.label,
+            django_field.required,
         )
 
     def test_sets_default_not_required(self):
@@ -247,8 +238,8 @@ class TestMakeFormField(MAASServerTestCase):
             "default": "some default",
         }
         django_field = make_form_field(json_field)
-        self.assertEqual("some default", django_field.initial)
-        self.assertEqual("", django_field.empty_value)
+        assert "some default" == django_field.initial
+        assert "" == django_field.empty_value
 
     def test_sets_default_and_empty_value_required(self):
         json_field = {
@@ -259,11 +250,11 @@ class TestMakeFormField(MAASServerTestCase):
             "default": "some default",
         }
         django_field = make_form_field(json_field)
-        self.assertEqual("some default", django_field.initial)
-        self.assertEqual("some default", django_field.empty_value)
+        assert "some default" == django_field.initial
+        assert "some default" == django_field.empty_value
 
 
-class TestMakeSettingField(MAASServerTestCase):
+class TestMakeSettingField:
     """Test that make_setting_field() creates JSON-verifiable fields."""
 
     def test_returns_json_verifiable_dict(self):
@@ -282,7 +273,7 @@ class TestMakeSettingField(MAASServerTestCase):
             "scope": "bmc",
             "secret": False,
         }
-        self.assertEqual(expected_field, json_field)
+        assert expected_field == json_field
 
     def test_sets_field_values(self):
         expected_field = {
@@ -296,16 +287,11 @@ class TestMakeSettingField(MAASServerTestCase):
             "secret": False,
         }
         json_field = make_setting_field(**expected_field)
-        self.assertEqual(expected_field, json_field)
+        assert expected_field == json_field
 
     def test_validates_choices(self):
-        self.assertRaises(
-            jsonschema.ValidationError,
-            make_setting_field,
-            "some_field",
-            "Some Label",
-            choices="Nonsense",
-        )
+        with pytest.raises(jsonschema.ValidationError):
+            make_setting_field("some_field", "Some Label", choices="Nonsense")
 
     def test_creates_password_fields(self):
         json_field = make_setting_field(
@@ -321,14 +307,12 @@ class TestMakeSettingField(MAASServerTestCase):
             "scope": "bmc",
             "secret": True,
         }
-        self.assertEqual(expected_field, json_field)
+        assert expected_field == json_field
 
 
-class TestAddPowerTypeParameters(MAASServerTestCase):
+class TestAddPowerTypeParameters:
     def make_field(self):
-        return make_setting_field(
-            self.getUniqueString(), self.getUniqueString()
-        )
+        return make_setting_field(factory.make_string(), factory.make_string())
 
     def make_multiple_choice_field(self):
         choices = [
@@ -336,8 +320,8 @@ class TestAddPowerTypeParameters(MAASServerTestCase):
             [factory.make_name("choice2"), "choice2"],
         ]
         return make_setting_field(
-            self.getUniqueString(),
-            self.getUniqueString(),
+            factory.make_string(),
+            factory.make_string(),
             field_type="multiple_choice",
             choices=choices,
             default=[choices[0][0]],
@@ -363,18 +347,15 @@ class TestAddPowerTypeParameters(MAASServerTestCase):
             missing_packages=[],
             parameters_set=existing_parameters,
         )
-        self.assertEqual(
-            [
-                {
-                    "driver_type": "power",
-                    "name": "blah",
-                    "description": "baz",
-                    "chassis": True,
-                    "fields": {},
-                }
-            ],
-            existing_parameters,
-        )
+        assert [
+            {
+                "driver_type": "power",
+                "name": "blah",
+                "description": "baz",
+                "chassis": True,
+                "fields": {},
+            }
+        ] == existing_parameters
 
     def test_adds_new_power_type_parameters(self):
         existing_parameters = []
@@ -390,34 +371,30 @@ class TestAddPowerTypeParameters(MAASServerTestCase):
             missing_packages=missing_packages,
             parameters_set=existing_parameters,
         )
-        self.assertEqual(
-            [
-                {
-                    "driver_type": "power",
-                    "name": "blah",
-                    "description": "baz",
-                    "chassis": False,
-                    "can_probe": False,
-                    "fields": fields,
-                    "missing_packages": missing_packages,
-                }
-            ],
-            existing_parameters,
-        )
+        assert [
+            {
+                "driver_type": "power",
+                "name": "blah",
+                "description": "baz",
+                "chassis": False,
+                "can_probe": False,
+                "fields": fields,
+                "missing_packages": missing_packages,
+            }
+        ] == existing_parameters
 
     def test_validates_new_parameters(self):
-        self.assertRaises(
-            jsonschema.ValidationError,
-            add_power_driver_parameters,
-            driver_type="power",
-            name="blah",
-            description="baz",
-            chassis=False,
-            can_probe=False,
-            fields=[{}],
-            missing_packages=[],
-            parameters_set=[],
-        )
+        with pytest.raises(jsonschema.ValidationError):
+            add_power_driver_parameters(
+                driver_type="power",
+                name="blah",
+                description="baz",
+                chassis=False,
+                can_probe=False,
+                fields=[{}],
+                missing_packages=[],
+                parameters_set=[],
+            )
 
     def test_subsequent_parameters_set_is_valid(self):
         parameters_set = []
@@ -450,11 +427,9 @@ class TestAddPowerTypeParameters(MAASServerTestCase):
         jsonschema.validate(parameters_set, JSON_POWER_DRIVERS_SCHEMA)
 
 
-class TestAddNOSTypeParameters(MAASServerTestCase):
+class TestAddNOSTypeParameters:
     def make_field(self):
-        return make_setting_field(
-            self.getUniqueString(), self.getUniqueString()
-        )
+        return make_setting_field(factory.make_string(), factory.make_string())
 
     def test_adding_existing_types_is_a_no_op(self):
         existing_parameters = [
@@ -472,17 +447,14 @@ class TestAddNOSTypeParameters(MAASServerTestCase):
             fields=[self.make_field()],
             parameters_set=existing_parameters,
         )
-        self.assertEqual(
-            [
-                {
-                    "driver_type": "nos",
-                    "name": "blah",
-                    "description": "baz",
-                    "fields": {},
-                }
-            ],
-            existing_parameters,
-        )
+        assert [
+            {
+                "driver_type": "nos",
+                "name": "blah",
+                "description": "baz",
+                "fields": {},
+            }
+        ] == existing_parameters
 
     def test_adds_new_nos_type_parameters(self):
         existing_parameters = []
@@ -494,49 +466,44 @@ class TestAddNOSTypeParameters(MAASServerTestCase):
             fields=fields,
             parameters_set=existing_parameters,
         )
-        self.assertEqual(
-            [
-                {
-                    "driver_type": "nos",
-                    "name": "blah",
-                    "description": "baz",
-                    "fields": fields,
-                }
-            ],
-            existing_parameters,
-        )
+        assert [
+            {
+                "driver_type": "nos",
+                "name": "blah",
+                "description": "baz",
+                "fields": fields,
+            }
+        ] == existing_parameters
 
     def test_validates_new_parameters(self):
-        self.assertRaises(
-            jsonschema.ValidationError,
-            add_nos_driver_parameters,
-            driver_type="nos",
-            name="blah",
-            description="baz",
-            fields=[{}],
-            parameters_set=[],
-        )
+        with pytest.raises(jsonschema.ValidationError):
+            add_nos_driver_parameters(
+                driver_type="nos",
+                name="blah",
+                description="baz",
+                fields=[{}],
+                parameters_set=[],
+            )
 
     def test_validates_driver_type(self):
-        self.assertRaises(
-            AssertionError,
-            add_nos_driver_parameters,
-            driver_type="power",
-            name="blah",
-            description="baz",
-            fields=[],
-            parameters_set=[],
-        )
+        with pytest.raises(AssertionError):
+            add_nos_driver_parameters(
+                driver_type="power",
+                name="blah",
+                description="baz",
+                fields=[],
+                parameters_set=[],
+            )
 
 
-class TestPowerTypes(MAASTestCase):
+class TestPowerTypes:
     # This is deliberately not using a MAASServerTestCase as that
     # patches the get_all_power_types() function with data
     # that's hidden from tests in here.  Instead the tests patch
     # explicitly here.
 
-    def test_get_power_driver_types_transforms_data_to_dict(self):
-        mocked = self.patch(driver_parameters, "get_all_power_types")
+    def test_get_power_driver_types_transforms_data_to_dict(self, mocker):
+        mocked = mocker.patch.object(driver_parameters, "get_all_power_types")
         mocked.return_value = [
             {
                 "driver_type": "power",
@@ -550,4 +517,4 @@ class TestPowerTypes(MAASTestCase):
             },
         ]
         expected = {"namevalue": "descvalue", "namevalue2": "descvalue2"}
-        self.assertEqual(expected, get_driver_types())
+        assert expected == get_driver_types()

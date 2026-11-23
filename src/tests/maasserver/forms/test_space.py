@@ -3,16 +3,18 @@
 
 """Tests for Space forms."""
 
+import pytest
+
 from maasserver.forms.space import SpaceForm
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from maasserver.utils.orm import reload_object
 
 
-class TestSpaceForm(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestSpaceForm:
     def test_requires_name(self):
         form = SpaceForm({})
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
 
     def test_creates_space(self):
         space_name = factory.make_name("space")
@@ -20,15 +22,15 @@ class TestSpaceForm(MAASServerTestCase):
         form = SpaceForm(
             {"name": space_name, "description": space_description}
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         space = form.save()
-        self.assertEqual(space_name, space.get_name())
-        self.assertEqual(space_description, space.description)
+        assert space.get_name() == space_name
+        assert space.description == space_description
 
     def test_doest_require_name_on_update(self):
         space = factory.make_Space()
         form = SpaceForm(instance=space, data={})
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
 
     def test_updates_space(self):
         new_name = factory.make_name("space")
@@ -38,7 +40,7 @@ class TestSpaceForm(MAASServerTestCase):
             instance=space,
             data={"name": new_name, "description": new_description},
         )
-        self.assertTrue(form.is_valid(), form.errors)
+        assert form.is_valid(), form.errors
         form.save()
-        self.assertEqual(new_name, reload_object(space).name)
-        self.assertEqual(new_description, reload_object(space).description)
+        assert reload_object(space).name == new_name
+        assert reload_object(space).description == new_description

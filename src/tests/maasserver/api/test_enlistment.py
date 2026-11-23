@@ -7,32 +7,62 @@ import json
 import random
 
 from django.conf import settings
+from django.contrib.auth.models import AnonymousUser
 from django.urls import reverse
+import pytest
 
+from maasserver import forms
 from maasserver.api import machines as machines_module
 from maasserver.enum import NODE_STATUS
 from maasserver.models import Domain, Machine, Node, NodeMetadata
 from maasserver.models.node import PowerInfo
-from maasserver.testing.api import APITestCase
-from maasserver.testing.architecture import make_usable_architecture
+from maasserver.testing.architecture import make_arch
 from maasserver.testing.factory import factory
+from maasserver.testing.testclient import MAASSensibleOAuthClient
 from maasserver.utils import strip_domain
 from maasserver.utils.converters import json_load_bytes
 from maasserver.utils.orm import get_one, post_commit_hooks, reload_object
 
 
-class TestEnlistmentAPI(APITestCase.ForAnonymousAndUserAndAdmin):
+def _make_usable_architecture(mocker, **kwargs):
+    architecture = make_arch(**kwargs)
+    mocker.patch.object(
+        forms, "list_all_usable_architectures", return_value=[architecture]
+    )
+    return architecture
+
+
+@pytest.mark.parametrize(
+    "api_identity",
+    [
+        pytest.param("anonymous", id="user=anonymous,client=oauth"),
+        pytest.param("user", id="user=user,client=oauth"),
+        pytest.param("admin", id="user=admin,client=oauth"),
+    ],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestEnlistmentAPI:
     """Enlistment tests."""
 
-    def setUp(self):
-        super().setUp()
-        self.patch(Node, "get_effective_power_info").return_value = PowerInfo(
-            False, False, False, False, None, None
-        )
+    @pytest.fixture(autouse=True)
+    def _setup(self, maas_region_test, api_identity, request, mocker):
+        self.mocker = mocker
+        if api_identity == "anonymous":
+            self.user = AnonymousUser()
+            self.client = MAASSensibleOAuthClient(user=self.user)
+        elif api_identity == "admin":
+            self.user = request.getfixturevalue("admin")
+            self.client = request.getfixturevalue("admin_api_client")
+        else:
+            self.user = request.getfixturevalue("maas_user")
+            self.client = request.getfixturevalue("api_client")
+        mocker.patch.object(
+            Node, "get_effective_power_info"
+        ).return_value = PowerInfo(False, False, False, False, None, None)
         factory.make_default_ubuntu_release_bootable()
 
     def test_POST_create_creates_machine(self):
-        architecture = make_usable_architecture(self)
+        architecture = _make_usable_architecture(self.mocker)
         response = self.client.post(
             reverse("machines_handler"),
             {
@@ -43,14 +73,14 @@ class TestEnlistmentAPI(APITestCase.ForAnonymousAndUserAndAdmin):
             },
         )
 
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code
         parsed_result = json_load_bytes(response.content)
-        self.assertIn("application/json", response["Content-Type"])
+        assert "application/json" in response["Content-Type"]
         domain_name = Domain.objects.get_default_domain().name
-        self.assertEqual("diane.%s" % domain_name, parsed_result["fqdn"])
-        self.assertNotEqual(0, len(parsed_result.get("system_id")))
+        assert "diane.%s" % domain_name == parsed_result["fqdn"]
+        assert 0 != len(parsed_result.get("system_id"))
         [diane] = Machine.objects.filter(hostname="diane")
-        self.assertEqual(architecture, diane.architecture)
+        assert architecture == diane.architecture
 
     def test_POST_new_generates_hostname_if_ip_based_hostname(self):
         with post_commit_hooks:
@@ -61,24 +91,24 @@ class TestEnlistmentAPI(APITestCase.ForAnonymousAndUserAndAdmin):
             reverse("machines_handler"),
             {
                 "hostname": hostname,
-                "architecture": make_usable_architecture(self),
+                "architecture": _make_usable_architecture(self.mocker),
                 "power_type": "manual",
                 "mac_addresses": [factory.make_mac_address()],
             },
         )
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code
         parsed_result = json_load_bytes(response.content)
 
         system_id = parsed_result.get("system_id")
         machine = Machine.objects.get(system_id=system_id)
-        self.assertNotEqual(hostname, machine.hostname)
+        assert hostname != machine.hostname
 
     def test_POST_create_creates_machine_with_power_parameters(self):
         # We're setting power parameters so we disable start_commissioning to
         # prevent anything from attempting to issue power instructions.
-        self.patch(Node, "start_commissioning")
+        self.mocker.patch.object(Node, "start_commissioning")
         hostname = factory.make_name("hostname")
-        architecture = make_usable_architecture(self)
+        architecture = _make_usable_architecture(self.mocker)
         power_type = "ipmi"
         power_parameters = {
             "power_address": factory.make_ip_address(),
@@ -95,14 +125,16 @@ class TestEnlistmentAPI(APITestCase.ForAnonymousAndUserAndAdmin):
                 "power_parameters": json.dumps(power_parameters),
             },
         )
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code
         [machine] = Machine.objects.filter(hostname=hostname)
         for key, value in power_parameters.items():
-            self.assertEqual(machine.bmc.get_power_parameters()[key], value)
-        self.assertEqual(power_type, machine.power_type)
+            assert value == machine.bmc.get_power_parameters()[key]
+        assert power_type == machine.power_type
 
     def test_POST_create_creates_machine_with_arch_only(self):
-        architecture = make_usable_architecture(self, subarch_name="generic")
+        architecture = _make_usable_architecture(
+            self.mocker, subarch_name="generic"
+        )
         response = self.client.post(
             reverse("machines_handler"),
             {
@@ -113,18 +145,18 @@ class TestEnlistmentAPI(APITestCase.ForAnonymousAndUserAndAdmin):
             },
         )
 
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code
         parsed_result = json_load_bytes(response.content)
-        self.assertIn("application/json", response["Content-Type"])
+        assert "application/json" in response["Content-Type"]
         domain_name = Domain.objects.get_default_domain().name
-        self.assertEqual("diane.%s" % domain_name, parsed_result["fqdn"])
-        self.assertNotEqual(0, len(parsed_result.get("system_id")))
+        assert "diane.%s" % domain_name == parsed_result["fqdn"]
+        assert 0 != len(parsed_result.get("system_id"))
         [diane] = Machine.objects.filter(hostname="diane")
-        self.assertEqual(architecture, diane.architecture)
+        assert architecture == diane.architecture
 
     def test_POST_create_creates_machine_with_subarchitecture(self):
         # The API allows a Machine to be created.
-        architecture = make_usable_architecture(self)
+        architecture = _make_usable_architecture(self.mocker)
         response = self.client.post(
             reverse("machines_handler"),
             {
@@ -136,17 +168,17 @@ class TestEnlistmentAPI(APITestCase.ForAnonymousAndUserAndAdmin):
             },
         )
 
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code
         parsed_result = json_load_bytes(response.content)
-        self.assertIn("application/json", response["Content-Type"])
+        assert "application/json" in response["Content-Type"]
         domain_name = Domain.objects.get_default_domain().name
-        self.assertEqual("diane.%s" % domain_name, parsed_result["fqdn"])
-        self.assertNotEqual(0, len(parsed_result.get("system_id")))
+        assert "diane.%s" % domain_name == parsed_result["fqdn"]
+        assert 0 != len(parsed_result.get("system_id"))
         [diane] = Machine.objects.filter(hostname="diane")
-        self.assertEqual(architecture, diane.architecture)
+        assert architecture == diane.architecture
 
     def test_POST_create_fails_machine_with_double_subarchitecture(self):
-        architecture = make_usable_architecture(self)
+        architecture = _make_usable_architecture(self.mocker)
         response = self.client.post(
             reverse("machines_handler"),
             {
@@ -156,16 +188,16 @@ class TestEnlistmentAPI(APITestCase.ForAnonymousAndUserAndAdmin):
                 "mac_addresses": ["aa:bb:cc:dd:ee:ff", "22:bb:cc:dd:ee:ff"],
             },
         )
-        self.assertEqual(http.client.BAD_REQUEST, response.status_code)
-        self.assertIn("text/plain", response["Content-Type"])
-        self.assertEqual(
-            b"Subarchitecture cannot be specified twice.", response.content
+        assert http.client.BAD_REQUEST == response.status_code
+        assert "text/plain" in response["Content-Type"]
+        assert (
+            b"Subarchitecture cannot be specified twice." == response.content
         )
 
     def test_POST_create_associates_mac_addresses(self):
         # The API allows a Machine to be created and associated with MAC
         # Addresses.
-        architecture = make_usable_architecture(self)
+        architecture = _make_usable_architecture(self.mocker)
         self.client.post(
             reverse("machines_handler"),
             {
@@ -176,16 +208,13 @@ class TestEnlistmentAPI(APITestCase.ForAnonymousAndUserAndAdmin):
             },
         )
         diane = get_one(Machine.objects.filter(hostname="diane"))
-        self.assertCountEqual(
-            ["aa:bb:cc:dd:ee:ff", "22:bb:cc:dd:ee:ff"],
-            [
-                interface.mac_address
-                for interface in diane.current_config.interface_set.all()
-            ],
-        )
+        assert ["aa:bb:cc:dd:ee:ff", "22:bb:cc:dd:ee:ff"] == [
+            interface.mac_address
+            for interface in diane.current_config.interface_set.all()
+        ]
 
     def test_POST_create_with_no_hostname_auto_populates_hostname(self):
-        architecture = make_usable_architecture(self)
+        architecture = _make_usable_architecture(self.mocker)
         response = self.client.post(
             reverse("machines_handler"),
             {
@@ -197,7 +226,7 @@ class TestEnlistmentAPI(APITestCase.ForAnonymousAndUserAndAdmin):
         machine = Machine.objects.get(
             system_id=json_load_bytes(response.content)["system_id"]
         )
-        self.assertNotEqual("", strip_domain(machine.hostname))
+        assert "" != strip_domain(machine.hostname)
 
     def test_POST_fails_with_bad_operation(self):
         # If the operation ('op=operation_name') specified in the
@@ -211,10 +240,10 @@ class TestEnlistmentAPI(APITestCase.ForAnonymousAndUserAndAdmin):
             },
         )
 
-        self.assertEqual(http.client.BAD_REQUEST, response.status_code)
-        self.assertEqual(
-            b"Unrecognised signature: method=POST op=invalid_operation",
-            response.content,
+        assert http.client.BAD_REQUEST == response.status_code
+        assert (
+            b"Unrecognised signature: method=POST op=invalid_operation"
+            == response.content
         )
 
     def test_POST_create_rejects_invalid_data(self):
@@ -229,15 +258,12 @@ class TestEnlistmentAPI(APITestCase.ForAnonymousAndUserAndAdmin):
         )
         parsed_result = json_load_bytes(response.content)
 
-        self.assertEqual(http.client.BAD_REQUEST, response.status_code)
-        self.assertIn("application/json", response["Content-Type"])
-        self.assertEqual(
-            [
-                "One or more MAC addresses is invalid. "
-                "('invalid' is not a valid MAC address.)"
-            ],
-            parsed_result["mac_addresses"],
-        )
+        assert http.client.BAD_REQUEST == response.status_code
+        assert "application/json" in response["Content-Type"]
+        assert [
+            "One or more MAC addresses is invalid. "
+            "('invalid' is not a valid MAC address.)"
+        ] == parsed_result["mac_addresses"]
 
     def test_POST_invalid_architecture_returns_bad_request(self):
         # If the architecture name provided to create a machine is not a valid
@@ -252,16 +278,14 @@ class TestEnlistmentAPI(APITestCase.ForAnonymousAndUserAndAdmin):
         )
         parsed_result = json_load_bytes(response.content)
 
-        self.assertEqual(http.client.BAD_REQUEST, response.status_code)
-        self.assertIn("application/json", response["Content-Type"])
-        self.assertEqual(
-            {"architecture"}, parsed_result.keys(), response.content
-        )
+        assert http.client.BAD_REQUEST == response.status_code
+        assert "application/json" in response["Content-Type"]
+        assert {"architecture"} == parsed_result.keys(), response.content
 
     def test_POST_create_creates_machine_with_domain(self):
         domain = factory.make_Domain()
         # The API allows a Machine to be created.
-        architecture = make_usable_architecture(self)
+        architecture = _make_usable_architecture(self.mocker)
         response = self.client.post(
             reverse("machines_handler"),
             {
@@ -274,21 +298,40 @@ class TestEnlistmentAPI(APITestCase.ForAnonymousAndUserAndAdmin):
             },
         )
 
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code
         parsed_result = json_load_bytes(response.content)
-        self.assertIn("application/json", response["Content-Type"])
-        self.assertEqual("diane.%s" % domain.name, parsed_result["fqdn"])
-        self.assertNotEqual(0, len(parsed_result.get("system_id")))
+        assert "application/json" in response["Content-Type"]
+        assert "diane.%s" % domain.name == parsed_result["fqdn"]
+        assert 0 != len(parsed_result.get("system_id"))
         [diane] = Machine.objects.filter(hostname="diane")
-        self.assertEqual(architecture, diane.architecture)
+        assert architecture == diane.architecture
 
 
-class TestMachineHostnameEnlistment(APITestCase.ForAnonymousAndUserAndAdmin):
-    def setUp(self):
-        super().setUp()
-        self.patch(Node, "get_effective_power_info").return_value = PowerInfo(
-            False, False, False, False, None, None
-        )
+@pytest.mark.parametrize(
+    "api_identity",
+    [
+        pytest.param("anonymous", id="user=anonymous,client=oauth"),
+        pytest.param("user", id="user=user,client=oauth"),
+        pytest.param("admin", id="user=admin,client=oauth"),
+    ],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestMachineHostnameEnlistment:
+    @pytest.fixture(autouse=True)
+    def _setup(self, maas_region_test, api_identity, request, mocker):
+        self.mocker = mocker
+        if api_identity == "anonymous":
+            self.user = AnonymousUser()
+            self.client = MAASSensibleOAuthClient(user=self.user)
+        elif api_identity == "admin":
+            self.user = request.getfixturevalue("admin")
+            self.client = request.getfixturevalue("admin_api_client")
+        else:
+            self.user = request.getfixturevalue("maas_user")
+            self.client = request.getfixturevalue("api_client")
+        mocker.patch.object(
+            Node, "get_effective_power_info"
+        ).return_value = PowerInfo(False, False, False, False, None, None)
         factory.make_default_ubuntu_release_bootable()
 
     def test_created_machine_gets_default_domain_appended(self):
@@ -297,30 +340,43 @@ class TestMachineHostnameEnlistment(APITestCase.ForAnonymousAndUserAndAdmin):
             reverse("machines_handler"),
             {
                 "hostname": hostname_without_domain,
-                "architecture": make_usable_architecture(self),
+                "architecture": _make_usable_architecture(self.mocker),
                 "power_type": "manual",
                 "mac_addresses": [factory.make_mac_address()],
             },
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         parsed_result = json_load_bytes(response.content)
         expected_hostname = "{}.{}".format(
             hostname_without_domain,
             Domain.objects.get_default_domain().name,
         )
-        self.assertEqual(expected_hostname, parsed_result.get("fqdn"))
+        assert expected_hostname == parsed_result.get("fqdn")
 
 
-class TestNonAdminEnlistmentAPI(APITestCase.ForAnonymousAndUser):
+@pytest.mark.parametrize(
+    "api_identity",
+    [
+        pytest.param("anonymous", id="user=anonymous,client=oauth"),
+        pytest.param("user", id="user=user,client=oauth"),
+    ],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestNonAdminEnlistmentAPI:
     """Enlistment tests for non-admin users."""
 
-    def setUp(self):
-        super().setUp()
-        self.patch(Node, "get_effective_power_info").return_value = PowerInfo(
-            False, False, False, False, None, None
-        )
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, request, mocker):
+        self.mocker = mocker
+        if api_identity == "anonymous":
+            self.user = AnonymousUser()
+            self.client = MAASSensibleOAuthClient(user=self.user)
+        else:
+            self.user = request.getfixturevalue("maas_user")
+            self.client = request.getfixturevalue("api_client")
+        mocker.patch.object(
+            Node, "get_effective_power_info"
+        ).return_value = PowerInfo(False, False, False, False, None, None)
 
     def test_POST_non_admin_creates_machine_in_declared_state(self):
         # Upon non-admin enlistment, a machine goes into the New
@@ -330,27 +386,33 @@ class TestNonAdminEnlistmentAPI(APITestCase.ForAnonymousAndUser):
             reverse("machines_handler"),
             {
                 "hostname": factory.make_string(),
-                "architecture": make_usable_architecture(self),
+                "architecture": _make_usable_architecture(self.mocker),
                 "mac_addresses": ["aa:bb:cc:dd:ee:ff"],
             },
         )
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         system_id = json_load_bytes(response.content)["system_id"]
-        self.assertEqual(
-            NODE_STATUS.NEW, Machine.objects.get(system_id=system_id).status
+        assert (
+            NODE_STATUS.NEW == Machine.objects.get(system_id=system_id).status
         )
 
 
-class TestAnonymousEnlistmentAPI(APITestCase.ForAnonymous):
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("anonymous", id="user=anonymous,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestAnonymousEnlistmentAPI:
     """Enlistment tests specific to anonymous users."""
 
-    def setUp(self):
-        super().setUp()
-        self.patch(Node, "get_effective_power_info").return_value = PowerInfo(
-            False, False, False, False, None, None
-        )
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, mocker):
+        self.mocker = mocker
+        self.user = AnonymousUser()
+        self.client = MAASSensibleOAuthClient(user=self.user)
+        mocker.patch.object(
+            Node, "get_effective_power_info"
+        ).return_value = PowerInfo(False, False, False, False, None, None)
 
     def test_POST_accept_not_allowed(self):
         # An anonymous user is not allowed to accept an anonymously
@@ -361,65 +423,56 @@ class TestAnonymousEnlistmentAPI(APITestCase.ForAnonymous):
             reverse("machines_handler"),
             {"op": "accept", "machines": [machine_id]},
         )
-        self.assertEqual(
-            (
-                http.client.UNAUTHORIZED,
-                b"You must be logged in to accept machines.",
-            ),
-            (response.status_code, response.content),
-        )
+        assert (
+            http.client.UNAUTHORIZED,
+            b"You must be logged in to accept machines.",
+        ) == (response.status_code, response.content)
 
     def test_POST_returns_limited_fields(self):
         response = self.client.post(
             reverse("machines_handler"),
             {
-                "architecture": make_usable_architecture(self),
+                "architecture": _make_usable_architecture(self.mocker),
                 "hostname": factory.make_string(),
                 "mac_addresses": ["aa:bb:cc:dd:ee:ff", "22:bb:cc:dd:ee:ff"],
             },
         )
         parsed_result = json_load_bytes(response.content)
         # Limited fields on machine.
-        self.assertEqual(
-            {
-                "system_id",
-                "hostname",
-                "domain",
-                "fqdn",
-                "architecture",
-                "status",
-                "power_type",
-                "power_state",
-                "zone",
-                "status_action",
-                "status_message",
-                "status_name",
-                "node_type",
-                "resource_uri",
-            },
-            parsed_result.keys(),
-        )
+        assert {
+            "system_id",
+            "hostname",
+            "domain",
+            "fqdn",
+            "architecture",
+            "status",
+            "power_type",
+            "power_state",
+            "zone",
+            "status_action",
+            "status_message",
+            "status_name",
+            "node_type",
+            "resource_uri",
+        } == parsed_result.keys()
         # Limited fields on domain.
-        self.assertEqual(
-            {
-                "id",
-                "name",
-                "ttl",
-                "is_default",
-                "authoritative",
-                "resource_record_count",
-            },
-            parsed_result["domain"].keys(),
-        )
+        assert {
+            "id",
+            "name",
+            "ttl",
+            "is_default",
+            "authoritative",
+            "resource_record_count",
+        } == parsed_result["domain"].keys()
         # Limited fields on zone.
-        self.assertEqual(
-            {"id", "name", "description"}, parsed_result["zone"].keys()
-        )
+        assert {"id", "name", "description"} == parsed_result["zone"].keys()
 
     def test_POST_create_returns_machine_with_matching_power_parameters(self):
-        mock_create_machine = self.patch(machines_module, "create_machine")
+        mock_create_machine = self.mocker.patch.object(
+            machines_module, "create_machine"
+        )
         hostname = factory.make_name("hostname")
-        architecture = make_usable_architecture(self)
+        architecture = _make_usable_architecture(self.mocker)
         power_type = "ipmi"
         power_parameters = {
             "power_address": factory.make_ip_address(),
@@ -446,15 +499,15 @@ class TestAnonymousEnlistmentAPI(APITestCase.ForAnonymous):
                 "power_parameters": json.dumps(power_parameters),
             },
         )
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code
         machine = reload_object(machine)
-        self.assertEqual(hostname, machine.hostname)
-        self.assertEqual(architecture, machine.architecture)
+        assert hostname == machine.hostname
+        assert architecture == machine.architecture
         for key, value in power_parameters.items():
-            self.assertEqual(machine.bmc.get_power_parameters()[key], value)
+            assert value == machine.bmc.get_power_parameters()[key]
         mock_create_machine.assert_not_called()
-        self.assertEqual(
-            machine.system_id, json_load_bytes(response.content)["system_id"]
+        assert (
+            machine.system_id == json_load_bytes(response.content)["system_id"]
         )
 
     def test_POST_create_returns_machine_with_matching_mac(self):
@@ -466,7 +519,7 @@ class TestAnonymousEnlistmentAPI(APITestCase.ForAnonymous):
             str(factory.make_Interface(node=machine).mac_address)
             for _ in range(3)
         ]
-        architecture = make_usable_architecture(self)
+        architecture = _make_usable_architecture(self.mocker)
         response = self.client.post(
             reverse("machines_handler"),
             {
@@ -482,17 +535,17 @@ class TestAnonymousEnlistmentAPI(APITestCase.ForAnonymous):
             },
         )
 
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code
         machine = reload_object(machine)
-        self.assertEqual(hostname, machine.hostname)
-        self.assertEqual(architecture, machine.architecture)
-        self.assertEqual(
-            machine.system_id, json_load_bytes(response.content)["system_id"]
+        assert hostname == machine.hostname
+        assert architecture == machine.architecture
+        assert (
+            machine.system_id == json_load_bytes(response.content)["system_id"]
         )
 
     def test_POST_create_creates_machine(self):
         hostname = factory.make_name("hostname")
-        architecture = make_usable_architecture(self)
+        architecture = _make_usable_architecture(self.mocker)
         response = self.client.post(
             reverse("machines_handler"),
             {
@@ -502,17 +555,17 @@ class TestAnonymousEnlistmentAPI(APITestCase.ForAnonymous):
                 "mac_addresses": ["aa:bb:cc:dd:ee:ff", "22:bb:cc:dd:ee:ff"],
             },
         )
-        self.assertEqual(http.client.OK, response.status_code)
-        self.assertFalse(NodeMetadata.objects.filter(key="enlisting").exists())
+        assert http.client.OK == response.status_code
+        assert not NodeMetadata.objects.filter(key="enlisting").exists()
         [machine] = Machine.objects.filter(hostname=hostname)
-        self.assertEqual(architecture, machine.architecture)
-        self.assertEqual(
-            machine.system_id, json_load_bytes(response.content)["system_id"]
+        assert architecture == machine.architecture
+        assert (
+            machine.system_id == json_load_bytes(response.content)["system_id"]
         )
 
     def test_POST_create_creates_machine_commission(self):
         hostname = factory.make_name("hostname")
-        architecture = make_usable_architecture(self)
+        architecture = _make_usable_architecture(self.mocker)
         response = self.client.post(
             reverse("machines_handler"),
             {
@@ -523,15 +576,15 @@ class TestAnonymousEnlistmentAPI(APITestCase.ForAnonymous):
                 "commission": True,
             },
         )
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code
         node_metadata = NodeMetadata.objects.get(key="enlisting")
-        self.assertEqual("True", node_metadata.value)
+        assert "True" == node_metadata.value
         [machine] = Machine.objects.filter(hostname=hostname)
-        self.assertEqual(architecture, machine.architecture)
-        self.assertEqual(
-            machine.system_id, json_load_bytes(response.content)["system_id"]
+        assert architecture == machine.architecture
+        assert (
+            machine.system_id == json_load_bytes(response.content)["system_id"]
         )
-        self.assertEqual(NODE_STATUS.COMMISSIONING, machine.status)
+        assert NODE_STATUS.COMMISSIONING == machine.status
 
     def test_POST_create_requires_architecture(self):
         hostname = factory.make_name("hostname")
@@ -543,11 +596,10 @@ class TestAnonymousEnlistmentAPI(APITestCase.ForAnonymous):
                 "mac_addresses": ["aa:bb:cc:dd:ee:ff", "22:bb:cc:dd:ee:ff"],
             },
         )
-        self.assertEqual(http.client.BAD_REQUEST, response.status_code)
-        self.assertDictEqual(
-            {"architecture": ["This field is required."]},
-            json_load_bytes(response.content),
-        )
+        assert http.client.BAD_REQUEST == response.status_code
+        assert {
+            "architecture": ["This field is required."]
+        } == json_load_bytes(response.content)
 
     def test_POST_create_validates_architecture(self):
         hostname = factory.make_name("hostname")
@@ -577,18 +629,26 @@ class TestAnonymousEnlistmentAPI(APITestCase.ForAnonymous):
                 "power_parameters": json.dumps(power_parameters),
             },
         )
-        self.assertEqual(http.client.BAD_REQUEST, response.status_code)
+        assert http.client.BAD_REQUEST == response.status_code
 
 
-class TestSimpleUserLoggedInEnlistmentAPI(APITestCase.ForUser):
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("user", id="user=user,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestSimpleUserLoggedInEnlistmentAPI:
     """Enlistment tests from the perspective of regular, non-admin users."""
 
-    def setUp(self):
-        super().setUp()
-        self.assertFalse(self.user.is_superuser)
-        self.patch(Node, "get_effective_power_info").return_value = PowerInfo(
-            False, False, False, False, None, None
-        )
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, maas_user, api_client, mocker):
+        self.mocker = mocker
+        self.user = maas_user
+        self.client = api_client
+        assert not self.user.is_superuser
+        mocker.patch.object(
+            Node, "get_effective_power_info"
+        ).return_value = PowerInfo(False, False, False, False, None, None)
 
     def test_POST_accept_not_allowed(self):
         # An non-admin user is not allowed to accept an anonymously
@@ -599,16 +659,13 @@ class TestSimpleUserLoggedInEnlistmentAPI(APITestCase.ForUser):
             reverse("machines_handler"),
             {"op": "accept", "machines": [machine_id]},
         )
-        self.assertEqual(
+        assert (
+            http.client.FORBIDDEN,
             (
-                http.client.FORBIDDEN,
-                (
-                    "You don't have the required permission to accept the "
-                    "following machine(s): %s." % machine_id
-                ).encode(settings.DEFAULT_CHARSET),
-            ),
-            (response.status_code, response.content),
-        )
+                "You don't have the required permission to accept the "
+                "following machine(s): %s." % machine_id
+            ).encode(settings.DEFAULT_CHARSET),
+        ) == (response.status_code, response.content)
 
     def test_POST_accept_all_does_not_accept_anything(self):
         # It is not an error for a non-admin user to attempt to accept all
@@ -620,9 +677,9 @@ class TestSimpleUserLoggedInEnlistmentAPI(APITestCase.ForUser):
         response = self.client.post(
             reverse("machines_handler"), {"op": "accept_all"}
         )
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code
         machines_returned = json_load_bytes(response.content)
-        self.assertEqual([], machines_returned)
+        assert [] == machines_returned
 
     def test_POST_simple_user_can_set_power_type_and_parameters(self):
         new_power_address = factory.make_ip_address()  # XXX: URLs don't work.
@@ -630,7 +687,7 @@ class TestSimpleUserLoggedInEnlistmentAPI(APITestCase.ForUser):
         response = self.client.post(
             reverse("machines_handler"),
             {
-                "architecture": make_usable_architecture(self),
+                "architecture": _make_usable_architecture(self.mocker),
                 "power_type": "virsh",
                 "power_parameters": json.dumps(
                     {
@@ -644,121 +701,123 @@ class TestSimpleUserLoggedInEnlistmentAPI(APITestCase.ForUser):
         machine = Machine.objects.get(
             system_id=json_load_bytes(response.content)["system_id"]
         )
-        self.assertEqual(http.client.OK, response.status_code)
-        self.assertEqual("virsh", machine.power_type)
-        self.assertEqual(
-            {
-                "power_pass": "",
-                "power_id": new_power_id,
-                "power_address": new_power_address,
-            },
-            machine.get_power_parameters(),
-        )
+        assert http.client.OK == response.status_code
+        assert "virsh" == machine.power_type
+        assert {
+            "power_pass": "",
+            "power_id": new_power_id,
+            "power_address": new_power_address,
+        } == machine.get_power_parameters()
 
     def test_POST_returns_limited_fields(self):
         response = self.client.post(
             reverse("machines_handler"),
             {
                 "hostname": factory.make_string(),
-                "architecture": make_usable_architecture(self),
+                "architecture": _make_usable_architecture(self.mocker),
                 "mac_addresses": ["aa:bb:cc:dd:ee:ff", "22:bb:cc:dd:ee:ff"],
             },
         )
         parsed_result = json_load_bytes(response.content)
-        self.assertEqual(
-            {
-                "hostname",
-                "description",
-                "hardware_uuid",
-                "default_gateways",
-                "domain",
-                "fqdn",
-                "owner",
-                "owner_data",
-                "system_id",
-                "architecture",
-                "min_hwe_kernel",
-                "hwe_kernel",
-                "status",
-                "locked",
-                "osystem",
-                "distro_series",
-                "netboot",
-                "node_type",
-                "node_type_name",
-                "numanode_set",
-                "parent",
-                "power_type",
-                "power_state",
-                "resource_uri",
-                "tag_names",
-                "ip_addresses",
-                "interface_set",
-                "cpu_count",
-                "cpu_speed",
-                "storage",
-                "memory",
-                "swap_size",
-                "pool",
-                "zone",
-                "disable_ipv4",
-                "address_ttl",
-                "boot_disk",
-                "bios_boot_method",
-                "boot_interface",
-                "blockdevice_set",
-                "physicalblockdevice_set",
-                "virtualblockdevice_set",
-                "volume_groups",
-                "raids",
-                "cache_sets",
-                "bcaches",
-                "status_action",
-                "status_message",
-                "status_name",
-                "special_filesystems",
-                "current_commissioning_result_id",
-                "current_testing_result_id",
-                "current_installation_result_id",
-                "commissioning_status",
-                "commissioning_status_name",
-                "testing_status",
-                "testing_status_name",
-                "cpu_test_status",
-                "cpu_test_status_name",
-                "memory_test_status",
-                "memory_test_status_name",
-                "network_test_status",
-                "network_test_status_name",
-                "storage_test_status",
-                "storage_test_status_name",
-                "other_test_status",
-                "other_test_status_name",
-                "hardware_info",
-                "interface_test_status",
-                "interface_test_status_name",
-                "workload_annotations",
-                "last_sync",
-                "sync_interval",
-                "next_sync",
-                "enable_hw_sync",
-                "ephemeral_deploy",
-                "error_description",
-                "enable_kernel_crash_dump",
-                "is_dpu",
-            },
-            parsed_result.keys(),
-        )
+        assert {
+            "hostname",
+            "description",
+            "hardware_uuid",
+            "default_gateways",
+            "domain",
+            "fqdn",
+            "owner",
+            "owner_data",
+            "system_id",
+            "architecture",
+            "min_hwe_kernel",
+            "hwe_kernel",
+            "status",
+            "locked",
+            "osystem",
+            "distro_series",
+            "netboot",
+            "node_type",
+            "node_type_name",
+            "numanode_set",
+            "parent",
+            "power_type",
+            "power_state",
+            "resource_uri",
+            "tag_names",
+            "ip_addresses",
+            "interface_set",
+            "cpu_count",
+            "cpu_speed",
+            "storage",
+            "memory",
+            "swap_size",
+            "pool",
+            "zone",
+            "disable_ipv4",
+            "address_ttl",
+            "boot_disk",
+            "bios_boot_method",
+            "boot_interface",
+            "blockdevice_set",
+            "physicalblockdevice_set",
+            "virtualblockdevice_set",
+            "volume_groups",
+            "raids",
+            "cache_sets",
+            "bcaches",
+            "status_action",
+            "status_message",
+            "status_name",
+            "special_filesystems",
+            "current_commissioning_result_id",
+            "current_testing_result_id",
+            "current_installation_result_id",
+            "commissioning_status",
+            "commissioning_status_name",
+            "testing_status",
+            "testing_status_name",
+            "cpu_test_status",
+            "cpu_test_status_name",
+            "memory_test_status",
+            "memory_test_status_name",
+            "network_test_status",
+            "network_test_status_name",
+            "storage_test_status",
+            "storage_test_status_name",
+            "other_test_status",
+            "other_test_status_name",
+            "hardware_info",
+            "interface_test_status",
+            "interface_test_status_name",
+            "workload_annotations",
+            "last_sync",
+            "sync_interval",
+            "next_sync",
+            "enable_hw_sync",
+            "ephemeral_deploy",
+            "error_description",
+            "enable_kernel_crash_dump",
+            "is_dpu",
+        } == parsed_result.keys()
 
 
-class TestAdminLoggedInEnlistmentAPI(APITestCase.ForAdmin):
+@pytest.mark.parametrize(
+    "api_identity",
+    [pytest.param("admin", id="user=admin,client=oauth")],
+)
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestAdminLoggedInEnlistmentAPI:
     """Enlistment tests from the perspective of admin users."""
 
-    def setUp(self):
-        super().setUp()
-        self.patch(Node, "get_effective_power_info").return_value = PowerInfo(
-            False, False, False, False, None, None
-        )
+    @pytest.fixture(autouse=True)
+    def _setup(self, api_identity, admin, admin_api_client, mocker):
+        self.mocker = mocker
+        self.user = admin
+        self.client = admin_api_client
+        mocker.patch.object(
+            Node, "get_effective_power_info"
+        ).return_value = PowerInfo(False, False, False, False, None, None)
         factory.make_RegionController()
         factory.make_default_ubuntu_release_bootable()
 
@@ -766,17 +825,17 @@ class TestAdminLoggedInEnlistmentAPI(APITestCase.ForAdmin):
         response = self.client.post(
             reverse("machines_handler"),
             {
-                "architecture": make_usable_architecture(self),
+                "architecture": _make_usable_architecture(self.mocker),
                 "power_type": "manual",
                 "mac_addresses": ["00:11:22:33:44:55"],
             },
         )
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code
         machine = Machine.objects.get(
             system_id=json_load_bytes(response.content)["system_id"]
         )
-        self.assertEqual("manual", machine.power_type)
-        self.assertEqual({}, machine.get_power_parameters())
+        assert "manual" == machine.power_type
+        assert {} == machine.get_power_parameters()
 
     def test_POST_sets_power_parameters_field(self):
         # The api allows the setting of a Machine's power_parameters field.
@@ -787,7 +846,7 @@ class TestAdminLoggedInEnlistmentAPI(APITestCase.ForAdmin):
         response = self.client.post(
             reverse("machines_handler"),
             {
-                "architecture": make_usable_architecture(self),
+                "architecture": _make_usable_architecture(self.mocker),
                 "power_type": "virsh",
                 "power_parameters_power_id": new_power_id,
                 "power_parameters_power_pass": new_power_pass,
@@ -796,20 +855,15 @@ class TestAdminLoggedInEnlistmentAPI(APITestCase.ForAdmin):
             },
         )
 
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         machine = Machine.objects.get(
             system_id=json_load_bytes(response.content)["system_id"]
         )
-        self.assertEqual(
-            {
-                "power_id": new_power_id,
-                "power_pass": new_power_pass,
-                "power_address": new_power_address,
-            },
-            reload_object(machine).get_power_parameters(),
-        )
+        assert {
+            "power_id": new_power_id,
+            "power_pass": new_power_pass,
+            "power_address": new_power_address,
+        } == reload_object(machine).get_power_parameters()
 
     def test_POST_updates_power_parameters_rejects_unknown_param(self):
         hostname = factory.make_string()
@@ -817,21 +871,18 @@ class TestAdminLoggedInEnlistmentAPI(APITestCase.ForAdmin):
             reverse("machines_handler"),
             {
                 "hostname": hostname,
-                "architecture": make_usable_architecture(self),
+                "architecture": _make_usable_architecture(self.mocker),
                 "power_type": "manual",
                 "power_parameters_unknown_param": factory.make_string(),
                 "mac_addresses": [factory.make_mac_address()],
             },
         )
 
-        self.assertEqual(
-            (
-                http.client.BAD_REQUEST,
-                {"power_parameters": ["Unknown parameter(s): unknown_param."]},
-            ),
-            (response.status_code, json_load_bytes(response.content)),
-        )
-        self.assertFalse(Machine.objects.filter(hostname=hostname).exists())
+        assert (
+            http.client.BAD_REQUEST,
+            {"power_parameters": ["Unknown parameter(s): unknown_param."]},
+        ) == (response.status_code, json_load_bytes(response.content))
+        assert not Machine.objects.filter(hostname=hostname).exists()
 
     def test_POST_new_sets_power_parameters_skip_check(self):
         # The api allows to skip the validation step and set arbitrary
@@ -840,7 +891,7 @@ class TestAdminLoggedInEnlistmentAPI(APITestCase.ForAdmin):
         response = self.client.post(
             reverse("machines_handler"),
             {
-                "architecture": make_usable_architecture(self),
+                "architecture": _make_usable_architecture(self.mocker),
                 "power_type": "manual",
                 "power_parameters_param": param,
                 "power_parameters_skip_check": "true",
@@ -848,15 +899,13 @@ class TestAdminLoggedInEnlistmentAPI(APITestCase.ForAdmin):
             },
         )
 
-        self.assertEqual(
-            http.client.OK, response.status_code, response.content
-        )
+        assert http.client.OK == response.status_code, response.content
         machine = Machine.objects.get(
             system_id=json_load_bytes(response.content)["system_id"]
         )
-        self.assertEqual(
-            {"param": param}, reload_object(machine).get_power_parameters()
-        )
+        assert {"param": param} == reload_object(
+            machine
+        ).get_power_parameters()
 
     def test_POST_admin_creates_machine_in_commissioning_state(self):
         # When an admin user enlists a machine, it goes into the
@@ -865,16 +914,16 @@ class TestAdminLoggedInEnlistmentAPI(APITestCase.ForAdmin):
             reverse("machines_handler"),
             {
                 "hostname": factory.make_string(),
-                "architecture": make_usable_architecture(self),
+                "architecture": _make_usable_architecture(self.mocker),
                 "power_type": "manual",
                 "mac_addresses": ["aa:bb:cc:dd:ee:ff"],
             },
         )
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code
         system_id = json_load_bytes(response.content)["system_id"]
-        self.assertEqual(
-            NODE_STATUS.COMMISSIONING,
-            Machine.objects.get(system_id=system_id).status,
+        assert (
+            NODE_STATUS.COMMISSIONING
+            == Machine.objects.get(system_id=system_id).status
         )
 
     def test_POST_returns_limited_fields(self):
@@ -882,96 +931,93 @@ class TestAdminLoggedInEnlistmentAPI(APITestCase.ForAdmin):
             reverse("machines_handler"),
             {
                 "hostname": factory.make_string(),
-                "architecture": make_usable_architecture(self),
+                "architecture": _make_usable_architecture(self.mocker),
                 "power_type": "manual",
                 "mac_addresses": ["aa:bb:cc:dd:ee:ff", "22:bb:cc:dd:ee:ff"],
             },
         )
         parsed_result = json_load_bytes(response.content)
-        self.assertEqual(
-            {
-                "hostname",
-                "description",
-                "hardware_uuid",
-                "default_gateways",
-                "domain",
-                "fqdn",
-                "owner",
-                "owner_data",
-                "system_id",
-                "architecture",
-                "min_hwe_kernel",
-                "hwe_kernel",
-                "status",
-                "locked",
-                "osystem",
-                "distro_series",
-                "netboot",
-                "node_type",
-                "node_type_name",
-                "parent",
-                "power_type",
-                "power_state",
-                "resource_uri",
-                "tag_names",
-                "ip_addresses",
-                "interface_set",
-                "cpu_count",
-                "cpu_speed",
-                "storage",
-                "memory",
-                "swap_size",
-                "zone",
-                "pool",
-                "disable_ipv4",
-                "address_ttl",
-                "boot_disk",
-                "bios_boot_method",
-                "boot_interface",
-                "blockdevice_set",
-                "numanode_set",
-                "physicalblockdevice_set",
-                "virtualblockdevice_set",
-                "volume_groups",
-                "raids",
-                "cache_sets",
-                "bcaches",
-                "status_name",
-                "status_message",
-                "status_action",
-                "special_filesystems",
-                "current_commissioning_result_id",
-                "current_testing_result_id",
-                "current_installation_result_id",
-                "commissioning_status",
-                "commissioning_status_name",
-                "testing_status",
-                "testing_status_name",
-                "cpu_test_status",
-                "cpu_test_status_name",
-                "memory_test_status",
-                "memory_test_status_name",
-                "network_test_status",
-                "network_test_status_name",
-                "storage_test_status",
-                "storage_test_status_name",
-                "other_test_status",
-                "other_test_status_name",
-                "hardware_info",
-                "interface_test_status",
-                "interface_test_status_name",
-                "workload_annotations",
-                "last_sync",
-                "sync_interval",
-                "next_sync",
-                "enable_hw_sync",
-                "ephemeral_deploy",
-                "error_description",
-                "enable_kernel_crash_dump",
-                "is_dpu",
-            },
-            parsed_result.keys(),
-        )
+        assert {
+            "hostname",
+            "description",
+            "hardware_uuid",
+            "default_gateways",
+            "domain",
+            "fqdn",
+            "owner",
+            "owner_data",
+            "system_id",
+            "architecture",
+            "min_hwe_kernel",
+            "hwe_kernel",
+            "status",
+            "locked",
+            "osystem",
+            "distro_series",
+            "netboot",
+            "node_type",
+            "node_type_name",
+            "parent",
+            "power_type",
+            "power_state",
+            "resource_uri",
+            "tag_names",
+            "ip_addresses",
+            "interface_set",
+            "cpu_count",
+            "cpu_speed",
+            "storage",
+            "memory",
+            "swap_size",
+            "zone",
+            "pool",
+            "disable_ipv4",
+            "address_ttl",
+            "boot_disk",
+            "bios_boot_method",
+            "boot_interface",
+            "blockdevice_set",
+            "numanode_set",
+            "physicalblockdevice_set",
+            "virtualblockdevice_set",
+            "volume_groups",
+            "raids",
+            "cache_sets",
+            "bcaches",
+            "status_name",
+            "status_message",
+            "status_action",
+            "special_filesystems",
+            "current_commissioning_result_id",
+            "current_testing_result_id",
+            "current_installation_result_id",
+            "commissioning_status",
+            "commissioning_status_name",
+            "testing_status",
+            "testing_status_name",
+            "cpu_test_status",
+            "cpu_test_status_name",
+            "memory_test_status",
+            "memory_test_status_name",
+            "network_test_status",
+            "network_test_status_name",
+            "storage_test_status",
+            "storage_test_status_name",
+            "other_test_status",
+            "other_test_status_name",
+            "hardware_info",
+            "interface_test_status",
+            "interface_test_status_name",
+            "workload_annotations",
+            "last_sync",
+            "sync_interval",
+            "next_sync",
+            "enable_hw_sync",
+            "ephemeral_deploy",
+            "error_description",
+            "enable_kernel_crash_dump",
+            "is_dpu",
+        } == parsed_result.keys()
 
     def test_POST_accept_all(self):
         # An admin user can accept all anonymously enlisted machines.
@@ -982,9 +1028,8 @@ class TestAdminLoggedInEnlistmentAPI(APITestCase.ForAdmin):
         response = self.client.post(
             reverse("machines_handler"), {"op": "accept_all"}
         )
-        self.assertEqual(http.client.OK, response.status_code)
+        assert http.client.OK == response.status_code
         machines_returned = json_load_bytes(response.content)
-        self.assertSetEqual(
-            {machine.system_id for machine in machines},
-            {machine["system_id"] for machine in machines_returned},
-        )
+        assert {machine.system_id for machine in machines} == {
+            machine["system_id"] for machine in machines_returned
+        }

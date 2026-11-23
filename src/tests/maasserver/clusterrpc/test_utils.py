@@ -4,16 +4,17 @@
 """Tests for :py:mod:`maasserver.clusterrpc.utils`."""
 
 import random
+import re
 from unittest.mock import Mock, sentinel
 
 from django.core.exceptions import NON_FIELD_ERRORS, ValidationError
+import pytest
 from twisted.python.failure import Failure
 
 from maasserver.clusterrpc import utils
 from maasserver.clusterrpc.utils import call_racks_synchronously
 from maasserver.node_action import RPC_EXCEPTIONS
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 from maasserver.utils import asynchronous
 from provisioningserver.rpc.exceptions import NoConnectionsAvailable
 
@@ -30,29 +31,29 @@ class MockFailure(Failure):
         self.value = "Mock failure"
 
 
-class TestCallClusters(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestCallClusters:
     """Tests for `utils.call_clusters`."""
 
-    def test_gets_clients(self):
+    def test_gets_clients(self, mocker):
         rack = factory.make_RackController()
-        getClientFor = self.patch(utils, "getClientFor")
+        getClientFor = mocker.patch.object(utils, "getClientFor")
         getClientFor.return_value = lambda: None
-        async_gather = self.patch(asynchronous, "gatherCallResults")
+        async_gather = mocker.patch.object(asynchronous, "gatherCallResults")
         async_gather.return_value = []
 
         # call_clusters returns with nothing because we patched out
         # asynchronous.gather, but we're interested in the side-effect:
         # getClientFor has been called for the accepted nodegroup.
-        self.assertEqual([], list(utils.call_clusters(sentinel.command)))
+        assert [] == list(utils.call_clusters(sentinel.command))
         getClientFor.assert_called_once_with(rack.system_id)
 
-    def test_with_successful_callbacks(self):
+    def test_with_successful_callbacks(self, mocker):
         rack = factory.make_RackController()
-        getClientFor = self.patch(utils, "getClientFor")
+        getClientFor = mocker.patch.object(utils, "getClientFor")
         getClientFor.return_value = lambda: None
-        partial = self.patch(utils, "partial")
-        partial.return_value = sentinel.partial
-        async_gather = self.patch(asynchronous, "gatherCallResults")
+        mocker.patch.object(utils, "partial", return_value=sentinel.partial)
+        async_gather = mocker.patch.object(asynchronous, "gatherCallResults")
         async_gather.return_value = (
             result for result in [(sentinel.partial, sentinel.result)]
         )
@@ -71,21 +72,20 @@ class TestCallClusters(MAASServerTestCase):
                 timeout_callback=timeout_callback,
             )
         )
-        self.assertEqual([sentinel.result], result)
+        assert result == [sentinel.result]
         available_callback.assert_called_once_with(rack)
         unavailable_callback.assert_not_called()
         success_callback.assert_called_once_with(rack)
         failed_callback.assert_not_called()
         timeout_callback.assert_not_called()
 
-    def test_with_unavailable_callbacks(self):
-        logger = self.patch(utils, "logger")
+    def test_with_unavailable_callbacks(self, mocker):
+        logger = mocker.patch.object(utils, "logger")
         rack = factory.make_RackController()
-        getClientFor = self.patch(utils, "getClientFor")
+        getClientFor = mocker.patch.object(utils, "getClientFor")
         getClientFor.side_effect = NoConnectionsAvailable
-        partial = self.patch(utils, "partial")
-        partial.return_value = sentinel.partial
-        async_gather = self.patch(asynchronous, "gatherCallResults")
+        mocker.patch.object(utils, "partial", return_value=sentinel.partial)
+        async_gather = mocker.patch.object(asynchronous, "gatherCallResults")
         async_gather.return_value = iter([])
         available_callback = Mock()
         unavailable_callback = Mock()
@@ -102,7 +102,7 @@ class TestCallClusters(MAASServerTestCase):
                 timeout_callback=timeout_callback,
             )
         )
-        self.assertEqual([], result)
+        assert result == []
         available_callback.assert_not_called()
         unavailable_callback.assert_called_once_with(rack)
         success_callback.assert_not_called()
@@ -110,16 +110,15 @@ class TestCallClusters(MAASServerTestCase):
         timeout_callback.assert_not_called()
         logger.error.assert_called_once()
         args, _ = logger.error.call_args
-        self.assertIn("Unable to get RPC connection", args[0])
+        assert "Unable to get RPC connection" in args[0]
 
-    def test_with_failed_callbacks(self):
-        logger = self.patch(utils, "logger")
+    def test_with_failed_callbacks(self, mocker):
+        logger = mocker.patch.object(utils, "logger")
         rack = factory.make_RackController()
-        getClientFor = self.patch(utils, "getClientFor")
+        getClientFor = mocker.patch.object(utils, "getClientFor")
         getClientFor.return_value = lambda: None
-        partial = self.patch(utils, "partial")
-        partial.return_value = sentinel.partial
-        async_gather = self.patch(asynchronous, "gatherCallResults")
+        mocker.patch.object(utils, "partial", return_value=sentinel.partial)
+        async_gather = mocker.patch.object(asynchronous, "gatherCallResults")
         async_gather.return_value = (
             result for result in [(sentinel.partial, MockFailure())]
         )
@@ -138,7 +137,7 @@ class TestCallClusters(MAASServerTestCase):
                 timeout_callback=timeout_callback,
             )
         )
-        self.assertEqual([], result)
+        assert result == []
         available_callback.assert_called_once_with(rack)
         unavailable_callback.assert_not_called()
         success_callback.assert_not_called()
@@ -147,19 +146,17 @@ class TestCallClusters(MAASServerTestCase):
 
         logger.warn.assert_called_once()
         args, _ = logger.warn.call_args
-        self.assertRegex(
-            args[0],
-            "Exception during .* on rack controller.*MockFailure: ",
+        assert re.search(
+            "Exception during .* on rack controller.*MockFailure: ", args[0]
         )
 
-    def test_with_timeout_callbacks(self):
-        logger = self.patch(utils, "logger")
+    def test_with_timeout_callbacks(self, mocker):
+        logger = mocker.patch.object(utils, "logger")
         rack = factory.make_RackController()
-        getClientFor = self.patch(utils, "getClientFor")
+        getClientFor = mocker.patch.object(utils, "getClientFor")
         getClientFor.return_value = lambda: None
-        partial = self.patch(utils, "partial")
-        partial.return_value = sentinel.partial
-        async_gather = self.patch(asynchronous, "gatherCallResults")
+        mocker.patch.object(utils, "partial", return_value=sentinel.partial)
+        async_gather = mocker.patch.object(asynchronous, "gatherCallResults")
         async_gather.return_value = (result for result in [])
         available_callback = Mock()
         unavailable_callback = Mock()
@@ -176,7 +173,7 @@ class TestCallClusters(MAASServerTestCase):
                 timeout_callback=timeout_callback,
             )
         )
-        self.assertEqual([], result)
+        assert result == []
         available_callback.assert_called_once_with(rack)
         unavailable_callback.assert_not_called()
         success_callback.assert_not_called()
@@ -185,34 +182,34 @@ class TestCallClusters(MAASServerTestCase):
 
         logger.error.assert_called_once()
         args, _ = logger.error.call_args
-        self.assertIn("RPC connection timed out", args[0])
+        assert "RPC connection timed out" in args[0]
 
 
-class TestCallRacksSynchronously(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestCallRacksSynchronously:
     """Tests for `utils.call_rakcks_synchronously`."""
 
-    def test_gets_clients(self):
+    def test_gets_clients(self, mocker):
         rack = factory.make_RackController()
-        getClientFor = self.patch(utils, "getClientFor")
+        getClientFor = mocker.patch.object(utils, "getClientFor")
         getClientFor.return_value = lambda: None
-        async_gather = self.patch(asynchronous, "gatherCallResults")
+        async_gather = mocker.patch.object(asynchronous, "gatherCallResults")
         async_gather.return_value = []
 
         # call_clusters returns with nothing because we patched out
         # asynchronous.gather, but we're interested in the side-effect:
         # getClientFor has been called for the accepted nodegroup.
-        self.assertEqual(
-            [], list(call_racks_synchronously(sentinel.command).results)
-        )
+        assert [] == list(call_racks_synchronously(sentinel.command).results)
         getClientFor.assert_called_once_with(rack.system_id)
 
 
-class TestGetErrorMessageForException(MAASServerTestCase):
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestGetErrorMessageForException:
     def test_returns_message_if_exception_has_one(self):
         error_message = factory.make_name("exception")
-        self.assertEqual(
-            error_message,
-            utils.get_error_message_for_exception(Exception(error_message)),
+        assert (
+            utils.get_error_message_for_exception(Exception(error_message))
+            == error_message
         )
 
     def test_returns_message_if_exception_has_none(self):
@@ -223,9 +220,9 @@ class TestGetErrorMessageForException(MAASServerTestCase):
             "on the region server for more information."
             % exception_class.__name__
         )
-        self.assertEqual(
-            error_message,
-            utils.get_error_message_for_exception(exception_class()),
+        assert (
+            utils.get_error_message_for_exception(exception_class())
+            == error_message
         )
 
     def test_returns_cluster_name_in_no_connections_error_message(self):
@@ -233,14 +230,11 @@ class TestGetErrorMessageForException(MAASServerTestCase):
         exception = NoConnectionsAvailable(
             "Unable to connect!", uuid=rack.system_id
         )
-        self.assertEqual(
+        assert utils.get_error_message_for_exception(exception) == (
             "Unable to connect to rack controller '%s' (%s); no connections "
-            "available." % (rack.hostname, rack.system_id),
-            utils.get_error_message_for_exception(exception),
+            "available." % (rack.hostname, rack.system_id)
         )
 
     def test_ValidationError(self):
         exception = ValidationError({NON_FIELD_ERRORS: "Some error"})
-        self.assertEqual(
-            utils.get_error_message_for_exception(exception), "Some error"
-        )
+        assert utils.get_error_message_for_exception(exception) == "Some error"

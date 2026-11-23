@@ -1,10 +1,12 @@
 # Copyright 2012-2026 Canonical Ltd.  This software is licensed under the
 # GNU Affero General Public License version 3 (see the file LICENSE).
 
-from pathlib import Path
 import random
+from unittest import TestCase as UnittestTestCase
 from unittest.mock import call, MagicMock
 from uuid import uuid4
+
+import pytest
 
 from maascommon.osystem.ubuntu import UbuntuOS
 from maasserver import deprecations, eventloop, locks, start_up, vault
@@ -24,10 +26,6 @@ from maasserver.start_up import (
 from maasserver.testing.config import RegionConfigurationFixture
 from maasserver.testing.eventloop import RegionEventLoopFixture
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import (
-    MAASServerTestCase,
-    MAASTransactionServerTestCase,
-)
 from maasserver.testing.vault import FakeVaultClient
 from maasserver.utils.certificates import (
     generate_ca_certificate,
@@ -55,29 +53,58 @@ from provisioningserver.utils.snap import SnapVersionsInfo
 from provisioningserver.utils.testing import MAASIDFixture, MAASUUIDFixture
 
 
-class TestStartUp(MAASTransactionServerTestCase):
+class _PytestDBTestCase:
+    @pytest.fixture(autouse=True)
+    def _setup_helpers(self, mocker, request, maasdb, maas_region_test):
+        self._mocker = mocker
+        self._request = request
+        self._assertions = UnittestTestCase()
+
+    def __getattr__(self, name):
+        if name.startswith("assert") or name == "fail":
+            return getattr(self._assertions, name)
+        raise AttributeError(name)
+
+    def patch(self, obj, attribute=None, value=None):
+        if attribute is None:
+            return self._mocker.patch(obj)
+        if value is None:
+            return self._mocker.patch.object(obj, attribute)
+        return self._mocker.patch.object(obj, attribute, value)
+
+    def patch_autospec(self, obj, attribute):
+        return self._mocker.patch.object(obj, attribute, autospec=True)
+
+    def useFixture(self, fixture):
+        fixture.setUp()
+        self._request.addfinalizer(fixture.cleanUp)
+        return fixture
+
+
+@pytest.mark.real_post_commit_hooks
+@pytest.mark.allow_transactions
+@pytest.mark.usefixtures("maas_region_test", "factory", "transactional_maasdb")
+class TestStartUp(_PytestDBTestCase):
     """Tests for the `start_up` function.
 
     The actual work happens in `inner_start_up` and `test_start_up`; the tests
     you see here are for the locking wrapper only.
     """
 
-    def setUp(self):
-        super().setUp()
+    @pytest.fixture(autouse=True)
+    def _set_up(self, transactional_maasdb, _setup_helpers, request, tmp_path):
         self.useFixture(RegionEventLoopFixture())
         self.patch(ipaddr, "get_ip_addr").return_value = {}
-        temp_dir = Path(self.make_dir())
-        self.patch(MAAS_SHARED_SECRET, "_path", lambda: temp_dir / "secret")
+        self.patch(MAAS_SHARED_SECRET, "_path", lambda: tmp_path / "secret")
         MAAS_SECRET.set(factory.make_bytes())
-
-    def tearDown(self):
-        super().tearDown()
         # start_up starts the Twisted event loop, so we need to stop it.
-        eventloop.reset().wait(get_testing_timeout())
+        request.addfinalizer(
+            lambda: eventloop.reset().wait(get_testing_timeout())
+        )
 
     def test_inner_start_up_runs_in_exclusion(self):
         # Disable boot source cache signals.
-        self.addCleanup(bootsources.signals.enable)
+        self._request.addfinalizer(bootsources.signals.enable)
         bootsources.signals.disable()
 
         locked = factory.make_exception("locked")
@@ -86,8 +113,13 @@ class TestStartUp(MAASTransactionServerTestCase):
         def check_lock():
             raise locked if locks.startup.is_locked() else unlocked
 
-        self.patch(start_up, "load_builtin_scripts").side_effect = check_lock
-        self.assertRaises(type(locked), start_up.inner_start_up, master=True)
+        self._mocker.patch.object(
+            RegionController.objects,
+            "get_or_create_running_controller",
+            side_effect=check_lock,
+        )
+        with pytest.raises(type(locked), match="locked"):
+            start_up.inner_start_up(master=True)
 
     def test_start_up_retries_with_wait_on_exception(self):
         inner_start_up = self.patch(start_up, "inner_start_up")
@@ -108,9 +140,9 @@ class TestStartUp(MAASTransactionServerTestCase):
         start_up.pause.assert_called_once_with(3.0)
 
     def test_start_up_fetches_secret_from_vault_after_migration(self):
-        vault.clear_vault_client_caches()
-        # Apparently, MAAS_SECRET state is shared between the tests
+        self._request.addfinalizer(vault.clear_vault_client_caches)
         old_secret = MAAS_SECRET.get()
+        self._request.addfinalizer(lambda: MAAS_SECRET.set(old_secret))
         # Prepare fake vault
         expected_shared_secret = b"EXPECTED"
         client = FakeVaultClient()
@@ -130,14 +162,14 @@ class TestStartUp(MAASTransactionServerTestCase):
         with post_commit_hooks:
             start_up.start_up()
 
-        self.assertEqual(expected_shared_secret, MAAS_SECRET.get())
-        MAAS_SECRET.set(old_secret)
-        vault.clear_vault_client_caches()
+        assert MAAS_SECRET.get() == expected_shared_secret
 
 
-class TestInnerStartUp(MAASServerTestCase):
-    def setUp(self):
-        super().setUp()
+@pytest.mark.real_post_commit_hooks
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestInnerStartUp(_PytestDBTestCase):
+    @pytest.fixture(autouse=True)
+    def _set_up(self, _setup_helpers, tmp_path):
         self.useFixture(MAASIDFixture(None))
         self.useFixture(MAASUUIDFixture("uuid"))
         self.patch_autospec(start_up, "dns_kms_setting_changed")
@@ -148,8 +180,7 @@ class TestInnerStartUp(MAASServerTestCase):
         self.patch(
             start_up, "get_versions_info"
         ).return_value = self.versions_info
-        temp_dir = Path(self.make_dir())
-        self.patch(MAAS_SHARED_SECRET, "_path", lambda: temp_dir / "secret")
+        self.patch(MAAS_SHARED_SECRET, "_path", lambda: tmp_path / "secret")
         MAAS_SECRET.set(factory.make_bytes())
         self.create_cluster_certificate_mock = self.patch(
             start_up, "_create_cluster_certificate_if_necessary"
@@ -469,9 +500,10 @@ class TestInnerStartUp(MAASServerTestCase):
         )
 
 
-class TestVaultMigrateDbCredentials(MAASServerTestCase):
-    def setUp(self):
-        super().setUp()
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestVaultMigrateDbCredentials(_PytestDBTestCase):
+    @pytest.fixture(autouse=True)
+    def _set_up(self, _setup_helpers):
         self.creds_path = factory.make_name("uuid")
         self.patch(
             start_up, "get_db_creds_vault_path"
@@ -539,9 +571,8 @@ class TestVaultMigrateDbCredentials(MAASServerTestCase):
         client = MagicMock()
         client.set.side_effect = [VaultError()]
         Config.objects.set_config("vault_enabled", True)
-        self.assertRaises(
-            VaultError, migrate_db_credentials_if_necessary, client
-        )
+        with pytest.raises(VaultError):
+            migrate_db_credentials_if_necessary(client)
         Config.objects.set_config("vault_enabled", False)
         with RegionConfiguration.open() as config:
             self.assertEqual(db_name, config.database_name)
@@ -597,9 +628,8 @@ class TestVaultMigrateDbCredentials(MAASServerTestCase):
         Config.objects.set_config("vault_enabled", False)
         exc = factory.make_exception()
         self.patch(ConfigurationFile, "save").side_effect = exc
-        self.assertRaises(
-            type(exc), migrate_db_credentials_if_necessary, client
-        )
+        with pytest.raises(type(exc)):
+            migrate_db_credentials_if_necessary(client)
         with RegionConfiguration.open() as config:
             self.assertEqual("", config.database_name)
             self.assertEqual("", config.database_user)
@@ -607,25 +637,20 @@ class TestVaultMigrateDbCredentials(MAASServerTestCase):
         client.delete.assert_not_called()
 
 
-class TestCreateClusterCertificate(MAASServerTestCase):
-    def setUp(self):
-        super().setUp()
+@pytest.mark.usefixtures("maasdb", "maas_region_test", "factory")
+class TestCreateClusterCertificate(_PytestDBTestCase):
+    @pytest.fixture(autouse=True)
+    def _set_up(self, _setup_helpers):
         MAAS_SECRET.set(factory.make_bytes())
         self.useFixture(MAASUUIDFixture(str(uuid4())))
 
     def test_create_and_store_certificates(self):
         secret_manager = SecretManager()
         # No certificates on the database
-        self.assertRaises(
-            SecretNotFound,
-            secret_manager.get_composite_secret,
-            "maas-ca-certificate",
-        )
-        self.assertRaises(
-            SecretNotFound,
-            secret_manager.get_composite_secret,
-            "cluster-certificate",
-        )
+        with pytest.raises(SecretNotFound):
+            secret_manager.get_composite_secret("maas-ca-certificate")
+        with pytest.raises(SecretNotFound):
+            secret_manager.get_composite_secret("cluster-certificate")
 
         _create_cluster_certificate_if_necessary()
 

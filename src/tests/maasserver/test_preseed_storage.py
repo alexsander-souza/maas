@@ -6,7 +6,7 @@ from difflib import ndiff
 import random
 from textwrap import dedent
 
-from testtools.content import text_content
+import pytest
 import yaml
 
 from maasserver.enum import (
@@ -33,7 +33,6 @@ from maasserver.models.partitiontable import (
 from maasserver.preseed_storage import compose_curtin_storage_config
 from maasserver.storage_layouts import VMFS6StorageLayout
 from maasserver.testing.factory import factory
-from maasserver.testing.testcase import MAASServerTestCase
 
 
 class AssertStorageConfigMixin:
@@ -43,18 +42,16 @@ class AssertStorageConfigMixin:
         return config
 
     def assertStorageConfig(self, expected, observed, strip_uuids=False):
-        self.assertIsInstance(observed, list)
-        self.assertEqual(len(observed), 1)
-        observed = observed[0]
-        observed = yaml.safe_load(observed)
-        self.assertEqual(
-            observed.get("partitioning_commands"),
-            {"builtin": ["curtin", "block-meta", "custom"]},
-        )
-        self.assertIn("storage", observed)
+        assert isinstance(observed, list)
+        assert len(observed) == 1
+        observed = yaml.safe_load(observed[0])
+        assert observed.get("partitioning_commands") == {
+            "builtin": ["curtin", "block-meta", "custom"]
+        }
+        assert "storage" in observed
         storage = observed["storage"]
-        self.assertEqual(storage.get("version"), 1)
-        self.assertIsInstance(storage.get("config"), list)
+        assert storage.get("version") == 1
+        assert isinstance(storage.get("config"), list)
         storage_observed = observed["storage"]["config"]
         storage_expected = yaml.safe_load(expected)["config"]
         if strip_uuids:
@@ -74,11 +71,13 @@ class AssertStorageConfigMixin:
                     storage_observed_dump.splitlines(),
                 )
             )
-            self.addDetail("Differences", text_content("\n".join(diff)))
-            self.fail("Storage configurations differ.")
+            pytest.fail("Storage configurations differ:\n" + "\n".join(diff))
 
 
-class TestSpecialFilesystems(MAASServerTestCase, AssertStorageConfigMixin):
+@pytest.mark.usefixtures(
+    "maasdb", "factory", "mock_openfga", "mock_start_workflows"
+)
+class TestSpecialFilesystems(AssertStorageConfigMixin):
     STORAGE_CONFIG = dedent(
         """\
         config:
@@ -130,7 +129,10 @@ class TestSpecialFilesystems(MAASServerTestCase, AssertStorageConfigMixin):
         self.assertStorageConfig(self.STORAGE_CONFIG, config)
 
 
-class TestExt4MetadataCSUM(MAASServerTestCase, AssertStorageConfigMixin):
+@pytest.mark.usefixtures(
+    "maasdb", "factory", "mock_openfga", "mock_start_workflows"
+)
+class TestExt4MetadataCSUM(AssertStorageConfigMixin):
     STORAGE_CONFIG = dedent(
         """\
         config:
@@ -200,7 +202,10 @@ class TestExt4MetadataCSUM(MAASServerTestCase, AssertStorageConfigMixin):
         self.assertStorageConfig(self.STORAGE_CONFIG, config)
 
 
-class TestSimpleGPTLayout(MAASServerTestCase, AssertStorageConfigMixin):
+@pytest.mark.usefixtures(
+    "maasdb", "factory", "mock_openfga", "mock_start_workflows"
+)
+class TestSimpleGPTLayout(AssertStorageConfigMixin):
     STORAGE_CONFIG = dedent(
         """\
         config:
@@ -369,7 +374,10 @@ class TestSimpleGPTLayout(MAASServerTestCase, AssertStorageConfigMixin):
         self.assertStorageConfig(self.STORAGE_CONFIG, config)
 
 
-class TestSimpleMBRLayout(MAASServerTestCase, AssertStorageConfigMixin):
+@pytest.mark.usefixtures(
+    "maasdb", "factory", "mock_openfga", "mock_start_workflows"
+)
+class TestSimpleMBRLayout(AssertStorageConfigMixin):
     STORAGE_CONFIG = dedent(
         """\
         config:
@@ -578,9 +586,10 @@ class TestSimpleMBRLayout(MAASServerTestCase, AssertStorageConfigMixin):
         self.assertStorageConfig(self.STORAGE_CONFIG, config)
 
 
-class TestSimpleWithEmptyDiskLayout(
-    MAASServerTestCase, AssertStorageConfigMixin
-):
+@pytest.mark.usefixtures(
+    "maasdb", "factory", "mock_openfga", "mock_start_workflows"
+)
+class TestSimpleWithEmptyDiskLayout(AssertStorageConfigMixin):
     STORAGE_CONFIG = dedent(
         """\
         config:
@@ -659,9 +668,10 @@ class TestSimpleWithEmptyDiskLayout(
         self.assertStorageConfig(self.STORAGE_CONFIG, config)
 
 
-class TestMBRWithBootDiskWithoutPartitionsLayout(
-    MAASServerTestCase, AssertStorageConfigMixin
-):
+@pytest.mark.usefixtures(
+    "maasdb", "factory", "mock_openfga", "mock_start_workflows"
+)
+class TestMBRWithBootDiskWithoutPartitionsLayout(AssertStorageConfigMixin):
     STORAGE_CONFIG = dedent(
         """\
         config:
@@ -743,9 +753,10 @@ class TestMBRWithBootDiskWithoutPartitionsLayout(
         self.assertStorageConfig(self.STORAGE_CONFIG, config)
 
 
-class TestGPTWithBootDiskWithoutPartitionsLayout(
-    MAASServerTestCase, AssertStorageConfigMixin
-):
+@pytest.mark.usefixtures(
+    "maasdb", "factory", "mock_openfga", "mock_start_workflows"
+)
+class TestGPTWithBootDiskWithoutPartitionsLayout(AssertStorageConfigMixin):
     STORAGE_CONFIG = dedent(
         """\
         config:
@@ -837,9 +848,10 @@ class TestGPTWithBootDiskWithoutPartitionsLayout(
         self.assertStorageConfig(self.STORAGE_CONFIG, config)
 
 
-class TestGPTPXELargeBootDiskLayout(
-    MAASServerTestCase, AssertStorageConfigMixin
-):
+@pytest.mark.usefixtures(
+    "maasdb", "factory", "mock_openfga", "mock_start_workflows"
+)
+class TestGPTPXELargeBootDiskLayout(AssertStorageConfigMixin):
     STORAGE_CONFIG = dedent(
         """\
         config:
@@ -922,7 +934,10 @@ class TestGPTPXELargeBootDiskLayout(
         self.assertStorageConfig(self.STORAGE_CONFIG, config)
 
 
-class TestLVMOnlyVG(MAASServerTestCase, AssertStorageConfigMixin):
+@pytest.mark.usefixtures(
+    "maasdb", "factory", "mock_openfga", "mock_start_workflows"
+)
+class TestLVMOnlyVG(AssertStorageConfigMixin):
     STORAGE_CONFIG = dedent(
         """\
         config:
@@ -984,7 +999,10 @@ class TestLVMOnlyVG(MAASServerTestCase, AssertStorageConfigMixin):
         self.assertStorageConfig(self.STORAGE_CONFIG, config)
 
 
-class TestComplexDiskLayout(MAASServerTestCase, AssertStorageConfigMixin):
+@pytest.mark.usefixtures(
+    "maasdb", "factory", "mock_openfga", "mock_start_workflows"
+)
+class TestComplexDiskLayout(AssertStorageConfigMixin):
     STORAGE_CONFIG = dedent(
         """\
         config:
@@ -1337,7 +1355,10 @@ class TestComplexDiskLayout(MAASServerTestCase, AssertStorageConfigMixin):
         self.assertStorageConfig(self.STORAGE_CONFIG, config)
 
 
-class TestSimplePower8Layout(MAASServerTestCase, AssertStorageConfigMixin):
+@pytest.mark.usefixtures(
+    "maasdb", "factory", "mock_openfga", "mock_start_workflows"
+)
+class TestSimplePower8Layout(AssertStorageConfigMixin):
     STORAGE_CONFIG = dedent(
         """\
         config:
@@ -1419,7 +1440,10 @@ class TestSimplePower8Layout(MAASServerTestCase, AssertStorageConfigMixin):
         self.assertStorageConfig(self.STORAGE_CONFIG, config)
 
 
-class TestPower8ExtraSpaceLayout(MAASServerTestCase, AssertStorageConfigMixin):
+@pytest.mark.usefixtures(
+    "maasdb", "factory", "mock_openfga", "mock_start_workflows"
+)
+class TestPower8ExtraSpaceLayout(AssertStorageConfigMixin):
     STORAGE_CONFIG = dedent(
         """\
         config:
@@ -1497,9 +1521,10 @@ class TestPower8ExtraSpaceLayout(MAASServerTestCase, AssertStorageConfigMixin):
         self.assertStorageConfig(self.STORAGE_CONFIG, config)
 
 
-class TestPower8NoPartitionTableLayout(
-    MAASServerTestCase, AssertStorageConfigMixin
-):
+@pytest.mark.usefixtures(
+    "maasdb", "factory", "mock_openfga", "mock_start_workflows"
+)
+class TestPower8NoPartitionTableLayout(AssertStorageConfigMixin):
     STORAGE_CONFIG = dedent(
         """\
         config:
@@ -1606,7 +1631,10 @@ def shuffled(things):
     return things
 
 
-class TestMountOrdering(MAASServerTestCase):
+@pytest.mark.usefixtures(
+    "maasdb", "factory", "mock_openfga", "mock_start_workflows"
+)
+class TestMountOrdering:
     def test_mounts_are_sorted_lexically_by_path(self):
         node = factory.make_Node(status=NODE_STATUS.READY, with_boot_disk=True)
         boot_disk = factory.make_PhysicalBlockDevice(
@@ -1652,12 +1680,13 @@ class TestMountOrdering(MAASServerTestCase):
         [config] = compose_curtin_storage_config(node)
         devices = yaml.safe_load(config)["storage"]["config"]
         mounts = [element for element in devices if element["type"] == "mount"]
-        self.assertEqual(
-            ["/"] + mount_points, [mount["path"] for mount in mounts]
-        )
+        assert ["/"] + mount_points == [mount["path"] for mount in mounts]
 
 
-class TestBootableRaidLayoutMBR(MAASServerTestCase, AssertStorageConfigMixin):
+@pytest.mark.usefixtures(
+    "maasdb", "factory", "mock_openfga", "mock_start_workflows"
+)
+class TestBootableRaidLayoutMBR(AssertStorageConfigMixin):
     STORAGE_CONFIG = dedent(
         """\
         config:
@@ -1800,7 +1829,10 @@ class TestBootableRaidLayoutMBR(MAASServerTestCase, AssertStorageConfigMixin):
         self.assertStorageConfig(self.STORAGE_CONFIG, config)
 
 
-class TestBootableRaidLayoutUEFI(MAASServerTestCase, AssertStorageConfigMixin):
+@pytest.mark.usefixtures(
+    "maasdb", "factory", "mock_openfga", "mock_start_workflows"
+)
+class TestBootableRaidLayoutUEFI(AssertStorageConfigMixin):
     STORAGE_CONFIG = dedent(
         """\
         config:
@@ -1927,7 +1959,10 @@ class TestBootableRaidLayoutUEFI(MAASServerTestCase, AssertStorageConfigMixin):
         self.assertStorageConfig(self.STORAGE_CONFIG, config)
 
 
-class TestBootableRaidLayoutGPT(MAASServerTestCase, AssertStorageConfigMixin):
+@pytest.mark.usefixtures(
+    "maasdb", "factory", "mock_openfga", "mock_start_workflows"
+)
+class TestBootableRaidLayoutGPT(AssertStorageConfigMixin):
     STORAGE_CONFIG = dedent(
         """\
         config:
@@ -2074,9 +2109,10 @@ class TestBootableRaidLayoutGPT(MAASServerTestCase, AssertStorageConfigMixin):
         self.assertStorageConfig(self.STORAGE_CONFIG, config)
 
 
-class TestBootableRaidLayoutGPTWithPartition(
-    MAASServerTestCase, AssertStorageConfigMixin
-):
+@pytest.mark.usefixtures(
+    "maasdb", "factory", "mock_openfga", "mock_start_workflows"
+)
+class TestBootableRaidLayoutGPTWithPartition(AssertStorageConfigMixin):
     STORAGE_CONFIG = dedent(
         """\
         config:
@@ -2243,7 +2279,10 @@ class TestBootableRaidLayoutGPTWithPartition(
         self.assertStorageConfig(self.STORAGE_CONFIG, config)
 
 
-class TestVMFS(MAASServerTestCase, AssertStorageConfigMixin):
+@pytest.mark.usefixtures(
+    "maasdb", "factory", "mock_openfga", "mock_start_workflows"
+)
+class TestVMFS(AssertStorageConfigMixin):
     STORAGE_CONFIG = dedent(
         """\
         config:
@@ -2438,7 +2477,10 @@ class TestVMFS(MAASServerTestCase, AssertStorageConfigMixin):
         self.assertStorageConfig(self.STORAGE_CONFIG, config, True)
 
 
-class TestDuplicateDiskIdentity(MAASServerTestCase):
+@pytest.mark.usefixtures(
+    "maasdb", "factory", "mock_openfga", "mock_start_workflows"
+)
+class TestDuplicateDiskIdentity:
     def test_falls_back_to_path_when_disks_share_model_and_serial(self):
         node = factory.make_Node(
             status=NODE_STATUS.ALLOCATED, with_boot_disk=False
@@ -2464,12 +2506,12 @@ class TestDuplicateDiskIdentity(MAASServerTestCase):
             for entry in config["storage"]["config"]
             if entry["type"] == "disk"
         }
-        self.assertNotIn("serial", disks["sda"])
-        self.assertNotIn("model", disks["sda"])
-        self.assertEqual("/dev/disk/by-id/wwn-0xaaa", disks["sda"]["path"])
-        self.assertNotIn("serial", disks["sdb"])
-        self.assertNotIn("model", disks["sdb"])
-        self.assertEqual("/dev/disk/by-id/wwn-0xbbb", disks["sdb"]["path"])
+        assert "serial" not in disks["sda"]
+        assert "model" not in disks["sda"]
+        assert "/dev/disk/by-id/wwn-0xaaa" == disks["sda"]["path"]
+        assert "serial" not in disks["sdb"]
+        assert "model" not in disks["sdb"]
+        assert "/dev/disk/by-id/wwn-0xbbb" == disks["sdb"]["path"]
 
     def test_raises_error_when_duplicate_disks_have_no_distinct_id_path(self):
         node = factory.make_Node(
@@ -2490,12 +2532,11 @@ class TestDuplicateDiskIdentity(MAASServerTestCase):
             id_path="/dev/disk/by-id/wwn-0xaaa",
         )
         node._create_acquired_filesystems()
-        error = self.assertRaises(
-            PreseedError, compose_curtin_storage_config, node
-        )
-        self.assertIn("sda", str(error))
-        self.assertIn("sdb", str(error))
-        self.assertIn("duplicate-serial", str(error))
+        with pytest.raises(PreseedError) as error:
+            compose_curtin_storage_config(node)
+        assert "sda" in str(error.value)
+        assert "sdb" in str(error.value)
+        assert "duplicate-serial" in str(error.value)
 
     def test_allows_disks_with_distinct_model_and_serial(self):
         node = factory.make_Node(
